@@ -82,6 +82,8 @@ extension SocketType {
         case .image: return Color(red: 0.33, green: 0.68, blue: 0.98)
         case .mask: return Color(red: 0.40, green: 0.80, blue: 0.45)
         case .string: return Color(red: 0.55, green: 0.80, blue: 0.70)
+        case .video: return Color(red: 0.95, green: 0.45, blue: 0.35)
+        case .audio: return Color(red: 0.30, green: 0.78, blue: 0.85)
         default: return Color.gray
         }
     }
@@ -97,6 +99,8 @@ extension NodeSchema {
         case "image": return SocketType.image.color
         case "subgraph": return Color(red: 0.62, green: 0.45, blue: 0.95)
         case "utils": return Color(red: 0.95, green: 0.80, blue: 0.30)
+        case "video": return SocketType.video.color
+        case "audio": return SocketType.audio.color
         default: return .gray
         }
     }

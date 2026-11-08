@@ -62,7 +62,9 @@ let package = Package(
                 "GraphRuntime",
                 "NodesStandard",
                 .product(name: "MLX", package: "mlx-swift"),
-            ]
+            ],
+            // AVKit's SwiftUI VideoPlayer needs the framework linked explicitly in a SwiftPM executable.
+            linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation")]
         ),
         .testTarget(
             name: "MLXDiffusionCoreTests",

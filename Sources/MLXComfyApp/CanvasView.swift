@@ -8,7 +8,9 @@ struct CanvasView: View {
     var body: some View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor).ignoresSafeArea()
-            if model.previewImage == nil, let a = model.displayedImage, let b = model.compareImage {
+            if model.previewImage == nil, let m = model.displayedMedia, m.kind != .image {
+                MediaCanvas(url: m.url, kind: m.kind).id(m.url)
+            } else if model.previewImage == nil, let a = model.displayedImage, let b = model.compareImage {
                 CompareView(a: a, b: b).id(model.compareURL)
             } else if let image = model.previewImage ?? model.displayedImage {
                 Image(decorative: image, scale: 1)

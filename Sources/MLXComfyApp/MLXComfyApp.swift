@@ -1,4 +1,5 @@
 import AppKit
+import NodesStandard
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -10,6 +11,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Running as a bare SwiftPM executable: become a regular foreground app with a Dock icon and menu bar.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Preview files only live for one session.
+        try? FileManager.default.removeItem(at: previewDirectory)
+        if CommandLine.arguments.contains("--smoke-media") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runMedia(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let prompt = SmokeTest.requestedPrompt {
             Task { @MainActor in
                 // Wait for SwiftUI to create the model.
@@ -47,20 +57,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MLXComfyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @State private var model = AppModel()
+    @State private var store = ModelStore()
 
     var body: some Scene {
         Window("MLXComfyUI", id: "main") {
             ContentView()
                 .environment(model)
+                .environment(store)
                 .frame(minWidth: 1000, minHeight: 640)
-                .onAppear { AppDelegate.model = model }
+                .onAppear {
+                    AppDelegate.model = model
+                    store.adopt(model.modelPath)
+                }
         }
         .defaultSize(width: 1440, height: 900)
         .commands { AppCommands(model: model) }
 
+        Window("Models", id: "models") {
+            ModelManagerView()
+                .environment(model)
+                .environment(store)
+        }
+        .defaultSize(width: 680, height: 720)
+
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(store)
         }
     }
 }
@@ -68,6 +91,7 @@ struct MLXComfyApp: App {
 struct AppCommands: Commands {
     let model: AppModel
     @Environment(\.undoManager) private var undoManager
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -89,6 +113,8 @@ struct AppCommands: Commands {
             Button("Cancel All") { model.cancelAll() }
                 .keyboardShortcut(".", modifiers: [.command, .shift])
             Divider()
+            Button("Models…") { openWindow(id: "models") }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             Button("Load Model Now") { model.preloadModel() }
             Button("Unload Models") { model.unloadModels() }
         }

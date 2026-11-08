@@ -13,6 +13,8 @@ public enum StandardNodes {
         LoRANode.self,
         FeatherMaskNode.self, PadImageNode.self, ImageScaleNode.self, PromptAssistantNode.self,
         NoteNode.self, RerouteNode.self,
+        TestPatternNode.self, TestToneNode.self, LoadVideoNode.self, LoadAudioNode.self, MixAudioNode.self,
+        AddAudioToVideoNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.
@@ -59,7 +61,8 @@ public struct LoadModelNode: NodeImplementation {
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let url = resolvePath(try inputs.string("path"))
         // Models live in the resource cache so they stay resident across runs and graph edits.
-        let model: DiffusionModel = try await context.resources.get("model:\(url.path)") {
+        let model: GenerativeModel = try await context.resources.get(
+            "model:\(url.path)", estimatedBytes: ModelRegistry.weightBytes(at: url)) {
             try await ModelRegistry.shared.load(url)
         }
         return ["model": .object(model)]

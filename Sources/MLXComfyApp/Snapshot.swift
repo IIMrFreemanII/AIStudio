@@ -1,12 +1,15 @@
 import AppKit
 import GraphRuntime
 import ImageIO
+import MLXDiffusionCore
 import SwiftUI
 
 /// `MLXComfyApp --snapshot <dir>` renders the main window offscreen in a few representative states and exits.
 /// Used to check layouts without driving the GUI by hand.
 @MainActor
 enum Snapshot {
+    static let store = ModelStore()
+
     static var requestedDirectory: URL? {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return nil }
@@ -138,6 +141,30 @@ enum Snapshot {
         }
         print("structured: " + s.graph.jsonString())
         print("structured-valid: \(s.validationError ?? "ok")")
+
+        // 22–26. Media: the Video mode panel, an audio and a video result, the Models window, loaded models.
+        let m = AppModel(persistSettings: false, autoloadModel: false)
+        m.outputDirectory = projectOutputs.path
+        m.simpleMode = .video
+        await render(m, to: dir.appendingPathComponent("22-video-mode.png"))
+        m.simpleMode = .image
+        let tone = MediaOps.mix(MediaOps.tone(frequency: 220, seconds: 3, sampleRate: 48000),
+                                MediaOps.tone(frequency: 660, seconds: 1, sampleRate: 48000, amplitude: 0.6), offset: 1)
+        let audioURL = dir.appendingPathComponent("snapshot-audio.wav")
+        try? await MediaIO.writeAudio(tone, to: audioURL)
+        m.displayedMedia = (audioURL, .audio)
+        await render(m, to: dir.appendingPathComponent("23-audio-result.png"))
+        let videoURL = dir.appendingPathComponent("snapshot-video.mp4")
+        try? await MediaIO.writeVideo(MediaOps.testPattern(width: 640, height: 360, frames: 48, fps: 24), audio: tone, to: videoURL)
+        m.displayedMedia = (videoURL, .video)
+        await render(m, to: dir.appendingPathComponent("24-video-result.png"))
+        let store = ModelStore()
+        store.adopt(m.modelPath)
+        await render(ModelManagerView().environment(m).environment(store),
+                     to: dir.appendingPathComponent("25-models-window.png"), size: CGSize(width: 680, height: 900))
+        m.loadedModels = [LoadedModel(key: "model:/Users/me/models/qwen-turbo-mlx", bytes: 24_100_000_000, pinned: false)]
+        await render(LoadedModelsView().environment(m), to: dir.appendingPathComponent("26-loaded-models.png"),
+                     size: CGSize(width: 340, height: 220))
     }
 
     static func render<V: View>(_ view: V, to url: URL, size: CGSize) async {
@@ -160,7 +187,8 @@ enum Snapshot {
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: ContentView().environment(model).frame(width: size.width, height: size.height))
+        let host = NSHostingView(rootView: ContentView().environment(model).environment(store)
+            .frame(width: size.width, height: size.height))
         window.contentView = host
         window.orderFrontRegardless()
         try? await Task.sleep(nanoseconds: 1_200_000_000)  // let layout, tasks and thumbnails settle

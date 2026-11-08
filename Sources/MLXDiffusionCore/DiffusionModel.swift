@@ -41,11 +41,15 @@ public struct SamplerStep {
     public let predicted: MLXArray
 }
 
-/// What a diffusion model must provide for the generic graph nodes (TextEncode, Sampler, VAEDecode…) to drive it.
-public protocol DiffusionModel: AnyObject {
+/// Anything a model folder loads into: image, video or audio models (and models that also write text).
+public protocol GenerativeModel: AnyObject {
     /// Stable family identifier, e.g. `"qwen-image-2.1"`.
     var family: String { get }
     var displayName: String { get }
+}
+
+/// What an image diffusion model must provide for the generic graph nodes (TextEncode, Sampler, VAEDecode…).
+public protocol DiffusionModel: GenerativeModel {
 
     /// Encodes a prompt, optionally with condition images (`[H, W, 4]` RGBA in `[0, 1]`) for editing/reference.
     func encodePrompt(_ prompt: String, images: [MLXArray]) throws -> Conditioning
@@ -160,9 +164,54 @@ extension DiffusionModel {
     }
 }
 
-/// Maps a diffusers `model_index.json` `_class_name` to a loader.
+/// A request to a video model: prompt, size, length and optional first frame.
+public struct VideoRequest: @unchecked Sendable {
+    public var prompt: String
+    public var width: Int
+    public var height: Int
+    public var seconds: Double
+    public var fps: Double
+    public var seed: UInt64
+    public var steps: Int?
+    /// Optional first frame (`[H, W, 3|4]` in `[0, 1]`) for image-to-video.
+    public var image: MLXArray?
+    public init(prompt: String, width: Int = 768, height: Int = 512, seconds: Double = 5, fps: Double = 24,
+                seed: UInt64 = 0, steps: Int? = nil, image: MLXArray? = nil) {
+        self.prompt = prompt; self.width = width; self.height = height; self.seconds = seconds; self.fps = fps
+        self.seed = seed; self.steps = steps; self.image = image
+    }
+}
+
+/// A model that generates video (possibly with a soundtrack). Model ports refine this with finer-grained steps.
+public protocol VideoModel: GenerativeModel {
+    func generateVideo(_ request: VideoRequest, onStep: ((Int, Int) throws -> Void)?) throws -> VideoClip
+}
+
+/// A request to an audio model. Which fields matter depends on the model (music uses lyrics, speech a voice).
+public struct AudioRequest: Sendable {
+    public var prompt: String
+    public var seconds: Double
+    public var seed: UInt64
+    public var steps: Int?
+    public var lyrics: String
+    public var voice: String
+    public var speed: Double
+    public init(prompt: String, seconds: Double = 10, seed: UInt64 = 0, steps: Int? = nil, lyrics: String = "",
+                voice: String = "", speed: Double = 1) {
+        self.prompt = prompt; self.seconds = seconds; self.seed = seed; self.steps = steps; self.lyrics = lyrics
+        self.voice = voice; self.speed = speed
+    }
+}
+
+/// A model that generates audio: music, speech or sound effects.
+public protocol AudioModel: GenerativeModel {
+    func generateAudio(_ request: AudioRequest, onStep: ((Int, Int) throws -> Void)?) throws -> AudioClip
+}
+
+/// Maps a model folder to a loader, by the `_class_name` in a diffusers `model_index.json` or the `class` in an
+/// `mlxcomfy.json` manifest (for repos without one).
 public final class ModelRegistry {
-    public typealias Loader = (URL) async throws -> DiffusionModel
+    public typealias Loader = (URL) async throws -> GenerativeModel
 
     public static let shared = ModelRegistry()
     private var loaders: [String: Loader] = [:]
@@ -176,14 +225,31 @@ public final class ModelRegistry {
     }
 
     public static func className(at url: URL) -> String? {
-        let idx = url.appendingPathComponent("model_index.json")
-        guard let data = try? Data(contentsOf: idx),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj["_class_name"] as? String
+        for (file, key) in [("model_index.json", "_class_name"), ("mlxcomfy.json", "class")] {
+            guard let data = try? Data(contentsOf: url.appendingPathComponent(file)),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let name = obj[key] as? String else { continue }
+            return name
+        }
+        return nil
     }
 
-    public func load(_ url: URL) async throws -> DiffusionModel {
+    /// Size of the weight files in a model folder (recursively): the estimate used for the memory budget.
+    public static func weightBytes(at url: URL) -> Int {
+        guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total = 0
+        for case let f as URL in e where ["safetensors", "bin", "gguf", "npz"].contains(f.pathExtension.lowercased()) {
+            total += (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        }
+        return total
+    }
+
+    public func isRegistered(_ className: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return loaders[className] != nil
+    }
+
+    public func load(_ url: URL) async throws -> GenerativeModel {
         let cls = Self.className(at: url)
         lock.lock()
         let loader = cls.flatMap { loaders[$0] }

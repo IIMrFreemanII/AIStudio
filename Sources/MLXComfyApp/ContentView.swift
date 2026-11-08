@@ -83,8 +83,16 @@ struct ContentView: View {
 
 struct MemoryGauge: View {
     @Environment(AppModel.self) private var model
+    @State private var showModels = false
 
     var body: some View {
+        gauge
+            .contentShape(Rectangle())
+            .onTapGesture { showModels.toggle() }
+            .popover(isPresented: $showModels, arrowEdge: .bottom) { LoadedModelsView().environment(model) }
+    }
+
+    @ViewBuilder var gauge: some View {
         let total = Double(ProcessInfo.processInfo.physicalMemory)
         let used = Double(model.activeMemory)
         HStack(spacing: 6) {
@@ -97,7 +105,7 @@ struct MemoryGauge: View {
                 .foregroundStyle(.secondary)
         }
         .help("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1e9)) of "
-              + "\(String(format: "%.0f", total / 1e9)) GB")
+              + "\(String(format: "%.0f", total / 1e9)) GB · click for loaded models")
     }
 }
 
@@ -118,5 +126,39 @@ struct ErrorBanner: View {
             .padding(12)
             .frame(maxWidth: 640)
         }
+    }
+}
+
+/// Models in memory, with their estimated size and an Unload button.
+struct LoadedModelsView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let total = Double(ProcessInfo.processInfo.physicalMemory)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Loaded Models").font(.headline)
+            if model.loadedModels.isEmpty {
+                Text("None. Models load on first use and stay until memory is needed.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(model.loadedModels) { m in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(m.name)
+                        Text(String(format: "%.1f GB%@", Double(m.bytes) / 1e9, m.pinned ? " · in use" : ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Unload") { model.unloadModel(m.key) }.disabled(m.pinned)
+                }
+            }
+            Divider()
+            Text(String(format: "Budget %.0f GB (%.0f%% of RAM). The least recently used model is unloaded when a new one doesn't fit; change it in Settings.",
+                        total * model.memoryBudget / 1e9, model.memoryBudget * 100))
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(width: 320)
     }
 }

@@ -86,6 +86,21 @@ struct SimplePanel: View {
 
     var body: some View {
         @Bindable var model = model
+        VStack(spacing: 0) {
+            Picker("Mode", selection: $model.simpleMode) {
+                ForEach(SimpleMode.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
+            if model.simpleMode == .image { imagePanel } else { MediaModePanel(mode: model.simpleMode) }
+        }
+    }
+
+    @ViewBuilder var imagePanel: some View {
+        @Bindable var model = model
         let b = LiteralBindings(model: model, undoManager: undoManager)
         let prompt = model.firstNode(ofType: "TextEncode")
         let latent = model.firstNode(ofType: "EmptyLatent")
@@ -541,6 +556,19 @@ struct SettingsView: View {
             }
             Text("New graphs save into the output folder; existing SaveImage nodes keep their own directory.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section("Memory") {
+                @Bindable var model = model
+                let total = Double(ProcessInfo.processInfo.physicalMemory)
+                LabeledContent("Models may use") {
+                    HStack {
+                        Slider(value: $model.memoryBudget, in: 0.5...0.95, step: 0.05)
+                        Text(String(format: "%.0f GB", total * model.memoryBudget / 1e9)).monospacedDigit()
+                            .frame(width: 56, alignment: .trailing)
+                    }
+                }
+                Text("When a model doesn't fit, the least recently used one is unloaded first. Models used by the running job are never unloaded.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Prompt Styles") {
                 StylesEditor()
             }

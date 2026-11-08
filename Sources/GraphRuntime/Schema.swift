@@ -16,6 +16,8 @@ public struct SocketType: RawRepresentable, Hashable, Codable, Sendable, CustomS
     public static let latent = SocketType("LATENT")
     public static let image = SocketType("IMAGE")
     public static let mask = SocketType("MASK")
+    public static let video = SocketType("VIDEO")
+    public static let audio = SocketType("AUDIO")
     /// Accepts any type (a Reroute's sockets); resolved to the real type before execution.
     public static let any = SocketType("*")
 
@@ -142,7 +144,11 @@ public struct NodeInputs {
     }
 
     public func object<T>(_ name: String, as: T.Type = T.self) throws -> T {
-        guard case .object(let o) = values[name], let t = o as? T else { throw missing(name) }
+        guard case .object(let o) = values[name] else { throw missing(name) }
+        guard let t = o as? T else {
+            // E.g. a video model wired into an image sampler.
+            throw GraphError.nodeFailed(node: nodeID, message: "input '\(name)' is a \(Swift.type(of: o)), which can't be used as \(T.self)")
+        }
         return t
     }
 
@@ -198,30 +204,76 @@ public final class NodeRegistry {
 }
 
 /// Long-lived objects shared across runs (loaded models), keyed by a caller-chosen string.
+///
+/// With a `budgetBytes`, it keeps resources only while they fit: before creating a new one it evicts the least
+/// recently used entries that aren't pinned (everything the current run has touched is pinned) until the resident
+/// size plus the new one's estimate is within budget. `onEvict` hears about evictions so callers can drop other
+/// references (cached outputs) and return memory.
 public final class ResourceCache {
-    private var items: [String: Any] = [:]
+    public struct EntryInfo: Sendable, Hashable {
+        public let key: String
+        public let bytes: Int
+        public let lastUsed: Date
+        public let pinned: Bool
+    }
+
+    private struct Entry {
+        var value: Any
+        var bytes: Int
+        var tick: UInt64
+        var lastUsed: Date
+    }
+
+    private var items: [String: Entry] = [:]
     /// Creations in progress, so concurrent callers share one load instead of building the resource twice.
     private var pending: [String: Task<Any, Error>] = [:]
+    private var pinCounts: [String: Int] = [:]
+    /// Keys used by the run in progress (pinned until it ends).
+    private var runKeys: Set<String>?
+    private var tick: UInt64 = 0
     private let lock = NSLock()
-    public init() {}
+
+    /// Upper bound for the summed `estimatedBytes` of resident entries; nil = unlimited.
+    public var budgetBytes: Int?
+    /// Called with the evicted keys, outside the lock, before the new resource is created.
+    public var onEvict: (([String]) -> Void)?
+
+    public init(budgetBytes: Int? = nil) { self.budgetBytes = budgetBytes }
 
     /// Returns the cached value for `key`, creating it once. Callers that arrive while it is being created wait
     /// for that same creation (loading a model twice at once would double its memory and race on the GPU).
-    public func get<T>(_ key: String, create: @escaping () async throws -> T) async throws -> T {
+    public func get<T>(_ key: String, estimatedBytes: Int = 0, create: @escaping () async throws -> T) async throws -> T {
         let task: Task<Any, Error>
+        var evicted: [String] = []
         lock.lock()
-        if let v = items[key] as? T { lock.unlock(); return v }
+        runKeys?.insert(key)
+        if var e = items[key], let v = e.value as? T {
+            tick += 1
+            e.tick = tick
+            e.lastUsed = Date()
+            items[key] = e
+            lock.unlock()
+            return v
+        }
         if let p = pending[key] {
             task = p
+            lock.unlock()
         } else {
+            evicted = evictionPlan(adding: estimatedBytes, excluding: key)
+            for k in evicted { items[k] = nil }
             task = Task { try await create() }
             pending[key] = task
+            lock.unlock()
+            if !evicted.isEmpty { onEvict?(evicted) }
         }
-        lock.unlock()
         do {
             let v = try await task.value
             lock.lock()
-            if pending[key] == task { pending[key] = nil; items[key] = v }
+            if pending[key] == task {
+                pending[key] = nil
+                tick += 1
+                items[key] = Entry(value: v, bytes: estimatedBytes, tick: tick, lastUsed: Date())
+            }
             lock.unlock()
             guard let t = v as? T else { throw ResourceError.typeMismatch(key) }
             return t
@@ -235,8 +287,59 @@ public final class ResourceCache {
 
     public enum ResourceError: Error { case typeMismatch(String) }
 
+    /// Least-recently-used unpinned keys to drop so `bytes` more fits the budget (caller holds the lock).
+    func evictionPlan(adding bytes: Int, excluding key: String) -> [String] {
+        guard let budget = budgetBytes else { return [] }
+        var resident = items.values.reduce(0) { $0 + $1.bytes }
+        var plan: [String] = []
+        let candidates = items.filter { k, _ in k != key && !isPinned(k) }.sorted { $0.value.tick < $1.value.tick }
+        for (k, e) in candidates where resident + bytes > budget {
+            plan.append(k)
+            resident -= e.bytes
+        }
+        return plan
+    }
+
+    private func isPinned(_ key: String) -> Bool { (pinCounts[key] ?? 0) > 0 || runKeys?.contains(key) == true }
+
+    /// Starts pinning every key the run touches; `endRun` releases them.
+    public func beginRun() { lock.lock(); runKeys = []; lock.unlock() }
+    public func endRun() { lock.lock(); runKeys = nil; lock.unlock() }
+
+    public func pin(_ key: String) { lock.lock(); pinCounts[key, default: 0] += 1; lock.unlock() }
+    public func unpin(_ key: String) {
+        lock.lock()
+        pinCounts[key] = max(0, (pinCounts[key] ?? 0) - 1)
+        lock.unlock()
+    }
+
     public func contains(_ key: String) -> Bool { lock.lock(); defer { lock.unlock() }; return items[key] != nil }
-    public func remove(_ key: String) { lock.lock(); items[key] = nil; lock.unlock() }
-    public func removeAll() { lock.lock(); items.removeAll(); lock.unlock() }
+
+    /// Drops `key` (and tells `onEvict`).
+    public func remove(_ key: String) {
+        lock.lock()
+        let had = items.removeValue(forKey: key) != nil
+        lock.unlock()
+        if had { onEvict?([key]) }
+    }
+
+    public func removeAll() {
+        lock.lock()
+        let keys = Array(items.keys)
+        items.removeAll()
+        lock.unlock()
+        if !keys.isEmpty { onEvict?(keys) }
+    }
+
     public var keys: [String] { lock.lock(); defer { lock.unlock() }; return Array(items.keys) }
+
+    /// Resident entries, most recently used first.
+    public var entries: [EntryInfo] {
+        lock.lock(); defer { lock.unlock() }
+        return items.sorted { $0.value.tick > $1.value.tick }.map {
+            EntryInfo(key: $0.key, bytes: $0.value.bytes, lastUsed: $0.value.lastUsed, pinned: isPinned($0.key))
+        }
+    }
+
+    public var residentBytes: Int { lock.lock(); defer { lock.unlock() }; return items.values.reduce(0) { $0 + $1.bytes } }
 }

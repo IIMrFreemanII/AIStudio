@@ -185,7 +185,12 @@ extension AppModel {
             let found = await Task.detached(priority: .utility) { () -> [URL: String] in
                 var out: [URL: String] = [:]
                 for url in missing {
-                    let g = AppModel.embeddedGraph(in: url)
+                    var g: Graph?
+                    if url.pathExtension.lowercased() == "png" {
+                        g = AppModel.embeddedGraph(in: url)
+                    } else if let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey] {
+                        g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8))
+                    }
                     if let n = g?.nodes.first(where: { $0.type == "TextEncode" }),
                        case .value(.string(let s))? = n.inputs["prompt"] {
                         out[url] = s

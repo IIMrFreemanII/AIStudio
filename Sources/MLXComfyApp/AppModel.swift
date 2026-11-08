@@ -51,6 +51,7 @@ struct QueueItem: Identifiable, Equatable {
 struct HistoryItem: Identifiable, Hashable {
     let url: URL
     let date: Date
+    var kind: MediaKind = .image
     /// The first Text Encode prompt from the embedded graph (filled in the background).
     var prompt: String?
     var isFavorite = false
@@ -77,6 +78,25 @@ final class AppModel {
     var previewImage: CGImage?
     var displayedImage: CGImage?
     var displayedURL: URL?
+    /// A video or audio result shown in the canvas (nil for images).
+    var displayedMedia: (url: URL, kind: MediaKind)? {
+        get { displayedMediaURL.map { ($0, displayedMediaKind) } }
+        set { displayedMediaURL = newValue?.url; displayedMediaKind = newValue?.kind ?? .image }
+    }
+    var displayedMediaURL: URL?
+    var displayedMediaKind: MediaKind = .image
+    /// Models held in memory (refreshed with the memory gauge).
+    var loadedModels: [LoadedModel] = []
+    /// Share of RAM models may occupy before the least recently used is unloaded.
+    var memoryBudget: Double = 0.8 {
+        didSet {
+            if persistSettings { UserDefaults.standard.set(memoryBudget, forKey: "memoryBudget") }
+            let f = memoryBudget
+            Task { await engine.setBudget(fraction: f) }
+        }
+    }
+    /// The Simple panel's mode.
+    var simpleMode: SimpleMode = .image
     var lastError: String?
     var history: [HistoryItem] = []
     var randomizeSeed = true
@@ -152,10 +172,16 @@ final class AppModel {
                 styles = s
             }
             selectedStyleName = defaults.string(forKey: "promptStyle")
+            if defaults.object(forKey: "memoryBudget") != nil { memoryBudget = defaults.double(forKey: "memoryBudget") }
         }
         reloadHistory()
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.activeMemory = Engine.activeMemory() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.activeMemory = Engine.activeMemory()
+                let models = self.engine.loadedModelsSnapshot()
+                if models != self.loadedModels { self.loadedModels = models }
+            }
         }
     }
 
@@ -372,6 +398,7 @@ final class AppModel {
             if let out = outputs.last {
                 displayedImage = out.image
                 displayedURL = out.url
+                displayedMedia = out.kind == .image ? nil : out.url.map { ($0, out.kind) }
             }
             // After the line above, so a finished plot's grid replaces the last cell's image.
             let item = queue.first { $0.id == id }
@@ -423,6 +450,14 @@ final class AppModel {
         }
     }
 
+    func unloadModel(_ key: String) {
+        Task {
+            await engine.unload(key)
+            loadedModels = engine.loadedModelsSnapshot()
+            if loadedModels.isEmpty { modelStatus = "Model not loaded" }
+        }
+    }
+
     func unloadModels() {
         Task {
             await engine.unloadModels()
@@ -444,15 +479,34 @@ final class AppModel {
         let dir = URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath)
         let urls = (try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        history = urls.filter { $0.pathExtension.lowercased() == "png" }.map { url in
+        history = urls.compactMap { url -> HistoryItem? in
+            let ext = url.pathExtension.lowercased()
+            let kind: MediaKind
+            if ext == "png" { kind = .image }
+            else if MediaIO.videoExtensions.contains(ext) { kind = .video }
+            else if MediaIO.audioExtensions.contains(ext) { kind = .audio }
+            else { return nil }
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
-            return HistoryItem(url: url, date: date, prompt: promptCache[url], isFavorite: Favorites.isFavorite(url))
+            return HistoryItem(url: url, date: date, kind: kind, prompt: promptCache[url],
+                               isFavorite: Favorites.isFavorite(url))
         }.sorted { $0.date > $1.date }
         loadHistoryPrompts()
     }
 
     func show(_ item: HistoryItem) {
+        if item.kind != .image {
+            displayedMedia = (item.url, item.kind)
+            displayedURL = item.url
+            displayedImage = nil
+            workspace = .image
+            if item.kind == .video {
+                let url = item.url
+                Task { if displayedMediaURL == url { displayedImage = await MediaIO.posterFrame(url) } }
+            }
+            return
+        }
+        displayedMedia = nil
         if let src = CGImageSourceCreateWithURL(item.url as CFURL, nil),
            let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
             displayedImage = img
@@ -469,8 +523,24 @@ final class AppModel {
 
     @discardableResult
     func open(_ url: URL, undoManager: UndoManager?) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if MediaIO.videoExtensions.contains(ext) || MediaIO.audioExtensions.contains(ext) {
+            // Media metadata loads asynchronously; the graph is restored when it arrives.
+            Task {
+                guard let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey],
+                      let g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8)) else {
+                    lastError = "\(url.lastPathComponent) has no embedded graph"
+                    NSSound.beep()
+                    return
+                }
+                setGraph(g, actionName: "Restore Graph", undoManager: undoManager)
+                selection = []
+                workspace = .graph
+            }
+            return true
+        }
         let g: Graph?
-        if url.pathExtension.lowercased() == "png" {
+        if ext == "png" {
             g = Self.embeddedGraph(in: url)
             if g == nil { lastError = "\(url.lastPathComponent) has no embedded graph" }
         } else {
@@ -501,7 +571,7 @@ final class AppModel {
 
     func trash(_ item: HistoryItem) {
         try? FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
-        if displayedURL == item.url { displayedImage = nil; displayedURL = nil }
+        if displayedURL == item.url { displayedImage = nil; displayedURL = nil; displayedMedia = nil }
         reloadHistory()
     }
 }

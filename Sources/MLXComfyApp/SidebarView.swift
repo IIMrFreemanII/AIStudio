@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import MLXDiffusionCore
 import SwiftUI
 
 struct SidebarView: View {
@@ -267,6 +268,13 @@ struct HistoryThumb: View {
                     Image(decorative: thumbnail, scale: 1).resizable().aspectRatio(contentMode: .fill)
                 }
             }
+            .overlay { if item.kind == .audio { AudioThumb(url: item.url) } }
+            .overlay(alignment: .bottomLeading) {
+                if item.kind == .video {
+                    Image(systemName: "play.fill").font(.system(size: 8)).foregroundStyle(.white)
+                        .padding(3).background(.black.opacity(0.55), in: Circle()).padding(4)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
                 selected ? Color.accentColor : compared ? Color.orange : .clear, lineWidth: 2))
@@ -278,6 +286,8 @@ struct HistoryThumb: View {
             }
             .task(id: item.url) {
                 let url = item.url
+                if item.kind == .video { thumbnail = await MediaIO.posterFrame(url, maxSize: 240); return }
+                if item.kind == .audio { return }
                 thumbnail = await Task.detached(priority: .utility) { () -> CGImage? in
                     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
                     return CGImageSourceCreateThumbnailAtIndex(src, 0, [

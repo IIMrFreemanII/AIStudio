@@ -1,0 +1,395 @@
+import AppKit
+import Foundation
+import MLXDiffusionCore
+import Observation
+import Security
+import SwiftUI
+
+/// The Hugging Face token for gated repos, kept in the login Keychain. The user enters it; the app never fills it.
+enum HFToken {
+    static let service = "MLXComfyUI.huggingface"
+
+    static func read() -> String? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
+        return String(data: d, encoding: .utf8)
+    }
+
+    static func save(_ token: String) {
+        delete()
+        guard !token.isEmpty else { return }
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecValueData as String: Data(token.utf8)]
+        SecItemAdd(q as CFDictionary, nil)
+    }
+
+    static func delete() {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
+    }
+}
+
+/// Installed models: catalog downloads in the models folder, plus folders the user added.
+@MainActor @Observable
+final class ModelStore {
+    enum Status: Equatable {
+        case notInstalled
+        case checking
+        case downloading(ModelDownloader.Progress)
+        case installed(URL)
+        case failed(String)
+
+        static func == (a: Status, b: Status) -> Bool {
+            switch (a, b) {
+            case (.notInstalled, .notInstalled), (.checking, .checking): return true
+            case (.downloading(let x), .downloading(let y)): return x.done == y.done && x.file == y.file
+            case (.installed(let x), .installed(let y)): return x == y
+            case (.failed(let x), .failed(let y)): return x == y
+            default: return false
+            }
+        }
+    }
+
+    /// A folder added by hand, with what it was recognized as.
+    struct ManualFolder: Codable, Hashable, Identifiable {
+        var path: String
+        var className: String?
+        var id: String { path }
+        var url: URL { URL(fileURLWithPath: path) }
+    }
+
+    var modelsDirectory: URL {
+        didSet { UserDefaults.standard.set(modelsDirectory.path, forKey: "modelsDirectory"); refresh() }
+    }
+    var manualFolders: [ManualFolder] {
+        didSet { if let d = try? JSONEncoder().encode(manualFolders) { UserDefaults.standard.set(d, forKey: "modelFolders") } }
+    }
+    private(set) var status: [String: Status] = [:]
+    /// File lists fetched for a pending download, keyed by catalog id.
+    private(set) var plans: [String: [RemoteFile]] = [:]
+    @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
+
+    init() {
+        let d = UserDefaults.standard
+        modelsDirectory = d.string(forKey: "modelsDirectory").map { URL(fileURLWithPath: $0) }
+            ?? AppModel.supportDirectory.appendingPathComponent("models")
+        manualFolders = d.data(forKey: "modelFolders").flatMap { try? JSONDecoder().decode([ManualFolder].self, from: $0) } ?? []
+        refresh()
+    }
+
+    func folder(for entry: CatalogEntry) -> URL { modelsDirectory.appendingPathComponent(entry.folder) }
+
+    /// A folder counts as installed when it has weights and no unfinished `.part` files.
+    static func isComplete(_ url: URL) -> Bool {
+        guard ModelRegistry.weightBytes(at: url) > 0,
+              let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil) else { return false }
+        for case let f as URL in e where f.pathExtension == "part" { return false }
+        return true
+    }
+
+    /// Folders found outside the models directory (the app's current image model), checked by class name.
+    @ObservationIgnored var knownFolders: [URL] = []
+
+    /// Remembers a folder in use elsewhere so a matching catalog entry shows as installed.
+    func adopt(_ path: String) {
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
+        if !knownFolders.contains(url) { knownFolders.append(url) }
+        refresh()
+    }
+
+    func refresh() {
+        let elsewhere = knownFolders + manualFolders.map(\.url)
+        for entry in ModelCatalog.entries {
+            if case .downloading? = status[entry.id] { continue }
+            let url = folder(for: entry)
+            if Self.isComplete(url) {
+                status[entry.id] = .installed(url)
+            } else if let cls = entry.className,
+                      let found = elsewhere.first(where: { ModelRegistry.className(at: $0) == cls && Self.isComplete($0) }) {
+                status[entry.id] = .installed(found)
+            } else {
+                status[entry.id] = .notInstalled
+            }
+        }
+    }
+
+    /// The installed folder for a kind (catalog download, or a matching manual folder), if any.
+    func installed(_ kind: CatalogEntry.Kind) -> URL? {
+        for entry in ModelCatalog.entries where entry.kind == kind && entry.supported {
+            if case .installed(let url)? = status[entry.id] { return url }
+        }
+        return nil
+    }
+
+    // MARK: downloads
+
+    /// Fetches the file list so the user sees the real size before agreeing to download.
+    func prepare(_ entry: CatalogEntry) async {
+        status[entry.id] = .checking
+        do {
+            let source = HTTPByteSource(repo: entry.repo, revision: entry.revision, token: entry.gated ? HFToken.read() : nil)
+            plans[entry.id] = HFAPI.select(try await source.list(), include: entry.include, exclude: entry.exclude)
+            status[entry.id] = .notInstalled
+        } catch {
+            status[entry.id] = .failed(String(describing: error))
+        }
+    }
+
+    /// Unfinished `.part` files from an earlier, interrupted download.
+    func hasPartialDownload(_ entry: CatalogEntry) -> Bool {
+        guard let e = FileManager.default.enumerator(at: folder(for: entry), includingPropertiesForKeys: nil) else { return false }
+        for case let f as URL in e where f.pathExtension == "part" { return true }
+        return false
+    }
+
+    func remainingBytes(_ entry: CatalogEntry) -> Int64? {
+        plans[entry.id].map { ModelDownloader.remainingBytes($0, in: folder(for: entry)) }
+    }
+
+    func start(_ entry: CatalogEntry) {
+        guard let files = plans[entry.id], tasks[entry.id] == nil else { return }
+        let dest = folder(for: entry)
+        let source = HTTPByteSource(repo: entry.repo, revision: entry.revision, token: entry.gated ? HFToken.read() : nil)
+        status[entry.id] = .downloading(.init(done: 0, total: files.reduce(0) { $0 + $1.size }, file: ""))
+        tasks[entry.id] = Task {
+            var lastUpdate = Date.distantPast
+            do {
+                try await ModelDownloader.download(files, to: dest, from: source) { p in
+                    // Progress arrives per chunk; publish a few times a second.
+                    guard Date().timeIntervalSince(lastUpdate) > 0.2 || p.done == p.total else { return }
+                    lastUpdate = Date()
+                    Task { @MainActor in if case .downloading? = self.status[entry.id] { self.status[entry.id] = .downloading(p) } }
+                }
+                status[entry.id] = .installed(dest)
+            } catch is CancellationError {
+                status[entry.id] = .notInstalled
+            } catch {
+                status[entry.id] = .failed(String(describing: error))
+            }
+            tasks[entry.id] = nil
+        }
+    }
+
+    /// Stops a download; the partial files stay so it resumes next time.
+    func cancel(_ entry: CatalogEntry) {
+        tasks[entry.id]?.cancel()
+    }
+
+    /// Moves the installed copy (wherever it is) to the Trash; the view confirms first.
+    func moveToTrash(_ entry: CatalogEntry) {
+        let url: URL = { if case .installed(let u)? = status[entry.id] { return u }; return folder(for: entry) }()
+        try? FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        knownFolders.removeAll { $0 == url }
+        plans[entry.id] = nil
+        refresh()
+    }
+
+    // MARK: manual folders
+
+    func addFolder(_ url: URL) {
+        let folder = ManualFolder(path: url.standardizedFileURL.path, className: ModelRegistry.className(at: url))
+        manualFolders.removeAll { $0.path == folder.path }
+        manualFolders.append(folder)
+        refresh()
+    }
+
+    func removeFolder(_ folder: ManualFolder) { manualFolders.removeAll { $0 == folder } }
+}
+
+/// The Models window: catalog downloads, folders added by hand, and the Hugging Face token.
+struct ModelManagerView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
+    @State private var confirming: CatalogEntry?
+    @State private var trashing: CatalogEntry?
+    @State private var token = HFToken.read() ?? ""
+    @State private var tokenSaved = false
+
+    var body: some View {
+        Form {
+            Section {
+                ForEach(ModelCatalog.entries) { entry in row(entry) }
+            } header: {
+                HStack {
+                    Text("Available Models")
+                    Spacer()
+                    Button("Open Models Folder") {
+                        try? FileManager.default.createDirectory(at: store.modelsDirectory, withIntermediateDirectories: true)
+                        NSWorkspace.shared.open(store.modelsDirectory)
+                    }
+                    .buttonStyle(.link).font(.caption)
+                }
+            } footer: {
+                Text("Downloads go to \(store.modelsDirectory.path) and resume if interrupted. Each model has its own license; you accept it before downloading.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Model Folders Added by Hand") {
+                if store.manualFolders.isEmpty {
+                    Text("Use a model you downloaded yourself: add its folder (diffusers layout with model_index.json, or an mlxcomfy.json manifest).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(store.manualFolders) { f in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(f.url.lastPathComponent)
+                            Text(f.className.map { ModelRegistry.shared.isRegistered($0) ? $0 : "\($0) (not supported)" }
+                                 ?? "Not recognized: no model_index.json")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let c = f.className, ModelRegistry.shared.isRegistered(c) {
+                            Button("Use for Images") { model.applyModelPath(f.path, undoManager: nil); model.preloadModel() }
+                        }
+                        Button(role: .destructive) { store.removeFolder(f) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                Button("Add Model Folder…") {
+                    let p = NSOpenPanel()
+                    p.canChooseDirectories = true
+                    p.canChooseFiles = false
+                    if p.runModal() == .OK, let u = p.url { store.addFolder(u) }
+                }
+            }
+
+            Section {
+                SecureField("Token", text: $token, prompt: Text("hf_…"))
+                HStack {
+                    Button("Save to Keychain") { HFToken.save(token); tokenSaved = true }
+                        .disabled(token.isEmpty)
+                    Button("Remove") { HFToken.delete(); token = ""; tokenSaved = false }
+                    if tokenSaved { Text("Saved").font(.caption).foregroundStyle(.secondary) }
+                }
+            } header: {
+                Text("Hugging Face Token")
+            } footer: {
+                Text("Only needed for gated models (marked with a lock). Create a read token on huggingface.co and accept the model's terms on its page first.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minWidth: 620, minHeight: 560)
+        .onAppear { store.adopt(model.modelPath) }
+        .sheet(item: $confirming) { entry in DownloadConfirmation(entry: entry) }
+        .confirmationDialog("Move \(trashing?.name ?? "") to the Trash?", isPresented: Binding(
+            get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
+            Button("Move to Trash", role: .destructive) { if let e = trashing { store.moveToTrash(e) }; trashing = nil }
+            Button("Cancel", role: .cancel) { trashing = nil }
+        } message: {
+            if let e = trashing, case .installed(let url)? = store.status[e.id] {
+                Text(String(format: "%@ (%.1f GB) goes to the Trash. You can restore it from there.", url.path,
+                            Double(ModelRegistry.weightBytes(at: url)) / 1e9))
+            }
+        }
+    }
+
+    @ViewBuilder
+    func row(_ entry: CatalogEntry) -> some View {
+        let status = store.status[entry.id] ?? .notInstalled
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: SimpleMode.allCases.first { $0.catalogKind == entry.kind }?.symbol ?? "cube")
+                .font(.title3).frame(width: 24).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(entry.name).fontWeight(.medium)
+                    if entry.gated { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary) }
+                }
+                Text(entry.notes).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(String(format: "about %.1f GB", entry.approxGB))
+                    Link(entry.license, destination: URL(string: entry.licenseURL)!)
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+                switch status {
+                case .downloading(let p):
+                    ProgressView(value: p.fraction).controlSize(.small)
+                    Text(String(format: "%.1f of %.1f GB · %@", Double(p.done) / 1e9, Double(p.total) / 1e9,
+                                (p.file as NSString).lastPathComponent))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                case .failed(let msg):
+                    Text(msg).font(.caption).foregroundStyle(.red).lineLimit(3)
+                default:
+                    EmptyView()
+                }
+            }
+            Spacer()
+            actions(entry, status)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    func actions(_ entry: CatalogEntry, _ status: ModelStore.Status) -> some View {
+        switch status {
+        case .installed(let url):
+            VStack(alignment: .trailing, spacing: 4) {
+                Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                HStack {
+                    if entry.kind == .image {
+                        Button("Use") { model.applyModelPath(url.path, undoManager: nil); model.preloadModel() }
+                    }
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
+                    Button(role: .destructive) { trashing = entry } label: { Image(systemName: "trash") }
+                }
+                .controlSize(.small)
+            }
+        case .downloading:
+            Button("Stop") { store.cancel(entry) }
+        case .checking:
+            ProgressView().controlSize(.small)
+        case .notInstalled, .failed:
+            if entry.supported {
+                Button(store.hasPartialDownload(entry) ? "Resume…" : "Download…") {
+                    confirming = entry
+                }
+            } else {
+                Text("Coming later").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Shows the real size, free space and license, and starts the download only when the user agrees.
+struct DownloadConfirmation: View {
+    @Environment(ModelStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let entry: CatalogEntry
+    @State private var accepted = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Download \(entry.name)?").font(.headline)
+            if let files = store.plans[entry.id], let remaining = store.remainingBytes(entry) {
+                let free = ModelDownloader.freeSpace(at: store.modelsDirectory)
+                LabeledContent("Files", value: "\(files.count) from huggingface.co/\(entry.repo)")
+                LabeledContent("To download", value: String(format: "%.2f GB", Double(remaining) / 1e9))
+                LabeledContent("Free space", value: String(format: "%.1f GB", Double(free) / 1e9))
+                if remaining > free { Text("Not enough disk space.").foregroundStyle(.red) }
+                Toggle(isOn: $accepted) {
+                    HStack(spacing: 4) {
+                        Text("I accept the")
+                        Link(entry.license, destination: URL(string: entry.licenseURL)!)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                    Button("Download") { store.start(entry); dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!accepted || remaining > free)
+                }
+            } else if case .failed(let msg)? = store.status[entry.id] {
+                Text(msg).foregroundStyle(.red)
+                HStack { Spacer(); Button("Close") { dismiss() } }
+            } else {
+                HStack { ProgressView().controlSize(.small); Text("Checking the file list…") }
+                HStack { Spacer(); Button("Cancel") { dismiss() } }
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .task { if store.plans[entry.id] == nil { await store.prepare(entry) } }
+    }
+}

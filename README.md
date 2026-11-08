@@ -1,6 +1,6 @@
 # MLXComfyUI
 
-A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. A prompt assistant uses the model's own language model to write prompts. The first supported model is Qwen-Image 2.1 Turbo.
+A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. A prompt assistant uses the model's own language model to write prompts. Video and audio support is being added: the app already saves, plays and mixes video and audio in its graphs, and video (LTX-2.3), sound effects, music and speech models are next. The first supported model is Qwen-Image 2.1 Turbo.
 
 This is an independent project and is not affiliated with ComfyUI.
 
@@ -45,7 +45,10 @@ open build/MLXComfyUI.app
 - **Inpainting:** use **Paint Mask…** to mark an area. Only that area is regenerated. **Feather** softens the edge so the change blends in; pixels outside the feathered edge stay identical to the original.
 - **Outpainting:** **Extend…** grows the reference image's canvas. Set the pixels to add on each side; the new border is generated to match.
 - **Hi-res fix** (Sampling): upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
-- **Model:** loaded at launch and kept in memory. The toolbar gauge shows MLX memory use.
+- **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain. You can also add a folder you downloaded yourself.
+- **Memory:** models load on first use and stay in memory while they fit. When a new model doesn't fit the budget (80% of RAM by default; change it in Settings), the least recently used one is unloaded first, never one the running job uses. Click the toolbar memory gauge to see loaded models and unload one.
+- **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Only Image can generate today; the others show which model they need.
+- **Video and audio results** play in the canvas (a player for video, a waveform for audio) and appear in history, with the graph embedded in the file so dropping it on the window restores it.
 
 Images are saved to `~/Pictures/MLXComfyUI` by default; change this in Settings (⌘,).
 
@@ -98,6 +101,7 @@ Generate without a graph:
 | `generate` | Text to image. Options: `--image` (condition image, repeatable), `--lora path[:strength]` (repeatable), `--size WxH`, `--seed`, `--save-steps`, `--dequantize` |
 | `make-test-lora` | Writes a synthetic LoRA. `--up-scale 0` makes a no-op one |
 | `vae-roundtrip` | Encodes and decodes an image and prints PSNR. Use it to check the VAE. `--tiled on` uses tiles |
+| `run examples/media-test.json` | Test pattern + tones → mixed → video with soundtrack (MP4) and audio (M4A). Needs no model |
 | `assist` | Prompt assistant: `--prompt "a cat"` enhances a prompt; `--mode describe --image x.png` describes an image; `--mode custom --instruction "…"` follows any instruction. `--temperature 0` is deterministic |
 | `tokenize` | Prints the Qwen token ids for a string |
 
@@ -118,6 +122,7 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
   - `steps` 8 gives an evenly spaced schedule, so denoise 0.4 runs 3 refinement steps (about 45 s at 1536²). With `steps` 0 the checkpoint's distilled schedule is used; it ends at σ 0.41, so any denoise below 0.7 gets a single step and less added detail.
 - **Large images:** `VAEEncode` and `VAEDecode` process the image in overlapping tiles above about 1.25 MP (`tiled`: `auto`, `on` or `off`). A whole-image VAE pass peaks at about 16 GB at 1536² and 28 GB at 2048²; tiled, it stays near 8 GB at the same accuracy.
   - `Sampler.denoise` < 1 on an encoded latent gives img2img instead.
+- **Video and audio:** `TestPattern`, `TestTone`, `LoadVideo`, `LoadAudio`, `MixAudio` (with offset and gain, resampling as needed), `AddAudioToVideo` (replace or mix the soundtrack, fitted to the video), `SaveVideo` (MP4 or MOV, H.264 or HEVC, AAC audio), `SaveAudio` (WAV or M4A), `PreviewVideo` and `PreviewAudio`. Files carry the graph: MP4/M4A in the iTunes comment field, WAV in a custom `mlxc` chunk. See [examples/media-test.json](examples/media-test.json).
 - **Prompt assistant:** the `PromptAssistant` node (model, prompt, optional image, mode `enhance`, `describe` or `custom`) outputs a STRING; link it into `TextEncode.prompt`. See [examples/assistant.json](examples/assistant.json). It is cached like any node, so it reruns only when its own inputs change.
   - Qwen-Image's text encoder is the full Qwen3-VL 8B chat model. Its LM head isn't needed for images, so it is loaded only on first use (8-bit, about 0.6 GB). Generation runs at about 28 tokens per second; a prompt takes about 5 s.
 - **LoRA:** the `LoRA` node (model, path, strength) returns a model that shares the base weights. Each target layer runs the LoRA as a low-rank side branch, because the base weights are 8-bit and can't be merged into.
@@ -142,7 +147,7 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
 
 ## Layout
 
-- `Sources/MLXDiffusionCore`: safetensors weight store, dense and quantized `Lin`, `Conv2d`, the flow-match Euler scheduler, PNG I/O, and mask and tiling helpers (`MaskOps`, `Tiling`).
+- `Sources/MLXDiffusionCore`: safetensors weight store, dense and quantized `Lin`, `Conv2d`, the flow-match Euler scheduler, media clips and file I/O (`Media.swift`, `MediaIO.swift`), the model catalog and resumable downloader (`ModelDownloads.swift`), PNG I/O, and mask and tiling helpers (`MaskOps`, `Tiling`).
 - `Sources/QwenImage21`:
   - `Qwen3TextEncoder`: features from the last layer, taken before the final norm. For image prompts it adds the vision tower (`Qwen3VisionTower`), interleaved mRoPE and deepstack.
   - `QwenImage21Transformer`: block-causal DiT. The prompt's K/V are cached once and each step runs only the image tokens.

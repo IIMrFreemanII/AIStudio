@@ -1,6 +1,7 @@
 import Foundation
 import GraphRuntime
 import MLXDiffusionCore
+import NodesStandard
 
 /// `MLXComfyApp --smoke-test "<prompt>"` queues one generation through the same path as the Generate button
 /// (AppModel → Engine → events), reports what the UI received, and exits.
@@ -205,5 +206,64 @@ extension SmokeTest {
             say("axis error: \(error)")
             return false
         }
+    }
+}
+
+extension SmokeTest {
+    /// `--smoke-media`: runs examples/media-test.json through the queue (TestPattern + tones → mix → video with
+    /// soundtrack, plus an M4A), checks the files with AVFoundation, restores the graph from the MP4, and checks that
+    /// a big new resource evicts the image model and that it loads again.
+    static func runMedia(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        guard var g = try? Graph.load(cwd.appendingPathComponent("examples/media-test.json")) else {
+            say("examples/media-test.json not found (run from the repo)"); return false
+        }
+        for id in ["save_video", "save_audio"] { try? g.setValue(.string(model.outputDirectory), node: id, input: "directory") }
+        model.setGraph(g, actionName: "Media Test", undoManager: nil)
+        let historyBefore = model.history.count
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return false }
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard case .done(let s)? = model.queue.first(where: { $0.id == item.id })?.status else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        say(String(format: "job done in %.2fs; history %d → %d", s, historyBefore, model.history.count))
+        let videos = model.history.filter { $0.kind == .video && $0.url.lastPathComponent.hasPrefix("media-test") }
+        let audios = model.history.filter { $0.kind == .audio && $0.url.lastPathComponent.hasPrefix("media-test") }
+        guard let video = videos.first?.url, let audio = audios.first?.url else { say("outputs missing from history"); return false }
+        say("displayed: \(model.displayedMedia.map { "\($0.kind.rawValue) \($0.url.lastPathComponent)" } ?? "none")")
+
+        guard let clip = try? await MediaIO.readVideo(video) else { say("can't read \(video.path)"); return false }
+        say(String(format: "video %dx%d, %d frames at %.1f fps, audio %.2fs", clip.width, clip.height, clip.frameCount,
+                   clip.fps, clip.audio?.duration ?? 0))
+        let sound = try? await MediaIO.readAudio(audio)
+        say(String(format: "m4a %.2fs at %d Hz, %d channels", sound?.duration ?? 0, sound?.sampleRate ?? 0, sound?.channels ?? 0))
+        let meta = await MediaIO.readMetadata(video)
+        guard clip.frameCount == 48, abs((clip.audio?.duration ?? 0) - 2) < 0.1, abs((sound?.duration ?? 0) - 3) < 0.1,
+              meta[StandardNodes.graphMetadataKey] != nil else { say("media check failed"); return false }
+
+        // Restore the graph from the MP4.
+        model.newGraph(undoManager: nil)
+        _ = model.open(video, undoManager: nil)
+        for _ in 0..<50 where model.graph["save_video"] == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+        say("graph restored from MP4: \(model.graph["save_video"] != nil && model.graph["attach"] != nil)")
+        guard model.graph["attach"] != nil else { return false }
+
+        // Eviction: the image model's estimate plus 30 GB exceeds the budget, so it must be unloaded.
+        model.newGraph(undoManager: nil)
+        let path = model.modelPath
+        _ = try? await model.engine.preload(modelPath: path)
+        let before = model.engine.loadedModelsSnapshot().map(\.name)
+        try? await model.engine.debugReserve("fake:30GB", bytes: 30_000_000_000)
+        let during = model.engine.loadedModelsSnapshot().map(\.name)
+        await model.engine.unload("fake:30GB")
+        _ = try? await model.engine.preload(modelPath: path)
+        let after = model.engine.loadedModelsSnapshot().map(\.name)
+        say("loaded before: \(before), after reserving 30 GB: \(during), after reloading: \(after)")
+        return !before.isEmpty && during.isEmpty && after == before
     }
 }

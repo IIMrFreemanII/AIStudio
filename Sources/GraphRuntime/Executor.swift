@@ -189,6 +189,9 @@ public final class GraphExecutor {
     public func run(_ graph: Graph, targets: [String]? = nil,
                     onEvent: @escaping (ExecutionEvent) -> Void = { _ in }) async throws -> RunResult {
         let start = Date()
+        // Models used by this run stay pinned in the resource cache until it ends.
+        resources.beginRun()
+        defer { resources.endRun() }
         // Runs the flattened graph; nodes still see the document graph (SaveImage embeds it, subgraphs and all).
         let flat = try graph.flattened()
         let order = try validateFlat(flat)
