@@ -114,8 +114,12 @@ public enum ModelCatalog {
                      notes: "Songs with or without lyrics, 10 s to 4 min, stereo 48 kHz. Includes the 1.7B song-planner LM and the Qwen3 text encoder.",
                      className: "ACEStepPipeline", manifest: ["class": "ACEStepPipeline"]),
         CatalogEntry(id: "kokoro-82m", name: "Kokoro 82M (speech)", kind: .speech, repo: "hexgrad/Kokoro-82M",
-                     approxGB: 0.4, license: "Apache-2.0", licenseURL: "https://www.apache.org/licenses/LICENSE-2.0",
-                     folder: "kokoro-82m", supported: false, notes: "English narration with many voices."),
+                     revision: "f3ff3571791e39611d31c381e3a41a3af07b4987",
+                     include: ["config.json", "kokoro-v1_0.pth", "README.md", "VOICES.md", "voices/a*.pt", "voices/b*.pt"],
+                     approxGB: 0.34, license: "Apache-2.0", licenseURL: "https://www.apache.org/licenses/LICENSE-2.0",
+                     folder: "kokoro-82m", supported: true,
+                     notes: "English narration (American and British) with 28 voices, 24 kHz. Pronunciation runs on-device in Swift.",
+                     className: "KokoroPipeline", manifest: ["class": "KokoroPipeline"]),
     ]
 }
 

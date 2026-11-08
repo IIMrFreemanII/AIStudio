@@ -164,3 +164,16 @@ func makeRepo() throws -> URL {
                        "acestep-v15-turbo/silence_latent.pt", "vae/config.json",
                        "vae/diffusion_pytorch_model.safetensors"])
 }
+
+/// The Kokoro entry fetches the model and the English (American and British) voices only.
+@Test func kokoroCatalogEntrySelectsEnglishVoices() throws {
+    let entry = try #require(ModelCatalog.entries.first { $0.id == "kokoro-82m" })
+    #expect(entry.supported && entry.kind == .speech && entry.manifest?["class"] == "KokoroPipeline")
+    let repoFiles = [".gitattributes", "README.md", "VOICES.md", "config.json", "kokoro-v1_0.pth", "samples/af_heart_0.wav",
+                     "eval/TTS_Arena-2025-02-26.jpeg", "voices/af_heart.pt", "voices/am_adam.pt", "voices/bf_emma.pt",
+                     "voices/bm_george.pt", "voices/jf_alpha.pt", "voices/zf_xiaobei.pt", "voices/ef_dora.pt"]
+        .map { RemoteFile(path: $0, size: 1) }
+    let picked = Set(HFAPI.select(repoFiles, include: entry.include, exclude: entry.exclude).map(\.path))
+    #expect(picked == ["README.md", "VOICES.md", "config.json", "kokoro-v1_0.pth", "voices/af_heart.pt", "voices/am_adam.pt",
+                       "voices/bf_emma.pt", "voices/bm_george.pt"])
+}

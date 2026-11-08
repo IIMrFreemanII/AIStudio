@@ -302,7 +302,7 @@ public final class ModelRegistry {
     public static func weightBytes(at url: URL) -> Int {
         guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
         var total = 0
-        for case let f as URL in e where ["safetensors", "bin", "gguf", "npz"].contains(f.pathExtension.lowercased()) {
+        for case let f as URL in e where ["safetensors", "bin", "gguf", "npz", "pth", "pt"].contains(f.pathExtension.lowercased()) {
             total += (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         }
         return total

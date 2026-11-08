@@ -1,5 +1,6 @@
 import Foundation
 import GraphRuntime
+import NodesStandard
 
 enum GraphTemplates {
     /// The graph behind Simple mode: model → prompt → empty latent → sampler → decode → save.
@@ -100,6 +101,39 @@ enum GraphTemplates {
                       inputs: ["audio": link("generate", "audio"), "filename_prefix": .value(.string("music")),
                                "directory": .value(.string(outputDirectory)), "format": .value(.string("wav"))],
                       position: GraphPoint(x: 700, y: 140)),
+        ])
+    }
+
+    /// The graph behind the Speech mode: model → text to speech → save (WAV, 24 kHz mono).
+    static func textToSpeech(modelPath: String, outputDirectory: String,
+                             text: String = "Welcome to MLX Comfy. Everything you hear was generated on this Mac, from text to waveform, in a fraction of a second.",
+                             voice: String = "af_heart") -> Graph {
+        func link(_ n: String, _ o: String) -> NodeInput { .link(node: n, output: o) }
+        return Graph(nodes: [
+            GraphNode(id: "model", type: "LoadModel", inputs: ["path": .value(.string(modelPath))],
+                      position: GraphPoint(x: 40, y: 140)),
+            GraphNode(id: "speak", type: "TextToSpeech",
+                      inputs: ["model": link("model", "model"), "text": .value(.string(text)), "voice": .value(.string(voice)),
+                               "speed": .value(.double(1)), "seed": .value(.int(1))],
+                      position: GraphPoint(x: 340, y: 100)),
+            GraphNode(id: "save", type: "SaveAudio",
+                      inputs: ["audio": link("speak", "audio"), "filename_prefix": .value(.string("speech")),
+                               "directory": .value(.string(outputDirectory)), "format": .value(.string("wav"))],
+                      position: GraphPoint(x: 680, y: 140)),
+        ])
+    }
+
+    /// Voice previews: the same model, a short sentence in the chosen voice, shown but not saved to history.
+    static func voicePreview(modelPath: String, voice: String, speed: Double) -> Graph {
+        let v = SpeechVoices.all.first { $0.id == voice }
+        let text = "Hi, I'm \(v?.name ?? voice). This is how I sound when I read your text aloud."
+        func link(_ n: String, _ o: String) -> NodeInput { .link(node: n, output: o) }
+        return Graph(nodes: [
+            GraphNode(id: "model", type: "LoadModel", inputs: ["path": .value(.string(modelPath))]),
+            GraphNode(id: "speak", type: "TextToSpeech",
+                      inputs: ["model": link("model", "model"), "text": .value(.string(text)), "voice": .value(.string(voice)),
+                               "speed": .value(.double(speed)), "seed": .value(.int(1))]),
+            GraphNode(id: "preview", type: "PreviewAudio", inputs: ["audio": link("speak", "audio")]),
         ])
     }
 

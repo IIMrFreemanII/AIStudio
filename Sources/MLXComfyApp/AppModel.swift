@@ -109,6 +109,7 @@ final class AppModel {
         if g.nodes.contains(where: { $0.type == "VideoSampler" }) { return .video }
         if g.nodes.contains(where: { $0.type == "TextToAudio" }) { return .sound }
         if g.nodes.contains(where: { $0.type == "TextToMusic" }) { return .music }
+        if g.nodes.contains(where: { $0.type == "TextToSpeech" }) { return .speech }
         return .image
     }
     /// The graph each mode had when the user switched away, restored on switching back.
@@ -343,7 +344,7 @@ final class AppModel {
     func enqueue(undoManager: UndoManager?) {
         if let err = validationError { lastError = err; NSSound.beep(); return }
         lastError = nil
-        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic"].contains($0.type) }.map(\.id)
+        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic", "TextToSpeech"].contains($0.type) }.map(\.id)
         for i in 0..<max(1, batchCount) {
             var g = graph
             var seed: Int?
@@ -363,12 +364,23 @@ final class AppModel {
         processQueue()
     }
 
+    /// Speaks a short sample in `voice` through the queue; the clip is shown and played, not saved to history.
+    func previewVoice(_ voice: String, speed: Double, modelPath: String) {
+        let g = GraphTemplates.voicePreview(modelPath: modelPath, voice: voice, speed: speed)
+        let name = SpeechVoices.all.first { $0.id == voice }?.label ?? voice
+        queue.append(QueueItem(graph: g, title: "Voice preview: \(name)", seed: nil))
+        processQueue()
+    }
+
     func title(for g: Graph) -> String {
         if let p = g.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
            case .value(.string(let s))? = p.inputs["prompt"],
            !s.isEmpty { return s }
         if let p = g.nodes.first(where: { $0.type == "TextToMusic" }),
            case .value(.string(let s))? = p.inputs["tags"],
+           !s.isEmpty { return s }
+        if let p = g.nodes.first(where: { $0.type == "TextToSpeech" }),
+           case .value(.string(let s))? = p.inputs["text"],
            !s.isEmpty { return s }
         return "Untitled graph"
     }
@@ -584,9 +596,9 @@ final class AppModel {
 
     /// Switches the Simple panel's mode; image and video swap the graph for that mode's (kept per mode).
     func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, soundModelPath: String? = nil,
-                       musicModelPath: String? = nil, undoManager: UndoManager?) {
+                       musicModelPath: String? = nil, speechModelPath: String? = nil, undoManager: UndoManager?) {
         switch mode {
-        case .image, .video, .sound, .music:
+        case .image, .video, .sound, .music, .speech:
             pendingMode = nil
             let current = Self.mode(of: graph)
             guard current != mode else { return }
@@ -596,6 +608,7 @@ final class AppModel {
                 case .video: return GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
                 case .sound: return GraphTemplates.textToSound(modelPath: soundModelPath ?? "", outputDirectory: outputDirectory)
                 case .music: return GraphTemplates.textToMusic(modelPath: musicModelPath ?? "", outputDirectory: outputDirectory)
+                case .speech: return GraphTemplates.textToSpeech(modelPath: speechModelPath ?? "", outputDirectory: outputDirectory)
                 default: return GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory)
                 }
             }()

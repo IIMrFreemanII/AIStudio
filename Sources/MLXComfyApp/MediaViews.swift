@@ -105,6 +105,11 @@ struct AudioResultView: View {
             player = try? AVAudioPlayer(contentsOf: url)
             player?.prepareToPlay()
             duration = player?.duration ?? 0
+            // Previews (voice samples, PreviewAudio nodes) play right away.
+            if url.standardizedFileURL.path.hasPrefix(previewDirectory.standardizedFileURL.path) {
+                player?.play()
+                playing = player != nil
+            }
             peaks = await MediaIO.waveform(url, buckets: 240)
         }
         .onReceive(timer) { _ in
@@ -542,5 +547,98 @@ enum MusicChoices {
         if code == "auto" { return "Auto" }
         if code == "yue" { return "Cantonese" }
         return Locale.current.localizedString(forLanguageCode: code) ?? code
+    }
+}
+
+/// The Simple panel's Speech mode: text, voice (with a spoken preview) and speed of the Text to Speech node.
+struct SpeechPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let installed = store.installed(.speech)
+        let loader = model.firstNode(ofType: "LoadModel")
+        let gen = model.firstNode(ofType: "TextToSpeech")
+
+        if installed == nil {
+            MediaModePanel(mode: .speech)
+        } else {
+            Form {
+                if let gen {
+                    Section("Text") {
+                        TextEditor(text: b.string(gen.id, "text"))
+                            .font(.body)
+                            .frame(minHeight: 200)
+                            .scrollContentBackground(.hidden)
+                        // Verbatim: the bracket syntax would otherwise render as Markdown links.
+                        Text(verbatim: "Any length: long text is read in sentence-sized chunks. Force a pronunciation with [word](/phonemes/), e.g. [Kokoro](/kˈOkəɹO/).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Section("Voice") {
+                        let voice = b.string(gen.id, "voice")
+                        Picker("Voice", selection: voice) {
+                            ForEach(["American", "British"], id: \.self) { accent in
+                                Section(accent) {
+                                    ForEach(SpeechVoices.all.filter { $0.accent == accent }, id: \.id) { v in
+                                        Text("\(v.name) · \(v.gender) · \(v.grade)").tag(v.id)
+                                    }
+                                }
+                            }
+                        }
+                        let speed = b.double(gen.id, "speed")
+                        LabeledContent("Speed") {
+                            HStack {
+                                Slider(value: Binding(get: { speed.wrappedValue },
+                                                      set: { speed.wrappedValue = ($0 * 20).rounded() / 20 }),
+                                       in: 0.5...2)
+                                Text(String(format: "%.2f×", speed.wrappedValue)).monospacedDigit().frame(width: 48, alignment: .trailing)
+                            }
+                        }
+                        if let loader {
+                            Button {
+                                model.previewVoice(voice.wrappedValue, speed: speed.wrappedValue,
+                                                   modelPath: b.string(loader.id, "path").wrappedValue)
+                            } label: {
+                                Label("Preview Voice", systemImage: "play.circle")
+                            }
+                            .disabled(model.isRunning)
+                            Text("Grades (A to F) are from the model's authors: how well each voice was trained.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Section("Generation") {
+                        Stepper(value: $model.batchCount, in: 1...16) {
+                            LabeledContent("Batch", value: "\(model.batchCount) take\(model.batchCount == 1 ? "" : "s")")
+                        }
+                    }
+                }
+                Section("Model") {
+                    if let installed, let loader {
+                        let path = b.string(loader.id, "path")
+                        LabeledContent("Folder") {
+                            Text((path.wrappedValue as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        }
+                        if URL(fileURLWithPath: path.wrappedValue).standardizedFileURL != installed.standardizedFileURL {
+                            Button("Use \(installed.lastPathComponent)") { path.wrappedValue = installed.path }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .safeAreaInset(edge: .bottom) {
+                Button { model.enqueue(undoManager: undoManager) } label: {
+                    Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate Speech", systemImage: "waveform")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+                .padding(12)
+                .background(.bar)
+            }
+        }
     }
 }

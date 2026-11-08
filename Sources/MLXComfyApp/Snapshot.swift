@@ -174,6 +174,10 @@ enum Snapshot {
         }
         m.displayedMedia = (audioURL, .audio)
         await render(m, to: dir.appendingPathComponent("28-music-mode.png"))
+        // 29. The Speech mode with Kokoro installed.
+        let speechDir = Snapshot.store.modelsDirectory.appendingPathComponent("kokoro-82m")
+        m.setSimpleMode(.speech, videoModelPath: nil, speechModelPath: speechDir.path, undoManager: nil)
+        await render(m, to: dir.appendingPathComponent("29-speech-mode.png"))
         m.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
         let store = ModelStore()
         store.adopt(m.modelPath)

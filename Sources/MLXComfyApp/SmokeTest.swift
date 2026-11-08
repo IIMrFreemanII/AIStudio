@@ -381,4 +381,47 @@ extension SmokeTest {
         return abs(clip.duration - 10) < 0.05 && clip.sampleRate == 48000 && clip.channels == 2 && maxTotal > 8
             && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
     }
+
+    /// `--smoke-speech`: the Speech mode end to end: a voice preview (shown, not saved), then a generated clip in
+    /// history with the graph embedded, then back to Image.
+    static func runSpeech(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let dir = ModelStore().modelsDirectory.appendingPathComponent("kokoro-82m")
+        guard ModelRegistry.className(at: dir) == "KokoroPipeline" else { say("no Kokoro at \(dir.path)"); return false }
+        model.setSimpleMode(.speech, videoModelPath: nil, speechModelPath: dir.path, undoManager: nil)
+        guard model.simpleMode == .speech, model.firstNode(ofType: "TextToSpeech") != nil else {
+            say("speech graph not set up"); return false
+        }
+        func wait(_ id: UUID) async -> QueueItem.Status? {
+            while model.queue.first(where: { $0.id == id })?.isFinished == false {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            return model.queue.first { $0.id == id }?.status
+        }
+        let historyBefore = model.history.count
+        model.previewVoice("bm_george", speed: 1, modelPath: dir.path)
+        guard let preview = model.queue.last, case .done? = await wait(preview.id) else {
+            say("preview failed: \(model.lastError ?? "?")"); return false
+        }
+        let previewShown = model.displayedMedia?.kind == .audio
+            && model.displayedMedia?.url.path.hasPrefix(previewDirectory.path) == true
+        say("preview shown \(previewShown), history unchanged \(model.history.count == historyBefore)")
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last, case .done(let secs)? = await wait(item.id) else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        guard let url = model.history.first(where: { $0.kind == .audio && $0.url.lastPathComponent.hasPrefix("speech") })?.url,
+              let clip = try? await MediaIO.readAudio(url) else { say("no speech in history"); return false }
+        let meta = await MediaIO.readMetadata(url)
+        say(String(format: "job done in %.1fs: %@ %.2fs at %d Hz, %d ch, graph embedded %@; displayed %@", secs,
+                   url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
+                   meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
+                   model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
+        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
+        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
+        say("back to image graph: \(back)")
+        return previewShown && model.history.count > historyBefore && clip.duration > 4 && clip.sampleRate == 24000
+            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+    }
 }

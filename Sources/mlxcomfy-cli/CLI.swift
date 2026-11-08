@@ -1,4 +1,5 @@
 import ACEStep
+import KokoroSpeech
 import ArgumentParser
 import Foundation
 import GraphRuntime
@@ -15,7 +16,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
-        subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, GenerateMusic.self, ProbeACEStep.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
+        subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, GenerateMusic.self, TTS.self, ProbeACEStep.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
                       FitPreview.self, MakeTestLoRA.self, Assist.self,
                       Tokenize.self])
 }
@@ -204,6 +205,42 @@ struct GenerateMusic: AsyncParsableCommand {
         let url = URL(fileURLWithPath: out)
         try await MediaIO.writeAudio(clip, to: url, format: url.pathExtension.lowercased() == "m4a" ? .m4a : .wav,
                                      metadata: ["mlxcomfy.prompt": tags, "mlxcomfy.seed": String(seed)])
+        log("wrote \(url.path)")
+    }
+}
+
+struct TTS: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "tts", abstract: "Text to speech with a speech model (Kokoro), no graph.")
+
+    @Option(help: "Model folder (with an mlxcomfy.json manifest).") var model: String
+    @Option(help: "Text to speak, or a path to a text file.") var text: String
+    @Option(help: "Voice, e.g. af_heart (American) or bf_emma (British).") var voice = "af_heart"
+    @Option(help: "Speaking rate (0.5–2).") var speed: Double = 1
+    @Option(help: "Seed for the vocoder's noise.") var seed: UInt64 = 0
+    @Flag(help: "Print the phonemes instead of speaking.") var phonemes = false
+    @Option(help: "Output path (.wav or .m4a).") var out = "speech.wav"
+
+    func run() async throws {
+        _ = StandardNodes.makeRegistry()
+        var input = text
+        if FileManager.default.fileExists(atPath: text), let s = try? String(contentsOfFile: text, encoding: .utf8) { input = s }
+        var t = Date()
+        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        guard let pipe = loaded as? KokoroPipeline else { throw ValidationError("\(loaded.displayName) is not a speech model") }
+        log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
+        if phonemes {
+            for chunk in try pipe.chunks(input, voice: voice) { print(chunk.phonemes) }
+            return
+        }
+        t = Date()
+        let clip = try pipe.generateAudio(AudioRequest(prompt: input, seed: seed, voice: voice, speed: speed), onStep: nil)
+        let secs = Date().timeIntervalSince(t)
+        log(String(format: "spoke %.2f s of audio at %d Hz in %.2fs (%.0f× real time, %@)", clip.duration, clip.sampleRate,
+                   secs, clip.duration / max(secs, 1e-6), memoryString()))
+        let url = URL(fileURLWithPath: out)
+        try await MediaIO.writeAudio(clip, to: url, format: url.pathExtension.lowercased() == "m4a" ? .m4a : .wav,
+                                     metadata: ["mlxcomfy.prompt": input, "mlxcomfy.voice": voice])
         log("wrote \(url.path)")
     }
 }

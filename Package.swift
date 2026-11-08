@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "LTX2", targets: ["LTX2"]),
         .library(name: "StableAudio", targets: ["StableAudio"]),
         .library(name: "ACEStep", targets: ["ACEStep"]),
+        .library(name: "KokoroSpeech", targets: ["KokoroSpeech"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
@@ -20,6 +21,8 @@ let package = Package(
         .executable(name: "ace-probe-dit", targets: ["ace-probe-dit"]),
         .executable(name: "ace-probe-lm", targets: ["ace-probe-lm"]),
         .executable(name: "ace-probe-vae", targets: ["ace-probe-vae"]),
+        .executable(name: "kokoro-probe-g2p", targets: ["kokoro-probe-g2p"]),
+        .executable(name: "kokoro-probe-model", targets: ["kokoro-probe-model"]),
         .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
         .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
     ],
@@ -173,6 +176,29 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
+        // Kokoro-82M (speech): pure-Swift English G2P (misaki lexicons, no espeak) …
+        .target(
+            name: "KokoroG2P",
+            resources: [.copy("Lexicons")]
+        ),
+        .executableTarget(name: "kokoro-probe-g2p", dependencies: ["KokoroG2P"]),
+        // … and the StyleTTS2/iSTFTNet model with the speech pipeline.
+        .target(
+            name: "Kokoro",
+            dependencies: [
+                "MLXDiffusionCore", "KokoroG2P",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ]
+        ),
+        .target(
+            name: "KokoroSpeech",
+            dependencies: ["Kokoro", "KokoroG2P", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .executableTarget(
+            name: "kokoro-probe-model",
+            dependencies: ["Kokoro", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
         .target(name: "GraphRuntime"),
         .target(
             name: "NodesStandard",
@@ -183,6 +209,7 @@ let package = Package(
                 "LTX2",
                 "StableAudio",
                 "ACEStep",
+                "KokoroSpeech",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
@@ -193,6 +220,7 @@ let package = Package(
                 "LTX2",
                 "StableAudio",
                 "ACEStep",
+                "KokoroSpeech",
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
@@ -218,6 +246,14 @@ let package = Package(
         .testTarget(
             name: "StableAudioTests",
             dependencies: ["StableAudio", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "KokoroG2PTests",
+            dependencies: ["KokoroG2P"]
+        ),
+        .testTarget(
+            name: "KokoroSpeechTests",
+            dependencies: ["KokoroSpeech", "KokoroG2P"]
         ),
         .testTarget(
             name: "ACEStepTests",
