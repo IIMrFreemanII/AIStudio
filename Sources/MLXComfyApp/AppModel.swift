@@ -34,6 +34,9 @@ struct QueueItem: Identifiable, Equatable {
     let title: String
     let seed: Int?
     var status: Status = .pending
+    /// Set for the cells of an XY plot: which plot, and the cell index (row-major).
+    var groupID: UUID? = nil
+    var cell: Int? = nil
 
     static func == (a: QueueItem, b: QueueItem) -> Bool { a.id == b.id && a.status == b.status }
 
@@ -48,6 +51,9 @@ struct QueueItem: Identifiable, Equatable {
 struct HistoryItem: Identifiable, Hashable {
     let url: URL
     let date: Date
+    /// The first Text Encode prompt from the embedded graph (filled in the background).
+    var prompt: String?
+    var isFavorite = false
     var id: URL { url }
 }
 
@@ -87,6 +93,24 @@ final class AppModel {
     @ObservationIgnored var assistantTask: Task<Void, Never>?
     @ObservationIgnored var assistantRun: UUID?
 
+    // MARK: batch & compare
+
+    /// Prompt styles (built-in ones until edited) and the one applied to the Simple prompt at queue time.
+    var styles: [PromptStyle] = PromptStyle.builtIn {
+        didSet { if persistSettings, let d = try? JSONEncoder().encode(styles) { UserDefaults.standard.set(d, forKey: "promptStyles") } }
+    }
+    var selectedStyleName: String? {
+        didSet { if persistSettings { UserDefaults.standard.set(selectedStyleName, forKey: "promptStyle") } }
+    }
+    /// XY plots in progress, by group ID.
+    @ObservationIgnored var plots: [UUID: PlotJob] = [:]
+    /// A/B compare: the image shown against the displayed one, and how.
+    var compareURL: URL?
+    var compareImage: CGImage?
+    var compareMode: CompareMode = .split
+    /// Prompts read from history PNGs, so reloads don't re-read files.
+    @ObservationIgnored var promptCache: [URL: String] = [:]
+
     @ObservationIgnored let engine = Engine()
     @ObservationIgnored let registry = StandardNodes.makeRegistry()
     @ObservationIgnored private var runTask: Task<Void, Never>?
@@ -119,6 +143,12 @@ final class AppModel {
         modelPath = path
         outputDirectory = out
         graph = GraphTemplates.textToImage(modelPath: path, outputDirectory: out)
+        if persistSettings {
+            if let d = defaults.data(forKey: "promptStyles"), let s = try? JSONDecoder().decode([PromptStyle].self, from: d) {
+                styles = s
+            }
+            selectedStyleName = defaults.string(forKey: "promptStyle")
+        }
         reloadHistory()
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.activeMemory = Engine.activeMemory() }
@@ -274,6 +304,7 @@ final class AppModel {
                     for id in samplers { try? graph.setValue(.int(newSeed), node: id, input: "seed") }
                 }
             }
+            g = prepared(g, seed: seed ?? i)
             queue.append(QueueItem(graph: g, title: title(for: g), seed: seed))
         }
         processQueue()
@@ -331,6 +362,11 @@ final class AppModel {
                 displayedImage = out.image
                 displayedURL = out.url
             }
+            // After the line above, so a finished plot's grid replaces the last cell's image.
+            let item = queue.first { $0.id == id }
+            if let gid = item?.groupID, let cell = item?.cell {
+                recordPlotCell(gid, cell: cell, image: outputs.last?.image)
+            }
             previewImage = nil
             runTask = nil
             if !outputs.isEmpty { reloadHistory() }
@@ -343,12 +379,14 @@ final class AppModel {
     func cancelAll() {
         for i in queue.indices where queue[i].status == .pending { queue[i].status = .cancelled }
         runTask?.cancel()
+        completePlotsIfDone()
     }
 
     func removeFromQueue(_ id: UUID) {
         guard let i = queue.firstIndex(where: { $0.id == id }) else { return }
         if case .running = queue[i].status { return }
         queue.remove(at: i)
+        completePlotsIfDone()
     }
 
     func clearFinished() { queue.removeAll { $0.isFinished } }
@@ -398,8 +436,9 @@ final class AppModel {
         history = urls.filter { $0.pathExtension.lowercased() == "png" }.map { url in
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
-            return HistoryItem(url: url, date: date)
+            return HistoryItem(url: url, date: date, prompt: promptCache[url], isFavorite: Favorites.isFavorite(url))
         }.sorted { $0.date > $1.date }
+        loadHistoryPrompts()
     }
 
     func show(_ item: HistoryItem) {

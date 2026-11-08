@@ -1,4 +1,5 @@
 import Foundation
+import GraphRuntime
 import MLXDiffusionCore
 
 /// `MLXComfyApp --smoke-test "<prompt>"` queues one generation through the same path as the Generate button
@@ -147,6 +148,62 @@ enum SmokeTest {
                 say("error: \(model.lastError ?? "none")")
                 return false
             }
+        }
+    }
+}
+
+extension SmokeTest {
+    /// `--smoke-xy`: a 2×2 plot (seed × steps) at 512² with a choice template and a style, through enqueuePlot.
+    /// Checks the cells' expanded prompts, the collapsed progress, and the saved grid PNG with its metadata.
+    static func runPlot(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        guard let te = model.firstNode(ofType: "TextEncode"), let sampler = model.firstNode(ofType: "Sampler"),
+              let latent = model.firstNode(ofType: "EmptyLatent") else { say("graph is not the standard one"); return false }
+        model.setLiteral(.string("a {red|arctic} fox sitting in fresh snow"), node: te.id, input: "prompt", undoManager: nil)
+        model.setLiteral(.int(512), node: latent.id, input: "width", undoManager: nil)
+        model.setLiteral(.int(512), node: latent.id, input: "height", undoManager: nil)
+        let previousStyle = model.selectedStyleName
+        model.selectedStyleName = "Watercolor"
+        defer { model.selectedStyleName = previousStyle }  // the real app persists this setting
+        do {
+            let spec = PlotSpec(x: try PlotAxis.parse("1, 2", type: .int, node: sampler.id, input: "seed"),
+                                y: try PlotAxis.parse("2, 4", type: .int, node: sampler.id, input: "steps"))
+            let historyBefore = model.history.count
+            let start = Date()
+            model.enqueuePlot(spec)
+            let cells = model.queue.filter { $0.groupID != nil }
+            say("queued \(cells.count) cells: " + cells.map(\.title).joined(separator: " | "))
+            for c in cells {
+                let p = c.graph[te.id].flatMap { n -> String? in
+                    if case .value(.string(let s))? = n.inputs["prompt"] { return s }; return nil
+                } ?? "?"
+                say("cell \(c.cell!) prompt: \(p)")
+                guard !p.contains("{"), p.contains("watercolor"),
+                      c.graph.metadata?["prompt_template.\(te.id)"] == "a {red|arctic} fox sitting in fresh snow",
+                      !c.graph.nodes.contains(where: { $0.type == "SaveImage" }) else {
+                    say("cell graph not prepared as expected"); return false
+                }
+            }
+            guard let gid = cells.first?.groupID else { return false }
+            var lastDone = -1
+            while model.plots[gid] != nil {
+                let p = model.plotProgress(gid)
+                if p.done != lastDone { lastDone = p.done; say("progress \(p.done)/\(p.total)") }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            say(String(format: "plot finished in %.1fs", Date().timeIntervalSince(start)))
+            guard let url = model.displayedURL, url.lastPathComponent.hasPrefix("plot_"),
+                  let img = model.displayedImage else { say("no grid shown: \(model.lastError ?? "none")"); return false }
+            say("grid \(img.width)x\(img.height) saved to \(url.path)")
+            let text = ImageArray.readPNGText(url)
+            let restored = AppModel.embeddedGraph(in: url)
+            say("grid metadata: graph \(restored != nil), plot \(text["mlxcomfy.plot"]?.isEmpty == false), "
+                + "history \(historyBefore) → \(model.history.count)")
+            return restored?.metadata?["xy_plot"] != nil && model.history.count == historyBefore + 1
+        } catch {
+            say("axis error: \(error)")
+            return false
         }
     }
 }

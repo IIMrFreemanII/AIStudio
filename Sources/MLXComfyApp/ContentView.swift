@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.undoManager) private var undoManager
     @State private var showInspector = true
     @State private var dropTargeted = false
+    @State private var showPlot = false
 
     var body: some View {
         @Bindable var model = model
@@ -46,6 +47,7 @@ struct ContentView: View {
             return true
         }
         .task { if model.autoloadModel { model.preloadModel() } }
+        .sheet(isPresented: $showPlot) { PlotSheet() }
     }
 
     @ToolbarContentBuilder
@@ -66,6 +68,8 @@ struct ContentView: View {
                 Button { model.cancelCurrent() } label: { Label("Cancel", systemImage: "stop.fill") }
                     .help("Cancel the running job (⌘.)")
             }
+            Button { showPlot = true } label: { Label("XY Plot", systemImage: "square.grid.3x3") }
+                .help("Queue a grid of images varying one or two inputs")
             Button { model.enqueue(undoManager: undoManager) } label: {
                 Label(model.isRunning ? "Queue" : "Generate", systemImage: "sparkles")
                     .labelStyle(.titleAndIcon)

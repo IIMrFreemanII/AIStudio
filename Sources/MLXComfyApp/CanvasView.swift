@@ -8,7 +8,9 @@ struct CanvasView: View {
     var body: some View {
         ZStack {
             Color(nsColor: .underPageBackgroundColor).ignoresSafeArea()
-            if let image = model.previewImage ?? model.displayedImage {
+            if model.previewImage == nil, let a = model.displayedImage, let b = model.compareImage {
+                CompareView(a: a, b: b).id(model.compareURL)
+            } else if let image = model.previewImage ?? model.displayedImage {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .interpolation(model.previewImage != nil ? .medium : .high)

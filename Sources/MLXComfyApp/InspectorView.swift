@@ -86,6 +86,7 @@ struct SimplePanel: View {
                         .scrollContentBackground(.hidden)
                         .disabled(model.assistantMode != nil)
                     assistantBar
+                    stylePicker
                 } else {
                     missing("TextEncode")
                 }
@@ -239,6 +240,21 @@ struct SimplePanel: View {
                 }
             }
         }
+    }
+
+    /// The style applied to the prompt when queued, and a reminder of the template syntax.
+    @ViewBuilder var stylePicker: some View {
+        @Bindable var model = model
+        Picker("Style", selection: $model.selectedStyleName) {
+            Text("None").tag(String?.none)
+            ForEach(model.styles) { Text($0.name).tag(String?.some($0.name)) }
+        }
+        if let style = model.selectedStyle {
+            Text(style.template).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        // verbatim: as a Markdown string, __name__ would render as bold "name".
+        Text(verbatim: "{a|b|c} picks one option per image; __name__ picks a line from wildcards/name.txt.")
+            .font(.caption2).foregroundStyle(.tertiary)
     }
 
     /// Enhance / Describe, or progress and Stop while the assistant writes.
@@ -487,6 +503,9 @@ struct SettingsView: View {
             }
             Text("New graphs save into the output folder; existing SaveImage nodes keep their own directory.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section("Prompt Styles") {
+                StylesEditor()
+            }
             Section("Prompt Assistant") {
                 AssistantPromptEditor(title: "Enhance", key: "enhance", fallback: PromptAssistant.enhanceSystem)
                 AssistantPromptEditor(title: "Enhance with a reference image", key: "edit",
@@ -573,5 +592,42 @@ struct AssistantPromptEditor: View {
                 TextEditor(text: $text).font(.callout).frame(minHeight: 80).scrollContentBackground(.hidden)
             }
         }
+    }
+}
+
+/// Add, rename, edit and remove prompt styles; `{prompt}` marks where the prompt goes.
+struct StylesEditor: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        ForEach($model.styles) { $style in
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Name", text: $style.name).font(.callout.weight(.medium))
+                    TextField("Template with {prompt}", text: $style.template, axis: .vertical)
+                        .font(.caption).lineLimit(1...3)
+                }
+                Button(role: .destructive) { model.styles.removeAll { $0.id == style.id } } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        HStack {
+            Button("Add Style") {
+                var name = "New Style"
+                var n = 2
+                while model.styles.contains(where: { $0.name == name }) { name = "New Style \(n)"; n += 1 }
+                model.styles.append(PromptStyle(name: name, template: "{prompt}, "))
+            }
+            Spacer()
+            Button("Restore Built-in Styles") { model.styles = PromptStyle.builtIn }
+            Button("Open Wildcards Folder") {
+                try? FileManager.default.createDirectory(at: AppModel.wildcardDirectory, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(AppModel.wildcardDirectory)
+            }
+        }
+        .controlSize(.small)
     }
 }

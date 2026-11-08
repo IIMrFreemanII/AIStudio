@@ -84,7 +84,33 @@ enum Snapshot {
             await render(model, to: dir.appendingPathComponent("12-assistant-idle.png"))
             // 13. Settings with the assistant's instructions.
             await render(SettingsView().environment(model), to: dir.appendingPathComponent("13-settings.png"),
-                         size: CGSize(width: 600, height: 640))
+                         size: CGSize(width: 600, height: 900))
+        }
+
+        // 14. Style picker in the panel, the XY plot sheet.
+        model.clearReferenceImage(undoManager: nil)
+        model.selectedStyleName = "Cinematic"
+        await render(model, to: dir.appendingPathComponent("14-style.png"))
+        await render(PlotSheet().environment(model), to: dir.appendingPathComponent("15-plot-sheet.png"),
+                     size: CGSize(width: 520, height: 620))
+        model.selectedStyleName = nil
+
+        // 16. History as a grid with a favorite; 17–19. A/B compare in each mode.
+        let defaults = UserDefaults.standard
+        let hadGrid = defaults.object(forKey: "historyGrid")
+        defaults.set(true, forKey: "historyGrid")
+        if model.history.count >= 2 {
+            model.history[1].isFavorite = true
+            model.show(model.history[0])
+            model.compare(with: model.history[1].url)
+            for (i, mode) in CompareMode.allCases.enumerated() {
+                model.compareMode = mode
+                await render(model, to: dir.appendingPathComponent("\(16 + i)-compare-\(mode.rawValue.lowercased().replacingOccurrences(of: " ", with: "-")).png"))
+            }
+            model.endCompare()
+        }
+        if let hadGrid { defaults.set(hadGrid, forKey: "historyGrid") } else { defaults.removeObject(forKey: "historyGrid") }
+        do {
         }
     }
 

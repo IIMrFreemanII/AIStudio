@@ -32,6 +32,10 @@ open build/MLXComfyUI.app
   - Every edit can be undone.
   - The running node is outlined, and each node shows its time or a "cached" badge.
 - **Sidebar:** the queue (cancel or reorder jobs) and history (the PNGs in the output folder). Right-click a history item to restore its graph.
+  - Search filters history by prompt. ★ marks favorites (stored on the file, so they survive moving it) and the star button shows only favorites. The grid button switches between a list and a thumbnail grid.
+- **Styles and wildcards:** pick a **Style** under the prompt to wrap it in a template (edit the styles in Settings). In any prompt, `{red|green|blue}` picks one option per image and `__name__` picks a line from `~/Library/Application Support/MLXComfyUI/wildcards/name.txt`. Choices are seeded by the image's seed, and the saved PNG records both the final prompt and the template.
+- **XY plot** (toolbar): vary one or two inputs of the current graph, such as seeds `1-4`, steps `4-12:4`, denoise `0.3, 0.5`, or a word in the prompt (search and replace). Each cell runs as a queued job, shown as one collapsed row, and the result is saved as a labelled grid PNG with the graph embedded.
+- **Compare:** ⌘-click a history item, or choose **Compare with Shown Image**, to see it against the current image: a draggable split, side by side, or the difference (brightened ×4 so small changes show).
 - **Restoring a graph:** drop a PNG made by MLXComfyUI anywhere on the window. ⌘O opens a graph JSON file or such a PNG. ⌘S saves the graph.
 - **Reference image:** drop an image on the Simple panel to edit it. The prompt describes the change, and the output keeps the image's aspect ratio.
 - **Inpainting:** use **Paint Mask…** to mark an area. Only that area is regenerated. **Feather** softens the edge so the change blends in; pixels outside the feathered edge stay identical to the original.
@@ -139,7 +143,7 @@ The executor:
   - `QwenImage21VAE`: the single-frame form of the causal 3D VAE.
   - `QwenImage21Pipeline`.
   - `TextGenerator.swift`: KV-cached text generation with the same decoder stack (the prompt assistant).
-- `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. It doesn't depend on MLX.
+- `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
 - `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.

@@ -99,10 +99,14 @@ public struct Graph: Codable, Hashable, Sendable {
 
     public var version: Int
     public var nodes: [GraphNode]
+    /// Free-form notes that travel with the graph (and into saved PNGs), e.g. the prompt template a queued prompt
+    /// was expanded from. Optional, so graphs without it still load.
+    public var metadata: [String: String]?
 
-    public init(version: Int = Graph.currentVersion, nodes: [GraphNode] = []) {
+    public init(version: Int = Graph.currentVersion, nodes: [GraphNode] = [], metadata: [String: String]? = nil) {
         self.version = version
         self.nodes = nodes
+        self.metadata = metadata
     }
 
     public subscript(id: String) -> GraphNode? {
