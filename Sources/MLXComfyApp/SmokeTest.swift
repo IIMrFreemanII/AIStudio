@@ -10,8 +10,22 @@ enum SmokeTest {
         return args[i + 1]
     }
 
+    static func argument(_ name: String) -> String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
+        return args[i + 1]
+    }
+
     static func run(_ model: AppModel, prompt: String) async -> Bool {
         func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        if let image = argument("--smoke-image") {
+            model.setReferenceImage(URL(fileURLWithPath: image), undoManager: nil)
+            say("reference image \(image)")
+        }
+        if let mask = argument("--smoke-mask") {
+            model.setMask(URL(fileURLWithPath: mask), undoManager: nil)
+            say("mask \(mask); graph nodes: \(model.graph.nodes.map(\.id).joined(separator: ", "))")
+        }
         say("model folder \(model.modelPath)")
         say("output folder \(model.outputDirectory)")
         guard let p = model.firstNode(ofType: "TextEncode") else { say("no TextEncode node"); return false }

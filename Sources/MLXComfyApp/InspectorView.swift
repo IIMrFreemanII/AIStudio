@@ -1,5 +1,6 @@
 import AppKit
 import GraphRuntime
+import ImageIO
 import SwiftUI
 
 /// Bindings onto literal node inputs, with undo.
@@ -65,6 +66,8 @@ struct InspectorView: View {
 struct SimplePanel: View {
     @Environment(AppModel.self) private var model
     @Environment(\.undoManager) private var undoManager
+    @State private var showMaskEditor = false
+    @State private var dropTargeted = false
 
     var body: some View {
         @Bindable var model = model
@@ -85,19 +88,25 @@ struct SimplePanel: View {
                 }
             }
 
+            if prompt != nil { referenceSection }
+
             Section("Size") {
                 if let latent {
                     let w = b.int(latent.id, "width"), h = b.int(latent.id, "height")
                     Picker("Preset", selection: Binding(
-                        get: { GraphTemplates.sizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1 },
+                        get: {
+                            if w.wrappedValue == 0 && h.wrappedValue == 0 { return -2 }
+                            return GraphTemplates.sizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1
+                        },
                         set: { i in
-                            guard i >= 0 else { return }
-                            let p = GraphTemplates.sizePresets[i]
+                            guard i >= 0 || i == -2 else { return }
+                            let (pw, ph) = i == -2 ? (0, 0) : (GraphTemplates.sizePresets[i].width, GraphTemplates.sizePresets[i].height)
                             model.mutate("Change Size", undoManager: undoManager) { g in
-                                try? g.setValue(.int(p.width), node: latent.id, input: "width")
-                                try? g.setValue(.int(p.height), node: latent.id, input: "height")
+                                try? g.setValue(.int(pw), node: latent.id, input: "width")
+                                try? g.setValue(.int(ph), node: latent.id, input: "height")
                             }
                         })) {
+                        if model.referenceImagePath != nil { Text("Match reference image").tag(-2) }
                         ForEach(GraphTemplates.sizePresets.indices, id: \.self) { i in
                             Text(GraphTemplates.sizePresets[i].name).tag(i)
                         }
@@ -162,6 +171,64 @@ struct SimplePanel: View {
             .padding(12)
             .background(.bar)
         }
+    }
+
+    @ViewBuilder var referenceSection: some View {
+        Section {
+            if let path = model.referenceImagePath {
+                HStack(spacing: 10) {
+                    Thumbnail(path: path, maskPath: model.maskPath).frame(width: 64, height: 64)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
+                             : "Editing: describe the change in the prompt.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Button(model.maskPath == nil ? "Paint Mask…" : "Edit Mask…") { showMaskEditor = true }
+                    if model.maskPath != nil { Button("Clear Mask") { model.clearMask(undoManager: undoManager) } }
+                    Spacer()
+                    Button("Remove", role: .destructive) { model.clearReferenceImage(undoManager: undoManager) }
+                }
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo.badge.plus").font(.title2).foregroundStyle(.secondary)
+                    Text("Drop an image to edit it or use it as a reference").font(.caption)
+                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Button("Choose…") { chooseReference() }.controlSize(.small)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(RoundedRectangle(cornerRadius: 8).strokeBorder(
+                    dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                    style: StrokeStyle(lineWidth: dropTargeted ? 2 : 1, dash: [5, 4])))
+                .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                    _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        Task { @MainActor in model.setReferenceImage(url, undoManager: undoManager) }
+                    }
+                    return true
+                }
+            }
+        } header: {
+            Text("Reference Image")
+        }
+        .sheet(isPresented: $showMaskEditor) {
+            if let path = model.referenceImagePath {
+                MaskEditorView(imageURL: URL(fileURLWithPath: path),
+                               existingMask: model.maskPath.map { URL(fileURLWithPath: $0) },
+                               saveDirectory: model.maskDirectory) { url in
+                    model.setMask(url, undoManager: undoManager)
+                }
+            }
+        }
+    }
+
+    func chooseReference() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        if panel.runModal() == .OK, let url = panel.url { model.setReferenceImage(url, undoManager: undoManager) }
     }
 
     func missing(_ type: String) -> some View {
@@ -307,5 +374,39 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 520)
         .padding()
+    }
+}
+
+
+/// Small image preview with the inpainting mask tinted red on top.
+struct Thumbnail: View {
+    let path: String
+    let maskPath: String?
+    @State private var image: CGImage?
+    @State private var mask: CGImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle().fill(.quaternary)
+            }
+            if let mask {
+                Image(decorative: mask, scale: 1).resizable().aspectRatio(contentMode: .fill).opacity(0.55)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: path + (maskPath ?? "")) {
+            image = Self.thumb(path)
+            mask = maskPath.flatMap(Self.thumb).flatMap { MaskEditorView.redOverlay($0) }
+        }
+    }
+
+    static func thumb(_ path: String) -> CGImage? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(src, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 192,
+        ] as CFDictionary)
     }
 }

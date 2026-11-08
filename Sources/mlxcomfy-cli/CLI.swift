@@ -13,7 +13,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
         subcommands: [Run.self, Generate.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
-                      FitPreview.self,
+                      FitPreview.self, MakeTestLoRA.self,
                       Tokenize.self])
 }
 
@@ -128,22 +128,38 @@ struct Generate: AsyncParsableCommand {
 
     @Option(help: "Model folder (diffusers layout).") var model = "qwen-turbo-mlx"
     @Option(help: "Prompt text.") var prompt: String
-    @Option(help: "Output size WxH.") var size = "1024x1024"
+    @Option(help: "Output size WxH (default 1024x1024, or the condition image's aspect at ~1 MP).") var size: String?
     @Option(help: "Random seed.") var seed: UInt64 = 0
     @Option(help: "Override the checkpoint's step count.") var steps: Int?
+    @Option(name: .customLong("image"), help: "Condition image for editing (repeatable).") var images: [String] = []
+    @Option(name: .customLong("lora"), help: "LoRA file, optionally with strength: path[:strength] (repeatable).")
+    var loras: [String] = []
     @Option(help: "Output PNG path.") var out = "out.png"
     @Flag(help: "Save every step's x0 estimate as out.stepN.png.") var saveSteps = false
     @Flag(help: "Expand the 8-bit transformer to bf16 at load (more memory, faster steps).") var dequantize = false
 
     func run() async throws {
-        let (w, h) = try parseSize(size)
+        let (w, h) = try parseSize(size ?? "1024x1024")
         let t0 = Date()
-        let pipe = try await QwenImage21Pipeline(directory: URL(fileURLWithPath: model),
+        var pipe = try await QwenImage21Pipeline(directory: URL(fileURLWithPath: model),
                                                  dequantizeTransformer: dequantize, log: log)
         log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t0), memoryString()))
+        for spec in loras {
+            let parts = spec.split(separator: ":", maxSplits: 1).map(String.init)
+            let strength = parts.count > 1 ? Float(parts[1]) ?? 1 : 1
+            let (m, report) = try pipe.applyingLoRA(URL(fileURLWithPath: parts[0]), strength: strength)
+            pipe = m as! QwenImage21Pipeline
+            log("LoRA \(report) at strength \(strength)")
+        }
 
-        let req = QwenImage21Pipeline.Request(prompt: prompt, width: w, height: h, seed: seed, steps: steps)
-        let snapped = pipe.snapSize(width: w, height: h)
+        var req = QwenImage21Pipeline.Request(prompt: prompt, width: w, height: h, seed: seed, steps: steps)
+        req.images = try images.map { ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: $0))) }
+        req.sizeFromImage = size == nil
+        var snapped = pipe.snapSize(width: w, height: h)
+        if let first = req.images.last, size == nil {
+            let d = QwenImage21Pipeline.dimensions(area: 1024 * 1024, aspect: Double(first.dim(1)) / Double(first.dim(0)))
+            snapped = pipe.snapSize(width: d.width, height: d.height)
+        }
         let outURL = URL(fileURLWithPath: out)
         let t1 = Date()
         let image = try pipe.generate(req) { step in
@@ -197,12 +213,21 @@ struct Compare: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Compare the pixels of two images.")
     @Argument var a: String
     @Argument var b: String
+    @Option(help: "Only compare pixels where this mask image is black.") var outsideMask: String?
 
     func run() async throws {
         let x = ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: a)))
         let y = ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: b)))
         guard x.shape == y.shape else { print("different sizes: \(x.shape) vs \(y.shape)"); throw ExitCode(1) }
-        let d = abs(x - y)
+        var d = abs(x - y)
+        if let outsideMask {
+            let m = ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: outsideMask)))
+            let keep = (try ImageArray.resized(m, width: x.dim(1), height: x.dim(0))[0..., 0..., ..<1] .< 0.01)
+            d = MLX.where(keep, d, MLXArray(Float(0)))
+            let inside = MLX.where(keep, MLXArray(Float(0)), abs(x - y))
+            print(String(format: "inside mask: mean diff %.1f/255", inside.sum().item(Float.self) * 255
+                / max(1, (1 - keep.asType(.float32)).sum().item(Float.self) * Float(x.dim(2)))))
+        }
         let maxDiff = d.max().item(Float.self) * 255
         let differing = (d .> 0).asType(.float32).mean().item(Float.self) * 100
         print(String(format: "max diff %.0f/255, %.2f%% of values differ", maxDiff, differing))
@@ -246,6 +271,34 @@ struct FitPreview: AsyncParsableCommand {
             print("    " + (0..<3).map { String(format: "%.6f", vals[r * 3 + $0]) }.joined(separator: ", ") + ",")
         }
         print("]")
+    }
+}
+
+struct MakeTestLoRA: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "make-test-lora",
+        abstract: "Write a synthetic PEFT-format LoRA over every block's attention projections (for testing).")
+    @Option var out = "outputs/test-lora.safetensors"
+    @Option var rank = 8
+    @Option var layers = 32
+    @Option(help: "Std-dev of the up matrices; 0 gives a no-op LoRA (like a freshly initialised one).") var upScale: Float = 0
+    @Option var seed: UInt64 = 0
+
+    func run() async throws {
+        var arrays: [String: MLXArray] = [:]
+        var key = MLXRandom.key(seed)
+        for i in 0..<layers {
+            for t in ["to_q", "to_k", "to_v", "to_out.0"] {
+                let name = "transformer.transformer_blocks.\(i).attn.\(t)"
+                let ks = MLXRandom.split(key: key, into: 3)
+                key = ks[0]
+                arrays[name + ".lora_A.weight"] = (MLXRandom.normal([rank, 4096], key: ks[1]) / sqrt(Float(4096)))
+                    .asType(.bfloat16)
+                arrays[name + ".lora_B.weight"] = (MLXRandom.normal([4096, rank], key: ks[2]) * upScale).asType(.bfloat16)
+            }
+        }
+        try save(arrays: arrays, url: URL(fileURLWithPath: out))
+        print("wrote \(out) (\(arrays.count) tensors)")
     }
 }
 

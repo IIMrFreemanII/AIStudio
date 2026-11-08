@@ -7,6 +7,10 @@ import Tokenizers
 public final class QwenImage21Pipeline: DiffusionModel {
     public struct Request {
         public var prompt: String
+        /// Condition images (`[H, W, 4]` RGBA in `[0, 1]`) for editing; the output takes the last one's aspect
+        /// ratio unless `width`/`height` are set explicitly.
+        public var images: [MLXArray] = []
+        public var sizeFromImage = true
         public var width = 1024
         public var height = 1024
         public var seed: UInt64 = 0
@@ -32,9 +36,13 @@ public final class QwenImage21Pipeline: DiffusionModel {
     public static let systemPrompt = "Comprehend and analyze the provided prompt."
     public static let vaeScale = 16
     public let family = "qwen-image-2.1"
-    public var displayName: String { "Qwen-Image 2.1 (\(directory.lastPathComponent))" }
+    public var displayName: String {
+        "Qwen-Image 2.1 (\(directory.lastPathComponent))" + (loras.isEmpty ? "" : " + \(loras.count) LoRA")
+    }
 
     public let directory: URL
+    /// LoRAs applied on top of the base weights, in order.
+    public private(set) var loras: [LoRAReport] = []
     public let tokenizer: Tokenizer
     public let textEncoder: Qwen3TextEncoder
     public let transformer: QwenImage21Transformer
@@ -75,21 +83,131 @@ public final class QwenImage21Pipeline: DiffusionModel {
             configURL: directory.appendingPathComponent("scheduler/scheduler_config.json"))
     }
 
+    private init(copying o: QwenImage21Pipeline, transformer: QwenImage21Transformer, loras: [LoRAReport]) {
+        directory = o.directory; tokenizer = o.tokenizer; textEncoder = o.textEncoder; vae = o.vae
+        sampleSigmas = o.sampleSigmas; schedulerTemplate = o.schedulerTemplate; dropCount = o.dropCount
+        self.transformer = transformer
+        self.loras = loras
+    }
+
+    public func applyingLoRA(_ lora: URL, strength: Float) throws -> (model: DiffusionModel, report: LoRAReport) {
+        let file = try LoRAFile(url: lora, moduleNames: transformer.linearNames)
+        let (t, matched) = transformer.adding(file.adapters(strength: strength))
+        let report = LoRAReport(file: lora.lastPathComponent, matchedLayers: matched,
+                                unmatchedKeys: file.unmatchedKeys.count)
+        return (QwenImage21Pipeline(copying: self, transformer: t, loras: loras + [report]), report)
+    }
+
     // MARK: DiffusionModel
 
-    public func tokens(for prompt: String) -> [Int] {
+    public var maxConditionImages: Int { 4 }
+    static let imagePadToken = 151655
+
+    public func tokens(for prompt: String, imageCount: Int = 0) -> [Int] {
         let p = prompt.isEmpty ? " " : prompt
-        let text = "<|im_start|>system\n\(Self.systemPrompt)<|im_end|>\n<|im_start|>user\n\(p)<|im_end|>\n"
+        var vision = ""
+        for i in 0..<imageCount {
+            vision += (i == 0 ? "" : " ") + "<image\(i + 1)><|vision_start|><|image_pad|><|vision_end|>"
+        }
+        let text = "<|im_start|>system\n\(Self.systemPrompt)<|im_end|>\n<|im_start|>user\n\(vision)\(p)<|im_end|>\n"
             + "<|im_start|>assistant\n"
         return tokenizer.encode(text: text, addSpecialTokens: false)
     }
 
-    public func encodePrompt(_ prompt: String) throws -> Conditioning {
-        let h = textEncoder.hiddenStates(tokens: tokens(for: prompt))
-        let embeds = h[0..., dropCount..., 0...]
-        eval(embeds)
-        let prefix = transformer.encodePrefix([.text(embeds)])
-        return Conditioning(family: family, payload: PromptPayload(embeddings: embeds, prefix: prefix))
+    /// `calculate_dimensions`: the size with `area` pixels and the given aspect ratio, rounded to multiples of 32.
+    public static func dimensions(area: Int, aspect: Double) -> (width: Int, height: Int) {
+        let w = (Double(area) * aspect).squareRoot()
+        let h = w / aspect
+        return (max(32, Int((w / 32).rounded()) * 32), max(32, Int((h / 32).rounded()) * 32))
+    }
+
+    /// A condition image prepared for both encoders.
+    struct PreparedImage {
+        let vision: Qwen3VisionTower.Output
+        let latents: MLXArray  // [1, h*w, 64] normalised
+        let latentH: Int
+        let latentW: Int
+        let width: Int
+        let height: Int
+    }
+
+    /// Resizes to ~1 MP (same aspect), then runs the vision tower (alpha over white) and the VAE (RGBA).
+    func prepare(_ image: MLXArray) throws -> PreparedImage {
+        let (w, h) = Self.dimensions(area: 1024 * 1024, aspect: Double(image.dim(1)) / Double(image.dim(0)))
+        let rgba: MLXArray
+        if image.dim(0) == h && image.dim(1) == w && image.dim(2) == 4 {
+            rgba = image.asType(.float32)
+        } else {
+            rgba = ImageArray.array(from: try ImageArray.cgImage(from: image, keepAlpha: true), width: w, height: h)
+        }
+        let alpha = rgba[0..., 0..., 3...]
+        let rgb = rgba[0..., 0..., ..<3] * alpha + (1 - alpha)
+        let vision = textEncoder.vision(rgb)
+        let z = vae.encode((rgba * 2 - 1).expandedDimensions(axis: 0))  // [1, h/16, w/16, 64]
+        let lh = h / Self.vaeScale, lw = w / Self.vaeScale
+        let latents = z.reshaped(1, lh * lw, 64)
+        eval(latents)
+        return PreparedImage(vision: vision, latents: latents, latentH: lh, latentW: lw, width: w, height: h)
+    }
+
+    public func encodePrompt(_ prompt: String, images: [MLXArray]) throws -> Conditioning {
+        guard images.count <= maxConditionImages else { throw DiffusionError.tooManyImages(max: maxConditionImages) }
+        if images.isEmpty {
+            let h = textEncoder.hiddenStates(tokens: tokens(for: prompt))
+            let embeds = h[0..., dropCount..., 0...]
+            eval(embeds)
+            let prefix = transformer.encodePrefix([.text(embeds)])
+            return Conditioning(family: family, payload: PromptPayload(embeddings: embeds, prefix: prefix))
+        }
+
+        let prepared = try images.map(prepare)
+        // Expand each <|image_pad|> to the image's merged-token count and lay out mRoPE positions.
+        var ids: [Int] = []
+        var runs: [(start: Int, count: Int)] = []
+        var positions: [(Int32, Int32, Int32)] = []
+        var cursor: Int32 = 0
+        var next = 0
+        for t in tokens(for: prompt, imageCount: images.count) {
+            if t == Self.imagePadToken, next < prepared.count {
+                let v = prepared[next].vision
+                runs.append((ids.count, v.gridH * v.gridW))
+                for r in 0..<v.gridH {
+                    for c in 0..<v.gridW { positions.append((cursor, cursor + Int32(r), cursor + Int32(c))) }
+                }
+                ids += Array(repeating: t, count: v.gridH * v.gridW)
+                cursor += Int32(max(v.gridH, v.gridW))
+                next += 1
+            } else {
+                ids.append(t)
+                positions.append((cursor, cursor, cursor))
+                cursor += 1
+            }
+        }
+        let visual = Qwen3TextEncoder.VisualInputs(
+            runs: runs,
+            embeddings: concatenated(prepared.map { $0.vision.embeddings }, axis: 0),
+            deepstack: (0 ..< prepared[0].vision.deepstack.count).map { k in
+                concatenated(prepared.map { $0.vision.deepstack[k] }, axis: 0)
+            },
+            positions: positions)
+        let hidden = textEncoder.hiddenStates(tokens: ids, visual: visual)
+        eval(hidden)
+
+        // Transformer prefix: encoder features for text, VAE latents in place of each image's slots.
+        var segments: [QwenImage21Transformer.Segment] = []
+        var pos = dropCount
+        for (i, run) in runs.enumerated() {
+            if run.start > pos { segments.append(.text(hidden[0..., pos ..< run.start, 0...])) }
+            let p = prepared[i]
+            segments.append(.image(p.latents, height: p.latentH, width: p.latentW))
+            pos = run.start + run.count
+        }
+        if pos < ids.count { segments.append(.text(hidden[0..., pos..., 0...])) }
+        let prefix = transformer.encodePrefix(segments)
+        let embeds = hidden[0..., dropCount..., 0...]
+        let last = prepared.last!
+        return Conditioning(family: family, payload: PromptPayload(embeddings: embeds, prefix: prefix),
+                            suggestedSize: (last.width, last.height))
     }
 
     public func snapSize(width: Int, height: Int) -> (width: Int, height: Int) {
@@ -133,6 +251,16 @@ public final class QwenImage21Pipeline: DiffusionModel {
         return out
     }
 
+    public var latentScale: Int { Self.vaeScale }
+
+    public func encodeImage(_ image: MLXArray) -> MLXArray {
+        let (h, w) = (image.dim(0) / Self.vaeScale, image.dim(1) / Self.vaeScale)
+        let z = vae.encode((image.asType(.float32) * 2 - 1).expandedDimensions(axis: 0))
+        let packed = z.reshaped(1, h * w, 64)
+        eval(packed)
+        return packed
+    }
+
     public func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray? {
         let (h, w) = latentSize(width: width, height: height)
         return QwenImage21LatentPreview.rgb(latents, h: h, w: w)
@@ -142,8 +270,9 @@ public final class QwenImage21Pipeline: DiffusionModel {
 
     /// Prompt → RGBA `[H, W, 4]` in `[0, 1]`, through the same ``DiffusionModel/sample`` loop the graph uses.
     public func generate(_ req: Request, onStep: ((SamplerStep) throws -> Void)? = nil) throws -> MLXArray {
-        let cond = try encodePrompt(req.prompt)
-        let size = snapSize(width: req.width, height: req.height)
+        let cond = try encodePrompt(req.prompt, images: req.images)
+        var size = snapSize(width: req.width, height: req.height)
+        if req.sizeFromImage, let s = cond.suggestedSize { size = snapSize(width: s.width, height: s.height) }
         let out = try sample(conditioning: cond, latent: Latent(width: size.width, height: size.height),
                              seed: req.seed, steps: req.steps, onStep: onStep)
         return decode(out.data!, width: size.width, height: size.height)

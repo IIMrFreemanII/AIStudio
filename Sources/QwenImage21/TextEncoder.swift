@@ -5,7 +5,7 @@ import MLXDiffusionCore
 /// The language model of `Qwen3VLForConditionalGeneration`, used as a feature extractor.
 ///
 /// Text-only prompts give every token the same position on the three mRoPE axes, so interleaved mRoPE reduces to
-/// ordinary (non-traditional) RoPE. The vision tower is not needed for text-to-image and is not loaded yet.
+/// ordinary (non-traditional) RoPE. Prompts with images use the vision tower, interleaved mRoPE and deepstack.
 public final class Qwen3TextEncoder {
     public struct Config {
         public var hiddenSize = 4096
@@ -40,13 +40,23 @@ public final class Qwen3TextEncoder {
     public let config: Config
     let embed: MLXArray
     let layers: [Layer]
+    /// The vision tower, used when prompts carry condition images.
+    public let vision: Qwen3VisionTower
+    public var mropeSection = [24, 20, 20]
 
     public init(directory: URL, dtype: DType = .bfloat16) throws {
         config = try Config(url: directory.appendingPathComponent("config.json"))
         let store = try WeightStore(directory: directory)
-        // Free the vision tower and LM head right away; only the decoder stack is used.
-        store.remove(prefix: "model.visual.")
+        // The LM head is never used (features, not tokens, are what we want).
         store.remove(prefix: "lm_head.")
+        vision = try Qwen3VisionTower(
+            store: store, config: Qwen3VisionTower.Config(textEncoderConfig: directory.appendingPathComponent("config.json")),
+            dtype: dtype)
+        if let obj = try? JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json")))
+            as? [String: Any], let t = obj["text_config"] as? [String: Any],
+            let rs = t["rope_scaling"] as? [String: Any], let sec = rs["mrope_section"] as? [Int] {
+            mropeSection = sec
+        }
         let p = "model.language_model."
         embed = try store.get(p + "embed_tokens.weight").asType(dtype)
         layers = try (0..<config.numLayers).map { i in
@@ -66,29 +76,103 @@ public final class Qwen3TextEncoder {
         }
     }
 
+    /// Visual inputs for a multimodal prompt.
+    public struct VisualInputs {
+        /// Contiguous runs of image-token positions in the token sequence, one per image, in order.
+        public var runs: [(start: Int, count: Int)]
+        /// Merged visual embeddings for all runs, concatenated `[sum(count), hidden]`.
+        public var embeddings: MLXArray
+        /// Deepstack features (same rows), added after the first `deepstack.count` decoder layers.
+        public var deepstack: [MLXArray]
+        /// mRoPE positions `(t, h, w)` per token.
+        public var positions: [(Int32, Int32, Int32)]
+    }
+
     /// Returns the output of the last decoder layer *before* the final RMSNorm, `[1, L, hidden]`.
     /// This is the feature the Qwen-Image 2.1 transformer was trained on.
-    public func hiddenStates(tokens: [Int]) -> MLXArray {
+    public func hiddenStates(tokens: [Int], visual: VisualInputs? = nil) -> MLXArray {
         let c = config
         let L = tokens.count
-        var x = embed[MLXArray(tokens.map { Int32($0) })].expandedDimensions(axis: 0)
+        var x = embed[MLXArray(tokens.map { Int32($0) })]
+        if let visual {
+            let rows = Self.scatterRows(visual.embeddings.asType(x.dtype), runs: visual.runs, length: L)
+            x = MLX.where(Self.rowMask(L, runs: visual.runs), rows, x)
+        }
+        x = x.expandedDimensions(axis: 0)
         let mask: MLXArray? = L > 1 ? causalMask(L, dtype: x.dtype) : nil
         let scale = 1 / sqrt(Float(c.headDim))
-        for layer in layers {
+        // Text-only prompts have equal positions on every mRoPE axis: plain RoPE. Otherwise build interleaved mRoPE.
+        let mrope = visual.map { mropeTables($0.positions) }
+        for (i, layer) in layers.enumerated() {
             let h = rmsNorm(x, weight: layer.inputNorm, eps: c.rmsEps)
             var q = layer.q(h).reshaped(1, L, c.numHeads, c.headDim)
             var k = layer.k(h).reshaped(1, L, c.numKVHeads, c.headDim)
             let v = layer.v(h).reshaped(1, L, c.numKVHeads, c.headDim).transposed(0, 2, 1, 3)
             q = rmsNorm(q, weight: layer.qNorm, eps: c.rmsEps).transposed(0, 2, 1, 3)
             k = rmsNorm(k, weight: layer.kNorm, eps: c.rmsEps).transposed(0, 2, 1, 3)
-            q = RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
-            k = RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            if let mrope {
+                q = applyRotateHalf(q, mrope)
+                k = applyRotateHalf(k, mrope)
+            } else {
+                q = RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+                k = RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            }
             let a = scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: mask)
             x = x + layer.o(a.transposed(0, 2, 1, 3).reshaped(1, L, -1))
             let h2 = rmsNorm(x, weight: layer.postNorm, eps: c.rmsEps)
             x = x + layer.down(siluAct(layer.gate(h2)) * layer.up(h2))
+            if let visual, i < visual.deepstack.count {
+                x = x + Self.scatterRows(visual.deepstack[i].asType(x.dtype), runs: visual.runs, length: L)
+                    .expandedDimensions(axis: 0)
+            }
         }
         return x
+    }
+
+    /// Interleaved mRoPE: frequency `d` uses the h position when `d % 3 == 1`, w when `d % 3 == 2` (within the
+    /// first `3 * section` frequencies), t otherwise; then duplicated for the rotate-half form. `[L, headDim]`, which
+    /// broadcasts over `[1, heads, L, headDim]`.
+    func mropeTables(_ positions: [(Int32, Int32, Int32)]) -> (MLXArray, MLXArray) {
+        let half = config.headDim / 2
+        let inv = (0..<half).map { 1 / pow(config.ropeTheta, Float(2 * $0) / Float(config.headDim)) }
+        var axis = [Int](repeating: 0, count: half)
+        for d in 0..<half {
+            if d % 3 == 1 && d < mropeSection[1] * 3 { axis[d] = 1 }
+            if d % 3 == 2 && d < mropeSection[2] * 3 { axis[d] = 2 }
+        }
+        var angles = [Float]()
+        angles.reserveCapacity(positions.count * half)
+        for (t, h, w) in positions {
+            for d in 0..<half {
+                let p = axis[d] == 0 ? t : (axis[d] == 1 ? h : w)
+                angles.append(Float(p) * inv[d])
+            }
+        }
+        let a = MLXArray(angles, [positions.count, half])
+        let full = concatenated([a, a], axis: 1)
+        return (cos(full), sin(full))
+    }
+
+    /// `[L, 1]` boolean mask of the rows covered by `runs`.
+    static func rowMask(_ length: Int, runs: [(start: Int, count: Int)]) -> MLXArray {
+        var m = [Bool](repeating: false, count: length)
+        for r in runs { for i in r.start ..< r.start + r.count { m[i] = true } }
+        return MLXArray(m).reshaped(length, 1)
+    }
+
+    /// Places `values` (rows in run order) at the run positions of a zero `[length, D]` array.
+    static func scatterRows(_ values: MLXArray, runs: [(start: Int, count: Int)], length: Int) -> MLXArray {
+        let d = values.dim(1)
+        var parts: [MLXArray] = []
+        var cursor = 0, offset = 0
+        for r in runs {
+            if r.start > cursor { parts.append(MLXArray.zeros([r.start - cursor, d], dtype: values.dtype)) }
+            parts.append(values[offset ..< offset + r.count])
+            offset += r.count
+            cursor = r.start + r.count
+        }
+        if cursor < length { parts.append(MLXArray.zeros([length - cursor, d], dtype: values.dtype)) }
+        return concatenated(parts, axis: 0)
     }
 }
 

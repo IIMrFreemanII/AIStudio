@@ -71,11 +71,15 @@ public final class WeightStore {
             let bits = quantizationBits
             let inDim = w.dim(1) * 32 / bits
             let groupSize = inDim / scales.dim(1)
-            return Lin(weight: w, bias: bias, scales: scales, qbiases: optional(prefix + ".biases"),
-                       bits: bits, groupSize: groupSize)
+            var l = Lin(weight: w, bias: bias, scales: scales, qbiases: optional(prefix + ".biases"),
+                        bits: bits, groupSize: groupSize)
+            l.name = prefix
+            return l
         }
         let wd = dtype.map { w.asType($0) } ?? w
-        return Lin(weight: wd, bias: bias.map { b in dtype.map { b.asType($0) } ?? b })
+        var l = Lin(weight: wd, bias: bias.map { b in dtype.map { b.asType($0) } ?? b })
+        l.name = prefix
+        return l
     }
 
     /// Same as ``linear(_:dtype:)`` but expands quantized weights to `dtype` (trades memory for matmul speed).
@@ -85,7 +89,9 @@ public final class WeightStore {
         let w = dequantized(l.weight, scales: scales, biases: l.qbiases, groupSize: l.groupSize, bits: l.bits)
             .asType(dtype)
         eval(w)
-        return Lin(weight: w, bias: l.bias)
+        var d = Lin(weight: w, bias: l.bias)
+        d.name = prefix
+        return d
     }
 
     /// Drops tensors (e.g. after a model has taken what it needs) so their memory can be reclaimed.
@@ -102,6 +108,10 @@ public struct Lin {
     public let qbiases: MLXArray?
     public let bits: Int
     public let groupSize: Int
+    /// Checkpoint key prefix (e.g. `transformer_blocks.0.attn.to_q`), used to match LoRA weights.
+    public var name: String = ""
+    /// Low-rank side branches added to the output (LoRA), applied without touching the base weight.
+    public var adapters: [LoRAAdapter] = []
 
     public init(weight: MLXArray, bias: MLXArray? = nil, scales: MLXArray? = nil, qbiases: MLXArray? = nil,
                 bits: Int = 8, groupSize: Int = 64) {
@@ -127,7 +137,17 @@ public struct Lin {
             y = matmul(x, weight.T)
         }
         if let bias { y = y + bias }
+        for a in adapters {
+            y = y + a.scale * matmul(matmul(x, a.down.T), a.up.T)
+        }
         return y
+    }
+
+    /// A copy with `adapter` appended.
+    public func adding(_ adapter: LoRAAdapter) -> Lin {
+        var l = self
+        l.adapters.append(adapter)
+        return l
     }
 }
 

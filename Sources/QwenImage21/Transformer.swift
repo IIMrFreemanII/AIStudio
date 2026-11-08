@@ -42,9 +42,13 @@ public final class QwenImage21Transformer {
     }
 
     struct Block {
-        let q, k, v, o: Lin
+        var q, k, v, o: Lin
         let normQ, normK: MLXArray
-        let proj, gate, out: Lin
+        var proj, gate, out: Lin
+
+        mutating func mapLinears(_ f: (Lin) -> Lin) {
+            q = f(q); k = f(k); v = f(v); o = f(o); proj = f(proj); gate = f(gate); out = f(out)
+        }
     }
 
     /// Per-block keys/values of the prefix, `[1, heads, Lp, headDim]`, plus the prefix length and RoPE cursor.
@@ -64,14 +68,43 @@ public final class QwenImage21Transformer {
 
     public let config: Config
     let txtNorm: MLXArray
-    let txtIn1, txtIn2: Lin
-    let imgIn: Lin
-    let time1, time2: Lin
-    let modLinear: Lin
-    let blocks: [Block]
-    let normOutLinear: Lin
-    let projOut: Lin
+    private(set) var txtIn1, txtIn2: Lin
+    private(set) var imgIn: Lin
+    private(set) var time1, time2: Lin
+    private(set) var modLinear: Lin
+    private(set) var blocks: [Block]
+    private(set) var normOutLinear: Lin
+    private(set) var projOut: Lin
     let ropeInvFreqs: [MLXArray]
+
+    private init(copying o: QwenImage21Transformer) {
+        config = o.config; txtNorm = o.txtNorm; txtIn1 = o.txtIn1; txtIn2 = o.txtIn2; imgIn = o.imgIn
+        time1 = o.time1; time2 = o.time2; modLinear = o.modLinear; blocks = o.blocks
+        normOutLinear = o.normOutLinear; projOut = o.projOut; ropeInvFreqs = o.ropeInvFreqs
+    }
+
+    /// Names of every linear layer (checkpoint key prefixes), for matching LoRA files.
+    public var linearNames: Set<String> {
+        var names: [String] = [txtIn1, txtIn2, imgIn, time1, time2, modLinear, normOutLinear, projOut].map(\.name)
+        for b in blocks { names += [b.q, b.k, b.v, b.o, b.proj, b.gate, b.out].map(\.name) }
+        return Set(names)
+    }
+
+    /// A transformer sharing these weights with `adapters` added to the matching layers; returns the match count.
+    public func adding(_ adapters: [String: LoRAAdapter]) -> (QwenImage21Transformer, Int) {
+        let t = QwenImage21Transformer(copying: self)
+        var matched = 0
+        func f(_ l: Lin) -> Lin {
+            guard let a = adapters[l.name] else { return l }
+            matched += 1
+            return l.adding(a)
+        }
+        t.txtIn1 = f(t.txtIn1); t.txtIn2 = f(t.txtIn2); t.imgIn = f(t.imgIn); t.time1 = f(t.time1)
+        t.time2 = f(t.time2); t.modLinear = f(t.modLinear); t.normOutLinear = f(t.normOutLinear)
+        t.projOut = f(t.projOut)
+        for i in t.blocks.indices { t.blocks[i].mapLinears(f) }
+        return (t, matched)
+    }
 
     /// - Parameter dequantize: expand 8-bit block weights to bf16 at load (≈2× the memory, faster matmuls).
     public init(directory: URL, dequantize: Bool = false) throws {

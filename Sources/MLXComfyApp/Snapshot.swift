@@ -51,6 +51,36 @@ enum Snapshot {
         model.nodeStates = [:]
         model.selection = []
         await render(model, to: dir.appendingPathComponent("4-graph-idle.png"))
+
+        // 5. Inpainting set up from the Simple panel: reference image + mask, graph rewired.
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let ref = cwd.appendingPathComponent("refs/girl.png"), mask = cwd.appendingPathComponent("examples/inpaint-mask.png")
+        if FileManager.default.fileExists(atPath: ref.path) {
+            model.setReferenceImage(ref, undoManager: nil)
+            model.setMask(mask, undoManager: nil)
+            model.workspace = .graph
+            await render(model, to: dir.appendingPathComponent("5-inpaint-graph.png"))
+            model.workspace = .image
+            await render(model, to: dir.appendingPathComponent("6-inpaint-panel.png"))
+            // 7. The mask editor on its own.
+            await render(MaskEditorView(imageURL: ref, existingMask: mask, saveDirectory: dir) { _ in },
+                         to: dir.appendingPathComponent("7-mask-editor.png"), size: CGSize(width: 900, height: 760))
+        }
+    }
+
+    static func render<V: View>(_ view: V, to url: URL, size: CGSize) async {
+        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
+        window.contentView = host
+        window.orderFrontRegardless()
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
+        host.cacheDisplay(in: host.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: url) }
+        window.close()
+        print("wrote \(url.path)")
     }
 
     static func render(_ model: AppModel, to url: URL, size: CGSize = CGSize(width: 1440, height: 900)) async {

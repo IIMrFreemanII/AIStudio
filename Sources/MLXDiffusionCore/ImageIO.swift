@@ -93,6 +93,26 @@ public enum ImageArray {
         do { try png.write(to: url, options: .atomic) } catch { throw ImageIOError.cannotWrite(url) }
     }
 
+    /// Resizes `[H, W, C]` (C = 1, 3 or 4) or `[H, W]` arrays in `[0, 1]` with Core Graphics' high-quality filter.
+    public static func resized(_ array: MLXArray, width: Int, height: Int) throws -> MLXArray {
+        let is2D = array.ndim == 2
+        let x = is2D ? array.expandedDimensions(axis: 2) : array
+        if x.dim(0) == height && x.dim(1) == width { return array }
+        let c = x.dim(2)
+        let rgba: MLXArray
+        switch c {
+        case 1: rgba = concatenated([x, x, x, MLXArray.ones(x.shape)], axis: 2)
+        case 3: rgba = concatenated([x, MLXArray.ones([x.dim(0), x.dim(1), 1])], axis: 2)
+        default: rgba = x
+        }
+        let out = Self.array(from: try cgImage(from: rgba, keepAlpha: true), width: width, height: height)
+        switch c {
+        case 1: return is2D ? out[0..., 0..., 0] : out[0..., 0..., ..<1]
+        case 3: return out[0..., 0..., ..<3]
+        default: return out
+        }
+    }
+
     /// Reads the `tEXt`/`iTXt` entries of a PNG (empty if none or not a PNG).
     public static func readPNGText(_ url: URL) -> [String: String] {
         guard let data = try? Data(contentsOf: url) else { return [:] }
