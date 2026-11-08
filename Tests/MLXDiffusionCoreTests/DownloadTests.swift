@@ -177,3 +177,23 @@ func makeRepo() throws -> URL {
     #expect(picked == ["README.md", "VOICES.md", "config.json", "kokoro-v1_0.pth", "voices/af_heart.pt", "voices/am_adam.pt",
                        "voices/bf_emma.pt", "voices/bm_george.pt"])
 }
+
+@Test func modelPathsFallBackToTheModelsFolder() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("modelpaths-\(UUID().uuidString)")
+    let models = root.appendingPathComponent("models"), elsewhere = root.appendingPathComponent("elsewhere")
+    try FileManager.default.createDirectory(at: models.appendingPathComponent("some-model"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: elsewhere.appendingPathComponent("local-model"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let saved = ModelPaths.directory
+    ModelPaths.directory = models
+    defer { ModelPaths.directory = saved }
+
+    // A path that exists is used as is.
+    let local = elsewhere.appendingPathComponent("local-model")
+    #expect(ModelPaths.resolve(local.path) == local.standardizedFileURL)
+    // A bare name, or a stale absolute path, finds the folder of that name in the models folder.
+    #expect(ModelPaths.resolve("some-model") == models.appendingPathComponent("some-model"))
+    #expect(ModelPaths.resolve("/nowhere/old-checkout/some-model") == models.appendingPathComponent("some-model"))
+    // Nothing found: the path as given, so the error names it.
+    #expect(ModelPaths.resolve("/nowhere/missing").path == "/nowhere/missing")
+}

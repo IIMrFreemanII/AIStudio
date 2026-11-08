@@ -141,7 +141,7 @@ struct GenerateAudio: AsyncParsableCommand {
     func run() async throws {
         _ = StandardNodes.makeRegistry()
         var t = Date()
-        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        let loaded = try await ModelRegistry.shared.load(ModelPaths.resolve(model))
         guard let pipe = loaded as? AudioModel else { throw ValidationError("\(loaded.displayName) is not an audio model") }
         log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
         t = Date()
@@ -184,7 +184,7 @@ struct GenerateMusic: AsyncParsableCommand {
             lyricText = s
         }
         var t = Date()
-        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        let loaded = try await ModelRegistry.shared.load(ModelPaths.resolve(model))
         guard let pipe = loaded as? AudioModel else { throw ValidationError("\(loaded.displayName) is not an audio model") }
         log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
         t = Date()
@@ -226,7 +226,7 @@ struct TTS: AsyncParsableCommand {
         var input = text
         if FileManager.default.fileExists(atPath: text), let s = try? String(contentsOfFile: text, encoding: .utf8) { input = s }
         var t = Date()
-        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        let loaded = try await ModelRegistry.shared.load(ModelPaths.resolve(model))
         guard let pipe = loaded as? KokoroPipeline else { throw ValidationError("\(loaded.displayName) is not a speech model") }
         log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
         if phonemes {
@@ -264,7 +264,7 @@ struct ProbeACEStep: AsyncParsableCommand {
                        rel.item(Float.self)))
         }
         var t = Date()
-        let pipe = try await ACEStepPipeline(directory: URL(fileURLWithPath: model))
+        let pipe = try await ACEStepPipeline(directory: ModelPaths.resolve(model))
         log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t), memoryString()))
         let metas = ACEPrompts.metas(bpm: nil, timeSignature: "", keyScale: "", seconds: seconds)
         let textPrompt = ACEPrompts.caption(caption: caption, metas: metas)
@@ -299,7 +299,7 @@ struct ProbeStableAudio: AsyncParsableCommand {
 
     func run() async throws {
         let d = try MLX.loadArrays(url: URL(fileURLWithPath: dump))
-        let dir = URL(fileURLWithPath: model)
+        let dir = ModelPaths.resolve(model)
         func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
             let diff = (a.asType(.float32) - b.asType(.float32))
             let rel = sqrt((diff * diff).sum()) / sqrt((b.asType(.float32) * b.asType(.float32)).sum())
@@ -348,7 +348,7 @@ struct GenerateVideo: AsyncParsableCommand {
         _ = StandardNodes.makeRegistry()  // registers the model loaders
         let (w, h) = try parseSize(size)
         var t = Date()
-        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        let loaded = try await ModelRegistry.shared.load(ModelPaths.resolve(model))
         guard let pipe = loaded as? VideoDiffusionModel else { throw ValidationError("\(loaded.displayName) is not a video model") }
         log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
         t = Date()
@@ -418,7 +418,7 @@ struct Generate: AsyncParsableCommand {
     func run() async throws {
         let (w, h) = try parseSize(size ?? "1024x1024")
         let t0 = Date()
-        var pipe = try await QwenImage21Pipeline(directory: URL(fileURLWithPath: model),
+        var pipe = try await QwenImage21Pipeline(directory: ModelPaths.resolve(model),
                                                  dequantizeTransformer: dequantize, log: log)
         log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t0), memoryString()))
         for spec in loras {
@@ -468,7 +468,7 @@ struct VAERoundTrip: AsyncParsableCommand {
     @Option(help: "Tile size in latent cells (16 px).") var tile = 64
 
     func run() async throws {
-        let vae = try QwenImage21VAE(directory: URL(fileURLWithPath: model).appendingPathComponent("vae"))
+        let vae = try QwenImage21VAE(directory: ModelPaths.resolve(model).appendingPathComponent("vae"))
         let cg = try ImageArray.load(URL(fileURLWithPath: input))
         var w = cg.width / 32 * 32, h = cg.height / 32 * 32
         if let size { (w, h) = try parseSize(size) }
@@ -526,7 +526,7 @@ struct FitPreview: AsyncParsableCommand {
     @Argument var images: [String]
 
     func run() async throws {
-        let vae = try QwenImage21VAE(directory: URL(fileURLWithPath: model).appendingPathComponent("vae"))
+        let vae = try QwenImage21VAE(directory: ModelPaths.resolve(model).appendingPathComponent("vae"))
         var xs: [MLXArray] = [], ys: [MLXArray] = []
         for path in images {
             let cg = try ImageArray.load(URL(fileURLWithPath: path))
@@ -589,7 +589,7 @@ struct Tokenize: AsyncParsableCommand {
     @Argument var text: String
 
     func run() async throws {
-        let url = URL(fileURLWithPath: model).appendingPathComponent("processor")
+        let url = ModelPaths.resolve(model).appendingPathComponent("processor")
         let tok = try await AutoTokenizer.from(modelFolder: url)
         print(tok.encode(text: text, addSpecialTokens: false))
     }
@@ -611,7 +611,7 @@ struct Assist: AsyncParsableCommand {
     func run() async throws {
         guard let m = PromptAssistant.Mode(rawValue: mode) else { throw ValidationError("unknown mode \(mode)") }
         let t0 = Date()
-        let pipe = try await QwenImage21Pipeline(directory: URL(fileURLWithPath: model))
+        let pipe = try await QwenImage21Pipeline(directory: ModelPaths.resolve(model))
         log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t0), memoryString()))
         let images = try image.map { ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: $0))) }
         let (system, user) = PromptAssistant.messages(mode: m, prompt: prompt, hasImage: !images.isEmpty,

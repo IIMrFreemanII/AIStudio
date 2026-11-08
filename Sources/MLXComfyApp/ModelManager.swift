@@ -60,7 +60,11 @@ final class ModelStore {
     }
 
     var modelsDirectory: URL {
-        didSet { UserDefaults.standard.set(modelsDirectory.path, forKey: "modelsDirectory"); refresh() }
+        didSet {
+            UserDefaults.standard.set(modelsDirectory.path, forKey: "modelsDirectory")
+            ModelPaths.directory = modelsDirectory
+            refresh()
+        }
     }
     var manualFolders: [ManualFolder] {
         didSet { if let d = try? JSONEncoder().encode(manualFolders) { UserDefaults.standard.set(d, forKey: "modelFolders") } }
@@ -74,8 +78,9 @@ final class ModelStore {
     init() {
         let d = UserDefaults.standard
         modelsDirectory = d.string(forKey: "modelsDirectory").map { URL(fileURLWithPath: $0) }
-            ?? AppModel.supportDirectory.appendingPathComponent("models")
+            ?? ModelPaths.defaultDirectory
         manualFolders = d.data(forKey: "modelFolders").flatMap { try? JSONDecoder().decode([ManualFolder].self, from: $0) } ?? []
+        ModelPaths.directory = modelsDirectory
         refresh()
     }
 

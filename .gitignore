@@ -12,8 +12,7 @@ qwen-turbo-mlx/
 
 # Generated images and personal reference images
 outputs/
-output.png
-refs/
+examples/girl.png
 
 # macOS
 .DS_Store

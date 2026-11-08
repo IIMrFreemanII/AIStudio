@@ -8,7 +8,7 @@ This is an independent project and is not affiliated with ComfyUI.
 
 - An Apple Silicon Mac. Images: about 24 GB resident, peaking around 30 GB at 1024². Video: about 27 GB resident, peaking around 35 GB for 5 s at 768×512. Models are swapped as needed, so 48 GB of RAM is comfortable for both.
 - macOS 15 or later, and Xcode 16 or later.
-- Qwen-Image 2.1 Turbo weights in the diffusers folder layout (`model_index.json`, `transformer/`, `text_encoder/`, `vae/`, `processor/`, `scheduler/`). The transformer can be bf16 or MLX-quantized. The weights aren't in this repo; put them in `qwen-turbo-mlx/` or choose the folder in the app.
+- Qwen-Image 2.1 Turbo weights in the diffusers folder layout (`model_index.json`, `transformer/`, `text_encoder/`, `vae/`, `processor/`, `scheduler/`). The transformer can be bf16 or MLX-quantized. The weights aren't in this repo; download them from the Models window, or put them in `~/Library/Application Support/MLXComfyUI/models/qwen-turbo-mlx/` yourself, or choose another folder in the app.
 - For video: LTX-2.3, downloaded from the Models window (about 28.6 GB: the 4-bit MLX conversion [dgrauet/ltx-2.3-mlx-q4](https://huggingface.co/dgrauet/ltx-2.3-mlx-q4) plus the Gemma 3 12B text encoder [mlx-community/gemma-3-12b-it-4bit](https://huggingface.co/mlx-community/gemma-3-12b-it-4bit)).
 
 ## App
@@ -46,7 +46,7 @@ open build/MLXComfyUI.app
 - **Inpainting:** use **Paint Mask…** to mark an area. Only that area is regenerated. **Feather** softens the edge so the change blends in; pixels outside the feathered edge stay identical to the original.
 - **Outpainting:** **Extend…** grows the reference image's canvas. Set the pixels to add on each side; the new border is generated to match.
 - **Hi-res fix** (Sampling): upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
-- **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain. You can also add a folder you downloaded yourself.
+- **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain. You can also add a folder you downloaded yourself. Models are stored in `~/Library/Application Support/MLXComfyUI/models` (changeable in the window). A model path in a graph or a `--model` option that doesn't exist as given, such as the examples' `qwen-turbo-mlx`, is looked up by name in that folder.
 - **Memory:** models load on first use and stay in memory while they fit. When a new model doesn't fit the budget (80% of RAM by default; change it in Settings), the least recently used one is unloaded first, never one the running job uses. Click the toolbar memory gauge to see loaded models and unload one.
 - **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Each mode has its own graph; switching swaps it (and switching back restores it), and undo covers the switch. A mode whose model isn't installed shows which model it needs and opens the Models window.
 - **Video** (LTX-2.3): a prompt describing the action, camera and sound; an optional **first frame** image to animate; size presets (multiples of 64, e.g. 768×512, 1024×576, portrait and square); length up to 10 s; 24, 25 or 30 fps; seed. Generation runs 8 steps at half resolution, upscales the latents 2×, and refines with 3 steps, showing a preview of the middle frame after each. The result is an MP4 with AAC stereo sound at 48 kHz. A 5 s 768×512 clip takes about 2 minutes on an M4 Max (2.6 s prompt, 114 s sampling, 13 s decoding), peaking at about 35 GB.
@@ -67,7 +67,7 @@ build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --smoke-test "a lighthouse at dus
 build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --snapshot /tmp/snaps
 ```
 
-`--smoke-test` queues one job through the same path as the Generate button and exits with status 0 on success. `--smoke-video`, `--smoke-sound`, `--smoke-music` and `--smoke-speech` do the same for the other modes with their installed models, and `--smoke-media` checks video/audio I/O and model eviction without any model. `--snapshot` renders the window offscreen to PNG files.
+`--smoke-test` queues one job through the same path as the Generate button and exits with status 0 on success. `--smoke-video`, `--smoke-sound`, `--smoke-music` and `--smoke-speech` do the same for the other modes with their installed models, and `--smoke-media` checks video/audio I/O and model eviction without any model. `--snapshot` renders the window offscreen to PNG files. `--open <file>` opens a graph (JSON, or a PNG/MP4/audio file saved by the app) at launch, and `--generate` also queues it, e.g. `open build/MLXComfyUI.app --args --open ~/graph.json --generate`.
 
 ## Build
 
@@ -125,7 +125,7 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
 - **Edit or reference:** connect a `LoadImage` to `TextEncode.image` (and optionally `image2`).
   - Qwen3-VL sees the image through its vision tower, and its VAE latents become an image block in the transformer prefix.
   - Set `EmptyLatent` to 0×0 to match the image's aspect ratio at about 1 MP.
-  - From the CLI: `generate --image refs/girl.png --prompt "Put her on a snowy mountain top"`.
+  - From the CLI: `generate --image examples/girl.png --prompt "Put her on a snowy mountain top"`.
 - **Inpainting:** see [examples/inpaint.json](examples/inpaint.json).
   - The chain is `VAEEncode` → `SetLatentMask` (from `LoadMask` → `FeatherMask`, white = regenerate) → `Sampler`, then `ImageCompositeMasked` blends the result over the original with the same feathered mask. Pixels where the feathered mask is 0 are bit-identical.
   - `FeatherMask` grows (or shrinks, with a negative value) the mask and blurs its edge. With feather 0 the result is the same as without it.

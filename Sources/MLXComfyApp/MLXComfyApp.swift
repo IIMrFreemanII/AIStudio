@@ -70,6 +70,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        // `--open <graph.json|png|mp4…>` opens a graph at launch; `--generate` also queues it, like pressing Generate.
+        if let path = SmokeTest.argument("--open") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let model = AppDelegate.model!
+                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath,
+                              relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+                guard model.open(url.standardizedFileURL, undoManager: nil) else { return }
+                if CommandLine.arguments.contains("--generate") {
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    model.enqueue(undoManager: nil)
+                }
+            }
+        }
         if let dir = Snapshot.requestedDirectory {
             Task { @MainActor in
                 await Snapshot.renderAll(to: dir)

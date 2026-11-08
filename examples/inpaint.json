@@ -2,7 +2,7 @@
   "version": 1,
   "nodes": [
     { "id": "model", "type": "LoadModel", "inputs": { "path": "qwen-turbo-mlx" }, "position": { "x": 40, "y": 200 } },
-    { "id": "image", "type": "LoadImage", "inputs": { "path": "refs/girl.png" }, "position": { "x": 40, "y": 360 } },
+    { "id": "image", "type": "LoadImage", "inputs": { "path": "examples/girl.png" }, "position": { "x": 40, "y": 360 } },
     { "id": "mask", "type": "LoadMask", "inputs": { "path": "examples/inpaint-mask.png", "channel": "luminance", "invert": false },
       "position": { "x": 40, "y": 500 } },
     { "id": "feather", "type": "FeatherMask", "position": { "x": 340, "y": 520 },

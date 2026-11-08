@@ -69,7 +69,7 @@ public struct LoadModelNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let url = resolvePath(try inputs.string("path"))
+        let url = ModelPaths.resolve(try inputs.string("path"))
         // Models live in the resource cache so they stay resident across runs and graph edits.
         let model: GenerativeModel = try await context.resources.get(
             "model:\(url.path)", estimatedBytes: ModelRegistry.weightBytes(at: url)) {

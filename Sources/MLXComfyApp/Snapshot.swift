@@ -57,7 +57,7 @@ enum Snapshot {
 
         // 5. Inpainting set up from the Simple panel: reference image + mask, graph rewired.
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        let ref = cwd.appendingPathComponent("refs/girl.png"), mask = cwd.appendingPathComponent("examples/inpaint-mask.png")
+        let ref = cwd.appendingPathComponent("examples/girl.png"), mask = cwd.appendingPathComponent("examples/inpaint-mask.png")
         if FileManager.default.fileExists(atPath: ref.path) {
             model.setReferenceImage(ref, undoManager: nil)
             model.setMask(mask, undoManager: nil)

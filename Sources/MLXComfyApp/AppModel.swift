@@ -202,9 +202,12 @@ final class AppModel {
         }
     }
 
-    /// Prefers a `qwen-turbo-mlx` folder next to the working directory or the executable's project.
+    /// The Qwen-Image folder: `qwen-turbo-mlx` in the models folder, else next to the working directory or in the
+    /// project checkout (older setups).
     static func guessModelPath() -> String {
         let candidates = [
+            (UserDefaults.standard.string(forKey: "modelsDirectory").map { URL(fileURLWithPath: $0) } ?? ModelPaths.directory)
+                .appendingPathComponent("qwen-turbo-mlx").path,
             FileManager.default.currentDirectoryPath + "/qwen-turbo-mlx",
             (NSHomeDirectory() as NSString).appendingPathComponent("ai/MLXComfyUI/qwen-turbo-mlx"),
         ]
