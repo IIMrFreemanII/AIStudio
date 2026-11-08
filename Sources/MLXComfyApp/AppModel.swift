@@ -96,7 +96,15 @@ final class AppModel {
         }
     }
     /// The Simple panel's mode.
-    var simpleMode: SimpleMode = .image
+    /// A Simple-panel mode that has no graph of its own yet (music, speech, sound until their models land).
+    var pendingMode: SimpleMode?
+    /// Image or video follows the graph (a Video Sampler means video), so undo and opening files switch it too.
+    var simpleMode: SimpleMode {
+        if let pendingMode { return pendingMode }
+        return graph.nodes.contains { $0.type == "VideoSampler" } ? .video : .image
+    }
+    /// The graph each mode had when the user switched away, restored on switching back.
+    @ObservationIgnored var modeGraphs: [SimpleMode: Graph] = [:]
     var lastError: String?
     var history: [HistoryItem] = []
     var randomizeSeed = true
@@ -327,7 +335,7 @@ final class AppModel {
     func enqueue(undoManager: UndoManager?) {
         if let err = validationError { lastError = err; NSSound.beep(); return }
         lastError = nil
-        let samplers = graph.nodes.filter { $0.type == "Sampler" }.map(\.id)
+        let samplers = graph.nodes.filter { $0.type == "Sampler" || $0.type == "VideoSampler" }.map(\.id)
         for i in 0..<max(1, batchCount) {
             var g = graph
             var seed: Int?
@@ -560,6 +568,24 @@ final class AppModel {
             try graph.jsonData().write(to: url, options: .atomic)
             documentURL = url
         } catch { lastError = "Could not save: \(error)" }
+    }
+
+    /// Switches the Simple panel's mode; image and video swap the graph for that mode's (kept per mode).
+    func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, undoManager: UndoManager?) {
+        switch mode {
+        case .image, .video:
+            pendingMode = nil
+            let current = graph.nodes.contains { $0.type == "VideoSampler" } ? SimpleMode.video : .image
+            guard current != mode else { return }
+            modeGraphs[current] = graph
+            let next = modeGraphs[mode] ?? (mode == .video
+                ? GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
+                : GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory))
+            setGraph(next, actionName: "Switch to \(mode.rawValue)", undoManager: undoManager)
+            selection = []
+        default:
+            pendingMode = mode
+        }
     }
 
     func newGraph(undoManager: UndoManager?) {

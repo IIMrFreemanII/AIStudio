@@ -80,6 +80,7 @@ struct InspectorView: View {
 /// Simple mode: edits the first TextEncode / EmptyLatent / Sampler nodes of whatever graph is loaded.
 struct SimplePanel: View {
     @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
     @Environment(\.undoManager) private var undoManager
     @State private var showMaskEditor = false
     @State private var dropTargeted = false
@@ -87,7 +88,9 @@ struct SimplePanel: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            Picker("Mode", selection: $model.simpleMode) {
+            Picker("Mode", selection: Binding(
+                get: { model.simpleMode },
+                set: { model.setSimpleMode($0, videoModelPath: store.installed(.video)?.path, undoManager: undoManager) })) {
                 ForEach(SimpleMode.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -95,7 +98,11 @@ struct SimplePanel: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 4)
-            if model.simpleMode == .image { imagePanel } else { MediaModePanel(mode: model.simpleMode) }
+            switch model.simpleMode {
+            case .image: imagePanel
+            case .video: VideoPanel()
+            default: MediaModePanel(mode: model.simpleMode)
+            }
         }
     }
 

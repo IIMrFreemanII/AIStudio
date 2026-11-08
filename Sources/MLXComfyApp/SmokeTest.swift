@@ -266,4 +266,48 @@ extension SmokeTest {
         say("loaded before: \(before), after reserving 30 GB: \(during), after reloading: \(after)")
         return !before.isEmpty && during.isEmpty && after == before
     }
+
+    /// `--smoke-video`: the Video mode end to end in the app. Preloads the image model, switches to Video (graph
+    /// swap), generates a short clip (the image model must be evicted to fit), checks previews, history and the
+    /// file, then switches back to Image and expects the image graph again.
+    static func runVideo(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let ltx = ModelStore().modelsDirectory.appendingPathComponent("ltx-2.3")
+        guard ModelRegistry.className(at: ltx) == "LTX2Pipeline" else { say("no LTX-2.3 at \(ltx.path)"); return false }
+        _ = try? await model.engine.preload(modelPath: model.modelPath)
+        let before = model.engine.loadedModelsSnapshot().map(\.name)
+        model.setSimpleMode(.video, videoModelPath: ltx.path, undoManager: nil)
+        guard model.simpleMode == .video, let latent = model.firstNode(ofType: "EmptyVideoLatent") else {
+            say("video graph not set up"); return false
+        }
+        model.mutate("Small", undoManager: nil) { g in
+            try? g.setValue(.int(512), node: latent.id, input: "width")
+            try? g.setValue(.int(320), node: latent.id, input: "height")
+            try? g.setValue(.double(2), node: latent.id, input: "seconds")
+        }
+        model.previewCount = 0
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return false }
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard case .done(let secs)? = model.queue.first(where: { $0.id == item.id })?.status else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        let after = model.engine.loadedModelsSnapshot().map(\.name)
+        say(String(format: "job done in %.1fs, previews %d", secs, model.previewCount))
+        say("loaded before: \(before), after: \(after)")
+        guard let video = model.history.first(where: { $0.kind == .video && $0.url.lastPathComponent.hasPrefix("video") })?.url,
+              let clip = try? await MediaIO.readVideo(video) else { say("no video in history"); return false }
+        say(String(format: "%@: %dx%d, %d frames, audio %.2fs; displayed %@", video.lastPathComponent, clip.width,
+                   clip.height, clip.frameCount, clip.audio?.duration ?? 0,
+                   model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
+        model.setSimpleMode(.image, videoModelPath: ltx.path, undoManager: nil)
+        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
+        say("back to image graph: \(back)")
+        return model.previewCount > 0 && clip.frameCount == 49 && (clip.audio?.duration ?? 0) > 1.9
+            && after.contains { $0.contains("ltx-2.3") } && !after.contains { $0.contains("qwen") } && back
+            && model.displayedMedia?.kind == .video
+    }
 }

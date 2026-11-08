@@ -26,15 +26,46 @@ public struct CatalogEntry: Codable, Hashable, Identifiable, Sendable {
     public var notes: String
     /// The loader class its folder declares (`model_index.json` `_class_name`), to recognise copies elsewhere.
     public var className: String?
+    /// More repos fetched into subfolders of the same folder (e.g. a text encoder), each under its own license.
+    public var extraParts: [CatalogPart]
+    /// Written as `mlxcomfy.json` after the download, for repos that don't declare a loader themselves.
+    public var manifest: [String: String]?
 
     public init(id: String, name: String, kind: Kind, repo: String, revision: String = "main", include: [String] = [],
                 exclude: [String] = [], approxGB: Double, license: String, licenseURL: String, gated: Bool = false,
-                folder: String, supported: Bool, notes: String = "", className: String? = nil) {
+                folder: String, supported: Bool, notes: String = "", className: String? = nil,
+                extraParts: [CatalogPart] = [], manifest: [String: String]? = nil) {
         self.id = id; self.name = name; self.kind = kind; self.repo = repo; self.revision = revision
         self.include = include; self.exclude = exclude; self.approxGB = approxGB; self.license = license
         self.licenseURL = licenseURL; self.gated = gated; self.folder = folder; self.supported = supported
         self.notes = notes
         self.className = className
+        self.extraParts = extraParts
+        self.manifest = manifest
+    }
+
+    /// The main repo followed by the extra parts.
+    public var parts: [CatalogPart] {
+        [CatalogPart(repo: repo, revision: revision, include: include, exclude: exclude, subfolder: "",
+                     license: license, licenseURL: licenseURL, gated: gated)] + extraParts
+    }
+}
+
+/// One repo of a catalog entry, downloaded into `subfolder` ("" = the entry's folder itself).
+public struct CatalogPart: Codable, Hashable, Sendable {
+    public var repo: String
+    public var revision: String
+    public var include: [String]
+    public var exclude: [String]
+    public var subfolder: String
+    public var license: String
+    public var licenseURL: String
+    public var gated: Bool
+
+    public init(repo: String, revision: String = "main", include: [String] = [], exclude: [String] = [],
+                subfolder: String, license: String, licenseURL: String, gated: Bool = false) {
+        self.repo = repo; self.revision = revision; self.include = include; self.exclude = exclude
+        self.subfolder = subfolder; self.license = license; self.licenseURL = licenseURL; self.gated = gated
     }
 }
 
@@ -45,12 +76,22 @@ public enum ModelCatalog {
                      repo: "abenzerps/Qwen-Image-2.1-Turbo-Quantized", exclude: ["*.md", ".gitattributes"],
                      approxGB: 24, license: "Apache-2.0",
                      licenseURL: "https://www.apache.org/licenses/LICENSE-2.0", folder: "qwen-turbo-mlx",
-                     supported: true, notes: "Text-to-image, editing, inpainting. The model the app uses today.",
+                     supported: true, notes: "Text-to-image, editing, inpainting and outpainting.",
                      className: "QwenImage21Pipeline"),
-        CatalogEntry(id: "ltx-2.3", name: "LTX-2.3 (video + audio)", kind: .video, repo: "Lightricks/LTX-2.3",
-                     approxGB: 25, license: "LTX-2 Community License",
-                     licenseURL: "https://github.com/Lightricks/LTX-2/blob/main/LICENSE", gated: true,
-                     folder: "ltx-2.3", supported: false, notes: "Video with a synchronized soundtrack. Coming next."),
+        CatalogEntry(id: "ltx-2.3", name: "LTX-2.3 Distilled (video + audio, 4-bit MLX)", kind: .video,
+                     repo: "dgrauet/ltx-2.3-mlx-q4",
+                     include: ["*.json", "LICENSE", "README.md", "transformer-distilled-1.1.safetensors",
+                               "connector.safetensors", "vae_decoder.safetensors", "vae_encoder.safetensors",
+                               "audio_vae.safetensors", "vocoder.safetensors", "spatial_upscaler_x2_v1_1.safetensors"],
+                     approxGB: 28.6, license: "LTX-2 Community License",
+                     licenseURL: "https://github.com/Lightricks/LTX-2/blob/main/LICENSE-2",
+                     folder: "ltx-2.3", supported: true,
+                     notes: "Text- and image-to-video with a synchronized soundtrack, up to 10 s. Includes the Gemma 3 12B text encoder.",
+                     className: "LTX2Pipeline",
+                     extraParts: [CatalogPart(repo: "mlx-community/gemma-3-12b-it-4bit", exclude: [".gitattributes"],
+                                              subfolder: "text_encoder", license: "Gemma Terms of Use",
+                                              licenseURL: "https://ai.google.dev/gemma/terms")],
+                     manifest: ["class": "LTX2Pipeline"]),
         CatalogEntry(id: "stable-audio-open-small", name: "Stable Audio Open Small", kind: .sound,
                      repo: "stabilityai/stable-audio-open-small", approxGB: 1.3,
                      license: "Stability AI Community License",

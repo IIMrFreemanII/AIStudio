@@ -187,6 +187,59 @@ public protocol VideoModel: GenerativeModel {
     func generateVideo(_ request: VideoRequest, onStep: ((Int, Int) throws -> Void)?) throws -> VideoClip
 }
 
+/// Video latents in a model's own layout (an opaque payload), plus the clip they decode to.
+///
+/// `payload == nil` is an empty latent: the sampler starts from noise.
+public struct VideoLatent: @unchecked Sendable {
+    public var payload: Any?
+    public var width: Int
+    public var height: Int
+    public var frames: Int
+    public var fps: Double
+    public init(payload: Any? = nil, width: Int, height: Int, frames: Int, fps: Double) {
+        self.payload = payload; self.width = width; self.height = height; self.frames = frames; self.fps = fps
+    }
+
+    /// Frame count for a duration (the model snaps it to what it accepts).
+    public static func frames(seconds: Double, fps: Double) -> Int { max(1, Int((seconds * fps).rounded()) + 1) }
+}
+
+/// Progress of a video sampler: `index` of `count` steps across all its stages (`stage` names the current one),
+/// with an optional small RGB preview `[h, w, 3]` in `[0, 1]`.
+public struct VideoSamplerStep {
+    public let index: Int
+    public let count: Int
+    public let stage: String
+    public let preview: MLXArray?
+    public init(index: Int, count: Int, stage: String, preview: MLXArray?) {
+        self.index = index; self.count = count; self.stage = stage; self.preview = preview
+    }
+}
+
+/// A video model split into the stages the graph nodes drive: prompt encoding, sampling, decoding.
+public protocol VideoDiffusionModel: VideoModel {
+    func encodeVideoPrompt(_ prompt: String) throws -> Conditioning
+    /// Size and frame count snapped to what the model accepts.
+    func snapVideo(width: Int, height: Int, frames: Int) -> (width: Int, height: Int, frames: Int)
+    /// Samples a clip; `image` (`[H, W, 3|4]` in `[0, 1]`) pins the first frame (image-to-video).
+    func sampleVideo(conditioning: Conditioning, latent: VideoLatent, seed: UInt64, steps: Int?, image: MLXArray?,
+                     onStep: ((VideoSamplerStep) throws -> Void)?) throws -> VideoLatent
+    /// Latents → frames (and the soundtrack, for models that generate one).
+    func decodeVideo(_ latent: VideoLatent) throws -> VideoClip
+}
+
+extension VideoDiffusionModel {
+    /// One-call generation built from the stages.
+    public func generateVideo(_ request: VideoRequest, onStep: ((Int, Int) throws -> Void)?) throws -> VideoClip {
+        let cond = try encodeVideoPrompt(request.prompt)
+        let latent = VideoLatent(width: request.width, height: request.height,
+                                 frames: VideoLatent.frames(seconds: request.seconds, fps: request.fps), fps: request.fps)
+        let out = try sampleVideo(conditioning: cond, latent: latent, seed: request.seed, steps: request.steps,
+                                  image: request.image) { try onStep?($0.index + 1, $0.count) }
+        return try decodeVideo(out)
+    }
+}
+
 /// A request to an audio model. Which fields matter depends on the model (music uses lyrics, speech a voice).
 public struct AudioRequest: Sendable {
     public var prompt: String

@@ -67,7 +67,8 @@ final class ModelStore {
     }
     private(set) var status: [String: Status] = [:]
     /// File lists fetched for a pending download, keyed by catalog id.
-    private(set) var plans: [String: [RemoteFile]] = [:]
+    /// Files to fetch per part of an entry (aligned with `entry.parts`), once its file lists are known.
+    private(set) var plans: [String: [[RemoteFile]]] = [:]
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
 
     init() {
@@ -128,8 +129,12 @@ final class ModelStore {
     func prepare(_ entry: CatalogEntry) async {
         status[entry.id] = .checking
         do {
-            let source = HTTPByteSource(repo: entry.repo, revision: entry.revision, token: entry.gated ? HFToken.read() : nil)
-            plans[entry.id] = HFAPI.select(try await source.list(), include: entry.include, exclude: entry.exclude)
+            var lists: [[RemoteFile]] = []
+            for part in entry.parts {
+                let source = HTTPByteSource(repo: part.repo, revision: part.revision, token: part.gated ? HFToken.read() : nil)
+                lists.append(HFAPI.select(try await source.list(), include: part.include, exclude: part.exclude))
+            }
+            plans[entry.id] = lists
             status[entry.id] = .notInstalled
         } catch {
             status[entry.id] = .failed(String(describing: error))
@@ -144,22 +149,42 @@ final class ModelStore {
     }
 
     func remainingBytes(_ entry: CatalogEntry) -> Int64? {
-        plans[entry.id].map { ModelDownloader.remainingBytes($0, in: folder(for: entry)) }
+        plans[entry.id].map { lists in
+            zip(entry.parts, lists).reduce(Int64(0)) { sum, pl in
+                sum + ModelDownloader.remainingBytes(pl.1, in: partFolder(entry, pl.0))
+            }
+        }
+    }
+
+    func partFolder(_ entry: CatalogEntry, _ part: CatalogPart) -> URL {
+        part.subfolder.isEmpty ? folder(for: entry) : folder(for: entry).appendingPathComponent(part.subfolder)
     }
 
     func start(_ entry: CatalogEntry) {
-        guard let files = plans[entry.id], tasks[entry.id] == nil else { return }
+        guard let lists = plans[entry.id], tasks[entry.id] == nil else { return }
         let dest = folder(for: entry)
-        let source = HTTPByteSource(repo: entry.repo, revision: entry.revision, token: entry.gated ? HFToken.read() : nil)
-        status[entry.id] = .downloading(.init(done: 0, total: files.reduce(0) { $0 + $1.size }, file: ""))
+        let total = lists.joined().reduce(Int64(0)) { $0 + $1.size }
+        status[entry.id] = .downloading(.init(done: 0, total: total, file: ""))
         tasks[entry.id] = Task {
             var lastUpdate = Date.distantPast
             do {
-                try await ModelDownloader.download(files, to: dest, from: source) { p in
-                    // Progress arrives per chunk; publish a few times a second.
-                    guard Date().timeIntervalSince(lastUpdate) > 0.2 || p.done == p.total else { return }
-                    lastUpdate = Date()
-                    Task { @MainActor in if case .downloading? = self.status[entry.id] { self.status[entry.id] = .downloading(p) } }
+                var before: Int64 = 0  // bytes of the parts already fetched, so progress spans the whole entry
+                for (part, files) in zip(entry.parts, lists) {
+                    let source = HTTPByteSource(repo: part.repo, revision: part.revision,
+                                                token: part.gated ? HFToken.read() : nil)
+                    let offset = before
+                    try await ModelDownloader.download(files, to: partFolder(entry, part), from: source) { p in
+                        // Progress arrives per chunk; publish a few times a second.
+                        guard Date().timeIntervalSince(lastUpdate) > 0.2 || p.done == p.total else { return }
+                        lastUpdate = Date()
+                        let q = ModelDownloader.Progress(done: offset + p.done, total: total, file: p.file)
+                        Task { @MainActor in if case .downloading? = self.status[entry.id] { self.status[entry.id] = .downloading(q) } }
+                    }
+                    before += files.reduce(0) { $0 + $1.size }
+                }
+                if let manifest = entry.manifest, ModelRegistry.className(at: dest) == nil,
+                   let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: dest.appendingPathComponent("mlxcomfy.json"))
                 }
                 status[entry.id] = .installed(dest)
             } catch is CancellationError {
@@ -361,16 +386,24 @@ struct DownloadConfirmation: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Download \(entry.name)?").font(.headline)
-            if let files = store.plans[entry.id], let remaining = store.remainingBytes(entry) {
+            if let lists = store.plans[entry.id], let remaining = store.remainingBytes(entry) {
                 let free = ModelDownloader.freeSpace(at: store.modelsDirectory)
-                LabeledContent("Files", value: "\(files.count) from huggingface.co/\(entry.repo)")
+                ForEach(Array(zip(entry.parts, lists).enumerated()), id: \.offset) { _, pl in
+                    LabeledContent(pl.0.subfolder.isEmpty ? "Files" : "Plus", value: "\(pl.1.count) from huggingface.co/\(pl.0.repo)")
+                }
                 LabeledContent("To download", value: String(format: "%.2f GB", Double(remaining) / 1e9))
                 LabeledContent("Free space", value: String(format: "%.1f GB", Double(free) / 1e9))
                 if remaining > free { Text("Not enough disk space.").foregroundStyle(.red) }
                 Toggle(isOn: $accepted) {
-                    HStack(spacing: 4) {
-                        Text("I accept the")
-                        Link(entry.license, destination: URL(string: entry.licenseURL)!)
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(Array(Set(entry.parts.map(\.license)).sorted().enumerated()), id: \.offset) { i, lic in
+                            HStack(spacing: 4) {
+                                Text(i == 0 ? "I accept the" : "and the")
+                                if let part = entry.parts.first(where: { $0.license == lic }), let url = URL(string: part.licenseURL) {
+                                    Link(lic, destination: url)
+                                }
+                            }
+                        }
                     }
                 }
                 HStack {

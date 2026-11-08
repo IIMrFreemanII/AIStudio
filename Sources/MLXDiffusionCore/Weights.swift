@@ -57,8 +57,12 @@ public final class WeightStore {
 
     public func optional(_ key: String) -> MLXArray? { arrays[key] }
 
+    /// Overrides ``quantizationBits`` for checkpoints that carry no `quantization_level` metadata.
+    public var bitsOverride: Int?
+
     /// Bits used by MLX-quantized checkpoints (`quantization_level` metadata), defaulting to 8.
     public var quantizationBits: Int {
+        if let bitsOverride { return bitsOverride }
         if let s = metadata["quantization_level"], let b = Int(s) { return b }
         return 8
     }

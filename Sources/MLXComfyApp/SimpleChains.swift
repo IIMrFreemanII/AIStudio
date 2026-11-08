@@ -320,3 +320,48 @@ extension AppModel {
         URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath).appendingPathComponent("masks")
     }
 }
+
+// MARK: - video
+
+extension AppModel {
+    /// The Load Image node feeding the Video Sampler's first frame, if any.
+    var firstFrameNode: GraphNode? {
+        guard let s = firstNode(ofType: "VideoSampler"), case .link(let id, _)? = s.inputs["image"] else { return nil }
+        return graph[id]
+    }
+
+    var firstFramePath: String? {
+        guard let n = firstFrameNode, case .value(.string(let p))? = n.inputs["path"], !p.isEmpty else { return nil }
+        return p
+    }
+
+    /// Pins the clip's first frame to an image (image-to-video).
+    func setFirstFrame(_ url: URL, undoManager: UndoManager?) {
+        guard let s = firstNode(ofType: "VideoSampler") else { lastError = "This graph has no Video Sampler node."; return }
+        mutate("Set First Frame", undoManager: undoManager) { g in
+            if let existing = firstFrameNode {
+                try? g.setValue(.string(url.path), node: existing.id, input: "path")
+            } else {
+                let id = g["first_frame"] == nil ? "first_frame" : "first_frame_\(g.nodes.count)"
+                let p = s.position ?? GraphPoint(x: 640, y: 120)
+                g.nodes.append(GraphNode(id: id, type: "LoadImage", inputs: ["path": .value(.string(url.path))],
+                                         position: GraphPoint(x: p.x - 300, y: p.y + 260)))
+                var n = g[s.id]!
+                n.inputs["image"] = .link(node: id, output: "image")
+                g[s.id] = n
+            }
+        }
+    }
+
+    func clearFirstFrame(undoManager: UndoManager?) {
+        guard let ref = firstFrameNode, let s = firstNode(ofType: "VideoSampler") else { return }
+        mutate("Remove First Frame", undoManager: undoManager) { g in
+            var n = g[s.id]!
+            n.inputs["image"] = nil
+            g[s.id] = n
+            // Keep the Load Image node if something else uses it.
+            let used = g.nodes.contains { $0.inputs.values.contains { if case .link(ref.id, _) = $0 { return true }; return false } }
+            if !used { g.nodes.removeAll { $0.id == ref.id } }
+        }
+    }
+}

@@ -91,6 +91,8 @@ actor Engine {
                 if let p = preview as? LatentPreview,
                    let rgb = p.model.latentPreview(p.latents, width: p.width, height: p.height) {
                     image = try? ImageArray.cgImage(from: rgb)
+                } else if let rgb = preview as? MLXArray {
+                    image = try? ImageArray.cgImage(from: rgb)
                 }
                 onEvent(.progress(node: n, step: step, total: total, preview: image))
             case .nodeFinished(let n, let s, let peak): onEvent(.nodeFinished(node: n, seconds: s, peakMemory: peak))

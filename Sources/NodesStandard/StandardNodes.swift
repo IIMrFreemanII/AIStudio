@@ -2,6 +2,7 @@ import Foundation
 import GraphRuntime
 import MLX
 import MLXDiffusionCore
+import LTX2
 import QwenImage21
 
 /// The built-in node library and the model loaders it relies on.
@@ -15,11 +16,13 @@ public enum StandardNodes {
         NoteNode.self, RerouteNode.self,
         TestPatternNode.self, TestToneNode.self, LoadVideoNode.self, LoadAudioNode.self, MixAudioNode.self,
         AddAudioToVideoNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
+        EmptyVideoLatentNode.self, VideoSamplerNode.self, VideoDecodeNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.
     public static func makeRegistry() -> NodeRegistry {
         QwenImage21Pipeline.register()
+        LTX2Pipeline.register()
         let r = NodeRegistry()
         r.register(all)
         return r
@@ -82,6 +85,10 @@ public struct TextEncodeNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let any: GenerativeModel = try inputs.object("model")
+        if let video = any as? VideoDiffusionModel {
+            return ["conditioning": .object(try video.encodeVideoPrompt(try inputs.string("prompt")))]
+        }
         let model: DiffusionModel = try inputs.object("model")
         let images = ["image", "image2"].compactMap { inputs.optionalObject($0, as: MLXArray.self) }
         return ["conditioning": .object(try model.encodePrompt(try inputs.string("prompt"), images: images))]

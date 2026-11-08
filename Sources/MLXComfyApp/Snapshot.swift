@@ -145,9 +145,9 @@ enum Snapshot {
         // 22–26. Media: the Video mode panel, an audio and a video result, the Models window, loaded models.
         let m = AppModel(persistSettings: false, autoloadModel: false)
         m.outputDirectory = projectOutputs.path
-        m.simpleMode = .video
+        m.setSimpleMode(.video, videoModelPath: nil, undoManager: nil)
         await render(m, to: dir.appendingPathComponent("22-video-mode.png"))
-        m.simpleMode = .image
+        m.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
         let tone = MediaOps.mix(MediaOps.tone(frequency: 220, seconds: 3, sampleRate: 48000),
                                 MediaOps.tone(frequency: 660, seconds: 1, sampleRate: 48000, amplitude: 0.6), offset: 1)
         let audioURL = dir.appendingPathComponent("snapshot-audio.wav")

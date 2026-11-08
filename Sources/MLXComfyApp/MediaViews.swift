@@ -2,6 +2,7 @@ import AVFoundation
 import AVKit
 import MLXDiffusionCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// What the Simple panel makes.
 enum SimpleMode: String, CaseIterable, Identifiable {
@@ -194,5 +195,132 @@ struct MediaModePanel: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The Simple panel's Video mode: edits the video graph's prompt, first frame, size, length and seed.
+struct VideoPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let installed = store.installed(.video)
+        let loader = model.firstNode(ofType: "LoadModel")
+        let prompt = model.firstNode(ofType: "TextEncode")
+        let latent = model.firstNode(ofType: "EmptyVideoLatent")
+        let sampler = model.firstNode(ofType: "VideoSampler")
+
+        if installed == nil {
+            MediaModePanel(mode: .video)
+        } else {
+            Form {
+                Section("Prompt") {
+                    if let prompt {
+                        TextEditor(text: b.string(prompt.id, "prompt"))
+                            .font(.body)
+                            .frame(minHeight: 120)
+                            .scrollContentBackground(.hidden)
+                        Text("Describe the action, camera and sound: the model also generates the soundtrack.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Section("First Frame") {
+                    if let path = model.firstFramePath {
+                        HStack(spacing: 10) {
+                            Thumbnail(path: path, maskPath: nil).frame(width: 64, height: 64)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                                Text("The clip starts from this image.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove", role: .destructive) { model.clearFirstFrame(undoManager: undoManager) }
+                        }
+                    } else {
+                        Button("Choose Image…") { chooseFirstFrame() }
+                        Text("Optional: animate a still image instead of starting from text alone.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if let latent {
+                    Section("Clip") {
+                        let w = b.int(latent.id, "width"), h = b.int(latent.id, "height")
+                        Picker("Size", selection: Binding(
+                            get: { GraphTemplates.videoSizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1 },
+                            set: { i in
+                                guard i >= 0 else { return }
+                                let p = GraphTemplates.videoSizePresets[i]
+                                model.mutate("Change Size", undoManager: undoManager) { g in
+                                    try? g.setValue(.int(p.width), node: latent.id, input: "width")
+                                    try? g.setValue(.int(p.height), node: latent.id, input: "height")
+                                }
+                            })) {
+                            ForEach(GraphTemplates.videoSizePresets.indices, id: \.self) { i in
+                                let p = GraphTemplates.videoSizePresets[i]
+                                Text("\(p.name) · \(p.width)×\(p.height)").tag(i)
+                            }
+                            Text("Custom").tag(-1)
+                        }
+                        let secs = b.double(latent.id, "seconds")
+                        LabeledContent("Length") {
+                            HStack {
+                                Slider(value: secs, in: 1...10, step: 0.5)
+                                Text(String(format: "%.1f s", secs.wrappedValue)).monospacedDigit().frame(width: 44, alignment: .trailing)
+                            }
+                        }
+                        Picker("Frame rate", selection: b.double(latent.id, "fps")) {
+                            ForEach([24.0, 25, 30], id: \.self) { Text("\(Int($0)) fps").tag($0) }
+                        }
+                    }
+                }
+                if let sampler {
+                    Section("Sampling") {
+                        HStack {
+                            TextField("Seed", value: b.int(sampler.id, "seed"), format: .number.grouping(.never))
+                            Button { b.int(sampler.id, "seed").wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
+                                Image(systemName: "dice")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("New random seed")
+                        }
+                        Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
+                        Stepper(value: b.int(sampler.id, "steps"), in: 0...8) {
+                            let s = b.int(sampler.id, "steps").wrappedValue
+                            LabeledContent("Steps", value: s == 0 ? "Model default (8 + 3)" : "\(s) + 3")
+                        }
+                    }
+                }
+                Section("Model") {
+                    if let installed, let loader {
+                        let path = b.string(loader.id, "path")
+                        LabeledContent("Folder") {
+                            Text((path.wrappedValue as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        }
+                        if URL(fileURLWithPath: path.wrappedValue).standardizedFileURL != installed.standardizedFileURL {
+                            Button("Use \(installed.lastPathComponent)") { path.wrappedValue = installed.path }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .safeAreaInset(edge: .bottom) {
+                Button { model.enqueue(undoManager: undoManager) } label: {
+                    Label("Generate Video", systemImage: "film").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+                .padding(12)
+                .background(.bar)
+            }
+        }
+    }
+
+    func chooseFirstFrame() {
+        let p = NSOpenPanel()
+        p.allowedContentTypes = [.image]
+        if p.runModal() == .OK, let u = p.url { model.setFirstFrame(u, undoManager: undoManager) }
     }
 }

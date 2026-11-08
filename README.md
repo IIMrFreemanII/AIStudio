@@ -1,14 +1,15 @@
 # MLXComfyUI
 
-A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. A prompt assistant uses the model's own language model to write prompts. Video and audio support is being added: the app already saves, plays and mixes video and audio in its graphs, and video (LTX-2.3), sound effects, music and speech models are next. The first supported model is Qwen-Image 2.1 Turbo.
+A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA, with Qwen-Image 2.1 Turbo. It also makes **video with a synchronized soundtrack**, from text or from a still image, with LTX-2.3. A prompt assistant uses the image model's own language model to write prompts. Sound effects, music and speech models are next.
 
 This is an independent project and is not affiliated with ComfyUI.
 
 ## Requirements
 
-- An Apple Silicon Mac. With every model kept loaded, it uses about 24 GB, peaking around 30 GB at 1024²; 48 GB of RAM is comfortable.
+- An Apple Silicon Mac. Images: about 24 GB resident, peaking around 30 GB at 1024². Video: about 27 GB resident, peaking around 35 GB for 5 s at 768×512. Models are swapped as needed, so 48 GB of RAM is comfortable for both.
 - macOS 15 or later, and Xcode 16 or later.
 - Qwen-Image 2.1 Turbo weights in the diffusers folder layout (`model_index.json`, `transformer/`, `text_encoder/`, `vae/`, `processor/`, `scheduler/`). The transformer can be bf16 or MLX-quantized. The weights aren't in this repo; put them in `qwen-turbo-mlx/` or choose the folder in the app.
+- For video: LTX-2.3, downloaded from the Models window (about 28.6 GB: the 4-bit MLX conversion [dgrauet/ltx-2.3-mlx-q4](https://huggingface.co/dgrauet/ltx-2.3-mlx-q4) plus the Gemma 3 12B text encoder [mlx-community/gemma-3-12b-it-4bit](https://huggingface.co/mlx-community/gemma-3-12b-it-4bit)).
 
 ## App
 
@@ -47,7 +48,8 @@ open build/MLXComfyUI.app
 - **Hi-res fix** (Sampling): upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
 - **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain. You can also add a folder you downloaded yourself.
 - **Memory:** models load on first use and stay in memory while they fit. When a new model doesn't fit the budget (80% of RAM by default; change it in Settings), the least recently used one is unloaded first, never one the running job uses. Click the toolbar memory gauge to see loaded models and unload one.
-- **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Only Image can generate today; the others show which model they need.
+- **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Image and Video each have their own graph; switching swaps it (and switching back restores it), and undo covers the switch. Music, Speech and Sound show which model they need; they arrive with later models.
+- **Video** (LTX-2.3): a prompt describing the action, camera and sound; an optional **first frame** image to animate; size presets (multiples of 64, e.g. 768×512, 1024×576, portrait and square); length up to 10 s; 24, 25 or 30 fps; seed. Generation runs 8 steps at half resolution, upscales the latents 2×, and refines with 3 steps, showing a preview of the middle frame after each. The result is an MP4 with AAC stereo sound at 48 kHz. A 5 s 768×512 clip takes about 2 minutes on an M4 Max (2.6 s prompt, 114 s sampling, 13 s decoding), peaking at about 35 GB.
 - **Video and audio results** play in the canvas (a player for video, a waveform for audio) and appear in history, with the graph embedded in the file so dropping it on the window restores it.
 
 Images are saved to `~/Pictures/MLXComfyUI` by default; change this in Settings (⌘,).
@@ -98,6 +100,8 @@ Generate without a graph:
 | `nodes` | Lists node types with their inputs and outputs |
 | `graph-from-png` | Prints the graph embedded in a saved PNG |
 | `compare` | Pixel diff of two images; exits with status 1 if they differ |
+| `generate-video` | Text or image to video with sound. `--model <ltx folder> --prompt … --size 768x512 --seconds 5 --fps 24 --seed`, `--image first.png` for image-to-video, `--contact-sheet x.png` writes 6 frames, `--preview-prefix p` saves each step's preview |
+| `run examples/txt2video.json` | The Video mode's graph. Try `--set latent.width=512 --set latent.height=320 --set latent.seconds=2` for a quick run |
 | `generate` | Text to image. Options: `--image` (condition image, repeatable), `--lora path[:strength]` (repeatable), `--size WxH`, `--seed`, `--save-steps`, `--dequantize` |
 | `make-test-lora` | Writes a synthetic LoRA. `--up-scale 0` makes a no-op one |
 | `vae-roundtrip` | Encodes and decodes an image and prints PSNR. Use it to check the VAE. `--tiled on` uses tiles |
@@ -123,6 +127,7 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
 - **Large images:** `VAEEncode` and `VAEDecode` process the image in overlapping tiles above about 1.25 MP (`tiled`: `auto`, `on` or `off`). A whole-image VAE pass peaks at about 16 GB at 1536² and 28 GB at 2048²; tiled, it stays near 8 GB at the same accuracy.
   - `Sampler.denoise` < 1 on an encoded latent gives img2img instead.
 - **Video and audio:** `TestPattern`, `TestTone`, `LoadVideo`, `LoadAudio`, `MixAudio` (with offset and gain, resampling as needed), `AddAudioToVideo` (replace or mix the soundtrack, fitted to the video), `SaveVideo` (MP4 or MOV, H.264 or HEVC, AAC audio), `SaveAudio` (WAV or M4A), `PreviewVideo` and `PreviewAudio`. Files carry the graph: MP4/M4A in the iTunes comment field, WAV in a custom `mlxc` chunk. See [examples/media-test.json](examples/media-test.json).
+- **Video models:** `TextEncode` accepts a video model too. `EmptyVideoLatent` (width, height, seconds, fps) → `VideoSampler` (model, conditioning, latent, seed, steps, optional `image` for the first frame) → `VideoDecode` → `video` and `audio`, then `SaveVideo`. See [examples/txt2video.json](examples/txt2video.json).
 - **Prompt assistant:** the `PromptAssistant` node (model, prompt, optional image, mode `enhance`, `describe` or `custom`) outputs a STRING; link it into `TextEncode.prompt`. See [examples/assistant.json](examples/assistant.json). It is cached like any node, so it reruns only when its own inputs change.
   - Qwen-Image's text encoder is the full Qwen3-VL 8B chat model. Its LM head isn't needed for images, so it is loaded only on first use (8-bit, about 0.6 GB). Generation runs at about 28 tokens per second; a prompt takes about 5 s.
 - **LoRA:** the `LoRA` node (model, path, strength) returns a model that shares the base weights. Each target layer runs the LoRA as a low-rank side branch, because the base weights are 8-bit and can't be merged into.
@@ -154,8 +159,15 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `QwenImage21VAE`: the single-frame form of the causal 3D VAE.
   - `QwenImage21Pipeline`.
   - `TextGenerator.swift`: KV-cached text generation with the same decoder stack (the prompt assistant).
+- `Sources/LTX2*`: LTX-2.3, ported from the MIT-licensed MLX port [dgrauet/ltx-2-mlx](https://github.com/dgrauet/ltx-2-mlx) of [Lightricks/LTX-2](https://github.com/Lightricks/LTX-2):
+  - `LTX2Text`: Gemma 3 12B (all 49 hidden states), the per-token RMS feature stack and the video/audio embedding connectors.
+  - `LTX2Transformer`: the 48-block dual-stream DiT (video 4096-wide, audio 2048-wide, bidirectional audio↔video cross-attention, per-token timesteps), positions and RoPE.
+  - `LTX2VAE`: the causal video VAE encoder and decoder (tiled, streaming) and the 2× latent upsampler.
+  - `LTX2Audio`: the audio VAE decoder (latents → mel), the BigVGAN vocoder (16 kHz) and bandwidth extension to 48 kHz stereo.
+  - `LTX2`: the distilled two-stage pipeline, sampling loop, image conditioning (with an H.264 round trip, as the reference does with libx264 CRF 33), and the sampler preview.
+  - Each component was checked against the Python reference on the real weights: the VAE, audio VAE and transformer blocks match bit for bit, the vocoder to float32 rounding, and the text features to about 0.5% (an rms-norm kernel rounds differently in one place). `ltx-probe-*` are the comparison tools used for that.
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also subgraph flattening, collapse and expand (`Subgraphs.swift`), and the Note and Reroute nodes. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
-- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
+- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyVideoLatent, VideoSampler, VideoDecode, the media nodes, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.
   - `Engine`: an actor that owns the executor and the loaded models.
@@ -166,4 +178,4 @@ The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transform
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). The model code is ported from [diffusers](https://github.com/huggingface/diffusers) and [transformers](https://github.com/huggingface/transformers), both Apache-2.0. Model weights are covered by their own licenses.
+Apache-2.0; see [LICENSE](LICENSE). The model code is ported from [diffusers](https://github.com/huggingface/diffusers) and [transformers](https://github.com/huggingface/transformers), both Apache-2.0. The LTX-2.3 code is ported from [ltx-2-mlx](https://github.com/dgrauet/ltx-2-mlx) (MIT). Model weights are covered by their own licenses (LTX-2.3: LTX-2 Community License; Gemma: Gemma Terms of Use).

@@ -115,3 +115,30 @@ func makeRepo() throws -> URL {
     #expect(!FileManager.default.fileExists(atPath: part.path))
     try await ModelDownloader.download(files, to: dest, from: source)  // clean retry succeeds
 }
+
+/// The LTX-2.3 entry fetches exactly what the pipeline loads from the 4-bit repo (not the other transformer
+/// variants or the LoRAs), plus the whole Gemma repo into `text_encoder/`.
+@Test func ltxCatalogEntrySelectsThePipelineFiles() throws {
+    let entry = try #require(ModelCatalog.entries.first { $0.id == "ltx-2.3" })
+    #expect(entry.parts.count == 2 && entry.parts[1].subfolder == "text_encoder")
+    let repoFiles = [".gitattributes", "LICENSE", "README.md", "audio_vae.safetensors", "config.json",
+                     "connector.safetensors", "embedded_config.json", "ltx-2.3-22b-distilled-lora-384-1.1.safetensors",
+                     "ltx-2.3-22b-distilled-lora-384.safetensors", "quantize_config.json",
+                     "spatial_upscaler_x1_5_v1_0.safetensors", "spatial_upscaler_x1_5_v1_0_config.json",
+                     "spatial_upscaler_x2_v1_1.safetensors", "spatial_upscaler_x2_v1_1_config.json", "split_model.json",
+                     "temporal_upscaler_x2_v1_0.safetensors", "temporal_upscaler_x2_v1_0_config.json",
+                     "transformer-dev.safetensors", "transformer-distilled-1.1.safetensors",
+                     "transformer-distilled.safetensors", "vae_decoder.safetensors", "vae_encoder.safetensors",
+                     "vocoder.safetensors"].map { RemoteFile(path: $0, size: 1) }
+    let picked = Set(HFAPI.select(repoFiles, include: entry.include, exclude: entry.exclude).map(\.path))
+    let weights = picked.filter { $0.hasSuffix(".safetensors") }
+    #expect(weights == ["transformer-distilled-1.1.safetensors", "connector.safetensors", "vae_decoder.safetensors",
+                        "vae_encoder.safetensors", "audio_vae.safetensors", "vocoder.safetensors",
+                        "spatial_upscaler_x2_v1_1.safetensors"])
+    #expect(picked.isSuperset(of: ["config.json", "embedded_config.json", "quantize_config.json",
+                                   "spatial_upscaler_x2_v1_1_config.json", "LICENSE"]))
+    #expect(entry.manifest?["class"] == "LTX2Pipeline")
+    let gemma = HFAPI.select([".gitattributes", "config.json", "model-00001-of-00002.safetensors", "tokenizer.json"]
+        .map { RemoteFile(path: $0, size: 1) }, include: entry.parts[1].include, exclude: entry.parts[1].exclude)
+    #expect(gemma.count == 3)
+}
