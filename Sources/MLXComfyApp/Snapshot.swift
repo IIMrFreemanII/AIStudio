@@ -65,6 +65,16 @@ enum Snapshot {
             // 7. The mask editor on its own.
             await render(MaskEditorView(imageURL: ref, existingMask: mask, saveDirectory: dir) { _ in },
                          to: dir.appendingPathComponent("7-mask-editor.png"), size: CGSize(width: 900, height: 760))
+            // 8. Inpainting with the hi-res fix on: feather and hi-res controls in the panel.
+            model.setHiRes(true, undoManager: nil)
+            await render(model, to: dir.appendingPathComponent("8-inpaint-hires-panel.png"))
+            // 9. Outpainting instead of inpainting, in the graph and the panel.
+            model.setOutpaint(left: 256, top: 0, right: 256, bottom: 128, undoManager: nil)
+            model.workspace = .graph
+            await render(model, to: dir.appendingPathComponent("9-outpaint-graph.png"))
+            model.workspace = .image
+            await render(model, to: dir.appendingPathComponent("10-outpaint-panel.png"))
+            print("graph: " + model.graph.jsonString())
         }
     }
 

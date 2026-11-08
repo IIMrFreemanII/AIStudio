@@ -67,10 +67,10 @@ public protocol DiffusionModel: AnyObject {
         -> MLXArray
 
     /// Packed latents → RGBA `[H, W, 4]` in `[0, 1]`.
-    func decode(_ latents: MLXArray, width: Int, height: Int) -> MLXArray
+    func decode(_ latents: MLXArray, width: Int, height: Int, tiling: VAETiling) -> MLXArray
 
     /// RGBA `[H, W, 4]` in `[0, 1]` (H, W already snapped) → packed latents.
-    func encodeImage(_ image: MLXArray) -> MLXArray
+    func encodeImage(_ image: MLXArray, tiling: VAETiling) -> MLXArray
 
     /// Pixels per latent token along each axis (for mapping masks to latents).
     var latentScale: Int { get }
@@ -82,8 +82,20 @@ public protocol DiffusionModel: AnyObject {
     func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray?
 }
 
+/// Whether the VAE processes an image in overlapping tiles. `auto` tiles only above a model-chosen size, so ordinary
+/// sizes are decoded exactly as before.
+public enum VAETiling: String, CaseIterable, Sendable {
+    case auto, on, off
+}
+
 extension DiffusionModel {
     public func encodePrompt(_ prompt: String) throws -> Conditioning { try encodePrompt(prompt, images: []) }
+
+    public func decode(_ latents: MLXArray, width: Int, height: Int) -> MLXArray {
+        decode(latents, width: width, height: height, tiling: .auto)
+    }
+
+    public func encodeImage(_ image: MLXArray) -> MLXArray { encodeImage(image, tiling: .auto) }
 
     public func applyingLoRA(_ lora: URL, strength: Float) throws -> (model: DiffusionModel, report: LoRAReport) {
         throw LoRAError.unsupported(displayName)

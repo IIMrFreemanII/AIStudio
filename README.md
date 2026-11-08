@@ -1,6 +1,6 @@
 # MLXComfyUI
 
-A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting and LoRA. The first supported model is Qwen-Image 2.1 Turbo.
+A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. The first supported model is Qwen-Image 2.1 Turbo.
 
 This is an independent project and is not affiliated with ComfyUI.
 
@@ -33,7 +33,9 @@ open build/MLXComfyUI.app
 - **Sidebar:** the queue (cancel or reorder jobs) and history (the PNGs in the output folder). Right-click a history item to restore its graph.
 - **Restoring a graph:** drop a PNG made by MLXComfyUI anywhere on the window. ⌘O opens a graph JSON file or such a PNG. ⌘S saves the graph.
 - **Reference image:** drop an image on the Simple panel to edit it. The prompt describes the change, and the output keeps the image's aspect ratio.
-- **Inpainting:** use **Paint Mask…** to mark an area. Only that area is regenerated, and every other pixel stays identical to the original.
+- **Inpainting:** use **Paint Mask…** to mark an area. Only that area is regenerated. **Feather** softens the edge so the change blends in; pixels outside the feathered edge stay identical to the original.
+- **Outpainting:** **Extend…** grows the reference image's canvas. Set the pixels to add on each side; the new border is generated to match.
+- **Hi-res fix** (Sampling): upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
 - **Model:** loaded at launch and kept in memory. The toolbar gauge shows MLX memory use.
 
 Images are saved to `~/Pictures/MLXComfyUI` by default; change this in Settings (⌘,).
@@ -86,7 +88,7 @@ Generate without a graph:
 | `compare` | Pixel diff of two images; exits with status 1 if they differ |
 | `generate` | Text to image. Options: `--image` (condition image, repeatable), `--lora path[:strength]` (repeatable), `--size WxH`, `--seed`, `--save-steps`, `--dequantize` |
 | `make-test-lora` | Writes a synthetic LoRA. `--up-scale 0` makes a no-op one |
-| `vae-roundtrip` | Encodes and decodes an image and prints PSNR. Use it to check the VAE |
+| `vae-roundtrip` | Encodes and decodes an image and prints PSNR. Use it to check the VAE. `--tiled on` uses tiles |
 | `tokenize` | Prints the Qwen token ids for a string |
 
 Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step and about 53 s end to end, with a peak of about 29 GB.
@@ -98,7 +100,13 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
   - Set `EmptyLatent` to 0×0 to match the image's aspect ratio at about 1 MP.
   - From the CLI: `generate --image refs/girl.png --prompt "Put her on a snowy mountain top"`.
 - **Inpainting:** see [examples/inpaint.json](examples/inpaint.json).
-  - The chain is `VAEEncode` → `SetLatentMask` (from `LoadMask`, white = regenerate) → `Sampler`, then `ImageCompositeMasked` pastes the result over the original. Pixels outside the mask are bit-identical.
+  - The chain is `VAEEncode` → `SetLatentMask` (from `LoadMask` → `FeatherMask`, white = regenerate) → `Sampler`, then `ImageCompositeMasked` blends the result over the original with the same feathered mask. Pixels where the feathered mask is 0 are bit-identical.
+  - `FeatherMask` grows (or shrinks, with a negative value) the mask and blurs its edge. With feather 0 the result is the same as without it.
+  - `SetLatentMask.blend`: `hard` (default) fully regenerates every latent the mask touches; `soft` follows the mask's coverage.
+- **Outpainting:** see [examples/outpaint.json](examples/outpaint.json). `PadImage` extends the canvas and outputs a mask over the new border, which drives the same chain as inpainting.
+- **Hi-res fix:** see [examples/hires.json](examples/hires.json): `VAEDecode` → `ImageScale` → `VAEEncode` → a second `Sampler` with `steps` 8 and `denoise` 0.4 → `VAEDecode`.
+  - `steps` 8 gives an evenly spaced schedule, so denoise 0.4 runs 3 refinement steps (about 45 s at 1536²). With `steps` 0 the checkpoint's distilled schedule is used; it ends at σ 0.41, so any denoise below 0.7 gets a single step and less added detail.
+- **Large images:** `VAEEncode` and `VAEDecode` process the image in overlapping tiles above about 1.25 MP (`tiled`: `auto`, `on` or `off`). A whole-image VAE pass peaks at about 16 GB at 1536² and 28 GB at 2048²; tiled, it stays near 8 GB at the same accuracy.
   - `Sampler.denoise` < 1 on an encoded latent gives img2img instead.
 - **LoRA:** the `LoRA` node (model, path, strength) returns a model that shares the base weights. Each target layer runs the LoRA as a low-rank side branch, because the base weights are 8-bit and can't be merged into.
   - Supported key formats: diffusers/PEFT (`lora_A`/`lora_B`), kohya/Comfy (`lora_down`/`lora_up` + `alpha`) and `lora_unet_…` underscore names.
@@ -120,14 +128,14 @@ The executor:
 
 ## Layout
 
-- `Sources/MLXDiffusionCore`: safetensors weight store, dense and quantized `Lin`, `Conv2d`, the flow-match Euler scheduler, and PNG I/O.
+- `Sources/MLXDiffusionCore`: safetensors weight store, dense and quantized `Lin`, `Conv2d`, the flow-match Euler scheduler, PNG I/O, and mask and tiling helpers (`MaskOps`, `Tiling`).
 - `Sources/QwenImage21`:
   - `Qwen3TextEncoder`: features from the last layer, taken before the final norm. For image prompts it adds the vision tower (`Qwen3VisionTower`), interleaved mRoPE and deepstack.
   - `QwenImage21Transformer`: block-causal DiT. The prompt's K/V are cached once and each step runs only the image tokens.
   - `QwenImage21VAE`: the single-frame form of the causal 3D VAE.
   - `QwenImage21Pipeline`.
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. It doesn't depend on MLX.
-- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, SaveImage and PreviewImage.
+- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.
   - `Engine`: an actor that owns the executor and the loaded models.

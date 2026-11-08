@@ -26,6 +26,17 @@ enum SmokeTest {
             model.setMask(URL(fileURLWithPath: mask), undoManager: nil)
             say("mask \(mask); graph nodes: \(model.graph.nodes.map(\.id).joined(separator: ", "))")
         }
+        if let pad = argument("--smoke-outpaint") {
+            // l,t,r,b in pixels
+            let v = pad.split(separator: ",").compactMap { Int($0) } + [0, 0, 0, 0]
+            model.setOutpaint(left: v[0], top: v[1], right: v[2], bottom: v[3], undoManager: nil)
+            say("outpaint \(pad)")
+        }
+        if CommandLine.arguments.contains("--smoke-hires") {
+            model.setHiRes(true, undoManager: nil)
+            say("hi-res fix on")
+        }
+        if model.lastError != nil { say("setup error: \(model.lastError!)") }
         say("model folder \(model.modelPath)")
         say("output folder \(model.outputDirectory)")
         guard let p = model.firstNode(ofType: "TextEncode") else { say("no TextEncode node"); return false }

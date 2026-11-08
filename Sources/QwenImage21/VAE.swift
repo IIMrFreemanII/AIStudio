@@ -72,6 +72,17 @@ public final class QwenImage21VAE {
         return clip(x, min: -1, max: 1)
     }
 
+    /// ``decode(normalizedLatents:)`` over overlapping latent tiles (`tile`/`overlap` in latent cells), blended
+    /// linearly. Bounds peak memory for large images; batch size must be 1.
+    public func decodeTiled(normalizedLatents z: MLXArray, tile: Int = 64, overlap: Int = 8) -> MLXArray {
+        Tiling.run(z, cell: 1, outPerCell: 16, tile: tile, overlap: overlap) { decode(normalizedLatents: $0) }
+    }
+
+    /// ``encode(_:)`` over overlapping pixel tiles (`tile`/`overlap` in latent cells of 16 px).
+    public func encodeTiled(_ image: MLXArray, tile: Int = 64, overlap: Int = 8) -> MLXArray {
+        Tiling.run(image, cell: 16, outPerCell: 1, tile: tile, overlap: overlap) { encode($0) }
+    }
+
     /// Image `[B, H, W, 4]` in `[-1, 1]` → normalised latents `[B, H/16, W/16, 64]` (posterior mode).
     public func encode(_ image: MLXArray) -> MLXArray {
         guard let encoder, let quantConv else { fatalError("VAE was loaded without its encoder") }

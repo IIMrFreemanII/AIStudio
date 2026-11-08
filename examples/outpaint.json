@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": "model", "type": "LoadModel", "inputs": { "path": "qwen-turbo-mlx" }, "position": { "x": 40, "y": 200 } },
+    { "id": "image", "type": "LoadImage", "inputs": { "path": "refs/girl.png" }, "position": { "x": 40, "y": 360 } },
+    { "id": "pad", "type": "PadImage", "position": { "x": 340, "y": 400 },
+      "inputs": { "image": { "node": "image", "output": "image" }, "left": 256, "top": 0, "right": 256, "bottom": 0, "fill": "edge" } },
+    { "id": "feather", "type": "FeatherMask", "position": { "x": 640, "y": 560 },
+      "inputs": { "mask": { "node": "pad", "output": "mask" }, "grow": 0, "feather": 32 } },
+    { "id": "prompt", "type": "TextEncode", "position": { "x": 340, "y": 40 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "image": { "node": "image", "output": "image" },
+                  "prompt": "Widen the shot: continue the room naturally to the left and right, same lighting and style" } },
+    { "id": "encode", "type": "VAEEncode", "position": { "x": 640, "y": 320 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "image": { "node": "pad", "output": "image" }, "megapixels": 0 } },
+    { "id": "masked", "type": "SetLatentMask", "position": { "x": 940, "y": 380 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "latent": { "node": "encode", "output": "latent" },
+                  "mask": { "node": "feather", "output": "mask" } } },
+    { "id": "sampler", "type": "Sampler", "position": { "x": 1240, "y": 160 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "conditioning": { "node": "prompt", "output": "conditioning" },
+                  "latent": { "node": "masked", "output": "latent" }, "seed": 3, "steps": 0, "denoise": 1 } },
+    { "id": "decode", "type": "VAEDecode", "position": { "x": 1540, "y": 200 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "latent": { "node": "sampler", "output": "latent" } } },
+    { "id": "composite", "type": "ImageCompositeMasked", "position": { "x": 1820, "y": 280 },
+      "inputs": { "destination": { "node": "pad", "output": "image" }, "source": { "node": "decode", "output": "image" },
+                  "mask": { "node": "feather", "output": "mask" } } },
+    { "id": "save", "type": "SaveImage", "position": { "x": 2100, "y": 280 },
+      "inputs": { "image": { "node": "composite", "output": "image" }, "filename_prefix": "outpaint", "directory": "outputs" } }
+  ]
+}

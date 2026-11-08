@@ -243,9 +243,24 @@ public final class QwenImage21Pipeline: DiffusionModel {
         return transformer.denoise(latents: latents, prefix: p.prefix, sigma: sigma, latentHeight: h, latentWidth: w)
     }
 
-    public func decode(_ latents: MLXArray, width: Int, height: Int) -> MLXArray {
+    /// `auto` tiles the VAE above this many latent cells (about 1.25 MP). Whole-image VAE passes peak at about
+    /// 16 GB at 1536² and 28 GB at 2048², on top of the resident models; tiles of 64 cells stay near 8 GB at any size.
+    /// Everything up to the standard presets (1024², 896×1184, 768×1344) is processed whole, exactly as before.
+    public static var autoTileCells = 80 * 80
+
+    public static func shouldTile(_ tiling: VAETiling, cells: Int) -> Bool {
+        switch tiling {
+        case .on: return true
+        case .off: return false
+        case .auto: return cells > autoTileCells
+        }
+    }
+
+    public func decode(_ latents: MLXArray, width: Int, height: Int, tiling: VAETiling) -> MLXArray {
         let (h, w) = latentSize(width: width, height: height)
-        let img = vae.decode(normalizedLatents: latents.reshaped(1, h, w, 64))
+        let z = latents.reshaped(1, h, w, 64)
+        let img = Self.shouldTile(tiling, cells: h * w) ? vae.decodeTiled(normalizedLatents: z)
+            : vae.decode(normalizedLatents: z)
         let out = (img[0].asType(.float32) + 1) / 2
         eval(out)
         return out
@@ -253,9 +268,10 @@ public final class QwenImage21Pipeline: DiffusionModel {
 
     public var latentScale: Int { Self.vaeScale }
 
-    public func encodeImage(_ image: MLXArray) -> MLXArray {
+    public func encodeImage(_ image: MLXArray, tiling: VAETiling) -> MLXArray {
         let (h, w) = (image.dim(0) / Self.vaeScale, image.dim(1) / Self.vaeScale)
-        let z = vae.encode((image.asType(.float32) * 2 - 1).expandedDimensions(axis: 0))
+        let input = (image.asType(.float32) * 2 - 1).expandedDimensions(axis: 0)
+        let z = Self.shouldTile(tiling, cells: h * w) ? vae.encodeTiled(input) : vae.encode(input)
         let packed = z.reshaped(1, h * w, 64)
         eval(packed)
         return packed

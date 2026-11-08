@@ -11,6 +11,7 @@ public enum StandardNodes {
         SaveImageNode.self, PreviewImageNode.self, LoadImageNode.self,
         VAEEncodeNode.self, LoadMaskNode.self, SetLatentMaskNode.self, ImageCompositeMaskedNode.self,
         LoRANode.self,
+        FeatherMaskNode.self, PadImageNode.self, ImageScaleNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.
@@ -142,7 +143,7 @@ public struct SamplerNode: NodeImplementation {
 public struct VAEDecodeNode: NodeImplementation {
     public static let schema = NodeSchema(
         type: "VAEDecode", displayName: "VAE Decode", category: "latent",
-        inputs: [InputSpec("model", .model), InputSpec("latent", .latent)],
+        inputs: [InputSpec("model", .model), InputSpec("latent", .latent), tilingInput],
         outputs: [OutputSpec("image", .image)])
     public init() {}
 
@@ -152,7 +153,8 @@ public struct VAEDecodeNode: NodeImplementation {
         guard let data = latent.data else {
             throw GraphError.nodeFailed(node: inputs.nodeID, message: "latent is empty; connect a Sampler")
         }
-        return ["image": .object(model.decode(data, width: latent.width, height: latent.height))]
+        return ["image": .object(model.decode(data, width: latent.width, height: latent.height,
+                                              tiling: try tiling(inputs)))]
     }
 }
 
@@ -233,6 +235,7 @@ public struct VAEEncodeNode: NodeImplementation {
             InputSpec("image", .image),
             // 0 keeps the image size (snapped to the model's multiple).
             InputSpec("megapixels", .float, default: .double(1), widget: .number(min: 0, max: 4, step: 0.25)),
+            tilingInput,
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}
@@ -245,7 +248,7 @@ public struct VAEEncodeNode: NodeImplementation {
         if mp > 0 { (w, h) = sizeFor(megapixels: mp, aspect: Double(w) / Double(h)) }
         let snapped = model.snapSize(width: w, height: h)
         let resized = try ImageArray.resized(image, width: snapped.width, height: snapped.height)
-        let latents = model.encodeImage(resized)
+        let latents = model.encodeImage(resized, tiling: try tiling(inputs))
         return ["latent": .object(Latent(data: latents, width: snapped.width, height: snapped.height))]
     }
 }
@@ -283,6 +286,9 @@ public struct SetLatentMaskNode: NodeImplementation {
             InputSpec("model", .model),
             InputSpec("latent", .latent),
             InputSpec("mask", .mask),
+            // hard: every latent the mask touches is fully regenerated (exact outside the mask after compositing).
+            // soft: each latent follows the mask's average coverage, blending generated and original content.
+            InputSpec("blend", .string, default: .string("hard"), widget: .choice(["hard", "soft"])),
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}
@@ -298,8 +304,11 @@ public struct SetLatentMaskNode: NodeImplementation {
         let m = try ImageArray.resized(mask, width: latent.width, height: latent.height)
         let (h, w) = (latent.height / s, latent.width / s)
         // Any coverage of a latent token regenerates it; the pixel composite restores exact edges afterwards.
-        let pooled = m.reshaped(h, s, w, s).max(axes: [1, 3])
-        latent.noiseMask = (pooled .> 0.02).asType(.float32).reshaped(1, h * w, 1)
+        let cells = m.reshaped(h, s, w, s)
+        let weights = try inputs.string("blend") == "soft"
+            ? clip(cells.mean(axes: [1, 3]), min: 0, max: 1)
+            : (cells.max(axes: [1, 3]) .> 0.02).asType(.float32)
+        latent.noiseMask = weights.reshaped(1, h * w, 1)
         return ["latent": .object(latent)]
     }
 }

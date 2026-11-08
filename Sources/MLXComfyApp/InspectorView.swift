@@ -141,6 +141,7 @@ struct SimplePanel: View {
                 } else {
                     missing("Sampler")
                 }
+                if sampler != nil { hiResControls(b) }
                 Stepper(value: $model.batchCount, in: 1...16) {
                     LabeledContent("Batch", value: "\(model.batchCount) image\(model.batchCount == 1 ? "" : "s")")
                 }
@@ -174,6 +175,7 @@ struct SimplePanel: View {
     }
 
     @ViewBuilder var referenceSection: some View {
+        let b = LiteralBindings(model: model, undoManager: undoManager)
         Section {
             if let path = model.referenceImagePath {
                 HStack(spacing: 10) {
@@ -181,6 +183,7 @@ struct SimplePanel: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                         Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
+                             : model.isOutpainting ? "Outpainting: the new border is generated."
                              : "Editing: describe the change in the prompt.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -188,9 +191,19 @@ struct SimplePanel: View {
                 HStack {
                     Button(model.maskPath == nil ? "Paint Mask…" : "Edit Mask…") { showMaskEditor = true }
                     if model.maskPath != nil { Button("Clear Mask") { model.clearMask(undoManager: undoManager) } }
+                    if model.maskPath == nil && !model.isOutpainting {
+                        Button("Extend…") {
+                            model.setOutpaint(left: 256, top: 0, right: 256, bottom: 0, undoManager: undoManager)
+                        }
+                        .help("Outpaint: grow the canvas and fill the new border")
+                    }
                     Spacer()
                     Button("Remove", role: .destructive) { model.clearReferenceImage(undoManager: undoManager) }
                 }
+                if model.maskPath != nil, model.graph[AppModel.inpaintIDs.feather] != nil {
+                    featherSlider(AppModel.inpaintIDs.feather, b)
+                }
+                if model.isOutpainting { outpaintControls(b) }
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "photo.badge.plus").font(.title2).foregroundStyle(.secondary)
@@ -220,6 +233,77 @@ struct SimplePanel: View {
                                existingMask: model.maskPath.map { URL(fileURLWithPath: $0) },
                                saveDirectory: model.maskDirectory) { url in
                     model.setMask(url, undoManager: undoManager)
+                }
+            }
+        }
+    }
+
+    func featherSlider(_ node: String, _ b: LiteralBindings) -> some View {
+        let f = b.int(node, "feather")
+        return LabeledContent("Feather") {
+            HStack {
+                Slider(value: Binding(get: { Double(f.wrappedValue) }, set: { f.wrappedValue = Int($0.rounded()) }),
+                       in: 0...96)
+                Text("\(f.wrappedValue) px").monospacedDigit().frame(width: 48, alignment: .trailing)
+            }
+        }
+        .help("Softens the edge where the generated area meets the original")
+    }
+
+    @ViewBuilder func outpaintControls(_ b: LiteralBindings) -> some View {
+        let pad = AppModel.outpaintIDs.pad
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+            GridRow {
+                sideStepper("Left", b.int(pad, "left"))
+                sideStepper("Right", b.int(pad, "right"))
+            }
+            GridRow {
+                sideStepper("Top", b.int(pad, "top"))
+                sideStepper("Bottom", b.int(pad, "bottom"))
+            }
+        }
+        featherSlider(AppModel.outpaintIDs.feather, b)
+        HStack {
+            Text(outpaintSizeText(b)).font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Stop Extending") { model.clearOutpaint(undoManager: undoManager) }
+        }
+    }
+
+    func sideStepper(_ label: String, _ v: Binding<Int>) -> some View {
+        Stepper(value: v, in: 0...1024, step: 64) {
+            LabeledContent(label, value: "\(v.wrappedValue)")
+        }
+    }
+
+    func outpaintSizeText(_ b: LiteralBindings) -> String {
+        let pad = AppModel.outpaintIDs.pad
+        let dx = b.int(pad, "left").wrappedValue + b.int(pad, "right").wrappedValue
+        let dy = b.int(pad, "top").wrappedValue + b.int(pad, "bottom").wrappedValue
+        guard let path = model.referenceImagePath, let size = Thumbnail.pixelSize(path) else {
+            return "+\(dx) × +\(dy) px"
+        }
+        let w = size.width + dx, h = size.height + dy
+        return "Output \(w) × \(h) (" + String(format: "%.1f", Double(w * h) / 1_048_576) + " MP)"
+    }
+
+    @ViewBuilder func hiResControls(_ b: LiteralBindings) -> some View {
+        Toggle("Hi-res fix", isOn: Binding(get: { model.isHiResEnabled },
+                                           set: { model.setHiRes($0, undoManager: undoManager) }))
+            .help("Upscale the result and refine it with a second, low-denoise pass")
+        if model.isHiResEnabled {
+            let ids = AppModel.hiresIDs
+            let scale = b.double(ids.scale, "factor"), denoise = b.double(ids.sampler, "denoise")
+            LabeledContent("Upscale") {
+                HStack {
+                    Slider(value: scale, in: 1.25...2, step: 0.25)
+                    Text(String(format: "%.2g×", scale.wrappedValue)).monospacedDigit().frame(width: 48, alignment: .trailing)
+                }
+            }
+            LabeledContent("Denoise") {
+                HStack {
+                    Slider(value: denoise, in: 0.2...0.7, step: 0.05)
+                    Text(String(format: "%.2f", denoise.wrappedValue)).monospacedDigit().frame(width: 48, alignment: .trailing)
                 }
             }
         }
@@ -408,5 +492,16 @@ struct Thumbnail: View {
         return CGImageSourceCreateThumbnailAtIndex(src, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 192,
         ] as CFDictionary)
+    }
+}
+
+extension Thumbnail {
+    /// Pixel size from the image header, without decoding it.
+    static func pixelSize(_ path: String) -> (width: Int, height: Int)? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int
+        else { return nil }
+        return (w, h)
     }
 }

@@ -187,6 +187,8 @@ struct VAERoundTrip: AsyncParsableCommand {
     @Option var input: String
     @Option var out = "roundtrip.png"
     @Option(help: "Resize to this size (multiple of 32), e.g. 768x1024.") var size: String?
+    @Option(help: "Tile the encoder and decoder: auto, on or off.") var tiled = "off"
+    @Option(help: "Tile size in latent cells (16 px).") var tile = 64
 
     func run() async throws {
         let vae = try QwenImage21VAE(directory: URL(fileURLWithPath: model).appendingPathComponent("vae"))
@@ -195,10 +197,13 @@ struct VAERoundTrip: AsyncParsableCommand {
         if let size { (w, h) = try parseSize(size) }
         let x = ImageArray.array(from: cg, width: w, height: h)
         let t = Date()
-        let z = vae.encode((x * 2 - 1).expandedDimensions(axis: 0))
+        let input = (x * 2 - 1).expandedDimensions(axis: 0)
+        let tiles = QwenImage21Pipeline.shouldTile(VAETiling(rawValue: tiled) ?? .off, cells: (w / 16) * (h / 16))
+        Memory.peakMemory = 0
+        let z = tiles ? vae.encodeTiled(input, tile: tile) : vae.encode(input)
         eval(z)
         log("latents \(z.shape)  mean \(z.mean().item(Float.self))  std \(sqrt(z.variance().item(Float.self)))")
-        let y = (vae.decode(normalizedLatents: z)[0].asType(.float32) + 1) / 2
+        let y = ((tiles ? vae.decodeTiled(normalizedLatents: z, tile: tile) : vae.decode(normalizedLatents: z))[0].asType(.float32) + 1) / 2
         eval(y)
         let diff = abs(y[0..., 0..., ..<3] - x[0..., 0..., ..<3])
         let mse = (diff * diff).mean().item(Float.self)
