@@ -1,4 +1,5 @@
 import Foundation
+import MLXDiffusionCore
 
 /// `MLXComfyApp --smoke-test "<prompt>"` queues one generation through the same path as the Generate button
 /// (AppModel → Engine → events), reports what the UI received, and exits.
@@ -14,6 +15,83 @@ enum SmokeTest {
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
         return args[i + 1]
+    }
+
+    /// `--smoke-assist "<idea>"` (+ `--smoke-image`): Enhance the idea, then Describe the image, through the same
+    /// AppModel path as the buttons, checking streaming, the final prompt, undo, and memory before first use.
+    static func runAssistant(_ model: AppModel, idea: String) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        // Explicit undo groups, as a window's event loop would provide: registering outside a group throws an
+        // Objective-C exception, which must never unwind through a Swift task.
+        let undo = UndoManager()
+        undo.groupsByEvent = false
+        // Load the model first so the memory comparison isolates the assistant.
+        model.preloadModel()
+        while !(await model.engine.isLoaded(modelPath: model.modelPath)) {
+            if model.lastError != nil { say("load failed: \(model.lastError!)"); return false }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let before = Engine.activeMemory()
+        say(String(format: "model loaded (weights map in lazily), memory %.2f GB", Double(before) / 1e9))
+        guard let te = model.firstNode(ofType: "TextEncode") else { say("no TextEncode"); return false }
+        model.setLiteral(.string(idea), node: te.id, input: "prompt", undoManager: nil)
+
+        func run(_ mode: PromptAssistant.Mode) async -> String? {
+            var updates = 0
+            var last = ""
+            let started = Date()
+            let result: String? = await withCheckedContinuation { cont in
+                undo.beginUndoGrouping()
+                model.runAssistant(mode, undoManager: undo) { r in
+                    undo.endUndoGrouping()
+                    cont.resume(returning: r)
+                }
+                Task { @MainActor in
+                    while model.assistantMode != nil {
+                        let now = model.literal(te.id, "prompt")?.description ?? ""
+                        if now != last { updates += 1; last = now }
+                        try? await Task.sleep(nanoseconds: 50_000_000)
+                    }
+                }
+            }
+            say("\(mode.rawValue): \(String(format: "%.1fs", Date().timeIntervalSince(started))), "
+                + "\(updates) live updates seen")
+            say("\(mode.rawValue) result: \(result ?? "nil (error: \(model.lastError ?? "none"))")")
+            return result
+        }
+
+        guard let enhanced = await run(.enhance), !enhanced.isEmpty else { return false }
+        let after = Engine.activeMemory()
+        say(String(format: "memory after first use %.2f GB (+%.2f GB)", Double(after) / 1e9,
+                   Double(after - before) / 1e9))
+        let shown = model.literal(te.id, "prompt")?.description ?? ""
+        say("prompt field matches result: \(shown == enhanced)")
+        undo.undo()
+        let restored = model.literal(te.id, "prompt")?.description ?? ""
+        say("undo restores the idea: \(restored == idea)")
+        guard shown == enhanced, restored == idea else { return false }
+
+        if let image = argument("--smoke-image") {
+            model.setReferenceImage(URL(fileURLWithPath: image), undoManager: nil)
+            guard let described = await run(.describe), !described.isEmpty else { return false }
+            // An edit instruction with the image attached.
+            model.setLiteral(.string("make it winter"), node: te.id, input: "prompt", undoManager: nil)
+            guard let edit = await run(.enhance), !edit.isEmpty else { return false }
+        }
+        // Stop mid-way: the partial text stays and one undo restores the previous prompt.
+        model.setLiteral(.string(idea), node: te.id, input: "prompt", undoManager: nil)
+        undo.beginUndoGrouping()
+        model.runAssistant(.enhance, undoManager: undo)
+        try? await Task.sleep(nanoseconds: 3_500_000_000)
+        model.stopAssistant()
+        while model.assistantMode != nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+        undo.endUndoGrouping()
+        let partial = model.literal(te.id, "prompt")?.description ?? ""
+        say("stopped: \(partial.count) chars kept")
+        undo.undo()
+        say("undo after stop restores the idea: \((model.literal(te.id, "prompt")?.description ?? "") == idea)")
+        return true
     }
 
     static func run(_ model: AppModel, prompt: String) async -> Bool {

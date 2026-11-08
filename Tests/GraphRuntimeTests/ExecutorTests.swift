@@ -273,3 +273,37 @@ func sinkResult(_ r: RunResult) -> Int? {
         #expect(throws: GraphError.self) { try GraphExecutor(registry: registry()).validate(g) }
     }
 }
+
+actor CreationCounter {
+    var count = 0
+    func bump() { count += 1 }
+}
+
+@Test func concurrentResourceGetsCreateOnce() async throws {
+    let cache = ResourceCache()
+    let counter = CreationCounter()
+    async let a: Int = cache.get("model") {
+        await counter.bump()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        return 7
+    }
+    async let b: Int = cache.get("model") {
+        await counter.bump()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        return 8
+    }
+    let (x, y) = try await (a, b)
+    #expect(x == y)
+    #expect(await counter.count == 1)
+    // Later calls hit the cache.
+    let z: Int = try await cache.get("model") { 9 }
+    #expect(z == x)
+}
+
+@Test func failedResourceCreationIsRetried() async throws {
+    struct Boom: Error {}
+    let cache = ResourceCache()
+    await #expect(throws: Boom.self) { let _: Int = try await cache.get("m") { throw Boom() } }
+    let v: Int = try await cache.get("m") { 3 }
+    #expect(v == 3)
+}

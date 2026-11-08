@@ -75,6 +75,16 @@ enum Snapshot {
             model.workspace = .image
             await render(model, to: dir.appendingPathComponent("10-outpaint-panel.png"))
             print("graph: " + model.graph.jsonString())
+            // 11. The prompt assistant mid-run (progress + Stop in place of Enhance / Describe).
+            model.clearOutpaint(undoManager: nil)
+            model.setHiRes(false, undoManager: nil)
+            model.assistantMode = .describe
+            await render(model, to: dir.appendingPathComponent("11-assistant-running.png"))
+            model.assistantMode = nil
+            await render(model, to: dir.appendingPathComponent("12-assistant-idle.png"))
+            // 13. Settings with the assistant's instructions.
+            await render(SettingsView().environment(model), to: dir.appendingPathComponent("13-settings.png"),
+                         size: CGSize(width: 600, height: 640))
         }
     }
 

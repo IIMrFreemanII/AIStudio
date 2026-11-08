@@ -80,6 +80,13 @@ final class AppModel {
     var modelStatus: String = "Model not loaded"
     var modelLoading = false
 
+    // MARK: prompt assistant
+
+    /// The assistant task in progress (Enhance / Describe), if any.
+    var assistantMode: PromptAssistant.Mode?
+    @ObservationIgnored var assistantTask: Task<Void, Never>?
+    @ObservationIgnored var assistantRun: UUID?
+
     @ObservationIgnored let engine = Engine()
     @ObservationIgnored let registry = StandardNodes.makeRegistry()
     @ObservationIgnored private var runTask: Task<Void, Never>?

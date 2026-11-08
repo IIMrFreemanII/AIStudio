@@ -1,6 +1,6 @@
 # MLXComfyUI
 
-A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. The first supported model is Qwen-Image 2.1 Turbo.
+A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA. A prompt assistant uses the model's own language model to write prompts. The first supported model is Qwen-Image 2.1 Turbo.
 
 This is an independent project and is not affiliated with ComfyUI.
 
@@ -23,6 +23,7 @@ open build/MLXComfyUI.app
 ```
 
 - **Image** (⌘1): the result, with a live preview after every sampler step. The inspector holds the Simple controls: prompt, size presets, seed with a randomize option, steps, batch count and model folder. The Simple controls edit the first TextEncode, EmptyLatent and Sampler nodes of whatever graph is loaded.
+- **Prompt assistant:** under the prompt, **Enhance** rewrites a short idea as a detailed prompt, and **Describe Image** writes a prompt from the reference image. With a reference image set, Enhance turns a short edit request into a clear, specific instruction. The text streams into the prompt field; **Stop** keeps what's written so far, and ⌘Z restores the previous prompt. The instructions the assistant follows can be edited in Settings.
 - **Graph** (⌘2): the node editor working on the same graph.
   - Drag a node by its header. ⇧-drag on the background selects with a rectangle.
   - Drag an output onto an input to connect them. Drag a connected input away to detach it.
@@ -89,6 +90,7 @@ Generate without a graph:
 | `generate` | Text to image. Options: `--image` (condition image, repeatable), `--lora path[:strength]` (repeatable), `--size WxH`, `--seed`, `--save-steps`, `--dequantize` |
 | `make-test-lora` | Writes a synthetic LoRA. `--up-scale 0` makes a no-op one |
 | `vae-roundtrip` | Encodes and decodes an image and prints PSNR. Use it to check the VAE. `--tiled on` uses tiles |
+| `assist` | Prompt assistant: `--prompt "a cat"` enhances a prompt; `--mode describe --image x.png` describes an image; `--mode custom --instruction "…"` follows any instruction. `--temperature 0` is deterministic |
 | `tokenize` | Prints the Qwen token ids for a string |
 
 Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step and about 53 s end to end, with a peak of about 29 GB.
@@ -108,6 +110,8 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
   - `steps` 8 gives an evenly spaced schedule, so denoise 0.4 runs 3 refinement steps (about 45 s at 1536²). With `steps` 0 the checkpoint's distilled schedule is used; it ends at σ 0.41, so any denoise below 0.7 gets a single step and less added detail.
 - **Large images:** `VAEEncode` and `VAEDecode` process the image in overlapping tiles above about 1.25 MP (`tiled`: `auto`, `on` or `off`). A whole-image VAE pass peaks at about 16 GB at 1536² and 28 GB at 2048²; tiled, it stays near 8 GB at the same accuracy.
   - `Sampler.denoise` < 1 on an encoded latent gives img2img instead.
+- **Prompt assistant:** the `PromptAssistant` node (model, prompt, optional image, mode `enhance`, `describe` or `custom`) outputs a STRING; link it into `TextEncode.prompt`. See [examples/assistant.json](examples/assistant.json). It is cached like any node, so it reruns only when its own inputs change.
+  - Qwen-Image's text encoder is the full Qwen3-VL 8B chat model. Its LM head isn't needed for images, so it is loaded only on first use (8-bit, about 0.6 GB). Generation runs at about 28 tokens per second; a prompt takes about 5 s.
 - **LoRA:** the `LoRA` node (model, path, strength) returns a model that shares the base weights. Each target layer runs the LoRA as a low-rank side branch, because the base weights are 8-bit and can't be merged into.
   - Supported key formats: diffusers/PEFT (`lora_A`/`lora_B`), kohya/Comfy (`lora_down`/`lora_up` + `alpha`) and `lora_unet_…` underscore names.
   - Connect the LoRA model to both TextEncode and Sampler.
@@ -134,8 +138,9 @@ The executor:
   - `QwenImage21Transformer`: block-causal DiT. The prompt's K/V are cached once and each step runs only the image tokens.
   - `QwenImage21VAE`: the single-frame form of the causal 3D VAE.
   - `QwenImage21Pipeline`.
+  - `TextGenerator.swift`: KV-cached text generation with the same decoder stack (the prompt assistant).
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. It doesn't depend on MLX.
-- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
+- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.
   - `Engine`: an actor that owns the executor and the loaded models.

@@ -13,7 +13,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
         subcommands: [Run.self, Generate.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
-                      FitPreview.self, MakeTestLoRA.self,
+                      FitPreview.self, MakeTestLoRA.self, Assist.self,
                       Tokenize.self])
 }
 
@@ -315,5 +315,44 @@ struct Tokenize: AsyncParsableCommand {
         let url = URL(fileURLWithPath: model).appendingPathComponent("processor")
         let tok = try await AutoTokenizer.from(modelFolder: url)
         print(tok.encode(text: text, addSpecialTokens: false))
+    }
+}
+
+struct Assist: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Prompt assistant: enhance a prompt or describe an image with the model's language model.")
+
+    @Option var model = "qwen-turbo-mlx"
+    @Option(help: "The prompt to enhance, or extra guidance when describing.") var prompt = ""
+    @Option(help: "Image to describe, or the image an edit instruction refers to (repeatable).") var image: [String] = []
+    @Option(help: "enhance, describe or custom.") var mode = "enhance"
+    @Option(help: "System instruction for custom mode.") var instruction = ""
+    @Option var seed: UInt64 = 0
+    @Option(help: "0 = greedy.") var temperature: Float = 0.7
+    @Option var maxTokens = 320
+
+    func run() async throws {
+        guard let m = PromptAssistant.Mode(rawValue: mode) else { throw ValidationError("unknown mode \(mode)") }
+        let t0 = Date()
+        let pipe = try await QwenImage21Pipeline(directory: URL(fileURLWithPath: model))
+        log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t0), memoryString()))
+        let images = try image.map { ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: $0))) }
+        let (system, user) = PromptAssistant.messages(mode: m, prompt: prompt, hasImage: !images.isEmpty,
+                                                      instruction: instruction)
+        let t = Date()
+        var first: Date?
+        var count = 0
+        let text = try pipe.generateText(system: system, user: user, images: images,
+                                         options: TextGenerationOptions(maxTokens: maxTokens,
+                                                                        temperature: temperature, seed: seed)) { _ in
+            if first == nil { first = Date() }
+            count += 1
+            return true
+        }
+        let decodeTime = first.map { Date().timeIntervalSince($0) } ?? 0
+        log(String(format: "%d tokens, first after %.1fs, %.1f tok/s (%@)", count,
+                   (first ?? Date()).timeIntervalSince(t), Double(max(count - 1, 0)) / max(decodeTime, 1e-3),
+                   memoryString()))
+        print(PromptAssistant.clean(text))
     }
 }

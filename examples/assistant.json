@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": "model", "type": "LoadModel", "inputs": { "path": "qwen-turbo-mlx" }, "position": { "x": 40, "y": 140 } },
+    { "id": "assistant", "type": "PromptAssistant", "position": { "x": 340, "y": 40 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "prompt": "a cozy bookshop on a rainy evening",
+                  "mode": "enhance", "seed": 1, "temperature": 0.7, "max_tokens": 320 } },
+    { "id": "prompt", "type": "TextEncode", "position": { "x": 640, "y": 40 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "prompt": { "node": "assistant", "output": "prompt" } } },
+    { "id": "latent", "type": "EmptyLatent", "inputs": { "width": 1024, "height": 1024 }, "position": { "x": 640, "y": 300 } },
+    { "id": "sampler", "type": "Sampler", "position": { "x": 940, "y": 120 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "conditioning": { "node": "prompt", "output": "conditioning" },
+                  "latent": { "node": "latent", "output": "latent" }, "seed": 1, "steps": 0, "denoise": 1 } },
+    { "id": "decode", "type": "VAEDecode", "position": { "x": 1240, "y": 140 },
+      "inputs": { "model": { "node": "model", "output": "model" }, "latent": { "node": "sampler", "output": "latent" } } },
+    { "id": "save", "type": "SaveImage", "position": { "x": 1520, "y": 140 },
+      "inputs": { "image": { "node": "decode", "output": "image" }, "filename_prefix": "assistant", "directory": "outputs" } }
+  ]
+}

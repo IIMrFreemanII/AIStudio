@@ -38,16 +38,23 @@ public final class Qwen3TextEncoder {
     }
 
     public let config: Config
+    public let directory: URL
+    public let dtype: DType
     let embed: MLXArray
     let layers: [Layer]
     /// The vision tower, used when prompts carry condition images.
     public let vision: Qwen3VisionTower
+    /// LM head for text generation, loaded on first use (TextGenerator.swift).
+    var lmHeadStorage: LMHead?
+    let lmHeadLock = NSLock()
     public var mropeSection = [24, 20, 20]
 
     public init(directory: URL, dtype: DType = .bfloat16) throws {
+        self.directory = directory
+        self.dtype = dtype
         config = try Config(url: directory.appendingPathComponent("config.json"))
         let store = try WeightStore(directory: directory)
-        // The LM head is never used (features, not tokens, are what we want).
+        // The LM head isn't needed for features; text generation loads it lazily (see TextGenerator.swift).
         store.remove(prefix: "lm_head.")
         vision = try Qwen3VisionTower(
             store: store, config: Qwen3VisionTower.Config(textEncoderConfig: directory.appendingPathComponent("config.json")),
@@ -91,31 +98,73 @@ public final class Qwen3TextEncoder {
     /// Returns the output of the last decoder layer *before* the final RMSNorm, `[1, L, hidden]`.
     /// This is the feature the Qwen-Image 2.1 transformer was trained on.
     public func hiddenStates(tokens: [Int], visual: VisualInputs? = nil) -> MLXArray {
-        let c = config
         let L = tokens.count
+        // Text-only prompts have equal positions on every mRoPE axis: plain RoPE. Otherwise build interleaved mRoPE.
+        let positions: RotaryPositions = visual.map { .mrope(mropeTables($0.positions)) } ?? .sequential(offset: 0)
+        return forward(embeddings(for: tokens, visual: visual), positions: positions,
+                       mask: L > 1 ? causalMask(L, dtype: embed.dtype) : nil, cache: nil, visual: visual)
+    }
+
+    /// Token embeddings `[1, L, hidden]` with the visual embeddings scattered into the image runs.
+    func embeddings(for tokens: [Int], visual: VisualInputs?) -> MLXArray {
         var x = embed[MLXArray(tokens.map { Int32($0) })]
         if let visual {
-            let rows = Self.scatterRows(visual.embeddings.asType(x.dtype), runs: visual.runs, length: L)
-            x = MLX.where(Self.rowMask(L, runs: visual.runs), rows, x)
+            let rows = Self.scatterRows(visual.embeddings.asType(x.dtype), runs: visual.runs, length: tokens.count)
+            x = MLX.where(Self.rowMask(tokens.count, runs: visual.runs), rows, x)
         }
-        x = x.expandedDimensions(axis: 0)
-        let mask: MLXArray? = L > 1 ? causalMask(L, dtype: x.dtype) : nil
+        return x.expandedDimensions(axis: 0)
+    }
+
+    /// Rotary positions for a forward pass: consecutive positions from `offset` (text), or precomputed mRoPE tables.
+    enum RotaryPositions {
+        case sequential(offset: Int)
+        case mrope((MLXArray, MLXArray))
+    }
+
+    /// Keys and values of every layer for the tokens seen so far (text generation).
+    public final class KVCache {
+        var keys: [MLXArray] = []
+        var values: [MLXArray] = []
+        /// Tokens held in the cache.
+        public internal(set) var length = 0
+        /// RoPE position of the next token. After an image this is ahead of `length` (mRoPE skips positions).
+        public internal(set) var nextPosition = 0
+        public init() {}
+    }
+
+    /// The decoder stack on `x` `[1, L, hidden]`; returns the last layer's output before the final norm.
+    /// With a `cache`, the new keys/values are appended to it and attention covers the cached tokens too.
+    func forward(_ input: MLXArray, positions: RotaryPositions, mask: MLXArray?, cache: KVCache?,
+                 visual: VisualInputs?) -> MLXArray {
+        let c = config
+        let L = input.dim(1)
+        var x = input
         let scale = 1 / sqrt(Float(c.headDim))
-        // Text-only prompts have equal positions on every mRoPE axis: plain RoPE. Otherwise build interleaved mRoPE.
-        let mrope = visual.map { mropeTables($0.positions) }
         for (i, layer) in layers.enumerated() {
             let h = rmsNorm(x, weight: layer.inputNorm, eps: c.rmsEps)
             var q = layer.q(h).reshaped(1, L, c.numHeads, c.headDim)
             var k = layer.k(h).reshaped(1, L, c.numKVHeads, c.headDim)
-            let v = layer.v(h).reshaped(1, L, c.numKVHeads, c.headDim).transposed(0, 2, 1, 3)
+            var v = layer.v(h).reshaped(1, L, c.numKVHeads, c.headDim).transposed(0, 2, 1, 3)
             q = rmsNorm(q, weight: layer.qNorm, eps: c.rmsEps).transposed(0, 2, 1, 3)
             k = rmsNorm(k, weight: layer.kNorm, eps: c.rmsEps).transposed(0, 2, 1, 3)
-            if let mrope {
-                q = applyRotateHalf(q, mrope)
-                k = applyRotateHalf(k, mrope)
-            } else {
-                q = RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
-                k = RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: 0)
+            switch positions {
+            case .mrope(let tables):
+                q = applyRotateHalf(q, tables)
+                k = applyRotateHalf(k, tables)
+            case .sequential(let offset):
+                q = RoPE(q, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: offset)
+                k = RoPE(k, dimensions: c.headDim, traditional: false, base: c.ropeTheta, scale: 1, offset: offset)
+            }
+            if let cache {
+                if i < cache.keys.count {
+                    k = concatenated([cache.keys[i], k], axis: 2)
+                    v = concatenated([cache.values[i], v], axis: 2)
+                    cache.keys[i] = k
+                    cache.values[i] = v
+                } else {
+                    cache.keys.append(k)
+                    cache.values.append(v)
+                }
             }
             let a = scaledDotProductAttention(queries: q, keys: k, values: v, scale: scale, mask: mask)
             x = x + layer.o(a.transposed(0, 2, 1, 3).reshaped(1, L, -1))
@@ -126,6 +175,7 @@ public final class Qwen3TextEncoder {
                     .expandedDimensions(axis: 0)
             }
         }
+        if let cache { cache.length += L }
         return x
     }
 

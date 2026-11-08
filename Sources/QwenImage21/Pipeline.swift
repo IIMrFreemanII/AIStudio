@@ -131,8 +131,8 @@ public final class QwenImage21Pipeline: DiffusionModel {
         let height: Int
     }
 
-    /// Resizes to ~1 MP (same aspect), then runs the vision tower (alpha over white) and the VAE (RGBA).
-    func prepare(_ image: MLXArray) throws -> PreparedImage {
+    /// A condition image resized to ~1 MP (same aspect, multiples of 32): RGBA, and RGB with alpha over white.
+    func conditioningRGB(_ image: MLXArray) throws -> (rgba: MLXArray, rgb: MLXArray, width: Int, height: Int) {
         let (w, h) = Self.dimensions(area: 1024 * 1024, aspect: Double(image.dim(1)) / Double(image.dim(0)))
         let rgba: MLXArray
         if image.dim(0) == h && image.dim(1) == w && image.dim(2) == 4 {
@@ -141,7 +141,12 @@ public final class QwenImage21Pipeline: DiffusionModel {
             rgba = ImageArray.array(from: try ImageArray.cgImage(from: image, keepAlpha: true), width: w, height: h)
         }
         let alpha = rgba[0..., 0..., 3...]
-        let rgb = rgba[0..., 0..., ..<3] * alpha + (1 - alpha)
+        return (rgba, rgba[0..., 0..., ..<3] * alpha + (1 - alpha), w, h)
+    }
+
+    /// Resizes to ~1 MP (same aspect), then runs the vision tower (alpha over white) and the VAE (RGBA).
+    func prepare(_ image: MLXArray) throws -> PreparedImage {
+        let (rgba, rgb, w, h) = try conditioningRGB(image)
         let vision = textEncoder.vision(rgb)
         let z = vae.encode((rgba * 2 - 1).expandedDimensions(axis: 0))  // [1, h/16, w/16, 64]
         let lh = h / Self.vaeScale, lw = w / Self.vaeScale
@@ -161,35 +166,9 @@ public final class QwenImage21Pipeline: DiffusionModel {
         }
 
         let prepared = try images.map(prepare)
-        // Expand each <|image_pad|> to the image's merged-token count and lay out mRoPE positions.
-        var ids: [Int] = []
-        var runs: [(start: Int, count: Int)] = []
-        var positions: [(Int32, Int32, Int32)] = []
-        var cursor: Int32 = 0
-        var next = 0
-        for t in tokens(for: prompt, imageCount: images.count) {
-            if t == Self.imagePadToken, next < prepared.count {
-                let v = prepared[next].vision
-                runs.append((ids.count, v.gridH * v.gridW))
-                for r in 0..<v.gridH {
-                    for c in 0..<v.gridW { positions.append((cursor, cursor + Int32(r), cursor + Int32(c))) }
-                }
-                ids += Array(repeating: t, count: v.gridH * v.gridW)
-                cursor += Int32(max(v.gridH, v.gridW))
-                next += 1
-            } else {
-                ids.append(t)
-                positions.append((cursor, cursor, cursor))
-                cursor += 1
-            }
-        }
-        let visual = Qwen3TextEncoder.VisualInputs(
-            runs: runs,
-            embeddings: concatenated(prepared.map { $0.vision.embeddings }, axis: 0),
-            deepstack: (0 ..< prepared[0].vision.deepstack.count).map { k in
-                concatenated(prepared.map { $0.vision.deepstack[k] }, axis: 0)
-            },
-            positions: positions)
+        let (ids, visual) = Self.expandImagePads(tokens(for: prompt, imageCount: images.count),
+                                                 visions: prepared.map(\.vision))
+        let runs = visual.runs
         let hidden = textEncoder.hiddenStates(tokens: ids, visual: visual)
         eval(hidden)
 
@@ -208,6 +187,42 @@ public final class QwenImage21Pipeline: DiffusionModel {
         let last = prepared.last!
         return Conditioning(family: family, payload: PromptPayload(embeddings: embeds, prefix: prefix),
                             suggestedSize: (last.width, last.height))
+    }
+
+    /// Expands each `<|image_pad|>` to its image's merged-token count and lays out the mRoPE positions
+    /// (`t` constant over an image, `h`/`w` its grid; text after it continues from the largest position + 1).
+    static func expandImagePads(_ tokens: [Int], visions: [Qwen3VisionTower.Output])
+        -> (ids: [Int], visual: Qwen3TextEncoder.VisualInputs)
+    {
+        var ids: [Int] = []
+        var runs: [(start: Int, count: Int)] = []
+        var positions: [(Int32, Int32, Int32)] = []
+        var cursor: Int32 = 0
+        var next = 0
+        for t in tokens {
+            if t == imagePadToken, next < visions.count {
+                let v = visions[next]
+                runs.append((ids.count, v.gridH * v.gridW))
+                for r in 0..<v.gridH {
+                    for c in 0..<v.gridW { positions.append((cursor, cursor + Int32(r), cursor + Int32(c))) }
+                }
+                ids += Array(repeating: t, count: v.gridH * v.gridW)
+                cursor += Int32(max(v.gridH, v.gridW))
+                next += 1
+            } else {
+                ids.append(t)
+                positions.append((cursor, cursor, cursor))
+                cursor += 1
+            }
+        }
+        let visual = Qwen3TextEncoder.VisualInputs(
+            runs: runs,
+            embeddings: visions.isEmpty ? MLXArray.zeros([0, 1]) : concatenated(visions.map(\.embeddings), axis: 0),
+            deepstack: (0 ..< (visions.first?.deepstack.count ?? 0)).map { k in
+                concatenated(visions.map { $0.deepstack[k] }, axis: 0)
+            },
+            positions: positions)
+        return (ids, visual)
     }
 
     public func snapSize(width: Int, height: Int) -> (width: Int, height: Int) {

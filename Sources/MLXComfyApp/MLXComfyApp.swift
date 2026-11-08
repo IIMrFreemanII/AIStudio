@@ -18,6 +18,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let idea = SmokeTest.argument("--smoke-assist") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runAssistant(AppDelegate.model!, idea: idea)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let dir = Snapshot.requestedDirectory {
             Task { @MainActor in
                 await Snapshot.renderAll(to: dir)

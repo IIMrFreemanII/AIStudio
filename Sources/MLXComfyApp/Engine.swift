@@ -71,6 +71,24 @@ actor Engine {
         return model.displayName
     }
 
+    /// Runs the prompt assistant on the (loaded, or loaded now) model. `onText` gets the full text after each token;
+    /// cancelling the calling task stops generation.
+    func generateText(modelPath: String, system: String, user: String, imagePaths: [String],
+                      options: TextGenerationOptions, onText: @escaping (String) -> Void) async throws -> String {
+        let url = URL(fileURLWithPath: (modelPath as NSString).expandingTildeInPath).standardizedFileURL
+        let model: DiffusionModel = try await executor.resources.get("model:\(url.path)") {
+            try await ModelRegistry.shared.load(url)
+        }
+        guard let writer = model as? TextGenerating else {
+            throw DiffusionError.unknownModel(url, "\(model.displayName) can't generate text")
+        }
+        let images = try imagePaths.map { ImageArray.array(from: try ImageArray.load(URL(fileURLWithPath: $0))) }
+        return try writer.generateText(system: system, user: user, images: images, options: options) { partial in
+            onText(partial)
+            return !Task.isCancelled
+        }
+    }
+
     func isLoaded(modelPath: String) -> Bool {
         let url = URL(fileURLWithPath: (modelPath as NSString).expandingTildeInPath).standardizedFileURL
         return executor.resources.contains("model:\(url.path)")

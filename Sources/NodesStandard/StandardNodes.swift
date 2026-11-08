@@ -11,7 +11,7 @@ public enum StandardNodes {
         SaveImageNode.self, PreviewImageNode.self, LoadImageNode.self,
         VAEEncodeNode.self, LoadMaskNode.self, SetLatentMaskNode.self, ImageCompositeMaskedNode.self,
         LoRANode.self,
-        FeatherMaskNode.self, PadImageNode.self, ImageScaleNode.self,
+        FeatherMaskNode.self, PadImageNode.self, ImageScaleNode.self, PromptAssistantNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.

@@ -1,6 +1,7 @@
 import AppKit
 import GraphRuntime
 import ImageIO
+import MLXDiffusionCore
 import SwiftUI
 
 /// Bindings onto literal node inputs, with undo.
@@ -83,6 +84,8 @@ struct SimplePanel: View {
                         .font(.body)
                         .frame(minHeight: 120)
                         .scrollContentBackground(.hidden)
+                        .disabled(model.assistantMode != nil)
+                    assistantBar
                 } else {
                     missing("TextEncode")
                 }
@@ -236,6 +239,36 @@ struct SimplePanel: View {
                 }
             }
         }
+    }
+
+    /// Enhance / Describe, or progress and Stop while the assistant writes.
+    @ViewBuilder var assistantBar: some View {
+        HStack(spacing: 8) {
+            if let mode = model.assistantMode {
+                ProgressView().controlSize(.small)
+                Text(mode == .describe ? "Describing the image…" : "Rewriting the prompt…")
+                    .font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("Stop") { model.stopAssistant() }
+            } else {
+                Button { model.runAssistant(.enhance, undoManager: undoManager) } label: {
+                    Label("Enhance", systemImage: "wand.and.stars")
+                }
+                .disabled(!model.canEnhance)
+                .help(model.referenceImagePath != nil
+                      ? "Rewrite the edit instruction as a clear, specific one for this image"
+                      : "Rewrite the idea as a detailed prompt")
+                if model.referenceImagePath != nil {
+                    Button { model.runAssistant(.describe, undoManager: undoManager) } label: {
+                        Label("Describe Image", systemImage: "text.viewfinder")
+                    }
+                    .disabled(!model.canDescribe)
+                    .help("Write a prompt that describes the reference image")
+                }
+                Spacer()
+            }
+        }
+        .controlSize(.small)
     }
 
     func featherSlider(_ node: String, _ b: LiteralBindings) -> some View {
@@ -454,9 +487,15 @@ struct SettingsView: View {
             }
             Text("New graphs save into the output folder; existing SaveImage nodes keep their own directory.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section("Prompt Assistant") {
+                AssistantPromptEditor(title: "Enhance", key: "enhance", fallback: PromptAssistant.enhanceSystem)
+                AssistantPromptEditor(title: "Enhance with a reference image", key: "edit",
+                                      fallback: PromptAssistant.editSystem)
+                AssistantPromptEditor(title: "Describe Image", key: "describe", fallback: PromptAssistant.describeSystem)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
+        .frame(width: 560)
         .padding()
     }
 }
@@ -503,5 +542,36 @@ extension Thumbnail {
               let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int
         else { return nil }
         return (w, h)
+    }
+}
+
+/// One editable assistant system prompt; empty means the built-in default.
+struct AssistantPromptEditor: View {
+    let title: String
+    let key: String
+    let fallback: String
+    @AppStorage private var text: String
+
+    init(title: String, key: String, fallback: String) {
+        self.title = title
+        self.key = key
+        self.fallback = fallback
+        _text = AppStorage(wrappedValue: "", AppModel.assistantDefaultsKey(key))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.callout)
+                Spacer()
+                if !text.isEmpty { Button("Use Default") { text = "" }.controlSize(.small) }
+                else { Button("Customize") { text = fallback }.controlSize(.small) }
+            }
+            if text.isEmpty {
+                Text(fallback).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            } else {
+                TextEditor(text: $text).font(.callout).frame(minHeight: 80).scrollContentBackground(.hidden)
+            }
+        }
     }
 }

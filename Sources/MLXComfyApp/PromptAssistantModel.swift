@@ -1,0 +1,90 @@
+import Foundation
+import GraphRuntime
+import MLXDiffusionCore
+
+/// Enhance / Describe in the Simple panel: runs the model's language model directly (not through the queue) and
+/// streams the answer into the first Text Encode's prompt. The whole replacement is one undo step.
+extension AppModel {
+    /// User-edited system prompts, keyed like ``PromptAssistant/messages(mode:prompt:hasImage:instruction:overrides:)``.
+    static let assistantOverrideKeys = ["enhance", "edit", "describe"]
+
+    static func assistantDefaultsKey(_ key: String) -> String { "assistant.system.\(key)" }
+
+    var assistantOverrides: [String: String] {
+        guard persistSettings else { return [:] }
+        var out: [String: String] = [:]
+        for k in Self.assistantOverrideKeys {
+            if let s = UserDefaults.standard.string(forKey: Self.assistantDefaultsKey(k)) { out[k] = s }
+        }
+        return out
+    }
+
+    var canEnhance: Bool {
+        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { return false }
+        if case .link? = te.inputs["prompt"] { return false }  // driven by another node
+        return !(literal(te.id, "prompt")?.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var canDescribe: Bool {
+        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { return false }
+        if case .link? = te.inputs["prompt"] { return false }
+        return referenceImagePath != nil
+    }
+
+    /// Starts Enhance or Describe. `completion` (for the smoke test) gets the final prompt, or nil on failure.
+    func runAssistant(_ mode: PromptAssistant.Mode, undoManager: UndoManager?,
+                      completion: ((String?) -> Void)? = nil) {
+        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { completion?(nil); return }
+        let current = literal(te.id, "prompt")?.description ?? ""
+        let image = referenceImagePath
+        if mode == .describe && image == nil { completion?(nil); return }
+        // Describe starts from the image alone; the old prompt usually belongs to something else.
+        let (system, user) = PromptAssistant.messages(mode: mode, prompt: mode == .describe ? "" : current,
+                                                      hasImage: image != nil, overrides: assistantOverrides)
+        let options = TextGenerationOptions(maxTokens: 320, temperature: mode == .describe ? 0.3 : 0.7,
+                                            seed: UInt64.random(in: 0...UInt64(UInt32.max)))
+        let start = graph
+        let run = UUID()
+        assistantRun = run
+        assistantMode = mode
+        lastError = nil
+        let path = modelPath
+        let nodeID = te.id
+        assistantTask = Task { [weak self] in
+            guard let self else { return }
+            var result: String?
+            do {
+                let text = try await engine.generateText(
+                    modelPath: path, system: system, user: user, imagePaths: image.map { [$0] } ?? [],
+                    options: options) { partial in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.assistantRun == run else { return }
+                        self.setPromptLive(PromptAssistant.clean(partial), node: nodeID)
+                    }
+                }
+                result = PromptAssistant.clean(text)
+            } catch is CancellationError {
+            } catch {
+                lastError = "Prompt assistant: \(error)"
+            }
+            assistantRun = nil
+            if let result, !result.isEmpty { setPromptLive(result, node: nodeID) }
+            if graph != start {
+                commitLiveEdit(from: start, actionName: mode == .describe ? "Describe Image" : "Enhance Prompt",
+                               undoManager: undoManager)
+            }
+            assistantMode = nil
+            assistantTask = nil
+            completion?(result)
+        }
+    }
+
+    /// Stops the assistant; the text written so far stays (one undo step restores the previous prompt).
+    func stopAssistant() { assistantTask?.cancel() }
+
+    private func setPromptLive(_ text: String, node: String) {
+        guard var n = graph[node] else { return }
+        n.inputs["prompt"] = .value(.string(text))
+        graph[node] = n
+    }
+}

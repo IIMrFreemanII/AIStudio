@@ -195,17 +195,40 @@ public final class NodeRegistry {
 /// Long-lived objects shared across runs (loaded models), keyed by a caller-chosen string.
 public final class ResourceCache {
     private var items: [String: Any] = [:]
+    /// Creations in progress, so concurrent callers share one load instead of building the resource twice.
+    private var pending: [String: Task<Any, Error>] = [:]
     private let lock = NSLock()
     public init() {}
 
-    public func get<T>(_ key: String, create: () async throws -> T) async throws -> T {
+    /// Returns the cached value for `key`, creating it once. Callers that arrive while it is being created wait
+    /// for that same creation (loading a model twice at once would double its memory and race on the GPU).
+    public func get<T>(_ key: String, create: @escaping () async throws -> T) async throws -> T {
+        let task: Task<Any, Error>
         lock.lock()
         if let v = items[key] as? T { lock.unlock(); return v }
+        if let p = pending[key] {
+            task = p
+        } else {
+            task = Task { try await create() }
+            pending[key] = task
+        }
         lock.unlock()
-        let v = try await create()
-        lock.lock(); items[key] = v; lock.unlock()
-        return v
+        do {
+            let v = try await task.value
+            lock.lock()
+            if pending[key] == task { pending[key] = nil; items[key] = v }
+            lock.unlock()
+            guard let t = v as? T else { throw ResourceError.typeMismatch(key) }
+            return t
+        } catch {
+            lock.lock()
+            if pending[key] == task { pending[key] = nil }
+            lock.unlock()
+            throw error
+        }
     }
+
+    public enum ResourceError: Error { case typeMismatch(String) }
 
     public func contains(_ key: String) -> Bool { lock.lock(); defer { lock.unlock() }; return items[key] != nil }
     public func remove(_ key: String) { lock.lock(); items[key] = nil; lock.unlock() }
