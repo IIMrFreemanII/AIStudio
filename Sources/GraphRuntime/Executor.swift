@@ -117,7 +117,8 @@ public final class GraphExecutor {
         return try topologicalOrder(graph)
     }
 
-    func topologicalOrder(_ graph: Graph) throws -> [GraphNode] {
+    /// Nodes in dependency order; throws ``GraphError/cycle(_:)`` if there is none.
+    public func topologicalOrder(_ graph: Graph) throws -> [GraphNode] {
         var indegree: [String: Int] = [:]
         var dependents: [String: [String]] = [:]
         for n in graph.nodes {

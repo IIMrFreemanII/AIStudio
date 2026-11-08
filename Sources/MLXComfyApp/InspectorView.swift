@@ -1,0 +1,311 @@
+import AppKit
+import GraphRuntime
+import SwiftUI
+
+/// Bindings onto literal node inputs, with undo.
+@MainActor
+struct LiteralBindings {
+    let model: AppModel
+    let undoManager: UndoManager?
+
+    func string(_ node: String, _ input: String) -> Binding<String> {
+        Binding(
+            get: { model.literal(node, input)?.description ?? "" },
+            set: { model.setLiteral(.string($0), node: node, input: input, undoManager: undoManager) })
+    }
+
+    func int(_ node: String, _ input: String) -> Binding<Int> {
+        Binding(
+            get: {
+                switch model.literal(node, input) {
+                case .int(let v)?: return v
+                case .double(let d)?: return Int(d)
+                default: return 0
+                }
+            },
+            set: { model.setLiteral(.int($0), node: node, input: input, undoManager: undoManager) })
+    }
+
+    func double(_ node: String, _ input: String) -> Binding<Double> {
+        Binding(
+            get: {
+                switch model.literal(node, input) {
+                case .int(let v)?: return Double(v)
+                case .double(let d)?: return d
+                default: return 0
+                }
+            },
+            set: { model.setLiteral(.double($0), node: node, input: input, undoManager: undoManager) })
+    }
+
+    func bool(_ node: String, _ input: String) -> Binding<Bool> {
+        Binding(
+            get: { if case .bool(let b)? = model.literal(node, input) { return b } else { return false } },
+            set: { model.setLiteral(.bool($0), node: node, input: input, undoManager: undoManager) })
+    }
+}
+
+struct InspectorView: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.workspace == .graph, model.selection.count == 1, let id = model.selection.first,
+           let node = model.graph[id] {
+            NodeInspector(node: node)
+        } else if model.workspace == .graph, model.selection.count > 1 {
+            ContentUnavailableView("\(model.selection.count) nodes selected", systemImage: "square.on.square",
+                                   description: Text("Select a single node to edit its values."))
+        } else {
+            SimplePanel()
+        }
+    }
+}
+
+/// Simple mode: edits the first TextEncode / EmptyLatent / Sampler nodes of whatever graph is loaded.
+struct SimplePanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let prompt = model.firstNode(ofType: "TextEncode")
+        let latent = model.firstNode(ofType: "EmptyLatent")
+        let sampler = model.firstNode(ofType: "Sampler")
+
+        Form {
+            Section("Prompt") {
+                if let prompt {
+                    TextEditor(text: b.string(prompt.id, "prompt"))
+                        .font(.body)
+                        .frame(minHeight: 120)
+                        .scrollContentBackground(.hidden)
+                } else {
+                    missing("TextEncode")
+                }
+            }
+
+            Section("Size") {
+                if let latent {
+                    let w = b.int(latent.id, "width"), h = b.int(latent.id, "height")
+                    Picker("Preset", selection: Binding(
+                        get: { GraphTemplates.sizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1 },
+                        set: { i in
+                            guard i >= 0 else { return }
+                            let p = GraphTemplates.sizePresets[i]
+                            model.mutate("Change Size", undoManager: undoManager) { g in
+                                try? g.setValue(.int(p.width), node: latent.id, input: "width")
+                                try? g.setValue(.int(p.height), node: latent.id, input: "height")
+                            }
+                        })) {
+                        ForEach(GraphTemplates.sizePresets.indices, id: \.self) { i in
+                            Text(GraphTemplates.sizePresets[i].name).tag(i)
+                        }
+                        Text("Custom").tag(-1)
+                    }
+                    HStack {
+                        TextField("Width", value: w, format: .number.grouping(.never))
+                        Text("×").foregroundStyle(.secondary)
+                        TextField("Height", value: h, format: .number.grouping(.never))
+                    }
+                    .multilineTextAlignment(.trailing)
+                } else {
+                    missing("EmptyLatent")
+                }
+            }
+
+            Section("Sampling") {
+                if let sampler {
+                    HStack {
+                        TextField("Seed", value: b.int(sampler.id, "seed"), format: .number.grouping(.never))
+                        Button { b.int(sampler.id, "seed").wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
+                            Image(systemName: "dice")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("New random seed")
+                    }
+                    Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
+                    Stepper(value: b.int(sampler.id, "steps"), in: 0...100) {
+                        let s = b.int(sampler.id, "steps").wrappedValue
+                        LabeledContent("Steps", value: s == 0 ? "Model default" : "\(s)")
+                    }
+                } else {
+                    missing("Sampler")
+                }
+                Stepper(value: $model.batchCount, in: 1...16) {
+                    LabeledContent("Batch", value: "\(model.batchCount) image\(model.batchCount == 1 ? "" : "s")")
+                }
+            }
+
+            Section("Model") {
+                LabeledContent("Status") {
+                    HStack(spacing: 6) {
+                        if model.modelLoading { ProgressView().controlSize(.mini) }
+                        Text(model.modelStatus).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                LabeledContent("Folder") {
+                    Text((model.modelPath as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                }
+                Button("Choose Model Folder…") { chooseModel() }
+            }
+        }
+        .formStyle(.grouped)
+        .safeAreaInset(edge: .bottom) {
+            Button { model.enqueue(undoManager: undoManager) } label: {
+                Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate", systemImage: "sparkles")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.return, modifiers: .command)
+            .padding(12)
+            .background(.bar)
+        }
+    }
+
+    func missing(_ type: String) -> some View {
+        Text("This graph has no \(type) node.").foregroundStyle(.secondary)
+    }
+
+    func chooseModel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose a diffusers-layout model folder (with model_index.json)."
+        if panel.runModal() == .OK, let url = panel.url {
+            model.applyModelPath(url.path, undoManager: undoManager)
+            model.preloadModel()
+        }
+    }
+}
+
+/// Graph mode: every literal input of the selected node.
+struct NodeInspector: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
+    let node: GraphNode
+
+    var body: some View {
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let schema = model.schema(for: node)
+        Form {
+            Section {
+                LabeledContent("Type", value: schema?.displayName ?? node.type)
+                LabeledContent("ID", value: node.id)
+                if let state = model.nodeStates[node.id] { LabeledContent("Last run", value: describe(state)) }
+            }
+            if let schema {
+                Section("Inputs") {
+                    ForEach(schema.inputs, id: \.name) { spec in
+                        if case .link(let src, let out)? = node.inputs[spec.name] {
+                            LabeledContent(spec.name, value: "← \(src).\(out)")
+                        } else if spec.type.isScalar {
+                            editor(spec, b)
+                        } else {
+                            LabeledContent(spec.name) {
+                                Text("not connected").foregroundStyle(spec.optional ? Color.secondary : Color.red)
+                            }
+                        }
+                    }
+                }
+                if !schema.outputs.isEmpty {
+                    Section("Outputs") {
+                        ForEach(schema.outputs, id: \.name) { o in
+                            LabeledContent(o.name, value: o.type.rawValue)
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    func editor(_ spec: InputSpec, _ b: LiteralBindings) -> some View {
+        switch (spec.type, spec.widget) {
+        case (.string, .text(multiline: true)?):
+            VStack(alignment: .leading) {
+                Text(spec.name).font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: b.string(node.id, spec.name)).frame(minHeight: 120)
+                    .scrollContentBackground(.hidden)
+            }
+        case (.string, .filePath?):
+            HStack {
+                TextField(spec.name, text: b.string(node.id, spec.name))
+                Button("Choose…") {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    if panel.runModal() == .OK, let url = panel.url { b.string(node.id, spec.name).wrappedValue = url.path }
+                }
+            }
+        case (.string, .choice(let options)?):
+            Picker(spec.name, selection: b.string(node.id, spec.name)) {
+                ForEach(options, id: \.self) { Text($0).tag($0) }
+            }
+        case (.string, _):
+            TextField(spec.name, text: b.string(node.id, spec.name))
+        case (.int, .seed?):
+            HStack {
+                TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+                Button { b.int(node.id, spec.name).wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
+                    Image(systemName: "dice")
+                }.buttonStyle(.borderless)
+            }
+        case (.int, _):
+            TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+        case (.float, _):
+            TextField(spec.name, value: b.double(node.id, spec.name), format: .number)
+        case (.bool, _):
+            Toggle(spec.name, isOn: b.bool(node.id, spec.name))
+        default:
+            LabeledContent(spec.name, value: spec.type.rawValue)
+        }
+    }
+
+    func describe(_ s: NodeRunState) -> String {
+        switch s {
+        case .pending: return "waiting"
+        case .running(let step, let total): return total > 0 ? "running \(step)/\(total)" : "running"
+        case .cached: return "cached"
+        case .done(let secs, let peak):
+            return String(format: "%.2fs", secs) + (peak.map { String(format: ", peak %.1f GB", Double($0) / 1e9) } ?? "")
+        case .failed(let m): return "failed: \(m)"
+        }
+    }
+}
+
+struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        Form {
+            LabeledContent("Model folder") {
+                HStack {
+                    Text(model.modelPath).lineLimit(1).truncationMode(.middle)
+                    Button("Choose…") {
+                        let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
+                        if p.runModal() == .OK, let u = p.url { model.applyModelPath(u.path, undoManager: undoManager) }
+                    }
+                }
+            }
+            LabeledContent("Output folder") {
+                HStack {
+                    Text(model.outputDirectory).lineLimit(1).truncationMode(.middle)
+                    Button("Choose…") {
+                        let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
+                        p.canCreateDirectories = true
+                        if p.runModal() == .OK, let u = p.url { model.outputDirectory = u.path }
+                    }
+                }
+            }
+            Text("New graphs save into the output folder; existing SaveImage nodes keep their own directory.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .formStyle(.grouped)
+        .frame(width: 520)
+        .padding()
+    }
+}

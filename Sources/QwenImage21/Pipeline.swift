@@ -133,6 +133,11 @@ public final class QwenImage21Pipeline: DiffusionModel {
         return out
     }
 
+    public func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray? {
+        let (h, w) = latentSize(width: width, height: height)
+        return QwenImage21LatentPreview.rgb(latents, h: h, w: w)
+    }
+
     // MARK: convenience
 
     /// Prompt → RGBA `[H, W, 4]` in `[0, 1]`, through the same ``DiffusionModel/sample`` loop the graph uses.

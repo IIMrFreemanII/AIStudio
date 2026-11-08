@@ -3,6 +3,44 @@
 A native macOS, ComfyUI-style image generator: pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), no Python at runtime.
 The first model is Qwen-Image 2.1 Turbo, an 8-bit MLX checkpoint in `qwen-turbo-mlx/`.
 
+## App
+
+Build `build/MLXComfyUI.app` and open it:
+
+```bash
+scripts/build-app.sh
+```
+
+```bash
+open build/MLXComfyUI.app
+```
+
+- **Image** (⌘1): the result, with a live preview after every sampler step. The inspector holds the Simple controls: prompt, size presets, seed with a randomize option, steps, batch count and model folder. The Simple controls edit the first TextEncode, EmptyLatent and Sampler nodes of whatever graph is loaded.
+- **Graph** (⌘2): the node editor working on the same graph.
+  - Drag a node by its header. ⇧-drag on the background selects with a rectangle.
+  - Drag an output onto an input to connect them. Drag a connected input away to detach it.
+  - Scroll to pan. ⌘-scroll or pinch to zoom.
+  - Double-click the background or press ⌘K to add a node. ⌘D duplicates the selection and ⌫ deletes it.
+  - Every edit can be undone.
+  - The running node is outlined, and each node shows its time or a "cached" badge.
+- **Sidebar:** the queue (cancel or reorder jobs) and history (the PNGs in the output folder). Right-click a history item to restore its graph.
+- **Restoring a graph:** drop a PNG made by MLXComfyUI anywhere on the window. ⌘O opens a graph JSON file or such a PNG. ⌘S saves the graph.
+- **Model:** loaded at launch and kept in memory. The toolbar gauge shows MLX memory use.
+
+Images are saved to `~/Pictures/MLXComfyUI` by default; change this in Settings (⌘,).
+
+To check the app without clicking through it, use these launch flags:
+
+```bash
+build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --smoke-test "a lighthouse at dusk"
+```
+
+```bash
+build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --snapshot /tmp/snaps
+```
+
+`--smoke-test` queues one job through the same path as the Generate button and exits with status 0 on success. `--snapshot` renders the window offscreen to PNG files.
+
 ## Build
 
 SwiftPM on the command line cannot compile MLX's Metal shaders, so build with `xcodebuild`:
@@ -66,6 +104,10 @@ The executor:
   - `QwenImage21Pipeline`.
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. It doesn't depend on MLX.
 - `Sources/NodesStandard`: LoadModel, TextEncode, EmptyLatent, Sampler, VAEDecode, SaveImage, PreviewImage and LoadImage.
+- `Sources/MLXComfyApp`: the SwiftUI app.
+  - `AppModel`: the document graph with undo, the queue, run state and history.
+  - `Engine`: an actor that owns the executor and the loaded models.
+  - `GraphEditor/`: the node editor.
 - `Sources/mlxcomfy-cli`: the command line front end.
 
 The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transformer_qwenimage21.py` and `autoencoder_kl_qwenimage21.py`.

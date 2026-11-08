@@ -55,6 +55,13 @@ public protocol DiffusionModel: AnyObject {
 
     /// Packed latents → RGBA `[H, W, 4]` in `[0, 1]`.
     func decode(_ latents: MLXArray, width: Int, height: Int) -> MLXArray
+
+    /// Cheap low-resolution RGB `[h, w, 3]` preview of packed latents, or `nil` if the model has none.
+    func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray?
+}
+
+extension DiffusionModel {
+    public func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray? { nil }
 }
 
 public enum DiffusionError: Error, CustomStringConvertible {

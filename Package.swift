@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
+        .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.33.0")),
@@ -52,6 +53,15 @@ let package = Package(
                 "NodesStandard",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
+        .executableTarget(
+            name: "MLXComfyApp",
+            dependencies: [
+                "MLXDiffusionCore",
+                "GraphRuntime",
+                "NodesStandard",
+                .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
         .testTarget(

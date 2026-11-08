@@ -13,6 +13,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
         subcommands: [Run.self, Generate.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
+                      FitPreview.self,
                       Tokenize.self])
 }
 
@@ -207,6 +208,44 @@ struct Compare: AsyncParsableCommand {
         print(String(format: "max diff %.0f/255, %.2f%% of values differ", maxDiff, differing))
         if maxDiff > 0 { throw ExitCode(1) }
         print("identical")
+    }
+}
+
+struct FitPreview: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "fit-preview",
+        abstract: "Fit a linear latent→RGB projection for fast step previews (prints Swift constants).")
+    @Option var model = "qwen-turbo-mlx"
+    @Argument var images: [String]
+
+    func run() async throws {
+        let vae = try QwenImage21VAE(directory: URL(fileURLWithPath: model).appendingPathComponent("vae"))
+        var xs: [MLXArray] = [], ys: [MLXArray] = []
+        for path in images {
+            let cg = try ImageArray.load(URL(fileURLWithPath: path))
+            let scale = min(1, 1024 / Double(max(cg.width, cg.height)))
+            let w = Int(Double(cg.width) * scale) / 32 * 32, h = Int(Double(cg.height) * scale) / 32 * 32
+            let img = ImageArray.array(from: cg, width: w, height: h)
+            let z = vae.encode((img * 2 - 1).expandedDimensions(axis: 0))[0]  // [h/16, w/16, 64]
+            let lh = h / 16, lw = w / 16
+            let rgb = img[0..., 0..., ..<3].reshaped(lh, 16, lw, 16, 3).mean(axes: [1, 3])
+            xs.append(z.reshaped(-1, 64).asType(.float32))
+            ys.append(rgb.reshaped(-1, 3))
+            log("\(path): \(lh)x\(lw) latents")
+        }
+        let x = concatenated(xs, axis: 0)
+        let X = concatenated([x, MLXArray.ones([x.dim(0), 1])], axis: 1)
+        let Y = concatenated(ys, axis: 0)
+        let xtx = matmul(X.T, X) + 1e-3 * MLXArray.eye(65)
+        let W = matmul(MLXLinalg.inv(xtx, stream: .cpu), matmul(X.T, Y))  // [65, 3]
+        let err = abs(matmul(X, W) - Y).mean().item(Float.self)
+        log(String(format: "mean abs error %.4f (%.1f/255) over %d samples", err, err * 255, X.dim(0)))
+        let vals = W.asArray(Float.self)
+        print("static let previewWeights: [Float] = [  // 64 rows × RGB, then bias")
+        for r in 0..<65 {
+            print("    " + (0..<3).map { String(format: "%.6f", vals[r * 3 + $0]) }.joined(separator: ", ") + ",")
+        }
+        print("]")
     }
 }
 
