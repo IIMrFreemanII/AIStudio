@@ -1,3 +1,4 @@
+import ACEStep
 import ArgumentParser
 import Foundation
 import GraphRuntime
@@ -14,7 +15,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
-        subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
+        subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, GenerateMusic.self, ProbeACEStep.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
                       FitPreview.self, MakeTestLoRA.self, Assist.self,
                       Tokenize.self])
 }
@@ -154,6 +155,102 @@ struct GenerateAudio: AsyncParsableCommand {
         try await MediaIO.writeAudio(clip, to: url, format: url.pathExtension.lowercased() == "m4a" ? .m4a : .wav,
                                      metadata: ["mlxcomfy.prompt": prompt, "mlxcomfy.seed": String(seed)])
         log("wrote \(url.path)")
+    }
+}
+
+struct GenerateMusic: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "generate-music", abstract: "Text and lyrics to music with a music model (ACE-Step 1.5), no graph.")
+
+    @Option(help: "Model folder (with an mlxcomfy.json manifest).") var model: String
+    @Option(help: "Style: genre, instruments, mood, vocals.") var tags: String
+    @Option(help: "Lyrics with [Verse]/[Chorus] markers, or [Instrumental]. A path to a text file also works.")
+    var lyrics = "[Instrumental]"
+    @Option(help: "Length in seconds (10–240).") var seconds: Double = 30
+    @Option(help: "Random seed.") var seed: UInt64 = 0
+    @Option(help: "Diffusion steps (default: the model's).") var steps: Int?
+    @Option(help: "Tempo in BPM (default: auto).") var bpm: Int?
+    @Option(help: "Key, e.g. \"A minor\" (default: auto).") var key = ""
+    @Option(help: "Time signature: 2, 3, 4 or 6 (default: auto).") var timeSignature = ""
+    @Option(help: "Vocal language code, e.g. en (default: auto).") var language = ""
+    @Flag(help: "Skip the song-planner LM (faster, weaker structure).") var noPlanner = false
+    @Option(help: "Output path (.wav or .m4a).") var out = "song.wav"
+
+    func run() async throws {
+        _ = StandardNodes.makeRegistry()
+        var lyricText = lyrics
+        if FileManager.default.fileExists(atPath: lyrics), let s = try? String(contentsOfFile: lyrics, encoding: .utf8) {
+            lyricText = s
+        }
+        var t = Date()
+        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        guard let pipe = loaded as? AudioModel else { throw ValidationError("\(loaded.displayName) is not an audio model") }
+        log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
+        t = Date()
+        let request = AudioRequest(prompt: tags, seconds: seconds, seed: seed, steps: steps, lyrics: lyricText, bpm: bpm,
+                                   key: key, timeSignature: timeSignature, language: language, planner: !noPlanner)
+        var lastLogged = -1
+        let clip = try pipe.generateAudio(request) { i, n in
+            let pct = n > 0 ? i * 20 / n : 0
+            if pct != lastLogged || i == n {
+                lastLogged = pct
+                log(String(format: "progress %d/%d  %.2fs", i, n, Date().timeIntervalSince(t)))
+            }
+        }
+        let x = clip.samples
+        log(String(format: "generated %.2f s at %d Hz, %d ch in %.1fs (%@); rms %.4f, peak %.4f", clip.duration,
+                   clip.sampleRate, clip.channels, Date().timeIntervalSince(t), memoryString(),
+                   sqrt((x * x).mean()).item(Float.self), abs(x).max().item(Float.self)))
+        let url = URL(fileURLWithPath: out)
+        try await MediaIO.writeAudio(clip, to: url, format: url.pathExtension.lowercased() == "m4a" ? .m4a : .wav,
+                                     metadata: ["mlxcomfy.prompt": tags, "mlxcomfy.seed": String(seed)])
+        log("wrote \(url.path)")
+    }
+}
+
+/// Development check: the ACE-Step pipeline stages on a dump from the official pipeline (scratchpad ace_ref.py), with
+/// the reference's noise: prompt tokens, conditioning, the sampler and the decode.
+struct ProbeACEStep: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "probe-ace-step", shouldDisplay: false)
+    @Option var model: String
+    @Option var dump: String
+    @Option var caption = "upbeat synthwave with punchy drums, warm analog bass and a catchy lead melody"
+    @Option var seconds: Double = 20
+
+    func run() async throws {
+        let d = try MLX.loadArrays(url: URL(fileURLWithPath: dump))
+        func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
+            guard a.shape == b.shape else { log("\(name): shape \(a.shape) vs ref \(b.shape)"); return }
+            let diff = (a.asType(.float32) - b.asType(.float32))
+            let rel = sqrt((diff * diff).sum()) / sqrt((b.asType(.float32) * b.asType(.float32)).sum())
+            log(String(format: "%@: shape %@ max-abs %.3g rel-L2 %.3g", name, "\(a.shape)", abs(diff).max().item(Float.self),
+                       rel.item(Float.self)))
+        }
+        var t = Date()
+        let pipe = try await ACEStepPipeline(directory: URL(fileURLWithPath: model))
+        log(String(format: "loaded in %.1fs (%@)", Date().timeIntervalSince(t), memoryString()))
+        let metas = ACEPrompts.metas(bpm: nil, timeSignature: "", keyScale: "", seconds: seconds)
+        let textPrompt = ACEPrompts.caption(caption: caption, metas: metas)
+        let lyricPrompt = ACEPrompts.lyrics("[Instrumental]", language: "")
+        let ids = pipe.tokens(textPrompt, max: 256)
+        let refIDs = d["te_ids0"]!.asType(.int32)
+        log("caption ids equal: \(ids.shape == refIDs.shape && (ids .== refIDs).all().item(Bool.self)) (\(ids.dim(1)) tokens)")
+        t = Date()
+        let enc = pipe.encode(captionPrompt: textPrompt, lyricPrompt: lyricPrompt)
+        eval(enc)
+        log(String(format: "encode %.2fs", Date().timeIntervalSince(t)))
+        report("cond_enc", enc, d["cond_enc"]!)
+        let frames = d["cond_ctx"]!.dim(1)
+        let ctx = concatenated([pipe.silenceFrames(frames), MLXArray.ones([1, frames, 64])], axis: -1)
+        report("cond_ctx", ctx, d["cond_ctx"]!)
+        t = Date()
+        let lat = try pipe.sample(noise: d["dit_x0"]!, context: ctx, encoder: enc)
+        log(String(format: "sample %.2fs (%@)", Date().timeIntervalSince(t), memoryString()))
+        report("target_latents", lat, d["gen_target_latents"]!)
+        t = Date()
+        let audio = pipe.decode(lat, seconds: seconds)
+        log(String(format: "decode %.2fs (%@)", Date().timeIntervalSince(t), memoryString()))
+        report("audio", audio, d["audio"]!)
     }
 }
 

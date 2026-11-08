@@ -344,4 +344,41 @@ extension SmokeTest {
         return abs(clip.duration - 4) < 0.05 && clip.sampleRate == 44100 && clip.channels == 2
             && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
     }
+
+    /// `--smoke-music`: the Music mode end to end: switch modes, generate a short instrumental (planner on), check the
+    /// file and history, then switch back to Image.
+    static func runMusic(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let dir = ModelStore().modelsDirectory.appendingPathComponent("ace-step-1.5")
+        guard ModelRegistry.className(at: dir) == "ACEStepPipeline" else { say("no ACE-Step at \(dir.path)"); return false }
+        model.setSimpleMode(.music, videoModelPath: nil, musicModelPath: dir.path, undoManager: nil)
+        guard model.simpleMode == .music, let gen = model.firstNode(ofType: "TextToMusic") else {
+            say("music graph not set up"); return false
+        }
+        model.mutate("Short", undoManager: nil) { g in try? g.setValue(.double(10), node: gen.id, input: "seconds") }
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return false }
+        var maxTotal = 0
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            if case .running(_, let total)? = model.queue.first(where: { $0.id == item.id })?.status { maxTotal = max(maxTotal, total) }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard case .done(let secs)? = model.queue.first(where: { $0.id == item.id })?.status else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        guard let url = model.history.first(where: { $0.kind == .audio && $0.url.lastPathComponent.hasPrefix("music") })?.url,
+              let clip = try? await MediaIO.readAudio(url) else { say("no music in history"); return false }
+        let meta = await MediaIO.readMetadata(url)
+        let title = model.history.first { $0.url == url }?.prompt ?? "?"
+        say(String(format: "job done in %.1fs (progress total %d): %@ %.2fs at %d Hz, %d ch, graph embedded %@; displayed %@; history prompt %@",
+                   secs, maxTotal, url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
+                   meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
+                   model.displayedMedia.map { $0.kind.rawValue } ?? "none", title))
+        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
+        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
+        say("back to image graph: \(back)")
+        return abs(clip.duration - 10) < 0.05 && clip.sampleRate == 48000 && clip.channels == 2 && maxTotal > 8
+            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+    }
 }

@@ -57,13 +57,14 @@ extension AppModel {
         var g = graph
         let wildcards = PromptTemplate.wildcardFiles(in: Self.wildcardDirectory)
         let first = g.nodes.first { $0.type == "TextEncode" }?.id
-        for n in g.nodes where n.type == "TextEncode" || n.type == "TextToAudio" {
-            guard case .value(.string(let raw))? = n.inputs["prompt"] else { continue }
+        for n in g.nodes where n.type == "TextEncode" || n.type == "TextToAudio" || n.type == "TextToMusic" {
+            let field = n.type == "TextToMusic" ? "tags" : "prompt"
+            guard case .value(.string(let raw))? = n.inputs[field] else { continue }
             var text = raw
             if n.id == first, let style = selectedStyle { text = style.apply(to: text) }
             let expanded = PromptTemplate.expand(text, seed: UInt64(truncatingIfNeeded: seed), wildcards: wildcards)
             guard expanded != raw else { continue }
-            try? g.setValue(.string(expanded), node: n.id, input: "prompt")
+            try? g.setValue(.string(expanded), node: n.id, input: field)
             var meta = g.metadata ?? [:]
             meta["prompt_template.\(n.id)"] = raw
             if n.id == first, let style = selectedStyle { meta["prompt_style"] = style.name }
@@ -191,8 +192,8 @@ extension AppModel {
                     } else if let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey] {
                         g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8))
                     }
-                    if let n = g?.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
-                       case .value(.string(let s))? = n.inputs["prompt"] {
+                    if let n = g?.nodes.first(where: { ["TextEncode", "TextToAudio", "TextToMusic"].contains($0.type) }),
+                       case .value(.string(let s))? = n.inputs[n.type == "TextToMusic" ? "tags" : "prompt"] {
                         out[url] = s
                     } else {
                         out[url] = ""

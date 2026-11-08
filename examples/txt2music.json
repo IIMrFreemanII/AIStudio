@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "nodes": [
+    { "id": "model", "type": "LoadModel", "inputs": { "path": "~/Library/Application Support/MLXComfyUI/models/ace-step-1.5" },
+      "position": { "x": 40, "y": 140 } },
+    { "id": "generate", "type": "TextToMusic", "position": { "x": 340, "y": 60 },
+      "inputs": { "model": { "node": "model", "output": "model" },
+                  "tags": "upbeat synth-pop, punchy drum machine, warm analog bass, bright female vocals",
+                  "lyrics": "[Verse]\nNeon lights across the city sky\nWe keep on running as the night goes by\n[Chorus]\nHold on tight, we're gonna fly tonight",
+                  "seconds": 30, "seed": 42, "steps": 0, "planner": true, "bpm": 0, "key": "auto",
+                  "time_signature": "auto", "language": "en" } },
+    { "id": "save", "type": "SaveAudio", "position": { "x": 700, "y": 140 },
+      "inputs": { "audio": { "node": "generate", "output": "audio" }, "filename_prefix": "music", "directory": "outputs", "format": "wav" } }
+  ]
+}

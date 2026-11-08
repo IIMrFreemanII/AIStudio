@@ -9,12 +9,17 @@ let package = Package(
         .library(name: "QwenImage21", targets: ["QwenImage21"]),
         .library(name: "LTX2", targets: ["LTX2"]),
         .library(name: "StableAudio", targets: ["StableAudio"]),
+        .library(name: "ACEStep", targets: ["ACEStep"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
         .executable(name: "ltx-probe-vae", targets: ["ltx-probe-vae"]),
         .executable(name: "ltx-probe-audio", targets: ["ltx-probe-audio"]),
+        .executable(name: "ace-probe-text", targets: ["ace-probe-text"]),
+        .executable(name: "ace-probe-dit", targets: ["ace-probe-dit"]),
+        .executable(name: "ace-probe-lm", targets: ["ace-probe-lm"]),
+        .executable(name: "ace-probe-vae", targets: ["ace-probe-vae"]),
         .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
         .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
     ],
@@ -111,6 +116,63 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
+        // ACE-Step 1.5 (music): Qwen3 encoders and the condition encoder.
+        .target(
+            name: "ACEStepText",
+            dependencies: [
+                "MLXDiffusionCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
+        // Development probe: runs ACEStepText on dumped reference inputs and reports the error.
+        .executableTarget(
+            name: "ace-probe-text",
+            dependencies: ["ACEStepText", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift"),
+                           .product(name: "Tokenizers", package: "swift-transformers")]
+        ),
+        // ACE-Step 1.5: the diffusion transformer and its sampler.
+        .target(
+            name: "ACEStepDiT",
+            dependencies: [
+                "MLXDiffusionCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+            ]
+        ),
+        .executableTarget(
+            name: "ace-probe-dit",
+            dependencies: ["ACEStepDiT", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        // ACE-Step 1.5: the 5 Hz planner LM (song blueprint and audio codes).
+        .target(
+            name: "ACEStepLM",
+            dependencies: [
+                "ACEStepText",
+                "MLXDiffusionCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
+        .executableTarget(
+            name: "ace-probe-lm",
+            dependencies: ["ACEStepLM", "ACEStepText", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift"),
+                           .product(name: "Tokenizers", package: "swift-transformers")]
+        ),
+        .executableTarget(
+            name: "ace-probe-vae",
+            dependencies: ["StableAudio", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        // ACE-Step 1.5: text/lyrics-to-music pipeline (planner → DiT → Oobleck VAE at 48 kHz).
+        .target(
+            name: "ACEStep",
+            dependencies: [
+                "MLXDiffusionCore", "ACEStepText", "ACEStepDiT", "ACEStepLM", "StableAudio",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
         .target(name: "GraphRuntime"),
         .target(
             name: "NodesStandard",
@@ -120,6 +182,7 @@ let package = Package(
                 "QwenImage21",
                 "LTX2",
                 "StableAudio",
+                "ACEStep",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
@@ -129,6 +192,7 @@ let package = Package(
                 "MLXDiffusionCore",
                 "LTX2",
                 "StableAudio",
+                "ACEStep",
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
@@ -154,6 +218,10 @@ let package = Package(
         .testTarget(
             name: "StableAudioTests",
             dependencies: ["StableAudio", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "ACEStepTests",
+            dependencies: ["ACEStep", .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
             name: "LTX2Tests",

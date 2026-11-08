@@ -1,6 +1,7 @@
 import AVFoundation
 import AVKit
 import MLXDiffusionCore
+import NodesStandard
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -402,5 +403,144 @@ struct SoundPanel: View {
                 .background(.bar)
             }
         }
+    }
+}
+
+/// The Simple panel's Music mode: style, lyrics and song settings of the Text to Music node.
+struct MusicPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let installed = store.installed(.music)
+        let loader = model.firstNode(ofType: "LoadModel")
+        let gen = model.firstNode(ofType: "TextToMusic")
+
+        if installed == nil {
+            MediaModePanel(mode: .music)
+        } else {
+            Form {
+                if let gen {
+                    Section("Style") {
+                        TextEditor(text: b.string(gen.id, "tags"))
+                            .font(.body)
+                            .frame(minHeight: 80)
+                            .scrollContentBackground(.hidden)
+                        Text("Genre, instruments, mood, vocals (e.g. \"dreamy indie pop, female vocals, jangly guitars, 90 BPM\").")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Section("Lyrics") {
+                        let lyrics = b.string(gen.id, "lyrics")
+                        let instrumental = Binding(
+                            get: { lyrics.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines) == "[Instrumental]" },
+                            set: { lyrics.wrappedValue = $0 ? "[Instrumental]" : "[Verse]\n\n[Chorus]\n" })
+                        Toggle("Instrumental", isOn: instrumental)
+                        if !instrumental.wrappedValue {
+                            TextEditor(text: lyrics)
+                                .font(.body.monospaced())
+                                .frame(minHeight: 160)
+                                .scrollContentBackground(.hidden)
+                            Text("Mark sections with [Verse], [Chorus], [Bridge]… One line per sung phrase.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Section("Song") {
+                        let secs = b.double(gen.id, "seconds")
+                        LabeledContent("Length") {
+                            HStack {
+                                // Rounded in the binding rather than with `step:` (which draws 46 tick marks).
+                                Slider(value: Binding(get: { secs.wrappedValue },
+                                                      set: { secs.wrappedValue = ($0 / 5).rounded() * 5 }),
+                                       in: 10...240)
+                                Text(Self.duration(secs.wrappedValue)).monospacedDigit().frame(width: 44, alignment: .trailing)
+                            }
+                        }
+                        Toggle(isOn: b.bool(gen.id, "planner")) {
+                            Text("Plan the song")
+                            Text("A language model writes the arrangement first: better structure and vocals, slower.")
+                        }
+                        let bpm = b.int(gen.id, "bpm")
+                        LabeledContent("Tempo") {
+                            HStack {
+                                TextField("Tempo", value: Binding(get: { bpm.wrappedValue > 0 ? bpm.wrappedValue : nil },
+                                                                  set: { bpm.wrappedValue = min(300, max(0, $0 ?? 0)) }),
+                                          format: .number.grouping(.never), prompt: Text("Auto"))
+                                    .labelsHidden()
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 64)
+                                Text("BPM").foregroundStyle(.secondary)
+                            }
+                        }
+                        Picker("Key", selection: b.string(gen.id, "key")) {
+                            ForEach(MusicKeys.all, id: \.self) { Text($0 == "auto" ? "Auto" : $0).tag($0) }
+                        }
+                        Picker("Time signature", selection: b.string(gen.id, "time_signature")) {
+                            ForEach(MusicKeys.timeSignatures, id: \.self) { Text($0 == "auto" ? "Auto" : "\($0)/\($0 == "6" ? "8" : "4")").tag($0) }
+                        }
+                        Picker("Vocal language", selection: b.string(gen.id, "language")) {
+                            ForEach(MusicKeys.languages, id: \.self) { Text(MusicChoices.languageName($0)).tag($0) }
+                        }
+                    }
+                    Section("Generation") {
+                        HStack {
+                            TextField("Seed", value: b.int(gen.id, "seed"), format: .number.grouping(.never))
+                            Button { b.int(gen.id, "seed").wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
+                                Image(systemName: "dice")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("New random seed")
+                        }
+                        Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
+                        Stepper(value: b.int(gen.id, "steps"), in: 0...20) {
+                            let s = b.int(gen.id, "steps").wrappedValue
+                            LabeledContent("Steps", value: s == 0 ? "Model default (8)" : "\(s)")
+                        }
+                        Stepper(value: $model.batchCount, in: 1...16) {
+                            LabeledContent("Batch", value: "\(model.batchCount) song\(model.batchCount == 1 ? "" : "s")")
+                        }
+                    }
+                }
+                Section("Model") {
+                    if let installed, let loader {
+                        let path = b.string(loader.id, "path")
+                        LabeledContent("Folder") {
+                            Text((path.wrappedValue as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        }
+                        if URL(fileURLWithPath: path.wrappedValue).standardizedFileURL != installed.standardizedFileURL {
+                            Button("Use \(installed.lastPathComponent)") { path.wrappedValue = installed.path }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .safeAreaInset(edge: .bottom) {
+                Button { model.enqueue(undoManager: undoManager) } label: {
+                    Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate Song", systemImage: "music.note")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+                .padding(12)
+                .background(.bar)
+            }
+        }
+    }
+
+    static func duration(_ s: Double) -> String {
+        let t = Int(s.rounded())
+        return t >= 60 ? String(format: "%d:%02d", t / 60, t % 60) : "\(t) s"
+    }
+}
+
+/// Names for the Music panel's language choices (the codes come from the Text to Music node).
+enum MusicChoices {
+    static func languageName(_ code: String) -> String {
+        if code == "auto" { return "Auto" }
+        if code == "yue" { return "Cantonese" }
+        return Locale.current.localizedString(forLanguageCode: code) ?? code
     }
 }

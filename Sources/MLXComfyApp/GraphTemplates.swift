@@ -81,6 +81,28 @@ enum GraphTemplates {
         ])
     }
 
+    /// The graph behind the Music mode: model → text to music → save (WAV, 48 kHz stereo).
+    static func textToMusic(modelPath: String, outputDirectory: String,
+                            tags: String = "Upbeat synthwave with punchy drums, warm analog bass and a catchy lead melody",
+                            lyrics: String = "[Instrumental]") -> Graph {
+        func link(_ n: String, _ o: String) -> NodeInput { .link(node: n, output: o) }
+        return Graph(nodes: [
+            GraphNode(id: "model", type: "LoadModel", inputs: ["path": .value(.string(modelPath))],
+                      position: GraphPoint(x: 40, y: 140)),
+            GraphNode(id: "generate", type: "TextToMusic",
+                      inputs: ["model": link("model", "model"), "tags": .value(.string(tags)),
+                               "lyrics": .value(.string(lyrics)), "seconds": .value(.double(30)),
+                               "seed": .value(.int(1)), "steps": .value(.int(0)), "planner": .value(.bool(true)),
+                               "bpm": .value(.int(0)), "key": .value(.string("auto")),
+                               "time_signature": .value(.string("auto")), "language": .value(.string("auto"))],
+                      position: GraphPoint(x: 340, y: 60)),
+            GraphNode(id: "save", type: "SaveAudio",
+                      inputs: ["audio": link("generate", "audio"), "filename_prefix": .value(.string("music")),
+                               "directory": .value(.string(outputDirectory)), "format": .value(.string("wav"))],
+                      position: GraphPoint(x: 700, y: 140)),
+        ])
+    }
+
     /// Video sizes: two-stage generation needs multiples of 64.
     static let videoSizePresets: [(name: String, width: Int, height: Int)] = [
         ("Landscape 3:2", 768, 512),

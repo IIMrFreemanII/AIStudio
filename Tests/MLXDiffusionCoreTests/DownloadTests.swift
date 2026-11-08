@@ -142,3 +142,25 @@ func makeRepo() throws -> URL {
         .map { RemoteFile(path: $0, size: 1) }, include: entry.parts[1].include, exclude: entry.parts[1].exclude)
     #expect(gemma.count == 3)
 }
+
+/// The ACE-Step entry fetches the turbo DiT, VAE, text encoder and 1.7B planner, but not the repo's Python model code
+/// or the duplicate top-level config.
+@Test func aceStepCatalogEntrySelectsThePipelineFiles() throws {
+    let entry = try #require(ModelCatalog.entries.first { $0.id == "ace-step-1.5" })
+    #expect(entry.supported && entry.kind == .music && entry.manifest?["class"] == "ACEStepPipeline")
+    let repoFiles = [".gitattributes", "README.md", "config.json",
+                     "Qwen3-Embedding-0.6B/config.json", "Qwen3-Embedding-0.6B/model.safetensors",
+                     "Qwen3-Embedding-0.6B/tokenizer.json", "acestep-5Hz-lm-1.7B/added_tokens.json",
+                     "acestep-5Hz-lm-1.7B/model.safetensors", "acestep-5Hz-lm-1.7B/tokenizer.json",
+                     "acestep-v15-turbo/config.json", "acestep-v15-turbo/configuration_acestep_v15.py",
+                     "acestep-v15-turbo/model.safetensors", "acestep-v15-turbo/modeling_acestep_v15_turbo.py",
+                     "acestep-v15-turbo/silence_latent.pt", "vae/config.json",
+                     "vae/diffusion_pytorch_model.safetensors"].map { RemoteFile(path: $0, size: 1) }
+    let picked = Set(HFAPI.select(repoFiles, include: entry.include, exclude: entry.exclude).map(\.path))
+    #expect(picked == ["README.md", "Qwen3-Embedding-0.6B/config.json", "Qwen3-Embedding-0.6B/model.safetensors",
+                       "Qwen3-Embedding-0.6B/tokenizer.json", "acestep-5Hz-lm-1.7B/added_tokens.json",
+                       "acestep-5Hz-lm-1.7B/model.safetensors", "acestep-5Hz-lm-1.7B/tokenizer.json",
+                       "acestep-v15-turbo/config.json", "acestep-v15-turbo/model.safetensors",
+                       "acestep-v15-turbo/silence_latent.pt", "vae/config.json",
+                       "vae/diffusion_pytorch_model.safetensors"])
+}

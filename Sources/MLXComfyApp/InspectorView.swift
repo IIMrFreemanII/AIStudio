@@ -91,7 +91,8 @@ struct SimplePanel: View {
             Picker("Mode", selection: Binding(
                 get: { model.simpleMode },
                 set: { model.setSimpleMode($0, videoModelPath: store.installed(.video)?.path,
-                                           soundModelPath: store.installed(.sound)?.path, undoManager: undoManager) })) {
+                                           soundModelPath: store.installed(.sound)?.path,
+                                           musicModelPath: store.installed(.music)?.path, undoManager: undoManager) })) {
                 ForEach(SimpleMode.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -103,6 +104,7 @@ struct SimplePanel: View {
             case .image: imagePanel
             case .video: VideoPanel()
             case .sound: SoundPanel()
+            case .music: MusicPanel()
             default: MediaModePanel(mode: model.simpleMode)
             }
         }

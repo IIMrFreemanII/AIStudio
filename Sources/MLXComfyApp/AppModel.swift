@@ -108,6 +108,7 @@ final class AppModel {
     static func mode(of g: Graph) -> SimpleMode {
         if g.nodes.contains(where: { $0.type == "VideoSampler" }) { return .video }
         if g.nodes.contains(where: { $0.type == "TextToAudio" }) { return .sound }
+        if g.nodes.contains(where: { $0.type == "TextToMusic" }) { return .music }
         return .image
     }
     /// The graph each mode had when the user switched away, restored on switching back.
@@ -342,7 +343,7 @@ final class AppModel {
     func enqueue(undoManager: UndoManager?) {
         if let err = validationError { lastError = err; NSSound.beep(); return }
         lastError = nil
-        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio"].contains($0.type) }.map(\.id)
+        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic"].contains($0.type) }.map(\.id)
         for i in 0..<max(1, batchCount) {
             var g = graph
             var seed: Int?
@@ -365,6 +366,9 @@ final class AppModel {
     func title(for g: Graph) -> String {
         if let p = g.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
            case .value(.string(let s))? = p.inputs["prompt"],
+           !s.isEmpty { return s }
+        if let p = g.nodes.first(where: { $0.type == "TextToMusic" }),
+           case .value(.string(let s))? = p.inputs["tags"],
            !s.isEmpty { return s }
         return "Untitled graph"
     }
@@ -580,9 +584,9 @@ final class AppModel {
 
     /// Switches the Simple panel's mode; image and video swap the graph for that mode's (kept per mode).
     func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, soundModelPath: String? = nil,
-                       undoManager: UndoManager?) {
+                       musicModelPath: String? = nil, undoManager: UndoManager?) {
         switch mode {
-        case .image, .video, .sound:
+        case .image, .video, .sound, .music:
             pendingMode = nil
             let current = Self.mode(of: graph)
             guard current != mode else { return }
@@ -591,6 +595,7 @@ final class AppModel {
                 switch mode {
                 case .video: return GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
                 case .sound: return GraphTemplates.textToSound(modelPath: soundModelPath ?? "", outputDirectory: outputDirectory)
+                case .music: return GraphTemplates.textToMusic(modelPath: musicModelPath ?? "", outputDirectory: outputDirectory)
                 default: return GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory)
                 }
             }()

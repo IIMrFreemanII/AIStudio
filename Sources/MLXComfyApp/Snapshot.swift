@@ -163,6 +163,17 @@ enum Snapshot {
         m.setSimpleMode(.sound, videoModelPath: nil, soundModelPath: soundDir.path, undoManager: nil)
         m.displayedMedia = (audioURL, .audio)
         await render(m, to: dir.appendingPathComponent("27-sound-mode.png"))
+        // 28. The Music mode with ACE-Step installed (lyrics shown).
+        let musicDir = Snapshot.store.modelsDirectory.appendingPathComponent("ace-step-1.5")
+        m.setSimpleMode(.music, videoModelPath: nil, musicModelPath: musicDir.path, undoManager: nil)
+        if let gen = m.firstNode(ofType: "TextToMusic") {
+            m.mutate("Lyrics", undoManager: nil) { g in
+                try? g.setValue(.string("[Verse]\nNeon lights across the city sky\nWe keep on running as the night goes by\n[Chorus]\nHold on tight, we're gonna fly tonight"),
+                                node: gen.id, input: "lyrics")
+            }
+        }
+        m.displayedMedia = (audioURL, .audio)
+        await render(m, to: dir.appendingPathComponent("28-music-mode.png"))
         m.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
         let store = ModelStore()
         store.adopt(m.modelPath)

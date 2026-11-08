@@ -240,7 +240,8 @@ extension VideoDiffusionModel {
     }
 }
 
-/// A request to an audio model. Which fields matter depends on the model (music uses lyrics, speech a voice).
+/// A request to an audio model. Which fields matter depends on the model (music uses lyrics and the musical fields,
+/// speech a voice).
 public struct AudioRequest: Sendable {
     public var prompt: String
     public var seconds: Double
@@ -249,10 +250,20 @@ public struct AudioRequest: Sendable {
     public var lyrics: String
     public var voice: String
     public var speed: Double
+    /// Music: tempo (nil = let the model decide), key such as "C major" and time signature such as "4" ("" = auto),
+    /// vocal language code such as "en" ("" = auto), and whether the song planner (LM) runs first.
+    public var bpm: Int?
+    public var key: String
+    public var timeSignature: String
+    public var language: String
+    public var planner: Bool
     public init(prompt: String, seconds: Double = 10, seed: UInt64 = 0, steps: Int? = nil, lyrics: String = "",
-                voice: String = "", speed: Double = 1) {
+                voice: String = "", speed: Double = 1, bpm: Int? = nil, key: String = "", timeSignature: String = "",
+                language: String = "", planner: Bool = true) {
         self.prompt = prompt; self.seconds = seconds; self.seed = seed; self.steps = steps; self.lyrics = lyrics
         self.voice = voice; self.speed = speed
+        self.bpm = bpm; self.key = key; self.timeSignature = timeSignature; self.language = language
+        self.planner = planner
     }
 }
 

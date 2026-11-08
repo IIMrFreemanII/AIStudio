@@ -2,6 +2,7 @@ import Foundation
 import GraphRuntime
 import MLX
 import MLXDiffusionCore
+import ACEStep
 import LTX2
 import QwenImage21
 import StableAudio
@@ -18,6 +19,7 @@ public enum StandardNodes {
         TestPatternNode.self, TestToneNode.self, LoadVideoNode.self, LoadAudioNode.self, MixAudioNode.self,
         AddAudioToVideoNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
         EmptyVideoLatentNode.self, VideoSamplerNode.self, VideoDecodeNode.self, TextToAudioNode.self,
+        TextToMusicNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.
@@ -25,6 +27,7 @@ public enum StandardNodes {
         QwenImage21Pipeline.register()
         LTX2Pipeline.register()
         StableAudioPipeline.register()
+        ACEStepPipeline.register()
         let r = NodeRegistry()
         r.register(all)
         return r
