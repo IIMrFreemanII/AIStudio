@@ -1,0 +1,22 @@
+# Build products
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+build/
+
+# Model weights and caches (tens of GB)
+qwen-turbo-mlx/
+*.safetensors
+
+# Generated images and personal reference images
+outputs/
+output.png
+refs/
+
+# macOS
+.DS_Store
+
+# Test coverage output
+*.profraw
