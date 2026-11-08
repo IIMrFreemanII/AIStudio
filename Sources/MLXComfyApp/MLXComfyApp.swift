@@ -102,6 +102,21 @@ struct AppCommands: Commands {
             Button("Duplicate") { model.duplicateSelection(undoManager: undoManager) }
                 .keyboardShortcut("d")
                 .disabled(model.selection.isEmpty)
+            Button("Group Selection") { model.groupSelection(undoManager: undoManager) }
+                .keyboardShortcut("g")
+                .disabled(model.selection.isEmpty)
+            Button("Collapse to Subgraph") { model.collapseSelection(undoManager: undoManager) }
+                .keyboardShortcut("g", modifiers: [.command, .option])
+                .disabled(model.selection.isEmpty)
+            Button("Expand Subgraph") {
+                if let id = model.selection.first { model.expandSubgraph(id, undoManager: undoManager) }
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled(model.selection.count != 1
+                      || model.editorGraph[model.selection.first!]?.type != "Subgraph")
+            Button("Exit Subgraph") { model.exitSubgraph() }
+                .keyboardShortcut(.upArrow, modifiers: .command)
+                .disabled(model.editingPath.isEmpty)
             Divider()
             Button("Show Image") { model.workspace = .image }
                 .keyboardShortcut("1")

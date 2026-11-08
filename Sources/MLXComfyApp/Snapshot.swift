@@ -110,8 +110,34 @@ enum Snapshot {
             model.endCompare()
         }
         if let hadGrid { defaults.set(hadGrid, forKey: "historyGrid") } else { defaults.removeObject(forKey: "historyGrid") }
-        do {
+        // 19–21. Graph structure on a fresh default graph, built with the same AppModel calls as the editor:
+        // a Reroute on the model wire, a Note, a group, then prompt/latent/sampler collapsed into a subgraph.
+        let s = AppModel(persistSettings: false, autoloadModel: false)
+        s.outputDirectory = projectOutputs.path
+        s.workspace = .graph
+        s.insertReroute(into: "sampler", input: "model", at: GraphPoint(x: 470, y: 230), undoManager: nil)
+        s.addNode(type: "Note", at: GraphPoint(x: 40, y: 360), undoManager: nil)
+        if let note = s.selection.first {
+            s.setEditorLiteral(.string("Prompt, size and sampler live in the subgraph. Double-click it to edit."),
+                               node: note, input: "text", undoManager: nil)
         }
+        s.selection = ["model"]
+        s.groupSelection(undoManager: nil)
+        s.updateGroup(s.selectedGroup ?? "", actionName: "", undoManager: nil) { $0.title = "Model" }
+        s.selectedGroup = nil
+        s.selection = ["prompt", "latent", "sampler"]
+        s.collapseSelection(undoManager: nil)
+        s.selection = []
+        await render(s, to: dir.appendingPathComponent("19-structure-graph.png"))
+        if let inst = s.graph.nodes.first(where: { $0.type == Graph.subgraphType })?.id {
+            s.enterSubgraph(inst)
+            await render(s, to: dir.appendingPathComponent("20-inside-subgraph.png"))
+            s.exitSubgraph()
+            s.selection = [inst]
+            await render(s, to: dir.appendingPathComponent("21-subgraph-inspector.png"))
+        }
+        print("structured: " + s.graph.jsonString())
+        print("structured-valid: \(s.validationError ?? "ok")")
     }
 
     static func render<V: View>(_ view: V, to url: URL, size: CGSize) async {

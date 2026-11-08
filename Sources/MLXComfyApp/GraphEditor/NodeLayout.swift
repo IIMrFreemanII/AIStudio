@@ -8,6 +8,12 @@ enum NodeLayout {
     static let header: CGFloat = 30
     static let row: CGFloat = 26
     static let bottomPadding: CGFloat = 8
+    /// A Reroute is a small pill: input socket on the left, output on the right.
+    static let rerouteSize = CGSize(width: 44, height: 22)
+    static let noteHeight: CGFloat = 150
+
+    static func isReroute(_ node: GraphNode) -> Bool { node.type == Graph.rerouteType }
+    static func isNote(_ node: GraphNode) -> Bool { node.type == Graph.noteType }
 
     struct Rows {
         var sockets: [InputSpec]  // inputs drawn as sockets on the left edge
@@ -34,6 +40,8 @@ enum NodeLayout {
     }
 
     static func height(_ node: GraphNode, _ schema: NodeSchema) -> CGFloat {
+        if isReroute(node) { return rerouteSize.height }
+        if isNote(node) { return noteHeight }
         let r = rows(node, schema)
         return header + CGFloat(r.socketRowCount) * row + r.widgets.map(widgetHeight).reduce(0, +) + bottomPadding
     }
@@ -43,19 +51,25 @@ enum NodeLayout {
     }
 
     static func inputPoint(_ node: GraphNode, _ schema: NodeSchema, _ name: String) -> CGPoint? {
+        if isReroute(node) { let o = origin(node); return CGPoint(x: o.x, y: o.y + rerouteSize.height / 2) }
         guard let i = rows(node, schema).sockets.firstIndex(where: { $0.name == name }) else { return nil }
         let o = origin(node)
         return CGPoint(x: o.x, y: o.y + header + row * (CGFloat(i) + 0.5))
     }
 
     static func outputPoint(_ node: GraphNode, _ schema: NodeSchema, _ name: String) -> CGPoint? {
+        if isReroute(node) {
+            let o = origin(node)
+            return CGPoint(x: o.x + rerouteSize.width, y: o.y + rerouteSize.height / 2)
+        }
         guard let i = schema.outputs.firstIndex(where: { $0.name == name }) else { return nil }
         let o = origin(node)
         return CGPoint(x: o.x + width, y: o.y + header + row * (CGFloat(i) + 0.5))
     }
 
     static func frame(_ node: GraphNode, _ schema: NodeSchema) -> CGRect {
-        CGRect(origin: origin(node), size: CGSize(width: width, height: height(node, schema)))
+        CGRect(origin: origin(node), size: CGSize(width: isReroute(node) ? rerouteSize.width : width,
+                                                  height: height(node, schema)))
     }
 }
 
@@ -81,6 +95,8 @@ extension NodeSchema {
         case "latent": return SocketType.latent.color
         case "sampling": return Color(red: 0.45, green: 0.55, blue: 1.0)
         case "image": return SocketType.image.color
+        case "subgraph": return Color(red: 0.62, green: 0.45, blue: 0.95)
+        case "utils": return Color(red: 0.95, green: 0.80, blue: 0.30)
         default: return .gray
         }
     }

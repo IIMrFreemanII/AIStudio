@@ -102,11 +102,18 @@ public struct Graph: Codable, Hashable, Sendable {
     /// Free-form notes that travel with the graph (and into saved PNGs), e.g. the prompt template a queued prompt
     /// was expanded from. Optional, so graphs without it still load.
     public var metadata: [String: String]?
+    /// Editor groups (visual only).
+    public var groups: [GraphGroup]?
+    /// Subgraph definitions by id, shared by all instances (including ones nested inside other definitions).
+    public var subgraphs: [String: SubgraphDef]?
 
-    public init(version: Int = Graph.currentVersion, nodes: [GraphNode] = [], metadata: [String: String]? = nil) {
+    public init(version: Int = Graph.currentVersion, nodes: [GraphNode] = [], metadata: [String: String]? = nil,
+                groups: [GraphGroup]? = nil, subgraphs: [String: SubgraphDef]? = nil) {
         self.version = version
         self.nodes = nodes
         self.metadata = metadata
+        self.groups = groups
+        self.subgraphs = subgraphs
     }
 
     public subscript(id: String) -> GraphNode? {
@@ -120,8 +127,24 @@ public struct Graph: Codable, Hashable, Sendable {
         }
     }
 
-    /// Sets a literal input, e.g. from `--set 3.seed=5`.
+    /// Sets a literal input, e.g. from `--set 3.seed=5`. `instance/inner` paths reach into subgraphs (changing the
+    /// definition, which every instance of it shares).
     public mutating func setValue(_ value: JSONValue, node: String, input: String) throws {
+        if self[node] == nil, node.contains("/") {
+            var parts = node.split(separator: "/").map(String.init)
+            let innerID = parts.removeLast()
+            var level = self
+            var defID: String?
+            for id in parts {
+                guard let n = level[id], let (d, def) = subgraphDef(for: n) else { throw GraphError.unknownNode(node) }
+                defID = d
+                level = def.graph
+            }
+            guard let defID, var inner = subgraphs?[defID]?.graph else { throw GraphError.unknownNode(node) }
+            try inner.setValue(value, node: innerID, input: input)
+            subgraphs?[defID]?.graph = inner
+            return
+        }
         guard var n = self[node] else { throw GraphError.unknownNode(node) }
         n.inputs[input] = .value(value)
         self[node] = n

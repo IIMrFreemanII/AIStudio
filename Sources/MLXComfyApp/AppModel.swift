@@ -63,6 +63,10 @@ final class AppModel {
 
     var graph: Graph
     var selection: Set<String> = []
+    /// Subgraph instances entered in the editor, outermost first (empty = the top-level graph).
+    var editingPath: [String] = []
+    /// The group selected in the editor, if any (at the current editing level).
+    var selectedGroup: String?
     var workspace: Workspace = .image
     var documentURL: URL?
 
@@ -166,7 +170,10 @@ final class AppModel {
 
     // MARK: schemas
 
-    func schema(for node: GraphNode) -> NodeSchema? { registry.schema(node.type) }
+    func schema(for node: GraphNode) -> NodeSchema? {
+        if node.type == Graph.subgraphType { return graph.subgraphSchema(node) }
+        return registry.schema(node.type)
+    }
     var schemas: [NodeSchema] { registry.schemas }
 
     // MARK: undoable edits
@@ -176,7 +183,9 @@ final class AppModel {
         let old = graph
         guard old != new else { return }
         graph = new
-        selection = selection.filter { id in new.nodes.contains { $0.id == id } }
+        if !editingPath.isEmpty, levelGraph(editingPath) == nil { editingPath = []; selection = [] }
+        selection = selection.filter { id in editorGraph.nodes.contains { $0.id == id } }
+        if let g = selectedGroup, !(editorGraph.groups ?? []).contains(where: { $0.id == g }) { selectedGroup = nil }
         undoManager?.registerUndo(withTarget: self) { target in
             MainActor.assumeIsolated {
                 target.setGraph(old, actionName: actionName, undoManager: undoManager)
@@ -217,7 +226,7 @@ final class AppModel {
         guard let schema = registry.schema(type) else { return }
         var n = 1
         let base = type.lowercased()
-        while graph[n == 1 ? base : "\(base)\(n)"] != nil { n += 1 }
+        while editorGraph[n == 1 ? base : "\(base)\(n)"] != nil { n += 1 }
         let id = n == 1 ? base : "\(base)\(n)"
         var inputs: [String: NodeInput] = [:]
         for spec in schema.inputs where spec.type.isScalar {
@@ -226,10 +235,11 @@ final class AppModel {
         if type == "LoadModel" { inputs["path"] = .value(.string(modelPath)) }
         if type == "SaveImage" { inputs["directory"] = .value(.string(outputDirectory)) }
         // Auto-wire a MODEL input to the first model loader, the common case.
-        if schema.inputs.contains(where: { $0.type == .model }), let m = firstNode(ofType: "LoadModel") {
+        if schema.inputs.contains(where: { $0.type == .model }),
+           let m = editorGraph.nodes.first(where: { $0.type == "LoadModel" }) {
             inputs["model"] = .link(node: m.id, output: "model")
         }
-        mutate("Add \(schema.displayName)", undoManager: undoManager) { g in
+        mutateEditor("Add \(schema.displayName)", undoManager: undoManager) { g in
             g.nodes.append(GraphNode(id: id, type: type, inputs: inputs, position: point))
         }
         selection = [id]
@@ -238,7 +248,7 @@ final class AppModel {
     func deleteSelection(undoManager: UndoManager?) {
         let ids = selection
         guard !ids.isEmpty else { return }
-        mutate(ids.count == 1 ? "Delete Node" : "Delete Nodes", undoManager: undoManager) { g in
+        mutateEditor(ids.count == 1 ? "Delete Node" : "Delete Nodes", undoManager: undoManager) { g in
             g.nodes.removeAll { ids.contains($0.id) }
             for i in g.nodes.indices {
                 for (name, input) in g.nodes[i].inputs {
@@ -254,12 +264,13 @@ final class AppModel {
         guard !ids.isEmpty else { return }
         var mapping: [String: String] = [:]
         var copies: [GraphNode] = []
-        for node in graph.nodes where ids.contains(node.id) {
+        let level = editorGraph
+        for node in level.nodes where ids.contains(node.id) {
             var n = 2
-            while graph[node.id + "_\(n)"] != nil || mapping.values.contains(node.id + "_\(n)") { n += 1 }
+            while level[node.id + "_\(n)"] != nil || mapping.values.contains(node.id + "_\(n)") { n += 1 }
             mapping[node.id] = node.id + "_\(n)"
         }
-        for node in graph.nodes where ids.contains(node.id) {
+        for node in level.nodes where ids.contains(node.id) {
             var c = node
             c.id = mapping[node.id]!
             c.position = GraphPoint(x: (node.position?.x ?? 0) + 40, y: (node.position?.y ?? 0) + 40)
@@ -268,7 +279,7 @@ final class AppModel {
             }
             copies.append(c)
         }
-        mutate("Duplicate", undoManager: undoManager) { g in g.nodes += copies }
+        mutateEditor("Duplicate", undoManager: undoManager) { g in g.nodes += copies }
         selection = Set(copies.map(\.id))
     }
 
@@ -342,14 +353,14 @@ final class AppModel {
     private func handle(_ event: EngineEvent, item: UUID) {
         switch event {
         case .started: break
-        case .nodeStarted(let n): nodeStates[n] = .running(step: 0, total: 0)
-        case .nodeCached(let n): nodeStates[n] = .cached
+        case .nodeStarted(let n): setState(.running(step: 0, total: 0), n)
+        case .nodeCached(let n): setState(.cached, n)
         case .progress(let n, let step, let total, let preview):
-            nodeStates[n] = .running(step: step, total: total)
+            setState(.running(step: step, total: total), n)
             if let preview { previewImage = preview; previewCount += 1 }
             if let i = queue.firstIndex(where: { $0.id == item }) { queue[i].status = .running(step: step, total: total) }
-        case .nodeFinished(let n, let s, let peak): nodeStates[n] = .done(seconds: s, peakMemory: peak)
-        case .nodeFailed(let n, let msg): nodeStates[n] = .failed(msg)
+        case .nodeFinished(let n, let s, let peak): setState(.done(seconds: s, peakMemory: peak), n)
+        case .nodeFailed(let n, let msg): setState(.failed(msg), n)
         case .finished, .cancelled: break
         }
     }

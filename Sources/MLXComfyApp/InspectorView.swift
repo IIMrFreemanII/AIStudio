@@ -9,41 +9,52 @@ import SwiftUI
 struct LiteralBindings {
     let model: AppModel
     let undoManager: UndoManager?
+    /// Bind to nodes at the editor's level (inside a subgraph) instead of the top-level graph.
+    var editor = false
+
+    func get(_ node: String, _ input: String) -> JSONValue? {
+        editor ? model.editorLiteral(node, input) : model.literal(node, input)
+    }
+
+    func set(_ v: JSONValue, _ node: String, _ input: String) {
+        if editor { model.setEditorLiteral(v, node: node, input: input, undoManager: undoManager) }
+        else { model.setLiteral(v, node: node, input: input, undoManager: undoManager) }
+    }
 
     func string(_ node: String, _ input: String) -> Binding<String> {
         Binding(
-            get: { model.literal(node, input)?.description ?? "" },
-            set: { model.setLiteral(.string($0), node: node, input: input, undoManager: undoManager) })
+            get: { get(node, input)?.description ?? "" },
+            set: { set(.string($0), node, input) })
     }
 
     func int(_ node: String, _ input: String) -> Binding<Int> {
         Binding(
             get: {
-                switch model.literal(node, input) {
+                switch get(node, input) {
                 case .int(let v)?: return v
                 case .double(let d)?: return Int(d)
                 default: return 0
                 }
             },
-            set: { model.setLiteral(.int($0), node: node, input: input, undoManager: undoManager) })
+            set: { set(.int($0), node, input) })
     }
 
     func double(_ node: String, _ input: String) -> Binding<Double> {
         Binding(
             get: {
-                switch model.literal(node, input) {
+                switch get(node, input) {
                 case .int(let v)?: return Double(v)
                 case .double(let d)?: return d
                 default: return 0
                 }
             },
-            set: { model.setLiteral(.double($0), node: node, input: input, undoManager: undoManager) })
+            set: { set(.double($0), node, input) })
     }
 
     func bool(_ node: String, _ input: String) -> Binding<Bool> {
         Binding(
-            get: { if case .bool(let b)? = model.literal(node, input) { return b } else { return false } },
-            set: { model.setLiteral(.bool($0), node: node, input: input, undoManager: undoManager) })
+            get: { if case .bool(let b)? = get(node, input) { return b } else { return false } },
+            set: { set(.bool($0), node, input) })
     }
 }
 
@@ -52,8 +63,11 @@ struct InspectorView: View {
 
     var body: some View {
         if model.workspace == .graph, model.selection.count == 1, let id = model.selection.first,
-           let node = model.graph[id] {
+           let node = model.editorGraph[id] {
             NodeInspector(node: node)
+        } else if model.workspace == .graph, model.selection.isEmpty, let gid = model.selectedGroup,
+                  let group = model.editorGraph.groups?.first(where: { $0.id == gid }) {
+            GroupInspector(group: group)
         } else if model.workspace == .graph, model.selection.count > 1 {
             ContentUnavailableView("\(model.selection.count) nodes selected", systemImage: "square.on.square",
                                    description: Text("Select a single node to edit its values."))
@@ -365,7 +379,10 @@ struct SimplePanel: View {
     }
 
     func missing(_ type: String) -> some View {
-        Text("This graph has no \(type) node.").foregroundStyle(.secondary)
+        Text(model.graph.subgraphs?.isEmpty == false
+             ? "No \(type) node at the top level. Nodes inside a subgraph are edited in the graph."
+             : "This graph has no \(type) node.")
+            .foregroundStyle(.secondary)
     }
 
     func chooseModel() {
@@ -387,19 +404,40 @@ struct NodeInspector: View {
     let node: GraphNode
 
     var body: some View {
-        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let b = LiteralBindings(model: model, undoManager: undoManager, editor: true)
         let schema = model.schema(for: node)
+        let bound = model.boundInputs[node.id] ?? [:]
         Form {
             Section {
-                LabeledContent("Type", value: schema?.displayName ?? node.type)
+                TextField("Title", text: Binding(get: { node.title ?? "" },
+                                                 set: { model.setTitle($0, node: node.id, undoManager: undoManager) }),
+                          prompt: Text(schema?.displayName ?? node.type))
+                LabeledContent("Type", value: node.type == Graph.subgraphType ? "Subgraph" : (schema?.displayName ?? node.type))
                 LabeledContent("ID", value: node.id)
-                if let state = model.nodeStates[node.id] { LabeledContent("Last run", value: describe(state)) }
+                if let state = model.nodeStates[model.nodeStatePrefix + node.id] {
+                    LabeledContent("Last run", value: describe(state))
+                }
+            }
+            if node.type == Graph.subgraphType {
+                Section {
+                    HStack {
+                        Button("Open Subgraph") { model.enterSubgraph(node.id) }
+                        Button("Expand") { model.expandSubgraph(node.id, undoManager: undoManager) }
+                    }
+                    if let def = model.graph.subgraphDef(for: node)?.def {
+                        Text("\(def.graph.nodes.count) nodes inside; \(def.inputs.count) input\(def.inputs.count == 1 ? "" : "s"), "
+                             + "\(def.outputs.count) output\(def.outputs.count == 1 ? "" : "s").")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
             }
             if let schema {
                 Section("Inputs") {
                     ForEach(schema.inputs, id: \.name) { spec in
                         if case .link(let src, let out)? = node.inputs[spec.name] {
                             LabeledContent(spec.name, value: "← \(src).\(out)")
+                        } else if let port = bound[spec.name] {
+                            LabeledContent(spec.name, value: "← subgraph input \(port)")
                         } else if spec.type.isScalar {
                             editor(spec, b)
                         } else {
@@ -629,5 +667,35 @@ struct StylesEditor: View {
             }
         }
         .controlSize(.small)
+    }
+}
+
+/// The selected group: title, color, delete.
+struct GroupInspector: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.undoManager) private var undoManager
+    let group: GraphGroup
+
+    var body: some View {
+        Form {
+            Section("Group") {
+                TextField("Title", text: Binding(get: { group.title }, set: { t in
+                    model.updateGroup(group.id, actionName: "Rename Group", undoManager: undoManager) { $0.title = t }
+                }))
+                Picker("Color", selection: Binding(get: { group.color }, set: { c in
+                    model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c }
+                })) {
+                    ForEach(AppModel.groupColors, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                LabeledContent("Nodes inside", value: "\(model.nodes(in: group.id).count)")
+            }
+            Section {
+                Button("Delete Group") { model.deleteGroup(group.id, withNodes: false, undoManager: undoManager) }
+                Button("Delete Group and Its Nodes", role: .destructive) {
+                    model.deleteGroup(group.id, withNodes: true, undoManager: undoManager)
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }

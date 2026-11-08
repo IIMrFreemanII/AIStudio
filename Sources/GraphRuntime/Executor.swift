@@ -82,8 +82,13 @@ public final class GraphExecutor {
 
     // MARK: validation
 
-    /// Checks node types, link targets, socket types and required inputs; returns nodes in topological order.
+    /// Checks node types, link targets, socket types and required inputs of the graph as it executes (subgraphs
+    /// inlined, reroutes spliced out, notes dropped); returns those nodes in topological order.
     public func validate(_ graph: Graph) throws -> [GraphNode] {
+        try validateFlat(graph.flattened())
+    }
+
+    func validateFlat(_ graph: Graph) throws -> [GraphNode] {
         var byID: [String: GraphNode] = [:]
         for n in graph.nodes { byID[n.id] = n }
 
@@ -184,10 +189,12 @@ public final class GraphExecutor {
     public func run(_ graph: Graph, targets: [String]? = nil,
                     onEvent: @escaping (ExecutionEvent) -> Void = { _ in }) async throws -> RunResult {
         let start = Date()
-        let order = try validate(graph)
+        // Runs the flattened graph; nodes still see the document graph (SaveImage embeds it, subgraphs and all).
+        let flat = try graph.flattened()
+        let order = try validateFlat(flat)
         let outputs = targets ?? order.filter { registry.schema($0.type)!.isOutput }.map(\.id)
         guard !outputs.isEmpty else { throw GraphError.noOutputs }
-        let needed = requiredNodes(graph, outputs: outputs)
+        let needed = requiredNodes(flat, outputs: outputs)
         let plan = order.filter { needed.contains($0.id) }
         let sigs = signatures(plan)
         onEvent(.started(nodes: plan.map(\.id)))

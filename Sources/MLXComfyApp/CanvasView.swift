@@ -53,7 +53,7 @@ struct RunStatusPill: View {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 if let (id, state) = running, case .running(let step, let total) = state {
-                    let name = model.graph[id].flatMap { model.schema(for: $0)?.displayName } ?? id
+                    let name = model.displayName(flatID: id)
                     Text(total > 0 ? "\(name) · step \(step) of \(total)" : "\(name)…")
                         .font(.callout.monospacedDigit())
                 } else {

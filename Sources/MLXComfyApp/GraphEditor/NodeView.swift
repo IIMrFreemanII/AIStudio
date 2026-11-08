@@ -11,6 +11,19 @@ struct NodeActions {
     var outputDragEnded: (_ output: String, _ location: CGPoint) -> Void
     var inputDragChanged: (_ input: String, _ location: CGPoint) -> Void
     var inputDragEnded: (_ input: String, _ location: CGPoint) -> Void
+    /// Double-click on the header (subgraph instances: enter it).
+    var open: (() -> Void)? = nil
+    var menu: NodeMenu = NodeMenu()
+}
+
+/// Context-menu commands for a node (nil = not offered).
+struct NodeMenu {
+    var open: (() -> Void)? = nil
+    var expand: (() -> Void)? = nil
+    var duplicate: (() -> Void)? = nil
+    var group: (() -> Void)? = nil
+    var collapse: (() -> Void)? = nil
+    var delete: (() -> Void)? = nil
 }
 
 struct NodeView: View {
@@ -20,6 +33,9 @@ struct NodeView: View {
     let selected: Bool
     let bindings: LiteralBindings
     let actions: NodeActions
+    /// Inside a subgraph: inputs fed from outside (input → port) and outputs exposed (output → port).
+    var boundInputs: [String: String] = [:]
+    var exposedOutputs: [String: String] = [:]
 
     var body: some View {
         let rows = NodeLayout.rows(node, schema)
@@ -45,6 +61,7 @@ struct NodeView: View {
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(borderColor, lineWidth: borderWidth))
         .shadow(color: .black.opacity(selected ? 0.35 : 0.2), radius: selected ? 10 : 5, y: 2)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
+        .contextMenu { NodeMenuItems(menu: actions.menu) }
     }
 
     var borderColor: Color {
@@ -61,6 +78,9 @@ struct NodeView: View {
     var header: some View {
         HStack(spacing: 6) {
             Circle().fill(schema.tint).frame(width: 8, height: 8)
+            if node.type == Graph.subgraphType {
+                Image(systemName: "square.stack.3d.up").font(.system(size: 10)).foregroundStyle(schema.tint)
+            }
             Text(node.title ?? schema.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
             Spacer(minLength: 4)
             statusBadge
@@ -75,6 +95,7 @@ struct NodeView: View {
             DragGesture(minimumDistance: 2, coordinateSpace: .named("canvas"))
                 .onChanged { actions.dragChanged($0.translation) }
                 .onEnded { _ in actions.dragEnded() })
+        .onTapGesture(count: 2) { actions.open?() }
     }
 
     @ViewBuilder var statusBadge: some View {
@@ -107,20 +128,24 @@ struct NodeView: View {
 
     func inputSocket(_ spec: InputSpec) -> some View {
         HStack(spacing: 2) {
-            socketDot(spec.type, filled: NodeLayout.isLinked(node, spec.name))
+            socketDot(spec.type, filled: NodeLayout.isLinked(node, spec.name) || boundInputs[spec.name] != nil)
                 .offset(x: -11)
                 .gesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("canvas"))
                         .onChanged { actions.inputDragChanged(spec.name, $0.location) }
                         .onEnded { actions.inputDragEnded(spec.name, $0.location) })
                 .help("\(spec.name): \(spec.type.rawValue)")
-            Text(spec.name).font(.system(size: 11)).foregroundStyle(.secondary).offset(x: -11)
+            Text(boundInputs[spec.name].map { "\(spec.name) ← \($0)" } ?? spec.name)
+                .font(.system(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
+                .lineLimit(1).offset(x: -11)
         }
     }
 
     func outputSocket(_ spec: OutputSpec) -> some View {
         HStack(spacing: 2) {
-            Text(spec.name).font(.system(size: 11)).foregroundStyle(.secondary).offset(x: 11)
+            Text(exposedOutputs[spec.name].map { "\($0) ← \(spec.name)" } ?? spec.name)
+                .font(.system(size: 11)).foregroundStyle(exposedOutputs[spec.name] != nil ? schema.tint : .secondary)
+                .lineLimit(1).offset(x: 11)
             socketDot(spec.type, filled: true)
                 .offset(x: 11)
                 .gesture(
@@ -168,6 +193,23 @@ struct NodeView: View {
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: spec.type == .string ? 150 : 90)
             }
+        }
+    }
+}
+
+struct NodeMenuItems: View {
+    let menu: NodeMenu
+
+    var body: some View {
+        if let open = menu.open { Button("Open Subgraph", action: open) }
+        if let expand = menu.expand { Button("Expand Subgraph", action: expand) }
+        if menu.open != nil || menu.expand != nil { Divider() }
+        if let duplicate = menu.duplicate { Button("Duplicate", action: duplicate) }
+        if let group = menu.group { Button("Group Selection", action: group) }
+        if let collapse = menu.collapse { Button("Collapse to Subgraph", action: collapse) }
+        if let delete = menu.delete {
+            Divider()
+            Button("Delete", role: .destructive, action: delete)
         }
     }
 }

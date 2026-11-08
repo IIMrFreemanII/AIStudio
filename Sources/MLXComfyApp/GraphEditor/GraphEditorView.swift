@@ -10,6 +10,7 @@ struct WireDrag {
     var end: CGPoint  // view coordinates
 }
 
+/// The node editor for the current editing level (the top-level graph, or a subgraph entered with a double-click).
 struct GraphEditorView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.undoManager) private var undoManager
@@ -19,6 +20,7 @@ struct GraphEditorView: View {
     @State private var panStart: CGSize?
     @State private var zoomStart: CGFloat?
     @State private var dragStartPositions: [String: GraphPoint]?
+    @State private var groupStart: GraphGroup?
     @State private var editStartGraph: Graph?
     @State private var wire: WireDrag?
     @State private var marqueeStart: CGPoint?
@@ -30,6 +32,7 @@ struct GraphEditorView: View {
 
     var body: some View {
         @Bindable var model = model
+        let level = model.editorGraph
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 GridBackground(zoom: zoom, pan: pan)
@@ -38,23 +41,17 @@ struct GraphEditorView: View {
                     .gesture(SpatialTapGesture(count: 2, coordinateSpace: .named("canvas")).onEnded { v in
                         model.paletteLocation = toGraph(v.location)
                         model.showPalette = true
-                    }.exclusively(before: TapGesture().onEnded { model.selection = [] }))
+                    }.exclusively(before: SpatialTapGesture(coordinateSpace: .named("canvas")).onEnded { v in
+                        backgroundTap(at: v.location)
+                    }))
 
-                Canvas { ctx, _ in drawWires(&ctx) }
+                ForEach(level.groups ?? []) { group in groupView(group) }
+
+                Canvas { ctx, _ in drawWires(&ctx, level) }
                     .allowsHitTesting(false)
 
-                ForEach(model.graph.nodes) { node in
-                    if let schema = model.schema(for: node) {
-                        let p = toView(NodeLayout.origin(node))
-                        NodeView(node: node, schema: schema, state: model.nodeStates[node.id],
-                                 selected: model.selection.contains(node.id),
-                                 bindings: LiteralBindings(model: model, undoManager: undoManager),
-                                 actions: actions(for: node))
-                            .scaleEffect(zoom, anchor: .topLeading)
-                            .offset(x: p.x, y: p.y)
-                    } else {
-                        unknownNode(node).offset(x: toView(NodeLayout.origin(node)).x, y: toView(NodeLayout.origin(node)).y)
-                    }
+                ForEach(level.nodes) { node in
+                    nodeView(node, level).offset(x: toView(NodeLayout.origin(node)).x, y: toView(NodeLayout.origin(node)).y)
                 }
 
                 if let marquee {
@@ -70,7 +67,7 @@ struct GraphEditorView: View {
             .overlay(alignment: .bottomTrailing) { zoomControls.padding(12) }
             .overlay(alignment: .bottomLeading) { MiniPreview().padding(12) }
             .overlay(alignment: .bottom) { RunStatusPill().padding(.bottom, 16) }
-            .overlay(alignment: .topLeading) { helpHint.padding(12) }
+            .overlay(alignment: .topLeading) { topBar.padding(12) }
             .onAppear {
                 viewSize = geo.size
                 fitOnceIfSized()
@@ -80,6 +77,7 @@ struct GraphEditorView: View {
                 viewSize = s
                 fitOnceIfSized()
             }
+            .onChange(of: model.editingPath) { _, _ in fitToContent() }
             .onDisappear { removeScrollMonitor() }
         }
         .onContinuousHover(coordinateSpace: .named("canvas")) { phase in
@@ -93,8 +91,22 @@ struct GraphEditorView: View {
             .onEnded { _ in zoomStart = nil })
         .focusable()
         .focusEffectDisabled()
-        .onDeleteCommand { model.deleteSelection(undoManager: undoManager) }
-        .onKeyPress(.escape) { model.selection = []; return .handled }
+        .onDeleteCommand {
+            if model.selection.isEmpty, let g = model.selectedGroup {
+                model.deleteGroup(g, withNodes: false, undoManager: undoManager)
+            } else {
+                model.deleteSelection(undoManager: undoManager)
+            }
+        }
+        .onKeyPress(.escape) {
+            if model.selection.isEmpty && model.selectedGroup == nil && !model.editingPath.isEmpty {
+                model.exitSubgraph()
+            } else {
+                model.selection = []
+                model.selectedGroup = nil
+            }
+            return .handled
+        }
         .sheet(isPresented: $model.showPalette) {
             NodePalette { type in
                 let at = model.paletteLocation ?? toGraph(CGPoint(x: viewSize.width / 2 - 120, y: viewSize.height / 2 - 60))
@@ -103,6 +115,86 @@ struct GraphEditorView: View {
             }
             .environment(model)
         }
+    }
+
+    // MARK: nodes
+
+    @ViewBuilder
+    func nodeView(_ node: GraphNode, _ level: Graph) -> some View {
+        let selected = model.selection.contains(node.id)
+        if NodeLayout.isReroute(node) {
+            let type: SocketType = {
+                if case .link(let src, let out)? = node.inputs["in"] { return model.resolvedType(src, out) ?? .any }
+                return .any
+            }()
+            RerouteView(node: node, type: type, selected: selected, actions: actions(for: node))
+                .scaleEffect(zoom, anchor: .topLeading)
+        } else if NodeLayout.isNote(node) {
+            NoteView(node: node, selected: selected,
+                     text: LiteralBindings(model: model, undoManager: undoManager, editor: true).string(node.id, "text"),
+                     actions: actions(for: node))
+                .scaleEffect(zoom, anchor: .topLeading)
+        } else if let schema = model.schema(for: node) {
+            NodeView(node: node, schema: schema, state: model.nodeStates[model.nodeStatePrefix + node.id],
+                     selected: selected,
+                     bindings: LiteralBindings(model: model, undoManager: undoManager, editor: true),
+                     actions: actions(for: node),
+                     boundInputs: model.boundInputs[node.id] ?? [:],
+                     exposedOutputs: model.exposedOutputs[node.id] ?? [:])
+                .scaleEffect(zoom, anchor: .topLeading)
+        } else {
+            unknownNode(node)
+        }
+    }
+
+    func groupView(_ group: GraphGroup) -> some View {
+        let origin = toView(CGPoint(x: group.x, y: group.y))
+        return GroupView(
+            group: group, size: CGSize(width: group.width * zoom, height: group.height * zoom), zoom: zoom,
+            selected: model.selectedGroup == group.id,
+            select: { model.selectedGroup = group.id; model.selection = [] },
+            moveChanged: { t in
+                if groupStart == nil {
+                    groupStart = group
+                    editStartGraph = model.graph
+                    let inside = model.nodes(in: group.id)
+                    dragStartPositions = Dictionary(uniqueKeysWithValues: model.editorGraph.nodes
+                        .filter { inside.contains($0.id) }.map { ($0.id, $0.position ?? GraphPoint(x: 0, y: 0)) })
+                    model.selectedGroup = group.id
+                    model.selection = []
+                }
+                guard let start = groupStart else { return }
+                let (dx, dy) = (Double(t.width / zoom), Double(t.height / zoom))
+                var level = model.editorGraph
+                if let i = level.groups?.firstIndex(where: { $0.id == group.id }) {
+                    level.groups![i].x = start.x + dx
+                    level.groups![i].y = start.y + dy
+                }
+                for (id, p) in dragStartPositions ?? [:] { level[id]?.position = GraphPoint(x: p.x + dx, y: p.y + dy) }
+                model.editorGraph = level
+            },
+            moveEnded: { endLiveEdit("Move Group") },
+            resizeChanged: { t in
+                if groupStart == nil { groupStart = group; editStartGraph = model.graph }
+                guard let start = groupStart else { return }
+                var level = model.editorGraph
+                if let i = level.groups?.firstIndex(where: { $0.id == group.id }) {
+                    level.groups![i].width = max(120, start.width + Double(t.width / zoom))
+                    level.groups![i].height = max(80, start.height + Double(t.height / zoom))
+                }
+                model.editorGraph = level
+            },
+            resizeEnded: { endLiveEdit("Resize Group") },
+            setColor: { c in model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c } },
+            delete: { withNodes in model.deleteGroup(group.id, withNodes: withNodes, undoManager: undoManager) })
+            .offset(x: origin.x, y: origin.y)
+    }
+
+    func endLiveEdit(_ name: String) {
+        if let start = editStartGraph { model.commitLiveEdit(from: start, actionName: name, undoManager: undoManager) }
+        groupStart = nil
+        dragStartPositions = nil
+        editStartGraph = nil
     }
 
     // MARK: coordinates
@@ -128,16 +220,28 @@ struct GraphEditorView: View {
     }
 
     func fitToContent() {
-        let frames = model.graph.nodes.compactMap { n in model.schema(for: n).map { NodeLayout.frame(n, $0) } }
+        let level = model.editorGraph
+        var frames = level.nodes.compactMap { n in model.schema(for: n).map { NodeLayout.frame(n, $0) } }
+        frames += (level.groups ?? []).map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
         guard let first = frames.first, viewSize.width > 0 else { return }
         let box = frames.dropFirst().reduce(first) { $0.union($1) }.insetBy(dx: -40, dy: -40)
         let z = min(max(min(viewSize.width / box.width, viewSize.height / box.height), 0.25), 1.5)
         zoom = z
         pan = CGSize(width: (viewSize.width - box.width * z) / 2 - box.minX * z,
-                     height: (viewSize.height - box.height * z) / 2 - box.minY * z)
+                     height: (viewSize.height - box.height * z) / 2 - box.minY * z + 16)
     }
 
     // MARK: gestures
+
+    /// Click on the background clears the selection; ⌥-click on a wire inserts a Reroute there.
+    func backgroundTap(at loc: CGPoint) {
+        if NSEvent.modifierFlags.contains(.option), let (node, input) = wire(near: loc) {
+            model.insertReroute(into: node, input: input, at: toGraph(loc), undoManager: undoManager)
+            return
+        }
+        model.selection = []
+        model.selectedGroup = nil
+    }
 
     /// Background drag pans; with ⇧ it draws a selection rectangle.
     var backgroundDrag: some Gesture {
@@ -149,7 +253,8 @@ struct GraphEditorView: View {
                                    width: abs(v.location.x - v.startLocation.x),
                                    height: abs(v.location.y - v.startLocation.y))
                     marquee = r
-                    model.selection = Set(model.graph.nodes.filter { n in
+                    model.selectedGroup = nil
+                    model.selection = Set(model.editorGraph.nodes.filter { n in
                         guard let s = model.schema(for: n) else { return false }
                         let f = NodeLayout.frame(n, s)
                         let vf = CGRect(origin: toView(f.origin), size: CGSize(width: f.width * zoom, height: f.height * zoom))
@@ -168,8 +273,13 @@ struct GraphEditorView: View {
     }
 
     func actions(for node: GraphNode) -> NodeActions {
-        NodeActions(
+        let isInstance = node.type == Graph.subgraphType
+        let selectionForMenu: () -> Void = {
+            if !model.selection.contains(node.id) { model.selection = [node.id] }
+        }
+        return NodeActions(
             select: { extend in
+                model.selectedGroup = nil
                 if extend {
                     if model.selection.contains(node.id) { model.selection.remove(node.id) } else { model.selection.insert(node.id) }
                 } else {
@@ -180,26 +290,21 @@ struct GraphEditorView: View {
                 if dragStartPositions == nil {
                     if !model.selection.contains(node.id) { model.selection = [node.id] }
                     editStartGraph = model.graph
-                    dragStartPositions = Dictionary(uniqueKeysWithValues: model.graph.nodes
+                    dragStartPositions = Dictionary(uniqueKeysWithValues: model.editorGraph.nodes
                         .filter { model.selection.contains($0.id) }
                         .map { ($0.id, $0.position ?? GraphPoint(x: 0, y: 0)) })
                 }
+                var level = model.editorGraph
                 for (id, start) in dragStartPositions ?? [:] {
-                    guard var n = model.graph[id] else { continue }
-                    n.position = GraphPoint(x: start.x + Double(t.width / zoom), y: start.y + Double(t.height / zoom))
-                    model.graph[id] = n
+                    level[id]?.position = GraphPoint(x: start.x + Double(t.width / zoom), y: start.y + Double(t.height / zoom))
                 }
+                model.editorGraph = level
             },
-            dragEnded: {
-                if let start = editStartGraph {
-                    model.commitLiveEdit(from: start, actionName: "Move", undoManager: undoManager)
-                }
-                dragStartPositions = nil
-                editStartGraph = nil
-            },
+            dragEnded: { endLiveEdit("Move") },
             outputDragChanged: { output, loc in
                 if wire == nil {
-                    guard let type = model.schema(for: node)?.output(output)?.type else { return }
+                    guard let type = model.resolvedType(node.id, output) ?? model.schema(for: node)?.output(output)?.type
+                    else { return }
                     editStartGraph = model.graph
                     wire = WireDrag(fromNode: node.id, fromOutput: output, type: type, end: loc)
                 }
@@ -209,17 +314,23 @@ struct GraphEditorView: View {
             inputDragChanged: { input, loc in
                 if wire == nil {
                     // Dragging a connected input picks the link up from its source.
-                    guard case .link(let src, let out)? = model.graph[node.id]?.inputs[input],
-                          let type = model.schema(for: node)?.input(input)?.type else { return }
+                    guard case .link(let src, let out)? = model.editorGraph[node.id]?.inputs[input] else { return }
+                    let type = model.resolvedType(src, out) ?? model.schema(for: node)?.input(input)?.type ?? .any
                     editStartGraph = model.graph
-                    var n = model.graph[node.id]!
-                    n.inputs[input] = nil
-                    model.graph[node.id] = n
+                    model.editorGraph[node.id]?.inputs[input] = nil
                     wire = WireDrag(fromNode: src, fromOutput: out, type: type, end: loc)
                 }
                 wire?.end = loc
             },
-            inputDragEnded: { _, loc in finishWire(at: loc, actionIfDropped: "Disconnect") })
+            inputDragEnded: { _, loc in finishWire(at: loc, actionIfDropped: "Disconnect") },
+            open: isInstance ? { model.enterSubgraph(node.id) } : nil,
+            menu: NodeMenu(
+                open: isInstance ? { model.enterSubgraph(node.id) } : nil,
+                expand: isInstance ? { model.expandSubgraph(node.id, undoManager: undoManager) } : nil,
+                duplicate: { selectionForMenu(); model.duplicateSelection(undoManager: undoManager) },
+                group: { selectionForMenu(); model.groupSelection(undoManager: undoManager) },
+                collapse: { selectionForMenu(); model.collapseSelection(undoManager: undoManager) },
+                delete: { selectionForMenu(); model.deleteSelection(undoManager: undoManager) }))
     }
 
     /// Connects the dragged wire to the input under `loc`; otherwise commits `actionIfDropped` (or reverts).
@@ -227,16 +338,14 @@ struct GraphEditorView: View {
         defer { wire = nil; editStartGraph = nil }
         guard let w = wire, let start = editStartGraph else { return }
         if let (target, input) = inputTarget(at: loc, for: w) {
-            var g = model.graph
-            var n = g[target]!
-            n.inputs[input] = .link(node: w.fromNode, output: w.fromOutput)
-            g[target] = n
+            var g = model.editorGraph
+            g[target]?.inputs[input] = .link(node: w.fromNode, output: w.fromOutput)
             if model.wouldCreateCycle(g) {
                 NSSound.beep()
                 model.graph = start
                 return
             }
-            model.graph = g
+            model.editorGraph = g
             model.commitLiveEdit(from: start, actionName: "Connect", undoManager: undoManager)
         } else if let action = actionIfDropped {
             model.commitLiveEdit(from: start, actionName: action, undoManager: undoManager)
@@ -245,12 +354,14 @@ struct GraphEditorView: View {
         }
     }
 
-    /// The compatible input socket nearest to `loc` (within reach), or the only compatible input of the node under it.
+    /// The compatible input socket nearest to `loc` (within reach), or the only compatible input of the node under
+    /// it. Dropping a scalar wire (e.g. a STRING) on a node can also target a widget input of that type.
     func inputTarget(at loc: CGPoint, for w: WireDrag) -> (String, String)? {
+        let level = model.editorGraph
         var best: (String, String, CGFloat)?
-        for n in model.graph.nodes where n.id != w.fromNode {
+        for n in level.nodes where n.id != w.fromNode {
             guard let s = model.schema(for: n) else { continue }
-            for spec in s.inputs where spec.type == w.type && !spec.type.isScalar {
+            for spec in s.inputs where spec.type.accepts(w.type) && !spec.type.isScalar {
                 guard let p = NodeLayout.inputPoint(n, s, spec.name) else { continue }
                 let v = toView(p)
                 let d = hypot(v.x - loc.x, v.y - loc.y)
@@ -258,34 +369,63 @@ struct GraphEditorView: View {
             }
         }
         if let best { return (best.0, best.1) }
-        for n in model.graph.nodes where n.id != w.fromNode {
+        for n in level.nodes where n.id != w.fromNode {
             guard let s = model.schema(for: n) else { continue }
             let f = NodeLayout.frame(n, s)
             let vf = CGRect(origin: toView(f.origin), size: CGSize(width: f.width * zoom, height: f.height * zoom))
             guard vf.contains(loc) else { continue }
-            let compatible = s.inputs.filter { $0.type == w.type && !$0.type.isScalar }
+            let compatible = s.inputs.filter {
+                $0.type.isScalar ? $0.type == w.type : $0.type.accepts(w.type)
+            }
             if compatible.count == 1 { return (n.id, compatible[0].name) }
         }
         return nil
     }
 
-    // MARK: drawing
-
-    func drawWires(_ ctx: inout GraphicsContext) {
-        let width = max(1.5, 2.5 * zoom)
-        for n in model.graph.nodes {
-            guard let s = model.schema(for: n) else { continue }
-            for spec in s.inputs {
-                guard case .link(let src, let out)? = n.inputs[spec.name], let srcNode = model.graph[src],
-                      let srcSchema = model.schema(for: srcNode),
-                      let a = NodeLayout.outputPoint(srcNode, srcSchema, out),
-                      let b = NodeLayout.inputPoint(n, s, spec.name) else { continue }
-                let highlighted = model.selection.contains(n.id) || model.selection.contains(src)
-                stroke(&ctx, from: toView(a), to: toView(b), color: spec.type.color.opacity(highlighted ? 1 : 0.75),
-                       width: highlighted ? width * 1.5 : width)
+    /// The link (target node, input) whose curve passes within a few points of `loc`.
+    func wire(near loc: CGPoint) -> (String, String)? {
+        var best: (String, String, CGFloat)?
+        for (node, input, _, a, b, _) in wireSegments(model.editorGraph) {
+            let dx = max(abs(b.x - a.x) * 0.5, 50 * zoom)
+            for i in 0...32 {
+                let t = CGFloat(i) / 32, u = 1 - t
+                let c1 = CGPoint(x: a.x + dx, y: a.y), c2 = CGPoint(x: b.x - dx, y: b.y)
+                let x = u * u * u * a.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t * t * t * b.x
+                let y = u * u * u * a.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t * t * t * b.y
+                let d = hypot(x - loc.x, y - loc.y)
+                if d < 8, d < (best?.2 ?? .infinity) { best = (node, input, d) }
             }
         }
-        if let w = wire, let srcNode = model.graph[w.fromNode], let srcSchema = model.schema(for: srcNode),
+        return best.map { ($0.0, $0.1) }
+    }
+
+    // MARK: drawing
+
+    /// Every drawn link in view coordinates: (target node, input, source node, from, to, type).
+    func wireSegments(_ level: Graph) -> [(String, String, String, CGPoint, CGPoint, SocketType)] {
+        var out: [(String, String, String, CGPoint, CGPoint, SocketType)] = []
+        for n in level.nodes {
+            guard let s = model.schema(for: n) else { continue }
+            for spec in s.inputs {
+                guard case .link(let src, let o)? = n.inputs[spec.name], let srcNode = level[src],
+                      let srcSchema = model.schema(for: srcNode),
+                      let a = NodeLayout.outputPoint(srcNode, srcSchema, o),
+                      let b = NodeLayout.inputPoint(n, s, spec.name) else { continue }
+                let type = spec.type == .any ? (model.resolvedType(src, o) ?? .any) : spec.type
+                out.append((n.id, spec.name, src, toView(a), toView(b), type))
+            }
+        }
+        return out
+    }
+
+    func drawWires(_ ctx: inout GraphicsContext, _ level: Graph) {
+        let width = max(1.5, 2.5 * zoom)
+        for (node, _, src, a, b, type) in wireSegments(level) {
+            let highlighted = model.selection.contains(node) || model.selection.contains(src)
+            stroke(&ctx, from: a, to: b, color: type.color.opacity(highlighted ? 1 : 0.75),
+                   width: highlighted ? width * 1.5 : width)
+        }
+        if let w = wire, let srcNode = level[w.fromNode], let srcSchema = model.schema(for: srcNode),
            let a = NodeLayout.outputPoint(srcNode, srcSchema, w.fromOutput) {
             stroke(&ctx, from: toView(a), to: w.end, color: w.type.color, width: width, dashed: true)
         }
@@ -310,6 +450,37 @@ struct GraphEditorView: View {
 
     // MARK: overlays
 
+    /// Breadcrumbs while inside a subgraph; a hint when the level is empty.
+    @ViewBuilder var topBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.editingPath.isEmpty {
+                HStack(spacing: 6) {
+                    Button { model.exitSubgraph() } label: { Image(systemName: "chevron.left") }
+                        .help("Back (Esc)")
+                    Button("Graph") { model.exitSubgraph(to: 0) }.buttonStyle(.link)
+                    ForEach(Array(model.editingTitles.enumerated()), id: \.offset) { i, title in
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                        if i == model.editingTitles.count - 1 {
+                            Text(title).fontWeight(.semibold)
+                        } else {
+                            Button(title) { model.exitSubgraph(to: i + 1) }.buttonStyle(.link)
+                        }
+                    }
+                }
+                .font(.callout)
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+            }
+            if model.editorGraph.nodes.isEmpty {
+                Text("Double-click or press ⌘K to add a node.")
+                    .font(.callout).foregroundStyle(.secondary)
+                    .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+    }
+
     var zoomControls: some View {
         HStack(spacing: 2) {
             Button { setZoom(zoom / 1.2, around: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)) } label: {
@@ -332,14 +503,6 @@ struct GraphEditorView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.regularMaterial, in: Capsule())
-    }
-
-    @ViewBuilder var helpHint: some View {
-        if model.graph.nodes.isEmpty {
-            Text("Double-click or press ⌘K to add a node.")
-                .font(.callout).foregroundStyle(.secondary)
-                .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        }
     }
 
     // MARK: scroll wheel

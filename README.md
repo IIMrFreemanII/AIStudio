@@ -31,6 +31,10 @@ open build/MLXComfyUI.app
   - Double-click the background or press ⌘K to add a node. ⌘D duplicates the selection and ⌫ deletes it.
   - Every edit can be undone.
   - The running node is outlined, and each node shows its time or a "cached" badge.
+  - **Notes:** add a Note node (⌘K) for a sticky note you edit in place. Notes never run.
+  - **Reroutes:** ⌥-click a wire to add a bend point, or add a Reroute node. A reroute takes the type of what flows into it, so type checks still apply end to end.
+  - **Groups:** ⌘G puts a labelled frame around the selection. Drag its title bar to move it with the nodes inside, drag the corner to resize, and rename or recolor it in the inspector.
+  - **Subgraphs:** ⌥⌘G collapses the selection into one node. Links that cross the boundary become its inputs and outputs. Double-click the node (or use the inspector) to edit inside it, with a breadcrumb bar to go back (Esc or ⌘↑). ⇧⌘G expands it again. Every instance shares the same definition. The Simple panel only edits nodes at the top level.
 - **Sidebar:** the queue (cancel or reorder jobs) and history (the PNGs in the output folder). Right-click a history item to restore its graph.
   - Search filters history by prompt. ★ marks favorites (stored on the file, so they survive moving it) and the star button shows only favorites. The grid button switches between a list and a thumbnail grid.
 - **Styles and wildcards:** pick a **Style** under the prompt to wrap it in a template (edit the styles in Settings). In any prompt, `{red|green|blue}` picks one option per image and `__name__` picks a line from `~/Library/Application Support/MLXComfyUI/wildcards/name.txt`. Choices are seeded by the image's seed, and the saved PNG records both the final prompt and the template.
@@ -134,6 +138,8 @@ The executor:
 
 `SaveImage` embeds the full graph in the PNG as an `iTXt` chunk under the key `mlxcomfy.graph`.
 
+Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared by `Subgraph` instance nodes) and `metadata`; all are optional, so older graphs still load. Before running, the executor flattens the graph: subgraph instances are inlined (inner nodes run as `instance/node`), reroutes are spliced out and notes are dropped. Caching works the same as in a flat graph, because signatures don't include node ids. `--set instance/node.input=value` reaches a node inside a subgraph. See [examples/structured.json](examples/structured.json), which renders the same image as `txt2img.json`.
+
 ## Layout
 
 - `Sources/MLXDiffusionCore`: safetensors weight store, dense and quantized `Lin`, `Conv2d`, the flow-match Euler scheduler, PNG I/O, and mask and tiling helpers (`MaskOps`, `Tiling`).
@@ -143,7 +149,7 @@ The executor:
   - `QwenImage21VAE`: the single-frame form of the causal 3D VAE.
   - `QwenImage21Pipeline`.
   - `TextGenerator.swift`: KV-cached text generation with the same decoder stack (the prompt assistant).
-- `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
+- `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also subgraph flattening, collapse and expand (`Subgraphs.swift`), and the Note and Reroute nodes. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
 - `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.

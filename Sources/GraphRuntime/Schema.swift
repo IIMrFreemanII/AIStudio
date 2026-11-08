@@ -16,8 +16,13 @@ public struct SocketType: RawRepresentable, Hashable, Codable, Sendable, CustomS
     public static let latent = SocketType("LATENT")
     public static let image = SocketType("IMAGE")
     public static let mask = SocketType("MASK")
+    /// Accepts any type (a Reroute's sockets); resolved to the real type before execution.
+    public static let any = SocketType("*")
 
     public var isScalar: Bool { [.int, .float, .string, .bool].contains(self) }
+
+    /// Whether a link of type `other` may connect to a socket of this type.
+    public func accepts(_ other: SocketType) -> Bool { self == other || self == .any || other == .any }
 }
 
 /// How the UI should present a scalar input.
