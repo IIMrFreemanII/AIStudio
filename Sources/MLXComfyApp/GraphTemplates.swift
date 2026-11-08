@@ -63,6 +63,24 @@ enum GraphTemplates {
         ])
     }
 
+    /// The graph behind the Sound mode: model → text to audio → save (WAV).
+    static func textToSound(modelPath: String, outputDirectory: String,
+                            prompt: String = "Rain on a tin roof with distant thunder, cozy and close") -> Graph {
+        func link(_ n: String, _ o: String) -> NodeInput { .link(node: n, output: o) }
+        return Graph(nodes: [
+            GraphNode(id: "model", type: "LoadModel", inputs: ["path": .value(.string(modelPath))],
+                      position: GraphPoint(x: 40, y: 140)),
+            GraphNode(id: "generate", type: "TextToAudio",
+                      inputs: ["model": link("model", "model"), "prompt": .value(.string(prompt)),
+                               "seconds": .value(.double(8)), "seed": .value(.int(1)), "steps": .value(.int(0))],
+                      position: GraphPoint(x: 340, y: 100)),
+            GraphNode(id: "save", type: "SaveAudio",
+                      inputs: ["audio": link("generate", "audio"), "filename_prefix": .value(.string("sound")),
+                               "directory": .value(.string(outputDirectory)), "format": .value(.string("wav"))],
+                      position: GraphPoint(x: 680, y: 140)),
+        ])
+    }
+
     /// Video sizes: two-stage generation needs multiples of 64.
     static let videoSizePresets: [(name: String, width: Int, height: Int)] = [
         ("Landscape 3:2", 768, 512),

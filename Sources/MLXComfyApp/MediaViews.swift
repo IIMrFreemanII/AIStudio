@@ -324,3 +324,83 @@ struct VideoPanel: View {
         if p.runModal() == .OK, let u = p.url { model.setFirstFrame(u, undoManager: undoManager) }
     }
 }
+
+/// The Simple panel's Sound mode: prompt, length and seed of the Text to Audio node.
+struct SoundPanel: View {
+    @Environment(AppModel.self) private var model
+    @Environment(ModelStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        @Bindable var model = model
+        let b = LiteralBindings(model: model, undoManager: undoManager)
+        let installed = store.installed(.sound)
+        let loader = model.firstNode(ofType: "LoadModel")
+        let gen = model.firstNode(ofType: "TextToAudio")
+
+        if installed == nil {
+            MediaModePanel(mode: .sound)
+        } else {
+            Form {
+                if let gen {
+                    Section("Prompt") {
+                        TextEditor(text: b.string(gen.id, "prompt"))
+                            .font(.body)
+                            .frame(minHeight: 120)
+                            .scrollContentBackground(.hidden)
+                        Text("Describe the sound: sources, setting, texture, tempo for loops (e.g. \"128 BPM tech house drum loop\").")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Section("Sound") {
+                        let secs = b.double(gen.id, "seconds")
+                        LabeledContent("Length") {
+                            HStack {
+                                Slider(value: secs, in: 1...11, step: 0.5)
+                                Text(String(format: "%.1f s", secs.wrappedValue)).monospacedDigit().frame(width: 44, alignment: .trailing)
+                            }
+                        }
+                        HStack {
+                            TextField("Seed", value: b.int(gen.id, "seed"), format: .number.grouping(.never))
+                            Button { b.int(gen.id, "seed").wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
+                                Image(systemName: "dice")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("New random seed")
+                        }
+                        Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
+                        Stepper(value: b.int(gen.id, "steps"), in: 0...50) {
+                            let s = b.int(gen.id, "steps").wrappedValue
+                            LabeledContent("Steps", value: s == 0 ? "Model default (8)" : "\(s)")
+                        }
+                        Stepper(value: $model.batchCount, in: 1...16) {
+                            LabeledContent("Batch", value: "\(model.batchCount) clip\(model.batchCount == 1 ? "" : "s")")
+                        }
+                    }
+                }
+                Section("Model") {
+                    if let installed, let loader {
+                        let path = b.string(loader.id, "path")
+                        LabeledContent("Folder") {
+                            Text((path.wrappedValue as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        }
+                        if URL(fileURLWithPath: path.wrappedValue).standardizedFileURL != installed.standardizedFileURL {
+                            Button("Use \(installed.lastPathComponent)") { path.wrappedValue = installed.path }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .safeAreaInset(edge: .bottom) {
+                Button { model.enqueue(undoManager: undoManager) } label: {
+                    Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate Sound", systemImage: "waveform")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+                .padding(12)
+                .background(.bar)
+            }
+        }
+    }
+}

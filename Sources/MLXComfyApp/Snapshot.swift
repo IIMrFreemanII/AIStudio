@@ -158,6 +158,12 @@ enum Snapshot {
         try? await MediaIO.writeVideo(MediaOps.testPattern(width: 640, height: 360, frames: 48, fps: 24), audio: tone, to: videoURL)
         m.displayedMedia = (videoURL, .video)
         await render(m, to: dir.appendingPathComponent("24-video-result.png"))
+        // 27. The Sound mode with Stable Audio installed, showing a generated sound.
+        let soundDir = Snapshot.store.modelsDirectory.appendingPathComponent("stable-audio-open-small")
+        m.setSimpleMode(.sound, videoModelPath: nil, soundModelPath: soundDir.path, undoManager: nil)
+        m.displayedMedia = (audioURL, .audio)
+        await render(m, to: dir.appendingPathComponent("27-sound-mode.png"))
+        m.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
         let store = ModelStore()
         store.adopt(m.modelPath)
         await render(ModelManagerView().environment(m).environment(store),

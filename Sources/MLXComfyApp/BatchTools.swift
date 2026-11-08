@@ -57,7 +57,7 @@ extension AppModel {
         var g = graph
         let wildcards = PromptTemplate.wildcardFiles(in: Self.wildcardDirectory)
         let first = g.nodes.first { $0.type == "TextEncode" }?.id
-        for n in g.nodes where n.type == "TextEncode" {
+        for n in g.nodes where n.type == "TextEncode" || n.type == "TextToAudio" {
             guard case .value(.string(let raw))? = n.inputs["prompt"] else { continue }
             var text = raw
             if n.id == first, let style = selectedStyle { text = style.apply(to: text) }
@@ -191,7 +191,7 @@ extension AppModel {
                     } else if let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey] {
                         g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8))
                     }
-                    if let n = g?.nodes.first(where: { $0.type == "TextEncode" }),
+                    if let n = g?.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
                        case .value(.string(let s))? = n.inputs["prompt"] {
                         out[url] = s
                     } else {

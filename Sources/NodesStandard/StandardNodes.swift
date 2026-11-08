@@ -4,6 +4,7 @@ import MLX
 import MLXDiffusionCore
 import LTX2
 import QwenImage21
+import StableAudio
 
 /// The built-in node library and the model loaders it relies on.
 public enum StandardNodes {
@@ -16,13 +17,14 @@ public enum StandardNodes {
         NoteNode.self, RerouteNode.self,
         TestPatternNode.self, TestToneNode.self, LoadVideoNode.self, LoadAudioNode.self, MixAudioNode.self,
         AddAudioToVideoNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
-        EmptyVideoLatentNode.self, VideoSamplerNode.self, VideoDecodeNode.self,
+        EmptyVideoLatentNode.self, VideoSamplerNode.self, VideoDecodeNode.self, TextToAudioNode.self,
     ]
 
     /// Registry with every standard node; also registers the bundled model loaders.
     public static func makeRegistry() -> NodeRegistry {
         QwenImage21Pipeline.register()
         LTX2Pipeline.register()
+        StableAudioPipeline.register()
         let r = NodeRegistry()
         r.register(all)
         return r

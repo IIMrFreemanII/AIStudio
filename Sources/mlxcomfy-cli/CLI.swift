@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import GraphRuntime
 import LTX2
+import StableAudio
 import MLX
 import MLXDiffusionCore
 import NodesStandard
@@ -13,7 +14,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "mlxcomfy-cli",
         abstract: "MLXComfyUI engine command line.",
-        subcommands: [Run.self, Generate.self, GenerateVideo.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
+        subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
                       FitPreview.self, MakeTestLoRA.self, Assist.self,
                       Tokenize.self])
 }
@@ -121,6 +122,73 @@ struct GraphFromPNG: AsyncParsableCommand {
         }
         let g = try JSONDecoder().decode(Graph.self, from: Data(json.utf8))
         print(String(data: try g.jsonData(), encoding: .utf8)!)
+    }
+}
+
+struct GenerateAudio: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "generate-audio", abstract: "Text to audio with an audio model (Stable Audio Open), no graph.")
+
+    @Option(help: "Model folder (with an mlxcomfy.json manifest).") var model: String
+    @Option(help: "Prompt text.") var prompt: String
+    @Option(help: "Length in seconds.") var seconds: Double = 10
+    @Option(help: "Random seed.") var seed: UInt64 = 0
+    @Option(help: "Sampling steps (default: the model's).") var steps: Int?
+    @Option(help: "Output path (.wav or .m4a).") var out = "out.wav"
+
+    func run() async throws {
+        _ = StandardNodes.makeRegistry()
+        var t = Date()
+        let loaded = try await ModelRegistry.shared.load(URL(fileURLWithPath: model))
+        guard let pipe = loaded as? AudioModel else { throw ValidationError("\(loaded.displayName) is not an audio model") }
+        log(String(format: "loaded %@ in %.1fs (%@)", pipe.displayName, Date().timeIntervalSince(t), memoryString()))
+        t = Date()
+        let clip = try pipe.generateAudio(AudioRequest(prompt: prompt, seconds: seconds, seed: seed, steps: steps)) { i, n in
+            log(String(format: "step %d/%d  %.2fs", i, n, Date().timeIntervalSince(t)))
+        }
+        let x = clip.samples
+        log(String(format: "generated %.2f s at %d Hz, %d ch in %.1fs (%@); rms %.4f, peak %.4f", clip.duration,
+                   clip.sampleRate, clip.channels, Date().timeIntervalSince(t), memoryString(),
+                   sqrt((x * x).mean()).item(Float.self), abs(x).max().item(Float.self)))
+        let url = URL(fileURLWithPath: out)
+        try await MediaIO.writeAudio(clip, to: url, format: url.pathExtension.lowercased() == "m4a" ? .m4a : .wav,
+                                     metadata: ["mlxcomfy.prompt": prompt, "mlxcomfy.seed": String(seed)])
+        log("wrote \(url.path)")
+    }
+}
+
+/// Development check: runs the Stable Audio modules on inputs dumped from the MLX reference and prints the error.
+struct ProbeStableAudio: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "probe-stable-audio", shouldDisplay: false)
+    @Option var model: String
+    @Option var dump: String
+
+    func run() async throws {
+        let d = try MLX.loadArrays(url: URL(fileURLWithPath: dump))
+        let dir = URL(fileURLWithPath: model)
+        func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
+            let diff = (a.asType(.float32) - b.asType(.float32))
+            let rel = sqrt((diff * diff).sum()) / sqrt((b.asType(.float32) * b.asType(.float32)).sum())
+            log(String(format: "%@: shape %@ max-abs %.3g rel-L2 %.3g", name, "\(a.shape)", abs(diff).max().item(Float.self),
+                       rel.item(Float.self)))
+        }
+        let store = try WeightStore(url: dir.appendingPathComponent("model.safetensors"))
+        let cfg = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("model_config.json"))) as? [String: Any] ?? [:]
+        let dit = try StableAudioDiT(store: store, config: StableAudioDiT.Config(modelConfig: cfg))
+        var blockIndex = 0
+        dit.trace = { name, a in
+            let key = name == "block" ? "block\(blockIndex)" : name
+            if name == "block" { blockIndex += 1 }
+            if let r = d[key] { report(key, a, r) }
+        }
+        report("dit velocity", dit(d["x"]!, t: d["t"]!, cond: d["cond"]!, global: d["g"]!), d["v"]!)
+        let dec = try OobleckDecoder(store: store, prefix: "pretransform.model.decoder.")
+        report("oobleck audio", dec(d["lat"]!), d["audio"]!)
+        let tok = try await AutoTokenizer.from(modelFolder: dir.appendingPathComponent("t5"))
+        log("swift ids: \(tok.encode(text: "128 BPM tech house drum loop, punchy kick"))")
+        log("ref ids:   \(d["ids"]![0][0..<13].asArray(Int32.self))")
+        let t5 = try T5Encoder(directory: dir.appendingPathComponent("t5"))
+        report("t5", t5(ids: d["ids"]!, mask: d["am"]!), d["t5"]!)
     }
 }
 

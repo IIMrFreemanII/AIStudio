@@ -27,10 +27,10 @@ struct CanvasView: View {
                         }
                     }
             } else {
-                let video = model.simpleMode == .video
+                let mode = model.simpleMode
                 ContentUnavailableView {
-                    Label(video ? "No video yet" : "No image yet",
-                          systemImage: video ? "film" : "photo.on.rectangle.angled")
+                    Label(mode == .image ? "No image yet" : mode == .video ? "No video yet" : "No sound yet",
+                          systemImage: mode == .image ? "photo.on.rectangle.angled" : mode.symbol)
                 } description: {
                     Text("Write a prompt in the inspector and press ⌘↩ to generate.\n"
                          + "Drop a PNG or MP4 made by MLXComfyUI here to restore its graph.")

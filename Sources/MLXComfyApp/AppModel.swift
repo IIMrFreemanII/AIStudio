@@ -101,7 +101,14 @@ final class AppModel {
     /// Image or video follows the graph (a Video Sampler means video), so undo and opening files switch it too.
     var simpleMode: SimpleMode {
         if let pendingMode { return pendingMode }
-        return graph.nodes.contains { $0.type == "VideoSampler" } ? .video : .image
+        return Self.mode(of: graph)
+    }
+
+    /// Which Simple-panel mode a graph belongs to, from the nodes it uses.
+    static func mode(of g: Graph) -> SimpleMode {
+        if g.nodes.contains(where: { $0.type == "VideoSampler" }) { return .video }
+        if g.nodes.contains(where: { $0.type == "TextToAudio" }) { return .sound }
+        return .image
     }
     /// The graph each mode had when the user switched away, restored on switching back.
     @ObservationIgnored var modeGraphs: [SimpleMode: Graph] = [:]
@@ -335,7 +342,7 @@ final class AppModel {
     func enqueue(undoManager: UndoManager?) {
         if let err = validationError { lastError = err; NSSound.beep(); return }
         lastError = nil
-        let samplers = graph.nodes.filter { $0.type == "Sampler" || $0.type == "VideoSampler" }.map(\.id)
+        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio"].contains($0.type) }.map(\.id)
         for i in 0..<max(1, batchCount) {
             var g = graph
             var seed: Int?
@@ -356,7 +363,8 @@ final class AppModel {
     }
 
     func title(for g: Graph) -> String {
-        if let p = g.nodes.first(where: { $0.type == "TextEncode" }), case .value(.string(let s))? = p.inputs["prompt"],
+        if let p = g.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
+           case .value(.string(let s))? = p.inputs["prompt"],
            !s.isEmpty { return s }
         return "Untitled graph"
     }
@@ -571,16 +579,21 @@ final class AppModel {
     }
 
     /// Switches the Simple panel's mode; image and video swap the graph for that mode's (kept per mode).
-    func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, undoManager: UndoManager?) {
+    func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, soundModelPath: String? = nil,
+                       undoManager: UndoManager?) {
         switch mode {
-        case .image, .video:
+        case .image, .video, .sound:
             pendingMode = nil
-            let current = graph.nodes.contains { $0.type == "VideoSampler" } ? SimpleMode.video : .image
+            let current = Self.mode(of: graph)
             guard current != mode else { return }
             modeGraphs[current] = graph
-            let next = modeGraphs[mode] ?? (mode == .video
-                ? GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
-                : GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory))
+            let next = modeGraphs[mode] ?? {
+                switch mode {
+                case .video: return GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
+                case .sound: return GraphTemplates.textToSound(modelPath: soundModelPath ?? "", outputDirectory: outputDirectory)
+                default: return GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory)
+                }
+            }()
             setGraph(next, actionName: "Switch to \(mode.rawValue)", undoManager: undoManager)
             selection = []
         default:

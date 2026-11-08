@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "MLXDiffusionCore", targets: ["MLXDiffusionCore"]),
         .library(name: "QwenImage21", targets: ["QwenImage21"]),
         .library(name: "LTX2", targets: ["LTX2"]),
+        .library(name: "StableAudio", targets: ["StableAudio"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
@@ -100,6 +101,16 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
+        // Stable Audio Open Small: text-to-sound (T5 + DiT + Oobleck VAE).
+        .target(
+            name: "StableAudio",
+            dependencies: [
+                "MLXDiffusionCore",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
         .target(name: "GraphRuntime"),
         .target(
             name: "NodesStandard",
@@ -108,6 +119,7 @@ let package = Package(
                 "MLXDiffusionCore",
                 "QwenImage21",
                 "LTX2",
+                "StableAudio",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
@@ -116,6 +128,7 @@ let package = Package(
             dependencies: [
                 "MLXDiffusionCore",
                 "LTX2",
+                "StableAudio",
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
@@ -137,6 +150,10 @@ let package = Package(
         .testTarget(
             name: "MLXDiffusionCoreTests",
             dependencies: ["MLXDiffusionCore", "QwenImage21"]
+        ),
+        .testTarget(
+            name: "StableAudioTests",
+            dependencies: ["StableAudio", .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
             name: "LTX2Tests",

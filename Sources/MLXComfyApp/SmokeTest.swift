@@ -310,4 +310,38 @@ extension SmokeTest {
             && after.contains { $0.contains("ltx-2.3") } && !after.contains { $0.contains("qwen") } && back
             && model.displayedMedia?.kind == .video
     }
+
+    /// `--smoke-sound`: the Sound mode end to end: switch modes (graph swap), generate a short clip, check history
+    /// and the file, then switch back to Image.
+    static func runSound(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let dir = ModelStore().modelsDirectory.appendingPathComponent("stable-audio-open-small")
+        guard ModelRegistry.className(at: dir) == "StableAudioPipeline" else { say("no Stable Audio at \(dir.path)"); return false }
+        model.setSimpleMode(.sound, videoModelPath: nil, soundModelPath: dir.path, undoManager: nil)
+        guard model.simpleMode == .sound, let gen = model.firstNode(ofType: "TextToAudio") else {
+            say("sound graph not set up"); return false
+        }
+        model.mutate("Short", undoManager: nil) { g in try? g.setValue(.double(4), node: gen.id, input: "seconds") }
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return false }
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard case .done(let secs)? = model.queue.first(where: { $0.id == item.id })?.status else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        guard let url = model.history.first(where: { $0.kind == .audio && $0.url.lastPathComponent.hasPrefix("sound") })?.url,
+              let clip = try? await MediaIO.readAudio(url) else { say("no sound in history"); return false }
+        let meta = await MediaIO.readMetadata(url)
+        say(String(format: "job done in %.1fs: %@ %.2fs at %d Hz, %d ch, graph embedded %@; displayed %@", secs,
+                   url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
+                   meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
+                   model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
+        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
+        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
+        say("back to image graph: \(back)")
+        return abs(clip.duration - 4) < 0.05 && clip.sampleRate == 44100 && clip.channels == 2
+            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+    }
 }

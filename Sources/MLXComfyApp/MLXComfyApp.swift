@@ -13,6 +13,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         // Preview files only live for one session.
         try? FileManager.default.removeItem(at: previewDirectory)
+        if CommandLine.arguments.contains("--smoke-sound") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runSound(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
         if CommandLine.arguments.contains("--smoke-video") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }

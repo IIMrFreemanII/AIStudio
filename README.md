@@ -1,6 +1,6 @@
 # MLXComfyUI
 
-A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA, with Qwen-Image 2.1 Turbo. It also makes **video with a synchronized soundtrack**, from text or from a still image, with LTX-2.3. A prompt assistant uses the image model's own language model to write prompts. Sound effects, music and speech models are next.
+A native macOS image generator with a node graph in the style of ComfyUI. It's pure Swift on [mlx-swift](https://github.com/ml-explore/mlx-swift), with no Python at runtime. It supports text-to-image, editing with a reference image, inpainting, outpainting, a hi-res fix and LoRA, with Qwen-Image 2.1 Turbo. It also makes **video with a synchronized soundtrack**, from text or from a still image, with LTX-2.3. A prompt assistant uses the image model's own language model to write prompts. It also generates **sound effects, ambience and loops** from text with Stable Audio Open Small. Music and speech models are next.
 
 This is an independent project and is not affiliated with ComfyUI.
 
@@ -48,8 +48,9 @@ open build/MLXComfyUI.app
 - **Hi-res fix** (Sampling): upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
 - **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain. You can also add a folder you downloaded yourself.
 - **Memory:** models load on first use and stay in memory while they fit. When a new model doesn't fit the budget (80% of RAM by default; change it in Settings), the least recently used one is unloaded first, never one the running job uses. Click the toolbar memory gauge to see loaded models and unload one.
-- **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Image and Video each have their own graph; switching swaps it (and switching back restores it), and undo covers the switch. Music, Speech and Sound show which model they need; they arrive with later models.
+- **Modes:** the Simple panel switches between Image, Video, Music, Speech and Sound. Image, Video and Sound each have their own graph; switching swaps it (and switching back restores it), and undo covers the switch. Music and Speech show which model they need; they arrive with later models.
 - **Video** (LTX-2.3): a prompt describing the action, camera and sound; an optional **first frame** image to animate; size presets (multiples of 64, e.g. 768×512, 1024×576, portrait and square); length up to 10 s; 24, 25 or 30 fps; seed. Generation runs 8 steps at half resolution, upscales the latents 2×, and refines with 3 steps, showing a preview of the middle frame after each. The result is an MP4 with AAC stereo sound at 48 kHz. A 5 s 768×512 clip takes about 2 minutes on an M4 Max (2.6 s prompt, 114 s sampling, 13 s decoding), peaking at about 35 GB.
+- **Sound** (Stable Audio Open Small): a prompt describing the sound (sources, setting, texture; a tempo for loops, e.g. "128 BPM tech house drum loop"), a length up to 11 s, seed and batch. 8 ping-pong steps, stereo 44.1 kHz WAV, peak-normalized. About 0.7 s per clip, peaking around 5 GB. The model is gated on Hugging Face: accept its license on the model page, paste a read token in the Models window, then Download.
 - **Video and audio results** play in the canvas (a player for video, a waveform for audio) and appear in history, with the graph embedded in the file so dropping it on the window restores it.
 
 Images are saved to `~/Pictures/MLXComfyUI` by default; change this in Settings (⌘,).
@@ -101,6 +102,8 @@ Generate without a graph:
 | `graph-from-png` | Prints the graph embedded in a saved PNG |
 | `compare` | Pixel diff of two images; exits with status 1 if they differ |
 | `generate-video` | Text or image to video with sound. `--model <ltx folder> --prompt … --size 768x512 --seconds 5 --fps 24 --seed`, `--image first.png` for image-to-video, `--contact-sheet x.png` writes 6 frames, `--preview-prefix p` saves each step's preview |
+| `generate-audio` | Text to sound: `--model <folder> --prompt … --seconds 10 --seed`, `--out x.wav` or `.m4a` |
+| `run examples/txt2sound.json` | The Sound mode's graph |
 | `run examples/txt2video.json` | The Video mode's graph. Try `--set latent.width=512 --set latent.height=320 --set latent.seconds=2` for a quick run |
 | `generate` | Text to image. Options: `--image` (condition image, repeatable), `--lora path[:strength]` (repeatable), `--size WxH`, `--seed`, `--save-steps`, `--dequantize` |
 | `make-test-lora` | Writes a synthetic LoRA. `--up-scale 0` makes a no-op one |
@@ -128,6 +131,7 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
   - `Sampler.denoise` < 1 on an encoded latent gives img2img instead.
 - **Video and audio:** `TestPattern`, `TestTone`, `LoadVideo`, `LoadAudio`, `MixAudio` (with offset and gain, resampling as needed), `AddAudioToVideo` (replace or mix the soundtrack, fitted to the video), `SaveVideo` (MP4 or MOV, H.264 or HEVC, AAC audio), `SaveAudio` (WAV or M4A), `PreviewVideo` and `PreviewAudio`. Files carry the graph: MP4/M4A in the iTunes comment field, WAV in a custom `mlxc` chunk. See [examples/media-test.json](examples/media-test.json).
 - **Video models:** `TextEncode` accepts a video model too. `EmptyVideoLatent` (width, height, seconds, fps) → `VideoSampler` (model, conditioning, latent, seed, steps, optional `image` for the first frame) → `VideoDecode` → `video` and `audio`, then `SaveVideo`. See [examples/txt2video.json](examples/txt2video.json).
+- **Audio models:** `TextToAudio` (model, prompt, seconds, seed, steps) → `audio`, then `SaveAudio`. See [examples/txt2sound.json](examples/txt2sound.json).
 - **Prompt assistant:** the `PromptAssistant` node (model, prompt, optional image, mode `enhance`, `describe` or `custom`) outputs a STRING; link it into `TextEncode.prompt`. See [examples/assistant.json](examples/assistant.json). It is cached like any node, so it reruns only when its own inputs change.
   - Qwen-Image's text encoder is the full Qwen3-VL 8B chat model. Its LM head isn't needed for images, so it is loaded only on first use (8-bit, about 0.6 GB). Generation runs at about 28 tokens per second; a prompt takes about 5 s.
 - **LoRA:** the `LoRA` node (model, path, strength) returns a model that shares the base weights. Each target layer runs the LoRA as a low-rank side branch, because the base weights are 8-bit and can't be merged into.
@@ -166,8 +170,9 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `LTX2Audio`: the audio VAE decoder (latents → mel), the BigVGAN vocoder (16 kHz) and bandwidth extension to 48 kHz stereo.
   - `LTX2`: the distilled two-stage pipeline, sampling loop, image conditioning (with an H.264 round trip, as the reference does with libx264 CRF 33), and the sampler preview.
   - Each component was checked against the Python reference on the real weights: the VAE, audio VAE and transformer blocks match bit for bit, the vocoder to float32 rounding, and the text features to about 0.5% (an rms-norm kernel rounds differently in one place). `ltx-probe-*` are the comparison tools used for that.
+- `Sources/StableAudio`: Stable Audio Open Small, ported from Stability AI's [stable-audio-tools](https://github.com/Stability-AI/stable-audio-tools) (MIT), checked module by module against the MLX port [sandst1/stable-audio-mlx](https://github.com/sandst1/stable-audio-mlx) (MIT): the T5-base encoder, the seconds conditioner, the 16-block DiT (T5 cross-attention, prepended global token, partial rotary), ping-pong sampling, and the Oobleck VAE decoder (shared with the upcoming music model). The DiT and T5 match the reference to float32 rounding.
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also subgraph flattening, collapse and expand (`Subgraphs.swift`), and the Note and Reroute nodes. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
-- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyVideoLatent, VideoSampler, VideoDecode, the media nodes, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
+- `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyVideoLatent, VideoSampler, VideoDecode, TextToAudio, the media nodes, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `AppModel`: the document graph with undo, the queue, run state and history.
   - `Engine`: an actor that owns the executor and the loaded models.
@@ -178,4 +183,4 @@ The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transform
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). The model code is ported from [diffusers](https://github.com/huggingface/diffusers) and [transformers](https://github.com/huggingface/transformers), both Apache-2.0. The LTX-2.3 code is ported from [ltx-2-mlx](https://github.com/dgrauet/ltx-2-mlx) (MIT). Model weights are covered by their own licenses (LTX-2.3: LTX-2 Community License; Gemma: Gemma Terms of Use).
+Apache-2.0; see [LICENSE](LICENSE). The model code is ported from [diffusers](https://github.com/huggingface/diffusers) and [transformers](https://github.com/huggingface/transformers), both Apache-2.0. The LTX-2.3 code is ported from [ltx-2-mlx](https://github.com/dgrauet/ltx-2-mlx) (MIT). Model weights are covered by their own licenses (LTX-2.3: LTX-2 Community License; Gemma: Gemma Terms of Use; Stable Audio Open: Stability AI Community License; T5: Apache-2.0). Stable Audio code follows stable-audio-tools (MIT).

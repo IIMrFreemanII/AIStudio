@@ -86,3 +86,31 @@ public struct VideoDecodeNode: NodeImplementation {
         return ["video": .object(clip), "audio": .object(audio)]
     }
 }
+
+/// Generates audio from a prompt with an audio model (sound effects now; music and speech models reuse it).
+public struct TextToAudioNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "TextToAudio", displayName: "Text to Audio", category: "audio",
+        inputs: [
+            InputSpec("model", .model),
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seconds", .float, default: .double(10), widget: .number(min: 0.5, max: 600, step: 0.5)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            // 0 = the model's default.
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 200, step: 1)),
+        ],
+        outputs: [OutputSpec("audio", .audio)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let model: GenerativeModel = try inputs.object("model")
+        guard let audio = model as? AudioModel else {
+            throw GraphError.nodeFailed(node: inputs.nodeID, message: "\(model.displayName) is not an audio model")
+        }
+        let steps = try inputs.int("steps")
+        let request = AudioRequest(prompt: try inputs.string("prompt"), seconds: try inputs.float("seconds"),
+                                   seed: UInt64(truncatingIfNeeded: try inputs.int("seed")), steps: steps > 0 ? steps : nil)
+        let clip = try audio.generateAudio(request) { step, total in context.progress(step: step, total: total) }
+        return ["audio": .object(clip)]
+    }
+}

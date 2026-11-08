@@ -90,7 +90,8 @@ struct SimplePanel: View {
         VStack(spacing: 0) {
             Picker("Mode", selection: Binding(
                 get: { model.simpleMode },
-                set: { model.setSimpleMode($0, videoModelPath: store.installed(.video)?.path, undoManager: undoManager) })) {
+                set: { model.setSimpleMode($0, videoModelPath: store.installed(.video)?.path,
+                                           soundModelPath: store.installed(.sound)?.path, undoManager: undoManager) })) {
                 ForEach(SimpleMode.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
             }
             .pickerStyle(.segmented)
@@ -101,6 +102,7 @@ struct SimplePanel: View {
             switch model.simpleMode {
             case .image: imagePanel
             case .video: VideoPanel()
+            case .sound: SoundPanel()
             default: MediaModePanel(mode: model.simpleMode)
             }
         }
