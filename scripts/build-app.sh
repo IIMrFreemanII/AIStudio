@@ -31,5 +31,17 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "warning: ad-hoc signing failed"
+# Signing: ad hoc by default, which gives every build a new identity, so macOS asks again for Keychain access (the
+# Hugging Face token) after each rebuild. With a stable identity, "Always Allow" sticks: create a self-signed
+# code-signing certificate named "MLXComfyUI Local Signing" in Keychain Access (Certificate Assistant › Create a
+# Certificate…, type Code Signing), or set MLXCOMFY_SIGN_IDENTITY to another identity's name.
+IDENTITY=${MLXCOMFY_SIGN_IDENTITY:-}
+if [[ -z "$IDENTITY" ]] && security find-identity -p codesigning 2>/dev/null | grep -q '"MLXComfyUI Local Signing"'; then
+  IDENTITY="MLXComfyUI Local Signing"
+fi
+if [[ -n "$IDENTITY" ]]; then
+  codesign --force --deep --sign "$IDENTITY" "$APP" >/dev/null 2>&1 || echo "warning: signing with “$IDENTITY” failed"
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "warning: ad-hoc signing failed"
+fi
 echo "built $APP"

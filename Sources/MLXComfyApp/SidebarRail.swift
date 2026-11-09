@@ -1,18 +1,22 @@
 import AppKit
 import GraphRuntime
+import ImageIO
 import MLXComfyLibrary
+import MLXDiffusionCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The panels the icon rail switches between.
 enum SidebarPanel: String, CaseIterable, Identifiable {
-    case workflows, presets, queue, nodes
+    case workflows, presets, assets, queue, nodes
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .workflows: return "Workflows"
         case .presets: return "Presets"
-        case .queue: return "Queue & History"
+        case .assets: return "Assets"
+        case .queue: return "Queue"
         case .nodes: return "Node Library"
         }
     }
@@ -21,7 +25,8 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         switch self {
         case .workflows: return "folder"
         case .presets: return "square.grid.2x2"
-        case .queue: return "clock.arrow.circlepath"
+        case .assets: return "photo.stack"
+        case .queue: return "list.bullet.rectangle"
         case .nodes: return "point.3.connected.trianglepath.dotted"
         }
     }
@@ -71,6 +76,7 @@ struct SidebarPanelView: View {
         switch panel {
         case .workflows: WorkflowsPanel()
         case .presets: PresetsPanel()
+        case .assets: AssetsPanel()
         case .queue: QueuePanel()
         case .nodes: NodeLibraryPanel()
         }
@@ -310,4 +316,188 @@ struct NodeAddRequest: Equatable {
     static let dragPrefix = "mlxcomfy-node:"
     let id = UUID()
     let type: String
+}
+
+// MARK: - assets
+
+/// Assets: Input (files to use in workflows, copied into the library's input folder) and Output (everything
+/// generated).
+struct AssetsPanel: View {
+    @Environment(AppModel.self) private var model
+    @AppStorage("assetsTab") private var tab = "input"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: "Assets") {
+                if tab == "input" {
+                    Button { importPanel() } label: { Image(systemName: "square.and.arrow.down") }
+                        .help("Import files into the input folder")
+                    Button { NSWorkspace.shared.open(model.library.input) } label: { Image(systemName: "arrow.up.forward.app") }
+                        .help("Open the input folder in Finder")
+                    Button { model.reloadAssets() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+                } else {
+                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: (model.outputDirectory as NSString).expandingTildeInPath)) } label: {
+                        Image(systemName: "arrow.up.forward.app")
+                    }
+                    .help("Open the output folder in Finder")
+                    Button { model.reloadHistory() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+                }
+            }
+            Picker("", selection: $tab) {
+                Text("Input").tag("input")
+                Text("Output").tag("output")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+            if tab == "input" { InputAssetsView() } else { OutputList() }
+        }
+        .onAppear { model.reloadAssets() }
+    }
+
+    func importPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.image, .movie, .audio]
+        panel.message = "Choose images, videos or sounds to copy into the input folder."
+        if panel.runModal() == .OK { model.importAssets(panel.urls) }
+    }
+}
+
+struct InputAssetsView: View {
+    @Environment(AppModel.self) private var model
+    @State private var query = ""
+    @State private var filter: AssetKind? = nil
+    @State private var dropTargeted = false
+    @State private var renaming: URL?
+    @State private var renameText = ""
+
+    var body: some View {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let items = model.assets.filter { (filter == nil || $0.kind == filter) && (q.isEmpty || $0.relativePath.lowercased().contains(q)) }
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("Search files", text: $query).textFieldStyle(.roundedBorder)
+                Picker("", selection: $filter) {
+                    Text("All").tag(AssetKind?.none)
+                    Text("Images").tag(AssetKind?.some(.image))
+                    Text("Masks").tag(AssetKind?.some(.mask))
+                    Text("Videos").tag(AssetKind?.some(.video))
+                    Text("Sounds").tag(AssetKind?.some(.audio))
+                }
+                .labelsHidden()
+                .frame(width: 92)
+            }
+            .padding(.horizontal, 10)
+            ScrollView {
+                if model.assets.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "tray.and.arrow.down").font(.largeTitle).foregroundStyle(.tertiary)
+                        Text("Drop images, videos or sounds here, or click Import. They are copied into \(model.library.input.path), and Load nodes refer to them by name.")
+                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    }
+                    .padding(24)
+                }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 82, maximum: 130), spacing: 8)], spacing: 8) {
+                    ForEach(items) { item in
+                        VStack(spacing: 3) {
+                            AssetThumb(url: item.url, kind: item.kind)
+                                .aspectRatio(1, contentMode: .fit)
+                                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
+                                    model.displayedURL == item.url ? Color.accentColor : .clear, lineWidth: 2))
+                            Text(item.relativePath).font(.caption2).lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture(count: 2) { model.showFile(item.url, kind: item.kind); model.openViewer() }
+                        .onTapGesture { model.showFile(item.url, kind: item.kind) }
+                        .draggable(item.url)
+                        .help("\(item.relativePath) — drag onto the graph for a Load node, or onto a Load node to use it there")
+                        .contextMenu { menu(item) }
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
+            }
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                        .padding(6).allowsHitTesting(false)
+                }
+            }
+            .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+                for p in providers {
+                    _ = p.loadObject(ofClass: URL.self) { url, _ in
+                        guard let url else { return }
+                        Task { @MainActor in model.importAssets([url]) }
+                    }
+                }
+                return !providers.isEmpty
+            }
+        }
+        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                if let url = renaming { model.renameAsset(url, to: renameText) }
+                renaming = nil
+            }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+    }
+
+    @ViewBuilder func menu(_ item: AssetItem) -> some View {
+        Button("Add to Workflow as \(item.kind.loadNodeType.replacingOccurrences(of: "Load", with: "Load "))") {
+            model.assetAddRequest = item.url
+        }
+        if item.kind == .image && model.canAdd(.reference) {
+            Button("Use as Reference Image") { model.setReferenceImage(item.url, undoManager: model.activeUndoManager) }
+        }
+        if item.kind == .image && model.canAdd(.firstFrame) {
+            Button("Use as First Frame") { model.setFirstFrame(item.url, undoManager: model.activeUndoManager) }
+        }
+        Divider()
+        Button("Rename…") { renameText = item.url.deletingPathExtension().lastPathComponent; renaming = item.url }
+        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+        Button("Move to Trash", role: .destructive) { model.trashAsset(item.url) }
+    }
+}
+
+/// An input asset's thumbnail: the image, a video's first frame, a waveform, or a mask on dark.
+struct AssetThumb: View {
+    let url: URL
+    let kind: AssetKind
+    @State private var image: CGImage?
+
+    var body: some View {
+        Rectangle().fill(kind == .mask ? AnyShapeStyle(Color.black) : AnyShapeStyle(.quaternary))
+            .overlay {
+                if let image {
+                    Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: kind == .mask ? .fit : .fill)
+                } else if kind == .audio {
+                    AudioThumb(url: url)
+                }
+            }
+            .overlay(alignment: .bottomLeading) {
+                if kind == .video {
+                    Image(systemName: "play.fill").font(.system(size: 8)).foregroundStyle(.white)
+                        .padding(3).background(.black.opacity(0.55), in: Circle()).padding(4)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .task(id: url) {
+                switch kind {
+                case .video: image = await MediaIO.posterFrame(url, maxSize: 240)
+                case .audio: break
+                case .image, .mask:
+                    let u = url
+                    image = await Task.detached(priority: .utility) { () -> CGImage? in
+                        guard let src = CGImageSourceCreateWithURL(u as CFURL, nil) else { return nil }
+                        return CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 240,
+                        ] as CFDictionary)
+                    }.value
+                }
+            }
+    }
 }

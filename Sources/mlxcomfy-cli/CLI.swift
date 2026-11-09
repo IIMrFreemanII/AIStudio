@@ -56,8 +56,12 @@ struct Run: AsyncParsableCommand {
     @Option(name: .customLong("then-set"),
             help: "Run a second time in the same process with these overrides, to exercise the cache.")
     var secondOverrides: [String] = []
+    @Option(name: .customLong("input-dir"),
+            help: "Folder that relative Load Image / Mask / Video / Audio paths are looked up in first (default: the app's ~/Documents/MLXComfyUI/input).")
+    var inputDir: String?
 
     func run() async throws {
+        InputFolder.url = URL(fileURLWithPath: ((inputDir ?? "~/Documents/MLXComfyUI/input") as NSString).expandingTildeInPath)
         let url = URL(fileURLWithPath: graph)
         var g: Graph
         if url.pathExtension.lowercased() == "png" {

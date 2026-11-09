@@ -29,7 +29,7 @@ extension AppModel {
     func assistantImage(for te: GraphNode) -> String? {
         guard case .link(let src, _)? = te.inputs["image"], let n = graph[src], n.type == "LoadImage",
               case .value(.string(let p))? = n.inputs["path"], !p.isEmpty else { return nil }
-        return p
+        return resolvedPath(p)
     }
 
     func canEnhance(_ node: String? = nil) -> Bool {

@@ -6,26 +6,46 @@ import Security
 import SwiftUI
 
 /// The Hugging Face token for gated repos, kept in the login Keychain. The user enters it; the app never fills it.
+///
+/// Reading the secret makes macOS ask for permission whenever the app's signature changed (every ad-hoc rebuild), so
+/// it is read only when a gated download needs it, at most once per launch. Showing whether a token is saved only
+/// looks at the item's attributes, which never asks.
+@MainActor
 enum HFToken {
     static let service = "MLXComfyUI.huggingface"
+    /// The token read (or saved) this launch.
+    private static var cached: String?
 
     static func read() -> String? {
+        if let cached { return cached }
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var out: AnyObject?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
-        return String(data: d, encoding: .utf8)
+        cached = String(data: d, encoding: .utf8)
+        return cached
+    }
+
+    /// Whether a token is saved, without reading it (no Keychain prompt).
+    static var isSaved: Bool {
+        if cached != nil { return true }
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+        var out: AnyObject?
+        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
     }
 
     static func save(_ token: String) {
         delete()
         guard !token.isEmpty else { return }
+        cached = token
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecValueData as String: Data(token.utf8)]
         SecItemAdd(q as CFDictionary, nil)
     }
 
     static func delete() {
+        cached = nil
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
     }
 }
@@ -259,8 +279,8 @@ struct ModelManagerView: View {
     @Environment(ModelStore.self) private var store
     @State private var confirming: CatalogEntry?
     @State private var trashing: CatalogEntry?
-    @State private var token = HFToken.read() ?? ""
-    @State private var tokenSaved = false
+    @State private var token = ""
+    @State private var tokenSaved = HFToken.isSaved
 
     var body: some View {
         Form {
@@ -311,12 +331,13 @@ struct ModelManagerView: View {
             }
 
             Section {
-                SecureField("Token", text: $token, prompt: Text("hf_…"))
+                SecureField("Token", text: $token, prompt: Text(tokenSaved ? "Saved in the Keychain — type to replace" : "hf_…"))
                 HStack {
-                    Button("Save to Keychain") { HFToken.save(token); tokenSaved = true }
+                    Button("Save to Keychain") { HFToken.save(token); token = ""; tokenSaved = true }
                         .disabled(token.isEmpty)
                     Button("Remove") { HFToken.delete(); token = ""; tokenSaved = false }
-                    if tokenSaved { Text("Saved").font(.caption).foregroundStyle(.secondary) }
+                        .disabled(!tokenSaved && token.isEmpty)
+                    if tokenSaved { Label("Saved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
                 }
             } header: {
                 Text("Hugging Face Token")

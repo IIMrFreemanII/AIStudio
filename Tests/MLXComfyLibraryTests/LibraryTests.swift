@@ -153,3 +153,49 @@ private let sample = Graph(nodes: [GraphNode(id: "n", type: "Note", inputs: ["te
         }
     }
 }
+
+@Suite struct AssetStoreTests {
+    @Test func importsCopiesWithUniqueNamesAndKinds() throws {
+        let outside = try tempDir()
+        let src = outside.appendingPathComponent("fox.png")
+        try Data([1, 2, 3]).write(to: src)
+        let clip = outside.appendingPathComponent("walk.MP4")
+        try Data([4]).write(to: clip)
+        let store = AssetStore(root: try tempDir(), useTrash: false)
+        let a = try store.importFile(src)
+        #expect(try store.importFile(src) == a, "importing the same file again reuses the copy")
+        try Data([9, 9]).write(to: src)
+        let b = try store.importFile(src)
+        try Data([1, 2, 3]).write(to: src)
+        let m = try store.importFile(src, asMask: true)
+        let v = try store.importFile(clip)
+        #expect(a.lastPathComponent == "fox.png" && b.lastPathComponent == "fox (1).png")
+        #expect(try Data(contentsOf: b) == Data([9, 9]))
+        #expect(FileManager.default.fileExists(atPath: src.path), "the original stays")
+        #expect(try store.importFile(a) == a, "a file already in the folder isn't copied again")
+        #expect(store.relativePath(m) == "masks/fox.png")
+        let kinds = Dictionary(uniqueKeysWithValues: store.list().map { ($0.relativePath, $0.kind) })
+        #expect(kinds == ["fox.png": .image, "fox (1).png": .image, "masks/fox.png": .mask, "walk.MP4": .video])
+        #expect(AssetStore.kind(of: URL(fileURLWithPath: "/x/notes.txt")) == nil)
+        #expect(throws: (any Error).self) { try store.importFile(URL(fileURLWithPath: "/x/notes.txt")) }
+        let renamed = try store.rename(v, to: "snow walk")
+        #expect(renamed.lastPathComponent == "snow walk.MP4")
+        try store.delete(renamed)
+        #expect(store.list().count == 3)
+    }
+
+    @Test func loadPathsLookInTheInputFolderFirst() throws {
+        let input = try tempDir()
+        try Data([1]).write(to: input.appendingPathComponent("only-in-input.png"))
+        let previous = InputFolder.url
+        defer { InputFolder.url = previous }
+        InputFolder.url = input
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        #expect(StandardNodes.resolveInputPath("only-in-input.png") == input.appendingPathComponent("only-in-input.png").standardizedFileURL)
+        // Not in the input folder: relative to the working directory, as before (the CLI's examples/…).
+        #expect(StandardNodes.resolveInputPath("examples/inpaint-mask.png") == cwd.appendingPathComponent("examples/inpaint-mask.png").standardizedFileURL)
+        #expect(StandardNodes.resolveInputPath("/abs/x.png") == URL(fileURLWithPath: "/abs/x.png"))
+        InputFolder.url = nil
+        #expect(StandardNodes.resolveInputPath("only-in-input.png") == cwd.appendingPathComponent("only-in-input.png").standardizedFileURL)
+    }
+}

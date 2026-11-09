@@ -3,6 +3,7 @@ import GraphRuntime
 import MLXDiffusionCore
 import NodesStandard
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Extra controls in the inspector for nodes that have a friendlier way to set them: a model menu, size presets,
 /// the prompt's style and assistant, the mask editor, a voice preview.
@@ -23,6 +24,7 @@ struct NodeExtras: View {
                             : GraphTemplates.videoSizePresets, video: true)
             case "TextEncode": promptSection
             case "LoadImage", "LoadMask": imageSection
+            case "LoadVideo", "LoadAudio": mediaSection
             case "TextToSpeech": voiceSection
             default: EmptyView()
             }
@@ -144,16 +146,17 @@ struct NodeExtras: View {
     // MARK: image
 
     @ViewBuilder var imageSection: some View {
-        let path = b.string(node.id, "path").wrappedValue
+        let path = model.resolvedPath(b.string(node.id, "path").wrappedValue)
         let isReference = model.referenceImageNode?.id == node.id
         Section(node.type == "LoadMask" ? "Mask" : "Image") {
             if !path.isEmpty {
                 HStack(spacing: 10) {
                     Thumbnail(path: path, maskPath: isReference ? model.maskPath : nil).frame(width: 72, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                     VStack(alignment: .leading, spacing: 3) {
                         Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                         if let size = Thumbnail.pixelSize(path) {
-                            Text("\(size.width) × \(size.height)").font(.caption).foregroundStyle(.secondary)
+                            Text(verbatim: "\(size.width) × \(size.height)").font(.caption).foregroundStyle(.secondary)
                         }
                         if isReference {
                             Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
@@ -167,8 +170,9 @@ struct NodeExtras: View {
             }
             HStack {
                 Button("Choose…") {
-                    if let url = AppModel.chooseFile([.image], message: "Choose an image.") {
-                        b.string(node.id, "path").wrappedValue = url.path
+                    if let url = AppModel.chooseFile([.image], message: "Choose an image (it is copied into Assets › Input)."),
+                       let copy = model.importAssets([url], asMask: node.type == "LoadMask").first {
+                        b.string(node.id, "path").wrappedValue = model.storedPath(copy)
                     }
                 }
                 if isReference, !path.isEmpty, model.hasImageSampler {
@@ -176,6 +180,25 @@ struct NodeExtras: View {
                         model.maskEditorTarget = MaskEditorTarget(imageNode: node.id, imagePath: path)
                     }
                     if model.maskPath != nil { Button("Clear Mask") { model.remove(.inpaint) } }
+                }
+            }
+            .controlSize(.small)
+        }
+    }
+
+    // MARK: video & audio
+
+    @ViewBuilder var mediaSection: some View {
+        let stored = b.string(node.id, "path").wrappedValue
+        let isVideo = node.type == "LoadVideo"
+        Section(isVideo ? "Video" : "Sound") {
+            if !stored.isEmpty {
+                Text((stored as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+            }
+            Button("Choose…") {
+                if let url = AppModel.chooseFile(isVideo ? [.movie] : [.audio], message: "Choose a file (it is copied into Assets › Input)."),
+                   let copy = model.importAssets([url]).first {
+                    b.string(node.id, "path").wrappedValue = model.storedPath(copy)
                 }
             }
             .controlSize(.small)

@@ -184,13 +184,16 @@ final class AppModel {
     let library: LibraryPaths
     var workflowTree: WorkflowFolder
     var presets: [Preset] = []
+    /// The files in the input folder (Assets › Input).
+    var assets: [AssetItem] = []
     /// The preset gallery sheet.
     var showPresetGallery = false
     /// The results pane under the graph, and the full-window viewer.
     var showResultsPane = true
     var viewerResult: NodeResult?
-    /// The Node Library asked the editor to add a node.
+    /// The Node Library asked the editor to add a node; Assets asked for a Load node for a file.
     var nodeAddRequest: NodeAddRequest?
+    var assetAddRequest: URL?
     var showSavePresetSheet = false
     /// The Load Image node whose mask is being painted.
     var maskEditorTarget: MaskEditorTarget?
@@ -227,6 +230,7 @@ final class AppModel {
         let lib = library ?? Self.launchLibrary()
         self.library = lib
         lib.ensure()
+        InputFolder.url = lib.input
         workflowTree = WorkflowStore(root: lib.workflows).tree()
         let first = WorkflowDocument(name: "Untitled", graph: GraphTemplates.textToImage(modelPath: path, outputDirectory: out))
         tabs = [first]
@@ -238,6 +242,7 @@ final class AppModel {
             if defaults.object(forKey: "memoryBudget") != nil { memoryBudget = defaults.double(forKey: "memoryBudget") }
         }
         reloadPresets()
+        reloadAssets()
         if restoreSession ?? (persistSettings && !Self.isAutomatedRun) { restoreTabs() }
         if persistSettings { startSessionAutosave() }
         reloadHistory()

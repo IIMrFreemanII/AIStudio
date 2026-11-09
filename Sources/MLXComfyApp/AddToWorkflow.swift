@@ -75,8 +75,10 @@ extension AppModel {
         let undo = activeUndoManager
         switch a {
         case .reference:
-            if let url = Self.chooseFile([.image], message: "Choose the image to edit, redraw or use as a reference.") {
-                setReferenceImage(url, undoManager: undo)
+            // Copied into the input folder first, so the workflow keeps working when the original moves.
+            if let url = Self.chooseFile([.image], message: "Choose the image to edit, redraw or use as a reference."),
+               let copy = importAssets([url]).first {
+                setReferenceImage(copy, undoManager: undo)
             }
         case .inpaint:
             guard let ref = referenceImageNode, let path = referenceImagePath else {
@@ -96,8 +98,9 @@ extension AppModel {
                 addLoRA(url, undoManager: undo)
             }
         case .firstFrame:
-            if let url = Self.chooseFile([.image], message: "Choose the image the clip starts from.") {
-                setFirstFrame(url, undoManager: undo)
+            if let url = Self.chooseFile([.image], message: "Choose the image the clip starts from."),
+               let copy = importAssets([url]).first {
+                setFirstFrame(copy, undoManager: undo)
             }
         }
         tidyChainGroups()

@@ -703,6 +703,50 @@ extension SmokeTest {
             model.reloadHistory()
         }
 
+        // Assets: imports, Load-node paths relative to the input folder, drops on the graph.
+        let maskFile = cwd.appendingPathComponent("examples/inpaint-mask.png")
+        let imported = model.importAssets([maskFile])
+        check(imported.first?.lastPathComponent == "inpaint-mask.png" && model.importAssets([maskFile]) == imported
+              && model.assets.map(\.relativePath) == ["inpaint-mask.png"], "import copies into the input folder once")
+        let assetsTab = model.openTab(Graph(), name: "Assets")
+        model.dropFiles([maskFile], at: GraphPoint(x: 100, y: 100), onto: nil)
+        let load = model.graph.nodes.first { $0.type == "LoadImage" }
+        check(load?.inputs["path"] == .value(.string("inpaint-mask.png")), "a dropped picture becomes a Load Image with its input name")
+        let other = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-drop-\(UUID().uuidString.prefix(6)).png")
+        try? FileManager.default.copyItem(at: maskFile, to: other)
+        model.dropFiles([other], at: GraphPoint(x: 0, y: 0), onto: load?.id)
+        check(model.graph.nodes.count == 1 && model.graph[load?.id ?? ""]?.inputs["path"] == .value(.string(other.lastPathComponent)),
+              "dropping onto a Load node replaces its file")
+        model.mutate("Preview", undoManager: nil) { g in
+            g.nodes.append(GraphNode(id: "mask", type: "LoadMask", inputs: ["path": .value(.string(""))], position: GraphPoint(x: 0, y: 300)))
+            g.nodes.append(GraphNode(id: "preview", type: "PreviewImage", inputs: ["image": .link(node: load?.id ?? "", output: "image")],
+                                     position: GraphPoint(x: 300, y: 0)))
+        }
+        model.dropFiles([maskFile], at: GraphPoint(x: 0, y: 0), onto: "mask")
+        check(model.graph["mask"]?.inputs["path"] == .value(.string("masks/inpaint-mask.png")), "an image dropped on Load Mask goes to masks/")
+        model.renameAsset(model.library.input.appendingPathComponent(other.lastPathComponent), to: "renamed")
+        check(model.graph[load?.id ?? ""]?.inputs["path"] == .value(.string("renamed.png")), "renaming an asset updates its Load nodes")
+        model.mutate("No mask", undoManager: nil) { g in g.nodes.removeAll { $0.id == "mask" } }
+        model.enqueue(undoManager: nil)
+        if let item = model.queue.last {
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false { try? await Task.sleep(nanoseconds: 50_000_000) }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        check(assetsTab.nodeResults["preview"]?.image?.width == 960, "the graph runs with the asset found in the input folder")
+        let tabsNow = model.tabs.count
+        model.dropFiles([first.fileURL!], at: GraphPoint(x: 0, y: 0), onto: nil)
+        check(model.activeTabID == first.id && model.tabs.count == tabsNow, "a dropped workflow opens (its open tab)")
+        if let output = model.history.first(where: { $0.kind == .image && AppModel.embeddedGraph(in: $0.url) != nil })?.url {
+            model.activate(assetsTab.id)
+            model.dropFiles([output], at: GraphPoint(x: 0, y: 0), onto: nil)
+            let opened = model.activeTabID != assetsTab.id
+            model.activate(assetsTab.id)
+            let before = model.graph.nodes.count
+            model.dropFiles([output], at: GraphPoint(x: 0, y: 500), onto: nil, forceAsInput: true)
+            check(opened && model.graph.nodes.count == before + 1, "an output with a graph opens it; with ⌥ it becomes an input")
+        }
+        try? FileManager.default.removeItem(at: other)
+
         // Session: drafts and the tab list come back in a new model.
         let dirty = model.newTab()
         model.setLiteral(.string("never saved"), node: te.id, input: "prompt", undoManager: nil)

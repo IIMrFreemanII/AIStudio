@@ -3,12 +3,9 @@ import ImageIO
 import MLXDiffusionCore
 import SwiftUI
 
-/// Pending and running jobs, then everything generated (the output folder and its workflow subfolders).
+/// Pending, running and finished jobs, each labelled with its workflow.
 struct QueuePanel: View {
     @Environment(AppModel.self) private var model
-    @State private var query = ""
-    @AppStorage("historyFavoritesOnly") private var favoritesOnly = false
-    @AppStorage("historyGrid") private var gridLayout = false
 
     /// Queue rows: single jobs, and one collapsed row per XY plot.
     enum Row: Identifiable {
@@ -33,10 +30,51 @@ struct QueuePanel: View {
         }
     }
 
+    var body: some View {
+        let rows = queueRows
+        let hasPlots = rows.contains { if case .plot = $0 { return true }; return false }
+        VStack(spacing: 0) {
+            PanelHeader(title: "Queue") {
+                if model.queue.contains(where: \.isFinished) {
+                    Button("Clear Finished") { model.clearFinished() }.controlSize(.small)
+                }
+                if model.pendingCount > 0 {
+                    Button("Cancel All") { model.cancelAll() }.controlSize(.small)
+                }
+            }
+            List {
+                if model.queue.isEmpty {
+                    Text("Nothing queued. Press ⌘↩ to run the current workflow; results are in Assets › Output.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(rows) { row in
+                    switch row {
+                    case .job(let item): QueueRow(item: item)
+                    case .plot(let g, let title): PlotQueueRow(group: g, title: title)
+                    }
+                }
+                // Reordering maps rows to queue items one-to-one only without plot groups.
+                .onMove(perform: hasPlots ? nil : { model.movePending(from: $0, to: $1) })
+            }
+            .listStyle(.sidebar)
+        }
+    }
+}
+
+/// Everything generated (the output folder and its workflow subfolders): search, favorites, a workflow filter, and
+/// a list or a grid.
+struct OutputList: View {
+    @Environment(AppModel.self) private var model
+    @State private var query = ""
+    @State private var workflow: String? = nil
+    @AppStorage("historyFavoritesOnly") private var favoritesOnly = false
+    @AppStorage("historyGrid") private var gridLayout = false
+
     var filteredHistory: [HistoryItem] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         return model.history.filter { item in
             (!favoritesOnly || item.isFavorite)
+                && (workflow == nil || item.workflow == workflow)
                 && (q.isEmpty || (item.prompt ?? "").lowercased().contains(q)
                     || item.url.lastPathComponent.lowercased().contains(q)
                     || (item.workflow ?? "").lowercased().contains(q))
@@ -44,43 +82,31 @@ struct QueuePanel: View {
     }
 
     var body: some View {
-        let rows = queueRows
-        let hasPlots = rows.contains { if case .plot = $0 { return true }; return false }
-        VStack(spacing: 0) {
-        PanelHeader(title: "Queue & History") { EmptyView() }
-        TextField("Search prompts and workflows", text: $query)
-            .textFieldStyle(.roundedBorder)
-            .padding(.horizontal, 10)
-            .padding(.bottom, 6)
-        List {
-            if !model.queue.isEmpty {
-                Section {
-                    ForEach(rows) { row in
-                        switch row {
-                        case .job(let item): QueueRow(item: item)
-                        case .plot(let g, let title): PlotQueueRow(group: g, title: title)
-                        }
-                    }
-                    // Reordering maps rows to queue items one-to-one only without plot groups.
-                    .onMove(perform: hasPlots ? nil : { model.movePending(from: $0, to: $1) })
-                } header: {
-                    HStack {
-                        Text("Queue")
-                        Spacer()
-                        if model.queue.contains(where: \.isFinished) {
-                            Button("Clear") { model.clearFinished() }
-                                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+        let workflows = Array(Set(model.history.compactMap(\.workflow))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("Search prompts", text: $query).textFieldStyle(.roundedBorder)
+                Button { favoritesOnly.toggle() } label: { Image(systemName: favoritesOnly ? "star.fill" : "star") }
+                    .buttonStyle(.borderless).foregroundStyle(favoritesOnly ? Color.yellow : .secondary)
+                    .help(favoritesOnly ? "Show everything" : "Show favorites only")
+                Button { gridLayout.toggle() } label: { Image(systemName: gridLayout ? "list.bullet" : "square.grid.2x2") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help(gridLayout ? "Show as a list" : "Show as a grid")
             }
-            Section {
+            .padding(.horizontal, 10)
+            Picker("Workflow", selection: $workflow) {
+                Text("All workflows").tag(String?.none)
+                ForEach(workflows, id: \.self) { Text($0).tag(String?.some($0)) }
+            }
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            List {
                 let items = filteredHistory
                 if model.history.isEmpty {
-                    Text("Generated images appear here.")
+                    Text("Generated images, videos and sounds appear here.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else if items.isEmpty {
-                    Text(favoritesOnly ? "No favorites match." : "No images match.")
+                    Text(favoritesOnly ? "No favorites match." : "Nothing matches.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 if gridLayout {
@@ -100,24 +126,8 @@ struct QueuePanel: View {
                             .modifier(HistoryActions(item: item))
                     }
                 }
-            } header: {
-                HStack(spacing: 8) {
-                    Text("History")
-                    Spacer()
-                    Button { favoritesOnly.toggle() } label: {
-                        Image(systemName: favoritesOnly ? "star.fill" : "star")
-                    }
-                    .buttonStyle(.plain).foregroundStyle(favoritesOnly ? Color.yellow : .secondary)
-                    .help(favoritesOnly ? "Show all images" : "Show favorites only")
-                    Button { gridLayout.toggle() } label: {
-                        Image(systemName: gridLayout ? "list.bullet" : "square.grid.2x2")
-                    }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help(gridLayout ? "Show as a list" : "Show as a grid")
-                }
             }
-        }
-        .listStyle(.sidebar)
+            .listStyle(.sidebar)
         }
     }
 }
@@ -141,6 +151,7 @@ struct HistoryActions: ViewModifier {
                 Button("Compare with Shown Image") { model.compare(with: item.url) }
                     .disabled(model.displayedImage == nil || model.displayedURL == item.url)
                 Button("Restore Graph in New Tab") { model.open(item.url) }
+                Button("Copy to Assets › Input") { model.importAssets([item.url]) }
                 Button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.toggleFavorite(item) }
                 Divider()
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }

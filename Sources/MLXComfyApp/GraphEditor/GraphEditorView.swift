@@ -1,6 +1,7 @@
 import AppKit
 import GraphRuntime
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A link being dragged from an output socket.
 struct WireDrag {
@@ -31,6 +32,7 @@ struct GraphEditorView: View {
     @State private var viewSize: CGSize = .zero
     @State private var scrollMonitor: Any?
     @State private var didInitialFit = false
+    @State private var dropTargeted = false
 
     var body: some View {
         @Bindable var model = model
@@ -73,14 +75,15 @@ struct GraphEditorView: View {
             }
             .coordinateSpace(name: "canvas")
             .clipped()
-            .dropDestination(for: String.self) { items, loc in
-                let types = items.filter { $0.hasPrefix(NodeAddRequest.dragPrefix) }.map { String($0.dropFirst(NodeAddRequest.dragPrefix.count)) }
-                for (i, t) in types.enumerated() {
-                    var p = toGraph(loc)
-                    p.y += Double(i) * 40
-                    model.addNode(type: t, at: p, undoManager: undoManager)
+            .onDrop(of: [.fileURL, .plainText], isTargeted: $dropTargeted) { providers, loc in
+                handleDrop(providers, at: loc)
+            }
+            .overlay {
+                if dropTargeted {
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                        .padding(6).allowsHitTesting(false)
                 }
-                return !types.isEmpty
             }
             .overlay(alignment: .bottomTrailing) { zoomControls.padding(12) }
             .overlay(alignment: .bottom) { RunStatusPill().padding(.bottom, 16) }
@@ -97,6 +100,11 @@ struct GraphEditorView: View {
             }
             .onChange(of: zoom) { _, z in doc.viewport = (z, pan) }
             .onChange(of: pan) { _, p in doc.viewport = (zoom, p) }
+            .onChange(of: model.assetAddRequest) { _, url in
+                guard let url else { return }
+                model.addLoadNode(for: url, at: toGraph(CGPoint(x: viewSize.width / 2 - 120, y: viewSize.height / 2 - 60)))
+                model.assetAddRequest = nil
+            }
             .onChange(of: model.nodeAddRequest) { _, req in
                 guard let req else { return }
                 model.addNode(type: req.type, at: toGraph(CGPoint(x: viewSize.width / 2 - 120, y: viewSize.height / 2 - 60)),
@@ -228,6 +236,44 @@ struct GraphEditorView: View {
         groupStart = nil
         dragStartPositions = nil
         editStartGraph = nil
+    }
+
+    // MARK: drops
+
+    /// Node types from the Node Library, or files: assets and Finder files become Load nodes (or replace the file of the
+    /// Load node they land on); workflows and outputs carrying a graph open in a tab (hold ⌥ to load an output as an
+    /// input instead).
+    func handleDrop(_ providers: [NSItemProvider], at loc: CGPoint) -> Bool {
+        let point = toGraph(loc)
+        let target = node(at: loc)
+        let forceAsInput = NSEvent.modifierFlags.contains(.option)
+        var handled = false
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                _ = p.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in model.dropFiles([url], at: point, onto: target, forceAsInput: forceAsInput) }
+                }
+            } else if p.canLoadObject(ofClass: NSString.self) {
+                handled = true
+                _ = p.loadObject(ofClass: NSString.self) { text, _ in
+                    guard let s = text as? String, s.hasPrefix(NodeAddRequest.dragPrefix) else { return }
+                    let type = String(s.dropFirst(NodeAddRequest.dragPrefix.count))
+                    Task { @MainActor in model.addNode(type: type, at: point, undoManager: model.activeUndoManager) }
+                }
+            }
+        }
+        return handled
+    }
+
+    /// The node under a point in view coordinates.
+    func node(at loc: CGPoint) -> String? {
+        model.editorGraph.nodes.reversed().first { n in
+            guard let s = model.schema(for: n) else { return false }
+            let f = NodeLayout.frame(n, s)
+            return CGRect(origin: toView(f.origin), size: CGSize(width: f.width * zoom, height: f.height * zoom)).contains(loc)
+        }?.id
     }
 
     // MARK: coordinates

@@ -177,6 +177,7 @@ struct MaskEditorSheet: View {
                        saveDirectory: model.maskDirectory) { url in
             model.setMask(url, undoManager: model.activeUndoManager)
             model.groupAddedChain(.inpaint)
+            model.reloadAssets()
         }
     }
 }

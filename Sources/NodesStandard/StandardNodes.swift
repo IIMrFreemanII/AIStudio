@@ -63,6 +63,31 @@ func resolvePath(_ path: String) -> URL {
         .appendingPathComponent(expanded).standardizedFileURL
 }
 
+/// The input folder (the app's Assets › Input, the CLI's `--input-dir`) that relative Load paths are looked up in.
+public enum InputFolder {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var current: URL?
+
+    public static var url: URL? {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue?.standardizedFileURL } }
+    }
+}
+
+extension StandardNodes {
+    /// A Load node's file: absolute and `~` paths as given; a relative one in the input folder when it is there,
+    /// else relative to the working directory (so graphs using `examples/…` keep working).
+    public static func resolveInputPath(_ path: String) -> URL {
+        let expanded = (path as NSString).expandingTildeInPath
+        if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded).standardizedFileURL }
+        if let dir = InputFolder.url {
+            let candidate = dir.appendingPathComponent(expanded).standardizedFileURL
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return resolvePath(expanded)
+    }
+}
+
 // MARK: - nodes
 
 public struct LoadModelNode: NodeImplementation {
@@ -240,7 +265,7 @@ public struct LoadImageNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let cg = try ImageArray.load(resolvePath(try inputs.string("path")))
+        let cg = try ImageArray.load(StandardNodes.resolveInputPath(try inputs.string("path")))
         return ["image": .object(ImageArray.array(from: cg))]
     }
 }
@@ -294,7 +319,7 @@ public struct LoadMaskNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let img = ImageArray.array(from: try ImageArray.load(resolvePath(try inputs.string("path"))))
+        let img = ImageArray.array(from: try ImageArray.load(StandardNodes.resolveInputPath(try inputs.string("path"))))
         var m: MLXArray
         switch try inputs.string("channel") {
         case "alpha": m = img[0..., 0..., 3]

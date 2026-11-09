@@ -46,12 +46,12 @@ extension AppModel {
 
     var referenceImagePath: String? {
         guard let n = referenceImageNode, case .value(.string(let p))? = n.inputs["path"], !p.isEmpty else { return nil }
-        return p
+        return resolvedPath(p)
     }
 
     var maskPath: String? {
         guard let n = graph[Self.inpaintIDs.mask], case .value(.string(let p))? = n.inputs["path"] else { return nil }
-        return p
+        return resolvedPath(p)
     }
 
     var isOutpainting: Bool { graph[Self.outpaintIDs.pad] != nil }
@@ -72,13 +72,13 @@ extension AppModel {
         guard let te = firstNode(ofType: "TextEncode") else { lastError = "This graph has no TextEncode node."; return }
         mutate("Set Reference Image", undoManager: undoManager) { g in
             if let existing = referenceImageNode {
-                try? g.setValue(.string(url.path), node: existing.id, input: "path")
+                try? g.setValue(.string(storedPath(url)), node: existing.id, input: "path")
                 // A mask painted for the previous image no longer fits.
                 if g[Self.inpaintIDs.mask] != nil { g = Self.removingInpaint(from: g) }
             } else {
                 let id = g["refimage"] == nil ? "refimage" : "refimage_\(g.nodes.count)"
                 let p = te.position ?? GraphPoint(x: 340, y: 40)
-                g.nodes.append(GraphNode(id: id, type: "LoadImage", inputs: ["path": .value(.string(url.path))],
+                g.nodes.append(GraphNode(id: id, type: "LoadImage", inputs: ["path": .value(.string(storedPath(url)))],
                                          position: GraphPoint(x: p.x - 300, y: p.y - 120)))
                 var t = g[te.id]!
                 t.inputs["image"] = .link(node: id, output: "image")
@@ -122,7 +122,7 @@ extension AppModel {
         let ids = Self.inpaintIDs
         mutate("Set Mask", undoManager: undoManager) { g in
             if g[ids.mask] != nil {
-                try? g.setValue(.string(url.path), node: ids.mask, input: "path")
+                try? g.setValue(.string(storedPath(url)), node: ids.mask, input: "path")
                 return
             }
             g = Self.removingImg2Img(from: Self.removingOutpaint(from: g))
@@ -135,7 +135,7 @@ extension AppModel {
                                    "megapixels": .value(.double(1))],
                           position: GraphPoint(x: sp.x - 300, y: sp.y + 300)),
                 GraphNode(id: ids.mask, type: "LoadMask",
-                          inputs: ["path": .value(.string(url.path)), "channel": .value(.string("luminance")),
+                          inputs: ["path": .value(.string(storedPath(url))), "channel": .value(.string("luminance")),
                                    "invert": .value(.bool(false))],
                           position: GraphPoint(x: sp.x - 600, y: sp.y + 500)),
                 GraphNode(id: ids.feather, type: "FeatherMask",
@@ -426,10 +426,6 @@ extension AppModel {
         return g
     }
 
-    /// Where the mask editor saves masks.
-    var maskDirectory: URL {
-        URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath).appendingPathComponent("masks")
-    }
 }
 
 // MARK: - video
@@ -443,7 +439,7 @@ extension AppModel {
 
     var firstFramePath: String? {
         guard let n = firstFrameNode, case .value(.string(let p))? = n.inputs["path"], !p.isEmpty else { return nil }
-        return p
+        return resolvedPath(p)
     }
 
     /// Pins the clip's first frame to an image (image-to-video).
@@ -451,11 +447,11 @@ extension AppModel {
         guard let s = firstNode(ofType: "VideoSampler") else { lastError = "This graph has no Video Sampler node."; return }
         mutate("Set First Frame", undoManager: undoManager) { g in
             if let existing = firstFrameNode {
-                try? g.setValue(.string(url.path), node: existing.id, input: "path")
+                try? g.setValue(.string(storedPath(url)), node: existing.id, input: "path")
             } else {
                 let id = g["first_frame"] == nil ? "first_frame" : "first_frame_\(g.nodes.count)"
                 let p = s.position ?? GraphPoint(x: 640, y: 120)
-                g.nodes.append(GraphNode(id: id, type: "LoadImage", inputs: ["path": .value(.string(url.path))],
+                g.nodes.append(GraphNode(id: id, type: "LoadImage", inputs: ["path": .value(.string(storedPath(url)))],
                                          position: GraphPoint(x: p.x - 300, y: p.y + 260)))
                 var n = g[s.id]!
                 n.inputs["image"] = .link(node: id, output: "image")

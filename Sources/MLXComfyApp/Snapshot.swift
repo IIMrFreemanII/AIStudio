@@ -36,7 +36,7 @@ enum Snapshot {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
-        let saved = ["sidebarPanel", "sidebarOpen", "historyGrid"].map { ($0, defaults.object(forKey: $0)) }
+        let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab"].map { ($0, defaults.object(forKey: $0)) }
         defer { for (k, v) in saved { if let v { defaults.set(v, forKey: k) } else { defaults.removeObject(forKey: k) } } }
 
         let model = makeModel(projectOutputs)
@@ -143,8 +143,9 @@ enum Snapshot {
             model.viewerResult = nil
         }
         defaults.set(true, forKey: "historyGrid")
-        panel(.queue)
-        await render(model, to: dir.appendingPathComponent("19-history-grid.png"))
+        defaults.set("output", forKey: "assetsTab")
+        panel(.assets)
+        await render(model, to: dir.appendingPathComponent("19-assets-output.png"))
 
         // 20–22. Graph structure on a fresh default graph, built with the same AppModel calls as the editor:
         // a Reroute on the model wire, a Note, a group, then prompt/latent/sampler collapsed into a subgraph.
@@ -196,6 +197,20 @@ enum Snapshot {
             if id == "speech" { m.selection = ["speak"] }
             await render(m, to: dir.appendingPathComponent("\(25 + i)-\(id)-result.png"))
         }
+        // 30. Assets › Input with an image, a mask, a video and a sound; a Load Image node using one.
+        let cwdURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        m.importAssets([audioURL, videoURL] + (newestImage.map { [$0.url] } ?? []))
+        m.importAssets([cwdURL.appendingPathComponent("examples/inpaint-mask.png")], asMask: true)
+        let edit = m.openPreset(m.preset(id: "qwen-edit")!)
+        if let ref = m.referenceImageNode?.id, let img = m.assets.first(where: { $0.kind == .image }) {
+            m.setLiteral(.string(img.relativePath), node: ref, input: "path", undoManager: nil)
+            m.selection = [ref]
+        }
+        defaults.set("input", forKey: "assetsTab")
+        panel(.assets)
+        await render(m, to: dir.appendingPathComponent("30-assets-input.png"))
+        m.selection = []
+        m.closeTab(edit.id)
         let st = ModelStore()
         st.adopt(m.modelPath)
         await render(ModelManagerView().environment(m).environment(st),

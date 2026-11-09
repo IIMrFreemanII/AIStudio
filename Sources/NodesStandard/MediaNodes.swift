@@ -77,7 +77,7 @@ public struct LoadVideoNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let n = try inputs.int("max_frames")
-        let clip = try await MediaIO.readVideo(resolvePath(try inputs.string("path")), maxFrames: n > 0 ? n : nil)
+        let clip = try await MediaIO.readVideo(StandardNodes.resolveInputPath(try inputs.string("path")), maxFrames: n > 0 ? n : nil)
         let silence = AudioClip(samples: MLXArray.zeros([2, max(1, Int(clip.duration * 48000))]), sampleRate: 48000)
         return ["video": .object(clip), "audio": .object(clip.audio ?? silence)]
     }
@@ -91,7 +91,7 @@ public struct LoadAudioNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        ["audio": .object(try await MediaIO.readAudio(resolvePath(try inputs.string("path"))))]
+        ["audio": .object(try await MediaIO.readAudio(StandardNodes.resolveInputPath(try inputs.string("path"))))]
     }
 }
 
