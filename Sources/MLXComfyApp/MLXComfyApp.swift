@@ -135,11 +135,17 @@ struct MLXComfyApp: App {
     @State private var model = AppModel()
     @State private var store = ModelStore()
 
+    init() {
+        // JetBrains Mono, the design system's typeface, before any view draws.
+        MGFonts.register()
+    }
+
     var body: some Scene {
         Window("MLXComfyUI", id: "main") {
             ContentView()
                 .environment(model)
                 .environment(store)
+                .mgRoot()
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     AppDelegate.model = model
@@ -154,6 +160,7 @@ struct MLXComfyApp: App {
             ModelManagerView()
                 .environment(model)
                 .environment(store)
+                .mgRoot()
         }
         .defaultSize(width: 680, height: 720)
 
@@ -161,6 +168,7 @@ struct MLXComfyApp: App {
             SettingsView()
                 .environment(model)
                 .environment(store)
+                .mgRoot()
         }
     }
 }
@@ -172,6 +180,7 @@ struct AppCommands: Commands {
     @AppStorage("showModelWires") private var showModelWires = false
     @AppStorage("showMinimap") private var showMinimap = true
     @AppStorage("snapToGrid") private var snapToGrid = true
+    @AppStorage("appearance") private var appearance = MGAppearance.system.rawValue
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -281,6 +290,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut("y")
                 .disabled(model.displayedResult == nil)
             Divider()
+            Picker("Appearance", selection: $appearance) {
+                ForEach(MGAppearance.allCases) { Text($0.title).tag($0.rawValue) }
+            }
             Picker("Wire Style", selection: $wireStyle) {
                 ForEach(WireStyle.allCases) { Text($0.title).tag($0.rawValue) }
             }

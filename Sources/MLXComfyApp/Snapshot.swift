@@ -37,8 +37,11 @@ enum Snapshot {
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
         let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab", "wireStyle", "showModelWires", "showMinimap",
-                     "snapToGrid"].map { ($0, defaults.object(forKey: $0)) }
+                     "snapToGrid", "appearance"].map { ($0, defaults.object(forKey: $0)) }
         defer { for (k, v) in saved { if let v { defaults.set(v, forKey: k) } else { defaults.removeObject(forKey: k) } } }
+        // Every render is written twice, light and dark (`-light.png`, `-dark.png`), following the window's appearance.
+        defaults.set(MGAppearance.system.rawValue, forKey: "appearance")
+        print("font: \(MGFonts.description)")
 
         let model = makeModel(projectOutputs)
         // Start from the newest image (smoke tests leave audio and video items on top of the history).
@@ -268,37 +271,52 @@ enum Snapshot {
         }
     }
 
+    static let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
+
+    /// `foo.png` → `foo-light.png` / `foo-dark.png`.
+    static func variant(_ url: URL, _ name: String) -> URL {
+        url.deletingLastPathComponent().appendingPathComponent(url.deletingPathExtension().lastPathComponent + "-\(name).png")
+    }
+
     static func render<V: View>(_ view: V, to url: URL, size: CGSize) async {
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
-        window.contentView = host
-        window.orderFrontRegardless()
-        try? await Task.sleep(nanoseconds: 800_000_000)
-        guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return }
-        host.cacheDisplay(in: host.bounds, to: rep)
-        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: url) }
-        window.close()
-        print("wrote \(url.path)")
+        for (name, appearance) in appearances {
+            let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                                  styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearance)
+            let host = NSHostingView(rootView: view.mgRoot().frame(width: size.width, height: size.height))
+            window.contentView = host
+            window.orderFrontRegardless()
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { continue }
+            host.cacheDisplay(in: host.bounds, to: rep)
+            let out = variant(url, name)
+            if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: out) }
+            window.close()
+            print("wrote \(out.path)")
+        }
     }
 
     static func render(_ model: AppModel, to url: URL, size: CGSize = CGSize(width: 1440, height: 900)) async {
-        let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
-                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: ContentView().environment(model).environment(store)
-            .frame(width: size.width, height: size.height))
-        window.contentView = host
-        window.orderFrontRegardless()
-        try? await Task.sleep(nanoseconds: 1_200_000_000)  // let layout, tasks and thumbnails settle
-        host.layoutSubtreeIfNeeded()
-        let view = window.contentView!.superview ?? host
-        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
-        view.cacheDisplay(in: view.bounds, to: rep)
-        if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: url) }
-        window.close()
-        print("wrote \(url.path)")
+        for (name, appearance) in appearances {
+            let window = NSWindow(contentRect: CGRect(origin: CGPoint(x: -4000, y: -4000), size: size),
+                                  styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearance)
+            let host = NSHostingView(rootView: ContentView().environment(model).environment(store).mgRoot()
+                .frame(width: size.width, height: size.height))
+            window.contentView = host
+            window.orderFrontRegardless()
+            try? await Task.sleep(nanoseconds: 1_200_000_000)  // let layout, tasks and thumbnails settle
+            host.layoutSubtreeIfNeeded()
+            let view = window.contentView!.superview ?? host
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let out = variant(url, name)
+            if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: out) }
+            window.close()
+            print("wrote \(out.path)")
+        }
     }
 }

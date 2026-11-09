@@ -99,9 +99,11 @@ struct NodeView: View {
         }
         .frame(width: NodeLayout.frameWidth(node), height: NodeLayout.height(node, schema), alignment: .top)
         .overlay { if node.isCollapsed { collapsedSockets(rows) } }
-        .background(RoundedRectangle(cornerRadius: 9).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(borderColor, lineWidth: borderWidth))
-        .shadow(color: .black.opacity(selected ? 0.35 : 0.2), radius: selected ? 10 : 5, y: 2)
+        // A design-system card: opaque, radius 10, a hairline; rings for selection and run state; a float shadow
+        // when selected (it's what you're moving).
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
+        .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(borderColor, lineWidth: borderWidth))
+        .mgShadow(selected ? MGShadow.float : MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
         .contextMenu { NodeMenuItems(menu: actions.menu) }
         .overlay(alignment: .top) {
@@ -110,8 +112,8 @@ struct NodeView: View {
                 Image(decorative: livePreview, scale: 1)
                     .resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
                     .frame(maxWidth: NodeLayout.width - 20, maxHeight: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .shadow(radius: 6)
+                    .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
+                    .mgShadow(MGShadow.popover)
                     .offset(y: NodeLayout.height(node, schema) + 8)
                     .allowsHitTesting(false)
             }
@@ -119,14 +121,15 @@ struct NodeView: View {
     }
 
     var borderColor: Color {
-        if case .running? = state { return .orange }
-        if case .failed? = state { return .red }
-        return selected ? .accentColor : Color.primary.opacity(0.12)
+        if case .running? = state { return MG.warning }
+        if case .failed? = state { return MG.destructive }
+        return selected ? MG.accent : MG.border
     }
 
     var borderWidth: CGFloat {
-        if case .running? = state { return 2.5 }
-        return selected ? 2 : 1
+        if case .running? = state { return 2 }
+        if case .failed? = state { return 2 }
+        return selected ? 2 : 0.5
     }
 
     var title: String { node.title ?? schema.displayName }
@@ -135,32 +138,35 @@ struct NodeView: View {
         HStack(spacing: 6) {
             if let toggle = actions.toggleCollapse, detail > 0 {
                 Image(systemName: node.isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    .font(.mg(size: 9, weight: .semibold)).foregroundStyle(MG.secondaryLabel)
                     .frame(width: 12, height: 20)
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggle)
                     .help(node.isCollapsed ? "Expand (⌥C)" : "Collapse (⌥C)")
-            } else {
-                Circle().fill(schema.tint).frame(width: 8, height: 8)
             }
-            if node.type == Graph.subgraphType {
-                Image(systemName: "square.stack.3d.up").font(.system(size: 10)).foregroundStyle(schema.tint)
+            if detail > 0 {
+                MGKindBadge(color: schema.tint,
+                            letter: node.type == Graph.subgraphType ? nil : String(schema.displayName.prefix(1)),
+                            symbol: node.type == Graph.subgraphType ? "square.stack.3d.up" : nil, size: 15)
             }
-            Text(title).font(.system(size: detail == 2 ? 12 : min(12 / zoom, 22), weight: .semibold)).lineLimit(1)
+            Text(title).font(.mg(size: detail == 2 ? 12.5 : min(12.5 / zoom, 22), weight: .semibold)).lineLimit(1)
                 .minimumScaleFactor(0.5)
             Spacer(minLength: 4)
             if node.isCollapsed && linkCount > 0 && !isRunning {
-                Text("\(linkCount)").font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+                Text("\(linkCount)").font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
                     .help("\(linkCount) connections")
             }
             if detail > 0 { statusBadge }
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, actions.toggleCollapse != nil && detail > 0 ? 6 : 8)
+        .padding(.trailing, 8)
         .frame(height: NodeLayout.header)
         .background(
-            UnevenRoundedRectangle(topLeadingRadius: 9, bottomLeadingRadius: node.isCollapsed ? 9 : 0,
-                                   bottomTrailingRadius: node.isCollapsed ? 9 : 0, topTrailingRadius: 9)
-                .fill(schema.tint.opacity(detail == 0 ? 0.55 : 0.22)))
+            UnevenRoundedRectangle(topLeadingRadius: MGRadius.lg, bottomLeadingRadius: node.isCollapsed ? MGRadius.lg : 0,
+                                   bottomTrailingRadius: node.isCollapsed ? MGRadius.lg : 0, topTrailingRadius: MGRadius.lg,
+                                   style: .continuous)
+                .fill(schema.tint.opacity(detail == 0 ? 0.5 : 0.08)))
+        .overlay(alignment: .bottom) { if !node.isCollapsed && detail > 0 { MGDivider() } }
         .contentShape(Rectangle())
         .gesture(moveGesture)
         .onTapGesture(count: 2) { actions.open?() }
@@ -181,7 +187,7 @@ struct NodeView: View {
     func bigTitle(_ rows: NodeLayout.Rows) -> some View {
         let h = NodeLayout.height(node, schema) - NodeLayout.header - (NodeLayout.showsResult(schema) ? NodeLayout.resultHeight + 4 : 0)
         return Text(title)
-            .font(.system(size: min(13 / zoom, 56), weight: .semibold))
+            .font(.mg(size: min(13 / zoom, 56), weight: .semibold))
             .foregroundStyle(schema.tint)
             .multilineTextAlignment(.center)
             .minimumScaleFactor(0.3)
@@ -218,11 +224,11 @@ struct NodeView: View {
             }
         }()
         return HStack(spacing: 6) {
-            Text(spec.name).foregroundStyle(.secondary)
+            Text(spec.name).foregroundStyle(MG.secondaryLabel)
             Spacer(minLength: 4)
             Text(verbatim: value).lineLimit(1).truncationMode(.middle)
         }
-        .font(.system(size: 11))
+        .font(.mg(size: 11))
     }
 
     @ViewBuilder var statusBadge: some View {
@@ -230,15 +236,15 @@ struct NodeView: View {
         case .running(let step, let total)?:
             HStack(spacing: 4) {
                 ProgressView().controlSize(.mini)
-                if total > 0 { Text("\(step)/\(total)").font(.system(size: 10).monospacedDigit()) }
+                if total > 0 { Text("\(step)/\(total)").font(.mg(size: 10).monospacedDigit()) }
             }
         case .done(let s, _)?:
-            Text(String(format: "%.1fs", s)).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+            Text(String(format: "%.1fs", s)).font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
         case .cached?:
-            Label("cached", systemImage: "checkmark").font(.system(size: 10)).foregroundStyle(.secondary)
+            Label("cached", systemImage: "checkmark").font(.mg(size: 10)).foregroundStyle(MG.secondaryLabel)
                 .labelStyle(.titleAndIcon)
         case .failed?:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.system(size: 11))
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MG.destructive).font(.system(size: 11))
         default:
             EmptyView()
         }
@@ -246,9 +252,9 @@ struct NodeView: View {
 
     func socketDot(_ type: SocketType, filled: Bool) -> some View {
         Circle()
-            .fill(filled ? type.color : Color(nsColor: .controlBackgroundColor))
+            .fill(filled ? type.color : MG.card)
             .overlay(Circle().strokeBorder(type.color, lineWidth: 2))
-            .frame(width: 12, height: 12)
+            .frame(width: 11, height: 11)
             .frame(width: 22, height: 22)
             .contentShape(Circle())
     }
@@ -265,7 +271,7 @@ struct NodeView: View {
             if let source = modelSources[spec.name], detail == 2 {
                 // The model wire is hidden: name its source instead.
                 Text("⟵ \(source)")
-                    .font(.system(size: 10, weight: .medium)).foregroundStyle(SocketType.model.color)
+                    .font(.mg(size: 10, weight: .medium)).foregroundStyle(SocketType.model.color)
                     .lineLimit(1)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(SocketType.model.color.opacity(0.15), in: Capsule())
@@ -274,7 +280,7 @@ struct NodeView: View {
                     .help("\(spec.name) from \(source) — the wire is hidden (View › Show Model Wires). Double-click to show it.")
             } else if detail == 2 {
                 Text(boundInputs[spec.name].map { "\(spec.name) ← \($0)" } ?? spec.name)
-                    .font(.system(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
+                    .font(.mg(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
                     .lineLimit(1).offset(x: -11)
             }
         }
@@ -284,7 +290,7 @@ struct NodeView: View {
         HStack(spacing: 2) {
             if detail == 2 {
                 Text(exposedOutputs[spec.name].map { "\($0) ← \(spec.name)" } ?? spec.name)
-                    .font(.system(size: 11)).foregroundStyle(exposedOutputs[spec.name] != nil ? schema.tint : .secondary)
+                    .font(.mg(size: 11)).foregroundStyle(exposedOutputs[spec.name] != nil ? schema.tint : .secondary)
                     .lineLimit(1).offset(x: 11)
             }
             socketDot(spec.type, filled: true)
@@ -299,25 +305,25 @@ struct NodeView: View {
 
     @ViewBuilder
     func widget(_ spec: InputSpec) -> some View {
-        let font = Font.system(size: 11)
+        let font = Font.mg(size: 11)
         switch (spec.type, spec.widget) {
         case (.string, .text(multiline: true)?):
             Text(bindings.string(node.id, spec.name).wrappedValue.isEmpty
                  ? "Empty \(spec.name)" : bindings.string(node.id, spec.name).wrappedValue)
                 .font(font)
-                .foregroundStyle(.primary.opacity(0.85))
+                .foregroundStyle(MG.label)
                 .lineLimit(3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(6)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.06)))
+                .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
                 .padding(.vertical, 2)
                 .help("Edit in the inspector")
         case (.bool, _):
-            Toggle(spec.name, isOn: bindings.bool(node.id, spec.name)).font(font).toggleStyle(.checkbox)
+            Toggle(spec.name, isOn: bindings.bool(node.id, spec.name)).font(font).toggleStyle(MGCheckboxStyle())
                 .frame(maxWidth: .infinity, alignment: .leading)
         default:
             HStack(spacing: 6) {
-                Text(spec.name).font(font).foregroundStyle(.secondary).lineLimit(1)
+                Text(spec.name).font(font).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 Spacer(minLength: 4)
                 Group {
                     switch spec.type {
@@ -330,7 +336,7 @@ struct NodeView: View {
                     }
                 }
                 .font(font)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(MGTextFieldStyle())
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: spec.type == .string ? 150 : 90)
             }
@@ -373,7 +379,7 @@ struct NodeResultView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05))
+            RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill)
             if let result {
                 switch result.kind {
                 case .image:
@@ -391,10 +397,10 @@ struct NodeResultView: View {
                 }
             } else {
                 Image(systemName: kind == .video ? "film" : kind == .audio ? "waveform" : "photo")
-                    .font(.system(size: 22, weight: .light)).foregroundStyle(.tertiary)
+                    .font(.mg(size: 22, weight: .light)).foregroundStyle(MG.tertiaryLabel)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
         .help(result?.url?.lastPathComponent.appending(" — double-click to open") ?? "The result shows here after a run")
     }
 }

@@ -13,19 +13,16 @@ struct CompareView: View {
         @Bindable var model = model
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Picker("Mode", selection: $model.compareMode) {
-                    ForEach(CompareMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 340)
+                MGSegmentedPicker(selection: $model.compareMode, options: CompareMode.allCases.map { ($0, $0.rawValue) })
+                    .frame(maxWidth: 340)
                 Spacer()
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(caption).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(1).truncationMode(.middle)
                 Button("Done") { model.endCompare() }.keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
+            .padding(.vertical, 8)
+            .background(MG.barOverContent)
+            .overlay(alignment: .bottom) { MGDivider() }
 
             GeometryReader { geo in
                 let frame = fitted(a, in: geo.size.insetBy(24))
@@ -64,11 +61,11 @@ struct CompareView: View {
             .overlay(alignment: .bottom) {
                 if model.compareMode == .split {
                     HStack {
-                        Label("A", systemImage: "a.square").padding(6).background(.regularMaterial, in: Capsule())
+                        Label("A", systemImage: "a.square").padding(.horizontal, 8).padding(.vertical, 4).mgGlass(.tooltip, in: Capsule())
                         Spacer()
-                        Label("B", systemImage: "b.square").padding(6).background(.regularMaterial, in: Capsule())
+                        Label("B", systemImage: "b.square").padding(.horizontal, 8).padding(.vertical, 4).mgGlass(.tooltip, in: Capsule())
                     }
-                    .font(.caption)
+                    .font(.mgSubheadline)
                     .padding(20)
                 }
             }

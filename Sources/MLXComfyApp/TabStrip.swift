@@ -10,7 +10,7 @@ struct TabStrip: View {
     var body: some View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 2) {
+                HStack(spacing: 4) {
                     ForEach(model.tabs) { doc in
                         TabButton(doc: doc, active: doc.id == model.activeTabID)
                             .onDrag {
@@ -23,14 +23,17 @@ struct TabStrip: View {
                 .padding(.horizontal, 6)
             }
             Button { model.showPresetGallery = true } label: {
-                Image(systemName: "plus").frame(width: 26, height: 26)
+                Image(systemName: "plus").font(.system(size: 12, weight: .medium))
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.mg(.icon))
+            .controlSize(.large)
             .help("New workflow from a preset (⌘N); ⌘T for a blank text-to-image tab")
             .padding(.trailing, 8)
         }
-        .frame(height: 34)
-        .background(.bar)
+        // The design system's document tab bar: 40 tall, 28 pt pills, a hairline under it.
+        .frame(height: 40)
+        .mgChrome(MG.barTint, material: .headerView)
+        .overlay(alignment: .bottom) { MGDivider() }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.newTab() }
     }
@@ -72,27 +75,34 @@ struct TabButton: View {
                 ProgressView().controlSize(.mini)
             } else {
                 Image(systemName: doc.fileURL == nil ? "doc" : "doc.text")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(.system(size: 11)).foregroundStyle(active ? MG.accent : MG.secondaryLabel)
             }
-            Text(doc.name).font(.system(size: 12, weight: active ? .semibold : .regular)).lineLimit(1)
+            Text(doc.name).font(.mg(size: 12.5, weight: active ? .medium : .regular)).lineLimit(1)
+                .foregroundStyle(active ? MG.label : MG.secondaryLabel)
             ZStack {
                 if hovering || (active && !doc.isDirty) {
                     Button { TabCommands.close(doc, model: model) } label: {
-                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.mg(.icon))
+                    .controlSize(.mini)
                     .help("Close tab (⌘W)")
                 } else if doc.isDirty {
-                    Circle().fill(Color.secondary).frame(width: 7, height: 7).help("Unsaved changes")
+                    Circle().fill(MG.secondaryLabel).frame(width: 7, height: 7).help("Unsaved changes")
                 }
             }
-            .frame(width: 14, height: 14)
+            .frame(width: 18, height: 18)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 26)
+        .padding(.leading, 10)
+        .padding(.trailing, 5)
+        .frame(height: 28)
         .frame(maxWidth: 220)
-        .background(RoundedRectangle(cornerRadius: 6).fill(active ? Color(nsColor: .controlBackgroundColor) : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(active ? Color.primary.opacity(0.12) : .clear))
+        .background {
+            // The selected tab is a raised pill; others show the hover fill.
+            RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
+                .fill(active ? MG.selectedTab : hovering ? MG.hover : .clear)
+                .mgShadow(active ? MGShadow.control : MGShadowSpec(x: 0, y: 0, blur: 0, color: .clear))
+        }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { model.activate(doc.id) }

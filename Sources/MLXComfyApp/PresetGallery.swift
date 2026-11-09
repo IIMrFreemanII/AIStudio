@@ -20,19 +20,22 @@ struct PresetGallery: View {
         }
         VStack(spacing: 0) {
             HStack {
-                Text("New Workflow").font(.title2.weight(.semibold))
+                Text("New Workflow").font(.mgTitle2)
                 Spacer()
-                TextField("Search presets", text: $query).textFieldStyle(.roundedBorder).frame(width: 240)
+                MGSearchField(prompt: "Search presets", text: $query).frame(width: 240)
             }
             .padding(18)
-            Divider()
+            MGDivider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     ForEach(Preset.Category.allCases) { cat in
                         let items = matches.filter { $0.category == cat }
                         if !items.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
-                                Label(cat.title, systemImage: cat.symbol).font(.headline)
+                                HStack(spacing: 8) {
+                                    MGKindBadge(color: cat.hue, symbol: cat.symbol, size: 18)
+                                    Text(cat.title).font(.mgHeadline)
+                                }
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 230), spacing: 12)],
                                           alignment: .leading, spacing: 12) {
                                     ForEach(items) { p in
@@ -48,12 +51,13 @@ struct PresetGallery: View {
                         }
                     }
                     if matches.isEmpty {
-                        Text("No presets match.").foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                        Text("No presets match.").foregroundStyle(MG.secondaryLabel).frame(maxWidth: .infinity)
                     }
                 }
                 .padding(18)
             }
-            Divider()
+            .background(MG.groupedBackground)
+            MGDivider()
             HStack {
                 Button("Blank Text to Image (⌘T)") { model.newTab(); dismiss() }
                 Button("Open Workflow…") {
@@ -66,6 +70,7 @@ struct PresetGallery: View {
             .padding(14)
         }
         .frame(width: 820, height: 640)
+        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
     }
 }
 
@@ -80,23 +85,22 @@ struct PresetCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8).fill(LinearGradient(
-                    colors: [Color.accentColor.opacity(available ? 0.35 : 0.12), Color.accentColor.opacity(0.06)],
-                    startPoint: .topLeading, endPoint: .bottomTrailing))
+                RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(
+                    (available ? preset.category.hue : MG.hueGray).opacity(0.14))
                 if let thumbnail {
                     Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fill)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
                 } else {
                     Image(systemName: preset.symbol).font(.system(size: 34, weight: .light))
-                        .foregroundStyle(available ? Color.accentColor : .secondary)
+                        .foregroundStyle(available ? preset.category.hue : MG.secondaryLabel)
                 }
             }
             .frame(height: 104)
             .clipped()
             VStack(alignment: .leading, spacing: 2) {
-                Text(preset.name).font(.callout.weight(.semibold)).lineLimit(1)
-                Text(preset.modelName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                Text(preset.summary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Text(preset.name).font(.mgCallout.weight(.semibold)).lineLimit(1)
+                Text(preset.modelName).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                Text(preset.summary).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(2)
                     .frame(height: 28, alignment: .top)
             }
             if !available {
@@ -104,9 +108,10 @@ struct PresetCard: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(hovering && available ? Color.accentColor : Color.primary.opacity(0.1),
-                                                                 lineWidth: hovering && available ? 2 : 1))
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(hovering && available ? MG.card : MG.card))
+        .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)
+            .strokeBorder(hovering && available ? MG.accent : MG.separator, lineWidth: hovering && available ? 2 : 0.5))
+        .mgShadow(hovering && available ? MGShadow.control : MGShadowSpec(x: 0, y: 0, blur: 0, color: .clear))
         .opacity(available ? 1 : 0.6)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -127,17 +132,27 @@ struct SavePresetSheet: View {
     @State private var summary = ""
 
     var body: some View {
-        Form {
-            TextField("Name", text: $name)
-            Picker("Category", selection: $category) {
-                ForEach(Preset.Category.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+        MGForm {
+            Text("Save as Preset").font(.mgTitle3)
+            MGSection {
+                MGFormRow("Name") { TextField("Name", text: $name).frame(maxWidth: 240) }
+                MGFormRow("Category") {
+                    Picker("Category", selection: $category) {
+                        ForEach(Preset.Category.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Description").foregroundStyle(MG.label)
+                    TextField("What it makes", text: $summary, axis: .vertical).lineLimit(2...4)
+                }
+            } footer: {
+                Text("Saved to \(model.library.presets.path). Model folders and the output folder are stored by name, so the preset works on another Mac with the same models.")
             }
-            TextField("Description", text: $summary, axis: .vertical).lineLimit(2...4)
-            Text("Saved to \(model.library.presets.path). Model folders and the output folder are stored by name, so the preset works on another Mac with the same models.")
-                .font(.caption).foregroundStyle(.secondary)
         }
-        .formStyle(.grouped)
-        .frame(width: 440)
+        .frame(width: 460, height: 360)
+        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Spacer()
@@ -146,6 +161,7 @@ struct SavePresetSheet: View {
                     model.saveAsPreset(name: name, category: category, summary: summary)
                     dismiss()
                 }
+                .buttonStyle(.mg(.prominent))
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }

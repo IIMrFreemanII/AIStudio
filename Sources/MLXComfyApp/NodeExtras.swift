@@ -43,16 +43,20 @@ struct NodeExtras: View {
     @ViewBuilder var modelSection: some View {
         let path = b.string(node.id, "path")
         let installed = ModelCatalog.entries.compactMap { e in store.installedURL(e.id).map { (e, $0) } }
-        Section("Model") {
-            Picker("Model", selection: Binding(
-                get: { URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path },
-                set: { p in setModel(p) })) {
-                ForEach(installed, id: \.1.path) { e, url in
-                    Label(e.name, systemImage: e.kind.symbol).tag(url.standardizedFileURL.path)
+        MGSection("Model") {
+            MGFormRow("Model") {
+                Picker("Model", selection: Binding(
+                    get: { URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path },
+                    set: { p in setModel(p) })) {
+                    ForEach(installed, id: \.1.path) { e, url in
+                        Label(e.name, systemImage: e.kind.symbol).tag(url.standardizedFileURL.path)
+                    }
+                    if !installed.contains(where: { $0.1.standardizedFileURL.path == URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path }) {
+                        Text((path.wrappedValue as NSString).lastPathComponent).tag(URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path)
+                    }
                 }
-                if !installed.contains(where: { $0.1.standardizedFileURL.path == URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path }) {
-                    Text((path.wrappedValue as NSString).lastPathComponent).tag(URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path)
-                }
+                .labelsHidden()
+                .fixedSize()
             }
             HStack {
                 Button("Choose Folder…") {
@@ -63,7 +67,7 @@ struct NodeExtras: View {
                     if panel.runModal() == .OK, let url = panel.url { setModel(url.path) }
                 }
                 Spacer()
-                Text(model.modelStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Text(model.modelStatus).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(1).truncationMode(.middle)
             }
         }
     }
@@ -80,7 +84,8 @@ struct NodeExtras: View {
 
     @ViewBuilder func sizeSection(_ presets: [(name: String, width: Int, height: Int)], video: Bool) -> some View {
         let w = b.int(node.id, "width"), h = b.int(node.id, "height")
-        Section("Size") {
+        MGSection("Size") {
+            MGFormRow("Preset") {
             Picker("Preset", selection: Binding(
                 get: {
                     if w.wrappedValue == 0 && h.wrappedValue == 0 { return -2 }
@@ -98,18 +103,21 @@ struct NodeExtras: View {
                 ForEach(presets.indices, id: \.self) { i in Text(presets[i].name).tag(i) }
                 Text("Custom").tag(-1)
             }
+            .labelsHidden()
+            .fixedSize()
+            }
         }
     }
 
     // MARK: prompt
 
     @ViewBuilder var promptSection: some View {
-        Section("Prompt Tools") {
+        MGSection("Prompt Tools") {
             if model.assistantMode != nil {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
                     Text(model.assistantMode == .describe ? "Describing the image…" : "Rewriting the prompt…")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
                     Spacer()
                     Button("Stop") { model.stopAssistant() }
                 }
@@ -128,18 +136,22 @@ struct NodeExtras: View {
                 }
                 .controlSize(.small)
             }
-            Picker("Style", selection: Binding(
-                get: { model.graph.metadata?[AppModel.styleKey(node.id)] },
-                set: { model.setStyle($0, node: node.id, undoManager: undoManager) })) {
-                Text("None").tag(String?.none)
-                ForEach(model.styles) { Text($0.name).tag(String?.some($0.name)) }
+            MGFormRow("Style") {
+                Picker("Style", selection: Binding(
+                    get: { model.graph.metadata?[AppModel.styleKey(node.id)] },
+                    set: { model.setStyle($0, node: node.id, undoManager: undoManager) })) {
+                    Text("None").tag(String?.none)
+                    ForEach(model.styles) { Text($0.name).tag(String?.some($0.name)) }
+                }
+                .labelsHidden()
+                .fixedSize()
             }
             if let style = model.style(of: node.id) {
-                Text(style.template).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(style.template).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(2)
             }
             // verbatim: as a Markdown string, __name__ would render as bold "name".
             Text(verbatim: "{a|b|c} picks one option per run; __name__ picks a line from wildcards/name.txt.")
-                .font(.caption2).foregroundStyle(.tertiary)
+                .font(.mgFootnote).foregroundStyle(.tertiary)
         }
     }
 
@@ -148,7 +160,7 @@ struct NodeExtras: View {
     @ViewBuilder var imageSection: some View {
         let path = model.resolvedPath(b.string(node.id, "path").wrappedValue)
         let isReference = model.referenceImageNode?.id == node.id
-        Section(node.type == "LoadMask" ? "Mask" : "Image") {
+        MGSection(node.type == "LoadMask" ? "Mask" : "Image") {
             if !path.isEmpty {
                 HStack(spacing: 10) {
                     Thumbnail(path: path, maskPath: isReference ? model.maskPath : nil).frame(width: 72, height: 72)
@@ -156,14 +168,14 @@ struct NodeExtras: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                         if let size = Thumbnail.pixelSize(path) {
-                            Text(verbatim: "\(size.width) × \(size.height)").font(.caption).foregroundStyle(.secondary)
+                            Text(verbatim: "\(size.width) × \(size.height)").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                         }
                         if isReference {
                             Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
                                  : model.isOutpainting ? "Outpainting: the new border is generated."
                                  : model.isImg2Img ? "Image to image: redrawn from the prompt."
                                  : "Editing: describe the change in the prompt.")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                         }
                     }
                 }
@@ -191,7 +203,7 @@ struct NodeExtras: View {
     @ViewBuilder var mediaSection: some View {
         let stored = b.string(node.id, "path").wrappedValue
         let isVideo = node.type == "LoadVideo"
-        Section(isVideo ? "Video" : "Sound") {
+        MGSection(isVideo ? "Video" : "Sound") {
             if !stored.isEmpty {
                 Text((stored as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
             }
@@ -208,14 +220,14 @@ struct NodeExtras: View {
     // MARK: voice
 
     @ViewBuilder var voiceSection: some View {
-        Section("Voice") {
+        MGSection("Voice") {
             Button {
                 model.previewVoice(b.string(node.id, "voice").wrappedValue, speed: b.double(node.id, "speed").wrappedValue,
                                    modelPath: modelPathOfGraph)
             } label: { Label("Preview Voice", systemImage: "play.circle") }
                 .disabled(model.isRunning)
             Text("Grades (A to F) are from the model's authors: how well each voice was trained.")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
         }
     }
 }

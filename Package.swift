@@ -308,6 +308,8 @@ let package = Package(
                 "MLXComfyLibrary",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
+            // JetBrains Mono (OFL), the design system's typeface.
+            resources: [.copy("Resources/Fonts")],
             // AVKit's SwiftUI VideoPlayer needs the framework linked explicitly in a SwiftPM executable.
             linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation")]
         ),

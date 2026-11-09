@@ -36,27 +36,33 @@ struct QueuePanel: View {
         VStack(spacing: 0) {
             PanelHeader(title: "Queue") {
                 if model.queue.contains(where: \.isFinished) {
-                    Button("Clear Finished") { model.clearFinished() }.controlSize(.small)
+                    Button("Clear Finished") { model.clearFinished() }.buttonStyle(.mg(.borderless)).controlSize(.small)
                 }
                 if model.pendingCount > 0 {
-                    Button("Cancel All") { model.cancelAll() }.controlSize(.small)
+                    Button("Cancel All") { model.cancelAll() }.buttonStyle(.mg(.borderless, destructive: true)).controlSize(.small)
                 }
             }
             List {
                 if model.queue.isEmpty {
                     Text("Nothing queued. Press ⌘↩ to run the current workflow; results are in Assets › Output.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+                        .padding(.horizontal, 16)
+                        .mgListRow()
                 }
                 ForEach(rows) { row in
-                    switch row {
-                    case .job(let item): QueueRow(item: item)
-                    case .plot(let g, let title): PlotQueueRow(group: g, title: title)
+                    Group {
+                        switch row {
+                        case .job(let item): QueueRow(item: item)
+                        case .plot(let g, let title): PlotQueueRow(group: g, title: title)
+                        }
                     }
+                    .mgRow(height: 38)
+                    .mgListRow()
                 }
                 // Reordering maps rows to queue items one-to-one only without plot groups.
                 .onMove(perform: hasPlots ? nil : { model.movePending(from: $0, to: $1) })
             }
-            .listStyle(.sidebar)
+            .mgList()
         }
     }
 }
@@ -84,30 +90,35 @@ struct OutputList: View {
     var body: some View {
         let workflows = Array(Set(model.history.compactMap(\.workflow))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         VStack(spacing: 6) {
-            HStack(spacing: 6) {
-                TextField("Search prompts", text: $query).textFieldStyle(.roundedBorder)
-                Button { favoritesOnly.toggle() } label: { Image(systemName: favoritesOnly ? "star.fill" : "star") }
-                    .buttonStyle(.borderless).foregroundStyle(favoritesOnly ? Color.yellow : .secondary)
-                    .help(favoritesOnly ? "Show everything" : "Show favorites only")
+            HStack(spacing: 4) {
+                MGSearchField(prompt: "Search prompts", text: $query)
+                Button { favoritesOnly.toggle() } label: {
+                    Image(systemName: favoritesOnly ? "star.fill" : "star")
+                        .foregroundStyle(favoritesOnly ? MG.hueYellow : MG.secondaryLabel)
+                }
+                .buttonStyle(.mg(.icon))
+                .help(favoritesOnly ? "Show everything" : "Show favorites only")
                 Button { gridLayout.toggle() } label: { Image(systemName: gridLayout ? "list.bullet" : "square.grid.2x2") }
-                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .buttonStyle(.mg(.icon))
                     .help(gridLayout ? "Show as a list" : "Show as a grid")
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             Picker("Workflow", selection: $workflow) {
                 Text("All workflows").tag(String?.none)
                 ForEach(workflows, id: \.self) { Text($0).tag(String?.some($0)) }
             }
             .labelsHidden()
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             List {
                 let items = filteredHistory
                 if model.history.isEmpty {
                     Text("Generated images, videos and sounds appear here.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+                        .padding(.horizontal, 16).mgListRow()
                 } else if items.isEmpty {
                     Text(favoritesOnly ? "No favorites match." : "Nothing matches.")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+                        .padding(.horizontal, 16).mgListRow()
                 }
                 if gridLayout {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 72, maximum: 120), spacing: 6)], spacing: 6) {
@@ -119,15 +130,19 @@ struct OutputList: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    .padding(.horizontal, 12)
+                    .mgListRow()
                 } else {
                     ForEach(items) { item in
                         HistoryRow(item: item, selected: model.displayedURL == item.url,
                                    compared: model.compareURL == item.url)
+                            .mgRow(selected: model.displayedURL == item.url, height: 60)
                             .modifier(HistoryActions(item: item))
+                            .mgListRow()
                     }
                 }
             }
-            .listStyle(.sidebar)
+            .mgList()
         }
     }
 }
@@ -172,23 +187,23 @@ struct PlotQueueRow: View {
         HStack(spacing: 8) {
             Group {
                 if p.running { ProgressView().controlSize(.mini) }
-                else if p.done == p.total { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                else if p.done == p.total { Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success) }
                 else { Image(systemName: "square.grid.3x3").foregroundStyle(.secondary) }
             }
             .frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).lineLimit(1).font(.callout)
+                Text(title).lineLimit(1).font(.mgCallout)
                 ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
                     .progressViewStyle(.linear).controlSize(.small)
-                Text("\(p.done) of \(p.total) images").font(.caption2).foregroundStyle(.secondary)
+                Text("\(p.done) of \(p.total) images").font(.mgFootnote).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             if p.done < p.total {
                 Button { model.cancelPlot(group) } label: { Image(systemName: "stop.circle") }
-                    .buttonStyle(.plain).help("Stop the plot (finished cells are still saved as a grid)")
+                    .buttonStyle(.mg(.icon, destructive: true)).help("Stop the plot (finished cells are still saved as a grid)")
             } else {
-                Button { model.queue.removeAll { $0.groupID == group } } label: { Image(systemName: "xmark.circle") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                Button { model.queue.removeAll { $0.groupID == group } } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.mg(.icon)).controlSize(.small)
             }
         }
         .padding(.vertical, 2)
@@ -203,36 +218,36 @@ struct QueueRow: View {
         HStack(spacing: 8) {
             statusIcon.frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.title).lineLimit(1).font(.callout)
+                Text(item.title).lineLimit(1).font(.mgCallout)
                 if !item.workflow.isEmpty {
-                    Text(item.workflow).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Text(item.workflow).font(.mgFootnote).foregroundStyle(.secondary).lineLimit(1)
                 }
                 switch item.status {
                 case .running(let step, let total) where total > 0:
                     ProgressView(value: Double(step), total: Double(total))
                         .progressViewStyle(.linear).controlSize(.small)
-                    Text("Step \(step) of \(total)").font(.caption2).foregroundStyle(.secondary)
+                    Text("Step \(step) of \(total)").font(.mgFootnote).foregroundStyle(.secondary)
                 case .running:
-                    Text("Running…").font(.caption2).foregroundStyle(.secondary)
+                    Text("Running…").font(.mgFootnote).foregroundStyle(.secondary)
                 case .done(let s):
                     Text(String(format: "%.1fs", s) + (item.seed.map { " · seed \($0)" } ?? ""))
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.mgFootnote).foregroundStyle(.secondary)
                 case .failed(let msg):
-                    Text(msg).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                    Text(msg).font(.mgFootnote).foregroundStyle(MG.destructive).lineLimit(2)
                 case .cancelled:
-                    Text("Cancelled").font(.caption2).foregroundStyle(.secondary)
+                    Text("Cancelled").font(.mgFootnote).foregroundStyle(.secondary)
                 case .pending:
                     Text(item.seed.map { "Waiting · seed \($0)" } ?? "Waiting")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.mgFootnote).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
             if case .running = item.status {
-                Button { model.cancelCurrent() } label: { Image(systemName: "stop.circle") }
-                    .buttonStyle(.plain).help("Cancel")
+                Button { model.cancelCurrent() } label: { Image(systemName: "stop.fill") }
+                    .buttonStyle(.mg(.icon, destructive: true)).controlSize(.small).help("Cancel")
             } else {
-                Button { model.removeFromQueue(item.id) } label: { Image(systemName: "xmark.circle") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Remove")
+                Button { model.removeFromQueue(item.id) } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.mg(.icon)).controlSize(.small).help("Remove")
             }
         }
         .padding(.vertical, 2)
@@ -242,8 +257,8 @@ struct QueueRow: View {
         switch item.status {
         case .pending: Image(systemName: "clock").foregroundStyle(.secondary)
         case .running: ProgressView().controlSize(.mini)
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success)
+        case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(MG.destructive)
         case .cancelled: Image(systemName: "minus.circle").foregroundStyle(.secondary)
         }
     }
@@ -260,14 +275,14 @@ struct HistoryRow: View {
                 .frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.prompt.flatMap { $0.isEmpty ? nil : $0 } ?? item.url.deletingPathExtension().lastPathComponent)
-                    .font(.callout).lineLimit(2)
+                    .font(.mgCallout).lineLimit(2)
                 HStack(spacing: 4) {
-                    if item.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow) }
-                    if compared { Text("B").fontWeight(.bold).foregroundStyle(Color.accentColor) }
+                    if item.isFavorite { Image(systemName: "star.fill").foregroundStyle(MG.hueYellow) }
+                    if compared { Text("B").fontWeight(.bold).foregroundStyle(MG.accent) }
                     if let w = item.workflow { Text(w).lineLimit(1); Text("·") }
                     Text(item.date, format: .relative(presentation: .named))
                 }
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.mgFootnote).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 2)
@@ -283,7 +298,7 @@ struct HistoryThumb: View {
     @State private var thumbnail: CGImage?
 
     var body: some View {
-        Rectangle().fill(.quaternary)
+        Rectangle().fill(MG.fill)
             .overlay {
                 if let thumbnail {
                     Image(decorative: thumbnail, scale: 1).resizable().aspectRatio(contentMode: .fill)
@@ -296,12 +311,12 @@ struct HistoryThumb: View {
                         .padding(3).background(.black.opacity(0.55), in: Circle()).padding(4)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
-                selected ? Color.accentColor : compared ? Color.orange : .clear, lineWidth: 2))
+            .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).strokeBorder(
+                selected ? MG.accent : compared ? MG.warning : MG.separator, lineWidth: selected || compared ? 2 : 0.5))
             .overlay(alignment: .topTrailing) {
                 if showStar && item.isFavorite {
-                    Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
+                    Image(systemName: "star.fill").font(.caption2).foregroundStyle(MG.hueYellow)
                         .shadow(radius: 1).padding(4)
                 }
             }

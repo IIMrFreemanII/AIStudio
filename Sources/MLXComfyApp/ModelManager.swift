@@ -283,8 +283,8 @@ struct ModelManagerView: View {
     @State private var tokenSaved = HFToken.isSaved
 
     var body: some View {
-        Form {
-            Section {
+        MGForm(maxWidth: 760) {
+            MGSection {
                 ForEach(ModelCatalog.entries) { entry in row(entry) }
             } header: {
                 HStack {
@@ -294,17 +294,17 @@ struct ModelManagerView: View {
                         try? FileManager.default.createDirectory(at: store.modelsDirectory, withIntermediateDirectories: true)
                         NSWorkspace.shared.open(store.modelsDirectory)
                     }
-                    .buttonStyle(.link).font(.caption)
+                    .buttonStyle(.mg(.borderless)).font(.mgSubheadline)
                 }
             } footer: {
                 Text("Downloads go to \(store.modelsDirectory.path) and resume if interrupted. Each model has its own license; you accept it before downloading.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
             }
 
-            Section("Model Folders Added by Hand") {
+            MGSection("Model Folders Added by Hand") {
                 if store.manualFolders.isEmpty {
                     Text("Use a model you downloaded yourself: add its folder (diffusers layout with model_index.json, or an mlxcomfy.json manifest).")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                 }
                 ForEach(store.manualFolders) { f in
                     HStack {
@@ -312,14 +312,14 @@ struct ModelManagerView: View {
                             Text(f.url.lastPathComponent)
                             Text(f.className.map { ModelRegistry.shared.isRegistered($0) ? $0 : "\($0) (not supported)" }
                                  ?? "Not recognized: no model_index.json")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                         }
                         Spacer()
                         if let c = f.className, ModelRegistry.shared.isRegistered(c) {
                             Button("Use for Images") { model.applyModelPath(f.path, undoManager: nil); model.preloadModel() }
                         }
                         Button(role: .destructive) { store.removeFolder(f) } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.mg(.icon))
                     }
                 }
                 Button("Add Model Folder…") {
@@ -330,23 +330,25 @@ struct ModelManagerView: View {
                 }
             }
 
-            Section {
+            MGSection {
+                MGFormRow("Token") {
                 SecureField("Token", text: $token, prompt: Text(tokenSaved ? "Saved in the Keychain — type to replace" : "hf_…"))
+                    .frame(maxWidth: 320)
+                }
                 HStack {
                     Button("Save to Keychain") { HFToken.save(token); token = ""; tokenSaved = true }
                         .disabled(token.isEmpty)
                     Button("Remove") { HFToken.delete(); token = ""; tokenSaved = false }
                         .disabled(!tokenSaved && token.isEmpty)
-                    if tokenSaved { Label("Saved", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green) }
+                    if tokenSaved { Label("Saved", systemImage: "checkmark.circle.fill").font(.mgSubheadline).foregroundStyle(MG.success) }
                 }
             } header: {
                 Text("Hugging Face Token")
             } footer: {
                 Text("Only needed for gated models (marked with a lock). Create a read token on huggingface.co and accept the model's terms on its page first.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
             }
         }
-        .formStyle(.grouped)
         .frame(minWidth: 620, minHeight: 560)
         .onAppear { store.adopt(model.modelPath) }
         .sheet(item: $confirming) { entry in DownloadConfirmation(entry: entry) }
@@ -367,26 +369,26 @@ struct ModelManagerView: View {
         let status = store.status[entry.id] ?? .notInstalled
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: entry.kind.symbol)
-                .font(.title3).frame(width: 24).foregroundStyle(.secondary)
+                .font(.mgTitle3).frame(width: 24).foregroundStyle(MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(entry.name).fontWeight(.medium)
-                    if entry.gated { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary) }
+                    if entry.gated { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(MG.secondaryLabel) }
                 }
-                Text(entry.notes).font(.caption).foregroundStyle(.secondary)
+                Text(entry.notes).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                 HStack(spacing: 8) {
                     Text(String(format: "about %.1f GB", entry.approxGB))
                     Link(entry.license, destination: URL(string: entry.licenseURL)!)
                 }
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 switch status {
                 case .downloading(let p):
                     ProgressView(value: p.fraction).controlSize(.small)
                     Text(String(format: "%.1f of %.1f GB · %@", Double(p.done) / 1e9, Double(p.total) / 1e9,
                                 (p.file as NSString).lastPathComponent))
-                        .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        .font(.mgFootnote.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
                 case .failed(let msg):
-                    Text(msg).font(.caption).foregroundStyle(.red).lineLimit(3)
+                    Text(msg).font(.mgSubheadline).foregroundStyle(MG.destructive).lineLimit(3)
                 default:
                     EmptyView()
                 }
@@ -402,7 +404,7 @@ struct ModelManagerView: View {
         switch status {
         case .installed(let url):
             VStack(alignment: .trailing, spacing: 4) {
-                Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(MG.success).font(.mgSubheadline)
                 HStack {
                     if entry.kind == .image {
                         Button("Use") { model.applyModelPath(url.path, undoManager: nil); model.preloadModel() }
@@ -422,7 +424,7 @@ struct ModelManagerView: View {
                     confirming = entry
                 }
             } else {
-                Text("Coming later").font(.caption).foregroundStyle(.secondary)
+                Text("Coming later").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
             }
         }
     }
@@ -437,7 +439,7 @@ struct DownloadConfirmation: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Download \(entry.name)?").font(.headline)
+            Text("Download \(entry.name)?").font(.mgHeadline)
             if let lists = store.plans[entry.id], let remaining = store.remainingBytes(entry) {
                 let free = ModelDownloader.freeSpace(at: store.modelsDirectory)
                 ForEach(Array(zip(entry.parts, lists).enumerated()), id: \.offset) { _, pl in
@@ -445,7 +447,7 @@ struct DownloadConfirmation: View {
                 }
                 LabeledContent("To download", value: String(format: "%.2f GB", Double(remaining) / 1e9))
                 LabeledContent("Free space", value: String(format: "%.1f GB", Double(free) / 1e9))
-                if remaining > free { Text("Not enough disk space.").foregroundStyle(.red) }
+                if remaining > free { Text("Not enough disk space.").foregroundStyle(MG.destructive) }
                 Toggle(isOn: $accepted) {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(Array(Set(entry.parts.map(\.license)).sorted().enumerated()), id: \.offset) { i, lic in
@@ -466,7 +468,7 @@ struct DownloadConfirmation: View {
                         .disabled(!accepted || remaining > free)
                 }
             } else if case .failed(let msg)? = store.status[entry.id] {
-                Text(msg).foregroundStyle(.red)
+                Text(msg).foregroundStyle(MG.destructive)
                 HStack { Spacer(); Button("Close") { dismiss() } }
             } else {
                 HStack { ProgressView().controlSize(.small); Text("Checking the file list…") }

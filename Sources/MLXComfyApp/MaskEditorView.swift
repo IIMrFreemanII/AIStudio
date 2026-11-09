@@ -29,17 +29,12 @@ struct MaskEditorView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                Picker("Tool", selection: $erase) {
-                    Label("Brush", systemImage: "paintbrush.pointed").tag(false)
-                    Label("Eraser", systemImage: "eraser").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 180)
+                MGSegmentedPicker(selection: $erase, options: [(false, "Brush"), (true, "Eraser")])
+                    .frame(width: 180)
                 HStack(spacing: 6) {
-                    Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(.secondary)
+                    Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(MG.secondaryLabel)
                     Slider(value: $brush, in: 0.01...0.25).frame(width: 140)
-                    Image(systemName: "circle.fill").font(.system(size: 14)).foregroundStyle(.secondary)
+                    Image(systemName: "circle.fill").font(.system(size: 14)).foregroundStyle(MG.secondaryLabel)
                 }
                 .help("Brush size")
                 Button("Undo Stroke") { _ = strokes.popLast() }
@@ -47,14 +42,16 @@ struct MaskEditorView: View {
                     .keyboardShortcut("z")
                 Button("Clear") { strokes = []; baseMask = nil; baseOverlay = nil }
                 Spacer()
-                if let error { Text(error).foregroundStyle(.red).font(.caption) }
+                if let error { Text(error).foregroundStyle(MG.destructive).font(.mgSubheadline) }
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Use Mask") { save() }
+                    .buttonStyle(.mg(.prominent))
                     .keyboardShortcut(.defaultAction)
                     .disabled(strokes.isEmpty && baseMask == nil)
             }
             .padding(12)
-            Divider()
+            .mgChrome(MG.barTint, material: .headerView)
+            MGDivider()
             GeometryReader { geo in
                 if let image {
                     let rect = fitted(CGSize(width: image.width, height: image.height), in: geo.size)
@@ -80,9 +77,9 @@ struct MaskEditorView: View {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .background(Color(nsColor: .underPageBackgroundColor))
+            .background(MG.contentBackground)
             Text("Paint over the area to regenerate. Everything outside the mask stays pixel-identical.")
-                .font(.caption).foregroundStyle(.secondary).padding(8)
+                .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).padding(8)
         }
         .frame(minWidth: 760, minHeight: 640)
         .task {

@@ -45,16 +45,16 @@ struct SidebarRail: View {
                     if open && selection == p { open = false } else { selection = p; open = true }
                 } label: {
                     Image(systemName: p.symbol)
-                        .font(.system(size: 16))
-                        .frame(width: 34, height: 34)
-                        .background(RoundedRectangle(cornerRadius: 7)
-                            .fill(open && selection == p ? Color.accentColor.opacity(0.18) : .clear))
-                        .foregroundStyle(open && selection == p ? Color.accentColor : .secondary)
+                        .font(.system(size: 15))
+                        .frame(width: 32, height: 32)
+                        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
+                            .fill(open && selection == p ? MG.selection : .clear))
+                        .foregroundStyle(open && selection == p ? MG.accent : MG.secondaryLabel)
                         .overlay(alignment: .topTrailing) {
                             if p == .queue, model.pendingCount + (model.isRunning ? 1 : 0) > 0 {
                                 Text("\(model.pendingCount + (model.isRunning ? 1 : 0))")
-                                    .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
-                                    .padding(.horizontal, 4).background(Capsule().fill(Color.accentColor))
+                                    .font(.mg(size: 9, weight: .bold)).foregroundStyle(MG.accentForeground)
+                                    .padding(.horizontal, 4).background(Capsule().fill(MG.warning))
                             }
                         }
                 }
@@ -65,7 +65,8 @@ struct SidebarRail: View {
         }
         .padding(.vertical, 10)
         .frame(width: 48)
-        .background(.bar)
+        .mgChrome(MG.sidebarTint)
+        .overlay(alignment: .trailing) { MGDivider(vertical: true) }
     }
 }
 
@@ -89,13 +90,14 @@ struct PanelHeader<Trailing: View>: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(title).font(.headline)
+            Text(title).font(.mgHeadline)
             Spacer()
             trailing
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .frame(height: 38)
+        .buttonStyle(.mg(.icon))
+        .padding(.leading, 16)
+        .padding(.trailing, 10)
+        .frame(height: 40)
     }
 }
 
@@ -106,6 +108,7 @@ struct WorkflowsPanel: View {
     @State private var query = ""
     @State private var renaming: URL?
     @State private var renameText = ""
+    @State private var expanded = Set<URL>()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -117,25 +120,27 @@ struct WorkflowsPanel: View {
                 Button { model.reloadWorkflows() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh")
             }
-            TextField("Search workflows", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-            List {
-                let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-                if q.isEmpty {
-                    folderContents(model.workflowTree)
-                } else {
-                    ForEach(model.workflowTree.allWorkflows.filter { $0.name.lowercased().contains(q) }) { w in
-                        row(w)
+            MGSearchField(prompt: "Search workflows", text: $query)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+                    if q.isEmpty {
+                        folderContents(model.workflowTree, depth: 0)
+                    } else {
+                        ForEach(model.workflowTree.allWorkflows.filter { $0.name.lowercased().contains(q) }) { w in
+                            row(w, depth: 0)
+                        }
+                    }
+                    if model.workflowTree.allWorkflows.isEmpty {
+                        Text("Saved workflows appear here. Press ⌘S to save the current tab.")
+                            .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+                            .padding(.horizontal, 16).padding(.vertical, 6)
                     }
                 }
-                if model.workflowTree.allWorkflows.isEmpty {
-                    Text("Saved workflows appear here. Press ⌘S to save the current tab.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
+                .padding(.bottom, 8)
             }
-            .listStyle(.sidebar)
             .dropDestination(for: URL.self) { urls, _ in
                 for u in urls where u.pathExtension == "json" { model.moveWorkflow(u, to: model.library.workflows) }
                 return true
@@ -152,36 +157,49 @@ struct WorkflowsPanel: View {
         }
     }
 
-    func folderContents(_ folder: WorkflowFolder) -> AnyView {
+    func folderContents(_ folder: WorkflowFolder, depth: Int) -> AnyView {
         AnyView(Group {
             ForEach(folder.folders) { sub in
-                DisclosureGroup {
-                    folderContents(sub)
-                } label: {
-                    Label(sub.name, systemImage: "folder")
-                        .contextMenu { folderMenu(sub) }
-                        .dropDestination(for: URL.self) { urls, _ in
-                            for u in urls { model.moveWorkflow(u, to: sub.url) }
-                            return true
-                        }
+                let isOpen = expanded.contains(sub.url)
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(MG.secondaryLabel)
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
+                        .frame(width: 12)
+                    Image(systemName: isOpen ? "folder.fill" : "folder").foregroundStyle(MG.hueFolder)
+                    Text(sub.name).lineLimit(1)
+                    Spacer()
                 }
+                .mgRow(indent: CGFloat(depth) * 14)
+                .onTapGesture {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        if isOpen { expanded.remove(sub.url) } else { expanded.insert(sub.url) }
+                    }
+                }
+                .contextMenu { folderMenu(sub) }
+                .dropDestination(for: URL.self) { urls, _ in
+                    for u in urls { model.moveWorkflow(u, to: sub.url) }
+                    return true
+                }
+                if isOpen { folderContents(sub, depth: depth + 1) }
             }
-            ForEach(folder.workflows) { w in row(w) }
+            ForEach(folder.workflows) { w in row(w, depth: depth) }
         })
     }
 
-    func row(_ w: WorkflowEntry) -> some View {
+    func row(_ w: WorkflowEntry, depth: Int) -> some View {
         let open = model.tabs.first { $0.fileURL == w.url }
+        let active = open?.id == model.activeTabID
         return HStack(spacing: 6) {
-            Image(systemName: "doc.text").foregroundStyle(.secondary)
+            Image(systemName: "doc.text").foregroundStyle(active ? MG.accent : MG.secondaryLabel)
             Text(w.name).lineLimit(1)
             Spacer()
             if let open {
-                Circle().fill(open.id == model.activeTabID ? Color.accentColor : Color.secondary.opacity(0.6))
+                Circle().fill(open.id == model.activeTabID ? MG.accent : MG.tertiaryLabel)
                     .frame(width: 6, height: 6).help("Open in a tab")
             }
         }
-        .contentShape(Rectangle())
+        .mgRow(selected: active, indent: CGFloat(depth) * 14 + 16)
         .onTapGesture { model.open(w.url) }
         .draggable(w.url)
         .contextMenu {
@@ -225,20 +243,22 @@ struct PresetsPanel: View {
         let installed = model.installedModelIDs
         VStack(spacing: 0) {
             PanelHeader(title: "Presets") {
-                Button("Gallery…") { model.showPresetGallery = true }.controlSize(.small)
+                Button("Gallery…") { model.showPresetGallery = true }
+                    .buttonStyle(.mg(.borderless)).controlSize(.small)
             }
-            List {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Preset.Category.allCases) { cat in
                     let items = model.presets.filter { $0.category == cat }
                     if !items.isEmpty {
-                        Section(cat.title) {
+                        MGListHeader(title: cat.title)
                             ForEach(items) { p in
                                 let ok = p.isAvailable(installed: installed)
                                 HStack(spacing: 8) {
-                                    Image(systemName: p.symbol).frame(width: 18).foregroundStyle(ok ? Color.accentColor : .secondary)
+                                    MGKindBadge(color: ok ? cat.hue : MG.hueGray, symbol: p.symbol, size: 20)
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(p.name).lineLimit(1)
-                                        Text(p.modelName).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(p.modelName).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                                     }
                                     Spacer()
                                     if !ok {
@@ -246,8 +266,8 @@ struct PresetsPanel: View {
                                             .controlSize(.mini).help("Get \(p.modelName) in the Models window")
                                     }
                                 }
+                                .mgRow(height: 38)
                                 .opacity(ok ? 1 : 0.55)
-                                .contentShape(Rectangle())
                                 .onTapGesture { if ok { model.openPreset(p) } else { NSSound.beep() } }
                                 .help(p.summary)
                                 .contextMenu {
@@ -258,14 +278,14 @@ struct PresetsPanel: View {
                                     }
                                 }
                             }
-                        }
                     }
                 }
+                }
+                .padding(.bottom, 8)
             }
-            .listStyle(.sidebar)
-            Divider()
+            MGDivider()
             Button("Save Current Workflow as Preset…") { model.showSavePresetSheet = true }
-                .buttonStyle(.borderless).padding(10)
+                .buttonStyle(.mg(.borderless)).padding(10)
         }
     }
 }
@@ -285,28 +305,28 @@ struct NodeLibraryPanel: View {
         let categories = Array(Set(matches.map(\.category))).sorted()
         VStack(spacing: 0) {
             PanelHeader(title: "Node Library") { EmptyView() }
-            TextField("Search nodes", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 6)
-            List {
-                ForEach(categories, id: \.self) { cat in
-                    Section(cat.capitalized) {
+            MGSearchField(prompt: "Search nodes", text: $query)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(categories, id: \.self) { cat in
+                        MGListHeader(title: cat.capitalized)
                         ForEach(matches.filter { $0.category == cat }, id: \.type) { s in
-                            HStack {
-                                Circle().fill(s.tint).frame(width: 8, height: 8)
-                                Text(s.displayName)
+                            HStack(spacing: 8) {
+                                MGKindBadge(color: s.tint, letter: String(s.displayName.prefix(1)), size: 16)
+                                Text(s.displayName).lineLimit(1)
                                 Spacer()
                             }
-                            .contentShape(Rectangle())
+                            .mgRow()
                             .onTapGesture { model.nodeAddRequest = NodeAddRequest(type: s.type) }
                             .draggable(NodeAddRequest.dragPrefix + s.type)
                             .help("Click to add at the centre of the graph, or drag onto it")
                         }
                     }
                 }
+                .padding(.bottom, 8)
             }
-            .listStyle(.sidebar)
         }
     }
 }
@@ -343,14 +363,9 @@ struct AssetsPanel: View {
                     Button { model.reloadHistory() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
                 }
             }
-            Picker("", selection: $tab) {
-                Text("Input").tag("input")
-                Text("Output").tag("output")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 10)
-            .padding(.bottom, 8)
+            MGSegmentedPicker(selection: $tab, options: [("input", "Input"), ("output", "Output")])
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             if tab == "input" { InputAssetsView() } else { OutputList() }
         }
         .onAppear { model.reloadAssets() }
@@ -378,7 +393,7 @@ struct InputAssetsView: View {
         let items = model.assets.filter { (filter == nil || $0.kind == filter) && (q.isEmpty || $0.relativePath.lowercased().contains(q)) }
         VStack(spacing: 6) {
             HStack(spacing: 6) {
-                TextField("Search files", text: $query).textFieldStyle(.roundedBorder)
+                MGSearchField(prompt: "Search files", text: $query)
                 Picker("", selection: $filter) {
                     Text("All").tag(AssetKind?.none)
                     Text("Images").tag(AssetKind?.some(.image))
@@ -389,13 +404,13 @@ struct InputAssetsView: View {
                 .labelsHidden()
                 .frame(width: 92)
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 12)
             ScrollView {
                 if model.assets.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "tray.and.arrow.down").font(.largeTitle).foregroundStyle(.tertiary)
                         Text("Drop images, videos or sounds here, or click Import. They are copied into \(model.library.input.path), and Load nodes refer to them by name.")
-                            .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            .font(.mgCallout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     }
                     .padding(24)
                 }
@@ -404,10 +419,11 @@ struct InputAssetsView: View {
                         VStack(spacing: 3) {
                             AssetThumb(url: item.url, kind: item.kind)
                                 .aspectRatio(1, contentMode: .fit)
-                                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(
-                                    model.displayedURL == item.url ? Color.accentColor : .clear, lineWidth: 2))
-                            Text(item.relativePath).font(.caption2).lineLimit(1).truncationMode(.middle)
-                                .foregroundStyle(.secondary)
+                                .overlay(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).strokeBorder(
+                                    model.displayedURL == item.url ? MG.accent : MG.separator,
+                                    lineWidth: model.displayedURL == item.url ? 2 : 0.5))
+                            Text(item.relativePath).font(.mgFootnote).lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(MG.secondaryLabel)
                         }
                         .contentShape(Rectangle())
                         .onTapGesture(count: 2) { model.showFile(item.url, kind: item.kind); model.openViewer() }
@@ -422,7 +438,7 @@ struct InputAssetsView: View {
             }
             .overlay {
                 if dropTargeted {
-                    RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    RoundedRectangle(cornerRadius: 10).strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
                         .padding(6).allowsHitTesting(false)
                 }
             }
@@ -470,7 +486,7 @@ struct AssetThumb: View {
     @State private var image: CGImage?
 
     var body: some View {
-        Rectangle().fill(kind == .mask ? AnyShapeStyle(Color.black) : AnyShapeStyle(.quaternary))
+        Rectangle().fill(kind == .mask ? AnyShapeStyle(Color.black) : AnyShapeStyle(MG.fill))
             .overlay {
                 if let image {
                     Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: kind == .mask ? .fit : .fill)
@@ -484,7 +500,7 @@ struct AssetThumb: View {
                         .padding(3).background(.black.opacity(0.55), in: Circle()).padding(4)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
             .task(id: url) {
                 switch kind {
                 case .video: image = await MediaIO.posterFrame(url, maxSize: 240)

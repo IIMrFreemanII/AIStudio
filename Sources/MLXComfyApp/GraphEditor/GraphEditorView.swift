@@ -95,8 +95,8 @@ struct GraphEditorView: View {
                 }
 
                 if let marquee {
-                    Rectangle().fill(Color.accentColor.opacity(0.12))
-                        .overlay(Rectangle().strokeBorder(Color.accentColor, lineWidth: 1))
+                    Rectangle().fill(MG.accent.opacity(0.12))
+                        .overlay(Rectangle().strokeBorder(MG.accent, lineWidth: 1))
                         .frame(width: marquee.width, height: marquee.height)
                         .offset(x: marquee.minX, y: marquee.minY)
                         .allowsHitTesting(false)
@@ -116,7 +116,7 @@ struct GraphEditorView: View {
             .overlay {
                 if dropTargeted {
                     RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                        .strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                         .padding(6).allowsHitTesting(false)
                 }
             }
@@ -782,9 +782,9 @@ struct GraphEditorView: View {
             let width = base * (direct ? 1.35 : 1) * (hoveredWire == w.ref ? 1.6 : 1)
             let style = { (lw: CGFloat) in StrokeStyle(lineWidth: lw, lineCap: .round, lineJoin: .round) }
             if selectedWire == w.ref {
-                ctx.stroke(path, with: .color(.accentColor.opacity(0.9)), style: style(width + 5))
+                ctx.stroke(path, with: .color(MG.accent.opacity(0.9)), style: style(width + 5))
             }
-            ctx.stroke(path, with: .color(.black.opacity(0.4 * opacity)), style: style(width + 2))
+            ctx.stroke(path, with: .color(MG.shadow.opacity(opacity)), style: style(width + 2))
             ctx.stroke(path, with: .color(w.type.color.opacity(opacity)), style: style(width))
         }
         if let w = wire {
@@ -811,18 +811,18 @@ struct GraphEditorView: View {
             return n.title ?? model.schema(for: n)?.displayName ?? id
         }
         return HStack(spacing: 6) {
-            Text(w.type.rawValue.uppercased()).font(.system(size: 10, weight: .bold)).foregroundStyle(w.type.color)
-            Text("\(title(w.source)).\(w.output) → \(title(w.target)).\(w.input)").font(.system(size: 11))
+            Text(w.type.rawValue.uppercased()).font(.mg(size: 10, weight: .bold)).foregroundStyle(w.type.color)
+            Text("\(title(w.source)).\(w.output) → \(title(w.target)).\(w.input)").font(.mg(size: 11))
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(.regularMaterial, in: Capsule())
+        .mgGlass(.floatingPanel, in: Capsule())
         .fixedSize()
     }
 
     func unknownNode(_ node: GraphNode) -> some View {
         Label("Unknown node type “\(node.type)”", systemImage: "questionmark.square.dashed")
             .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.2)))
+            .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.destructive.opacity(0.18)))
             .scaleEffect(zoom, anchor: .topLeading)
     }
 
@@ -835,26 +835,26 @@ struct GraphEditorView: View {
                 HStack(spacing: 6) {
                     Button { model.exitSubgraph() } label: { Image(systemName: "chevron.left") }
                         .help("Back (Esc)")
-                    Button("Graph") { model.exitSubgraph(to: 0) }.buttonStyle(.link)
+                    Button("Graph") { model.exitSubgraph(to: 0) }.buttonStyle(.mg(.borderless))
                     ForEach(Array(model.editingTitles.enumerated()), id: \.offset) { i, title in
-                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(MG.secondaryLabel)
                         if i == model.editingTitles.count - 1 {
                             Text(title).fontWeight(.semibold)
                         } else {
-                            Button(title) { model.exitSubgraph(to: i + 1) }.buttonStyle(.link)
+                            Button(title) { model.exitSubgraph(to: i + 1) }.buttonStyle(.mg(.borderless))
                         }
                     }
                 }
-                .font(.callout)
-                .buttonStyle(.borderless)
+                .font(.mgCallout)
+                .buttonStyle(.mg(.icon))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(.regularMaterial, in: Capsule())
+                .mgGlass(.floatingPanel, in: Capsule())
             }
             if model.editorGraph.nodes.isEmpty {
                 Text("Double-click or press ⌘K to add a node.")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+                    .padding(8).mgGlass(.floatingPanel, radius: MGRadius.lg)
             }
         }
     }
@@ -864,7 +864,7 @@ struct GraphEditorView: View {
             Button { setZoom(zoom / 1.2, around: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)) } label: {
                 Image(systemName: "minus")
             }
-            Text("\(Int((zoom * 100).rounded()))%").font(.caption.monospacedDigit()).frame(width: 44)
+            Text("\(Int((zoom * 100).rounded()))%").font(.mgSubheadline.monospacedDigit()).frame(width: 44)
             Button { setZoom(zoom * 1.2, around: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2)) } label: {
                 Image(systemName: "plus")
             }
@@ -884,10 +884,10 @@ struct GraphEditorView: View {
             } label: { Image(systemName: "plus.square.on.square") }
                 .help("Add node (⌘K or double-click)")
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.mg(.icon))
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
-        .background(.regularMaterial, in: Capsule())
+        .mgGlass(.floatingPanel, in: Capsule())
     }
 
     /// The minimap, when it's on and the graph doesn't already fit in the editor.
@@ -939,11 +939,11 @@ struct GridBackground: View {
 
     var body: some View {
         Canvas { ctx, size in
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(nsColor: .underPageBackgroundColor)))
+            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(MG.contentBackground))
             let spacing = GraphEditorView.grid * zoom
             guard spacing > 6 else { return }
             let dot = max(1, 1.6 * zoom)
-            let color = Color.primary.opacity(0.13)
+            let color = MG.tertiaryLabel.opacity(0.55)
             var x = pan.width.truncatingRemainder(dividingBy: spacing)
             if x < 0 { x += spacing }
             while x < size.width {
@@ -984,14 +984,14 @@ struct NodePalette: View {
             HStack(spacing: 8) {
                 if let wire {
                     Text(wire.type.rawValue.uppercased())
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(wire.type.color)
+                        .font(.mg(size: 10, weight: .bold)).foregroundStyle(wire.type.color)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(wire.type.color.opacity(0.15), in: Capsule())
                         .help(wire.fromOutput ? "Nodes that take this" : "Nodes that can feed this")
                 }
                 TextField(wire == nil ? "Search nodes" : (wire!.fromOutput ? "Connect to…" : "Feed from…"), text: $query)
                     .textFieldStyle(.plain)
-                    .font(.title3)
+                    .font(.mgTitle3)
                     .onSubmit { if let first = matches.first { choose(first.schema.type) } }
             }
             .padding(12)
@@ -1003,10 +1003,10 @@ struct NodePalette: View {
                         Text(m.schema.displayName)
                         if let socket = m.socket {
                             Text(wire?.fromOutput == true ? "→ \(socket)" : "\(socket) →")
-                                .font(.caption).foregroundStyle(wire?.type.color ?? .secondary)
+                                .font(.mgSubheadline).foregroundStyle(wire?.type.color ?? .secondary)
                         }
                         Spacer()
-                        Text(m.schema.category).font(.caption).foregroundStyle(.secondary)
+                        Text(m.schema.category).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                     }
                     .contentShape(Rectangle())
                 }

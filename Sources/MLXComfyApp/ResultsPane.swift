@@ -11,9 +11,9 @@ struct ResultsPane: View {
         let doc = model.active
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("Results").font(.headline)
+                Text("Results").font(.mgHeadline)
                 if let url = doc.displayedURL, doc.previewImage == nil {
-                    Text(url.lastPathComponent).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(url.lastPathComponent).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                         .truncationMode(.middle)
                 }
                 Spacer()
@@ -27,16 +27,18 @@ struct ResultsPane: View {
                 Button { withAnimation { model.showResultsPane = false } } label: { Image(systemName: "chevron.down") }
                     .help("Hide the results pane (⌥⌘R)")
             }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 12)
-            .frame(height: 30)
-            .background(.bar)
-            Divider()
+            .buttonStyle(.mg(.icon))
+            .padding(.leading, 16)
+            .padding(.trailing, 10)
+            .frame(height: 32)
+            .background(MG.barOverContent)
+            .overlay(alignment: .bottom) { MGDivider() }
+            .overlay(alignment: .top) { MGDivider(gap: true) }
             ResultContent(doc: doc, padding: 12)
                 .onTapGesture(count: 2) { model.openViewer() }
                 .overlay(alignment: .bottom) { if doc.outputs.count > 1 { ResultStrip(doc: doc) } }
         }
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .background(MG.contentBackground)
     }
 }
 
@@ -68,11 +70,8 @@ struct ResultContent: View {
                         }
                     }
             } else {
-                ContentUnavailableView {
-                    Label("No results yet", systemImage: "photo.on.rectangle.angled")
-                } description: {
-                    Text("Press ⌘↩ to run this workflow. Results also show on their Save and Preview nodes.")
-                }
+                MGEmptyState(symbol: "photo.on.rectangle.angled", title: "No results yet",
+                             message: "Press ⌘↩ to run this workflow. Results also show on their Save and Preview nodes.")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -96,15 +95,16 @@ struct ResultStrip: View {
                 ForEach(doc.outputs.reversed().prefix(40)) { r in
                     ResultThumb(result: r)
                         .frame(width: 44, height: 44)
-                        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(
-                            r.url != nil && r.url == doc.displayedURL ? Color.accentColor : .clear, lineWidth: 2))
+                        .overlay(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous).strokeBorder(
+                            r.url != nil && r.url == doc.displayedURL ? MG.accent : MG.separator,
+                            lineWidth: r.url != nil && r.url == doc.displayedURL ? 2 : 0.5))
                         .onTapGesture { model.show(r, in: doc) }
                         .onTapGesture(count: 2) { model.show(r, in: doc); model.openViewer() }
                 }
             }
             .padding(6)
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .mgGlass(.floatingPanel, radius: MGRadius.lg)
         .padding(8)
         .frame(maxWidth: 520)
     }
@@ -114,7 +114,7 @@ struct ResultThumb: View {
     let result: NodeResult
 
     var body: some View {
-        Rectangle().fill(.quaternary)
+        Rectangle().fill(MG.fill)
             .overlay {
                 if let img = result.image {
                     Image(decorative: img, scale: 1).resizable().aspectRatio(contentMode: .fill)
@@ -128,7 +128,7 @@ struct ResultThumb: View {
                         .padding(3).background(.black.opacity(0.55), in: Circle()).padding(3)
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .clipShape(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous))
     }
 }
 
@@ -156,12 +156,12 @@ struct ResultViewer: View {
                 content(current)
             }
             VStack {
-                HStack(spacing: 12) {
-                    Text(current?.url?.lastPathComponent ?? "Preview").foregroundStyle(.white).lineLimit(1)
-                    if let index { Text("\(index + 1) of \(items.count)").foregroundStyle(.white.opacity(0.6)) }
+                HStack(spacing: 10) {
+                    Text(current?.url?.lastPathComponent ?? "Preview").font(.mgHeadline).lineLimit(1)
+                    if let index { Text("\(index + 1) of \(items.count)").foregroundStyle(MG.secondaryLabel) }
                     Spacer()
                     if current?.kind == .image {
-                        Text("\(Int(zoom * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.7))
+                        Text("\(Int(zoom * 100))%").font(.mgSubheadline.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
                         Button { withAnimation { zoom = 1; offset = .zero } } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
                             .help("Fit (double-click)")
                     }
@@ -169,13 +169,14 @@ struct ResultViewer: View {
                         Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
                             .help("Reveal in Finder")
                     }
-                    Button { close() } label: { Image(systemName: "xmark.circle.fill").font(.title2) }
+                    Button { close() } label: { Image(systemName: "xmark") }
                         .help("Close (Esc)")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .padding(14)
-                .background(LinearGradient(colors: [.black.opacity(0.6), .clear], startPoint: .top, endPoint: .bottom))
+                .buttonStyle(.mg(.icon))
+                .padding(.horizontal, 14)
+                .frame(height: 40)
+                .mgGlass(.floatingPanel, radius: MGRadius.lg)
+                .padding(12)
                 Spacer()
                 HStack {
                     navButton("chevron.left", enabled: (index ?? 0) > 0) { step(-1, items, index) }
@@ -243,8 +244,8 @@ struct ResultViewer: View {
 
     func navButton(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 22, weight: .semibold)).foregroundStyle(.white)
-                .frame(width: 44, height: 64).background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+            Image(systemName: symbol).font(.system(size: 20, weight: .semibold)).foregroundStyle(MG.label)
+                .frame(width: 44, height: 64).mgGlass(.floatingPanel, radius: MGRadius.lg)
         }
         .buttonStyle(.plain)
         .opacity(enabled ? 1 : 0.25)

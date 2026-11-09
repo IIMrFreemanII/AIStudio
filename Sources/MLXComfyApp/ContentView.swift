@@ -17,15 +17,14 @@ struct ContentView: View {
             SidebarRail(selection: Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows },
                                            set: { panelRaw = $0.rawValue }),
                         open: $panelOpen)
-            Divider()
             if panelOpen {
                 SidebarPanelView(panel: SidebarPanel(rawValue: panelRaw) ?? .workflows)
                     .frame(width: 290)
-                Divider()
+                    .mgChrome(MG.sidebarTint)
             }
+            MGDivider(vertical: true, gap: true)
             VStack(spacing: 0) {
                 TabStrip()
-                Divider()
                 VSplitView {
                     GraphEditorView(doc: model.active)
                         .id(model.activeTabID)
@@ -37,10 +36,11 @@ struct ContentView: View {
                     }
                 }
             }
+            .background(MG.windowBackground)
             .overlay {
                 if dropTargeted {
                     RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [8, 6]))
+                        .strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 3, dash: [8, 6]))
                         .padding(8)
                         .allowsHitTesting(false)
                 }
@@ -78,21 +78,25 @@ struct ContentView: View {
             MemoryGauge()
             if model.isRunning {
                 Button { model.cancelCurrent() } label: { Label("Cancel", systemImage: "stop.fill") }
+                    .buttonStyle(.mg(.icon, destructive: true))
                     .help("Cancel the running job (⌘.)")
             }
             Button { showPlot = true } label: { Label("XY Plot", systemImage: "square.grid.3x3") }
+                .buttonStyle(.mg(.icon))
                 .help("Queue a grid of results varying one or two inputs")
             Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
                 Label(model.isRunning ? "Queue" : "Generate", systemImage: "sparkles")
                     .labelStyle(.titleAndIcon)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.mg(.prominent))
             .help("Queue the current workflow (⌘↩)")
             Button { withAnimation { model.showResultsPane.toggle() } } label: {
                 Label("Results", systemImage: "rectangle.bottomhalf.inset.filled")
             }
+            .buttonStyle(.mg(.icon))
             .help("Show or hide the results pane (⌥⌘R)")
             Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
+                .buttonStyle(.mg(.icon))
         }
     }
 }
@@ -114,10 +118,10 @@ struct MemoryGauge: View {
         HStack(spacing: 6) {
             Gauge(value: min(used / total, 1)) { EmptyView() }
                 .gaugeStyle(.accessoryLinearCapacity)
-                .tint(used / total > 0.8 ? .red : .accentColor)
+                .tint(used / total > 0.8 ? MG.destructive : MG.accent)
                 .frame(width: 70)
             Text(String(format: "%.1f GB", used / 1e9))
-                .font(.caption.monospacedDigit())
+                .font(.mgSubheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
         .help("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1e9)) of "
@@ -131,14 +135,15 @@ struct ErrorBanner: View {
     var body: some View {
         if let err = model.lastError {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                Text(err).font(.callout).textSelection(.enabled).lineLimit(4)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(MG.warning)
+                Text(err).font(.mgCallout).textSelection(.enabled).lineLimit(4)
                 Spacer()
                 Button { model.lastError = nil } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.mg(.icon))
+                    .controlSize(.small)
             }
             .padding(10)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .mgGlass(.popover, radius: MGRadius.lg)
             .padding(12)
             .frame(maxWidth: 640)
         }
@@ -152,26 +157,26 @@ struct LoadedModelsView: View {
     var body: some View {
         let total = Double(ProcessInfo.processInfo.physicalMemory)
         VStack(alignment: .leading, spacing: 10) {
-            Text("Loaded Models").font(.headline)
+            Text("Loaded Models").font(.mgHeadline)
             if model.loadedModels.isEmpty {
                 Text("None. Models load on first use and stay until memory is needed.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.mgSubheadline).foregroundStyle(.secondary)
             }
             ForEach(model.loadedModels) { m in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(m.name)
                         Text(String(format: "%.1f GB%@", Double(m.bytes) / 1e9, m.pinned ? " · in use" : ""))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.mgSubheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Unload") { model.unloadModel(m.key) }.disabled(m.pinned)
                 }
             }
-            Divider()
+            MGDivider()
             Text(String(format: "Budget %.0f GB (%.0f%% of RAM). The least recently used model is unloaded when a new one doesn't fit; change it in Settings.",
                         total * model.memoryBudget / 1e9, model.memoryBudget * 100))
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.mgSubheadline).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
@@ -190,22 +195,22 @@ struct RunStatusPill: View {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 if let doc, doc.id != model.activeTabID {
-                    Text(doc.name).font(.callout.weight(.medium))
+                    Text(doc.name).font(.mgCallout.weight(.medium))
                 }
                 if let (id, state) = running, case .running(let step, let total) = state {
                     let name = model.displayName(flatID: id, in: doc)
                     Text(total > 0 ? "\(name) · step \(step) of \(total)" : "\(name)…")
-                        .font(.callout.monospacedDigit())
+                        .font(.mgCallout.monospacedDigit())
                 } else {
-                    Text("Starting…").font(.callout)
+                    Text("Starting…").font(.mgCallout)
                 }
                 if model.pendingCount > 0 {
-                    Text("+\(model.pendingCount) queued").font(.caption).foregroundStyle(.secondary)
+                    Text("+\(model.pendingCount) queued").font(.mgSubheadline).foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .background(.regularMaterial, in: Capsule())
+            .mgGlass(.tooltip, in: Capsule())
             .onTapGesture { if let doc { model.activate(doc.id) } }
         }
     }

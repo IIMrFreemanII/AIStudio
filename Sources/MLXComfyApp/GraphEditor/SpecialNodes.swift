@@ -24,8 +24,8 @@ struct RerouteView: View {
                     .onEnded { actions.outputDragEnded("out", $0.location) })
         }
         .frame(width: size.width, height: size.height)
-        .background(Capsule().fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(Capsule().strokeBorder(selected ? Color.accentColor : type.color.opacity(0.8), lineWidth: selected ? 2 : 1.5))
+        .background(Capsule().fill(MG.card))
+        .overlay(Capsule().strokeBorder(selected ? MG.accent : type.color.opacity(0.8), lineWidth: selected ? 2 : 1))
         .overlay {
             // Grip in the middle: drag to move.
             Capsule().fill(Color.clear).frame(width: 14, height: size.height).contentShape(Rectangle())
@@ -33,13 +33,13 @@ struct RerouteView: View {
                     .onChanged { actions.dragChanged($0.translation) }
                     .onEnded { _ in actions.dragEnded() })
         }
-        .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+        .mgShadow(MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
         .contextMenu { NodeMenuItems(menu: actions.menu) }
     }
 
     func dot(filled: Bool) -> some View {
-        Circle().fill(filled ? type.color : Color(nsColor: .controlBackgroundColor))
+        Circle().fill(filled ? type.color : MG.card)
             .overlay(Circle().strokeBorder(type.color, lineWidth: 2))
             .frame(width: 10, height: 10)
             .frame(width: 18, height: NodeLayout.rerouteSize.height)
@@ -58,10 +58,10 @@ struct NoteView: View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "note.text").font(.system(size: 10))
-                Text(node.title ?? "Note").font(.system(size: 11, weight: .semibold))
+                Text(node.title ?? "Note").font(.mg(size: 11, weight: .semibold))
                 Spacer()
             }
-            .foregroundStyle(Color.black.opacity(0.65))
+            .foregroundStyle(MG.secondaryLabel)
             .padding(.horizontal, 10)
             .frame(height: 24)
             .contentShape(Rectangle())
@@ -69,32 +69,21 @@ struct NoteView: View {
                 .onChanged { actions.dragChanged($0.translation) }
                 .onEnded { _ in actions.dragEnded() })
             TextEditor(text: text)
-                .font(.system(size: 12))
-                .foregroundStyle(Color.black.opacity(0.85))
+                .font(.mg(size: 12))
+                .foregroundStyle(MG.label)
                 .scrollContentBackground(.hidden)
                 .padding(.horizontal, 6)
                 .padding(.bottom, 6)
         }
         .frame(width: NodeLayout.width, height: NodeLayout.noteHeight)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color(red: 1, green: 0.93, blue: 0.62)))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.accentColor : .black.opacity(0.1),
-                                                               lineWidth: selected ? 2 : 1))
-        .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+        // A card washed with the palette's yellow; text stays in the label colours, so it reads in both themes.
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.hueYellow.opacity(0.22)))
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
+        .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)
+            .strokeBorder(selected ? MG.accent : MG.hueYellow.opacity(0.6), lineWidth: selected ? 2 : 0.5))
+        .mgShadow(MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
         .contextMenu { NodeMenuItems(menu: actions.menu) }
-    }
-}
-
-extension GraphGroup {
-    var tint: Color {
-        switch color {
-        case "green": return Color(red: 0.35, green: 0.75, blue: 0.45)
-        case "yellow": return Color(red: 0.95, green: 0.78, blue: 0.25)
-        case "red": return Color(red: 0.92, green: 0.38, blue: 0.35)
-        case "purple": return Color(red: 0.62, green: 0.45, blue: 0.95)
-        case "gray": return .gray
-        default: return Color(red: 0.35, green: 0.58, blue: 0.95)
-        }
     }
 }
 
@@ -121,11 +110,11 @@ struct GroupView: View {
             // The body doesn't take hits, so panning and rubber-band selection work over groups.
             RoundedRectangle(cornerRadius: 8 * zoom).fill(group.tint.opacity(0.10)).allowsHitTesting(false)
             RoundedRectangle(cornerRadius: 8 * zoom)
-                .strokeBorder(selected ? Color.accentColor : group.tint.opacity(0.55), lineWidth: selected ? 2 : 1)
+                .strokeBorder(selected ? MG.accent : group.tint.opacity(0.55), lineWidth: selected ? 2 : 1)
                 .allowsHitTesting(false)
             handle(
                 HStack {
-                    if !floating { Text(group.title).font(.system(size: max(10, 14 * zoom), weight: .semibold)).lineLimit(1) }
+                    if !floating { Text(group.title).font(.mg(size: max(10, 14 * zoom), weight: .semibold)).lineLimit(1) }
                     Spacer()
                 }
                 .padding(.horizontal, 10 * zoom)
@@ -134,7 +123,7 @@ struct GroupView: View {
                     .fill(group.tint.opacity(0.30))))
             if floating {
                 handle(
-                    Text(group.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text(group.title).font(.mg(size: 12, weight: .semibold)).lineLimit(1)
                         .padding(.horizontal, 8).padding(.vertical, 2)
                         .background(group.tint.opacity(0.45), in: Capsule())
                         .fixedSize())
@@ -142,7 +131,7 @@ struct GroupView: View {
             }
             // Resize handle.
             Image(systemName: "arrow.up.left.and.arrow.down.right")
-                .font(.system(size: 9)).foregroundStyle(group.tint)
+                .font(.mg(size: 9)).foregroundStyle(group.tint)
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
                 .offset(x: size.width - 18, y: size.height - 18)

@@ -60,12 +60,13 @@ struct AudioResultView: View {
             HStack(spacing: 16) {
                 Button { toggle() } label: {
                     Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 44))
+                        .foregroundStyle(MG.accent)
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.space, modifiers: [])
-                Text("\(format(position)) / \(format(duration))").font(.title3.monospacedDigit()).foregroundStyle(.secondary)
+                Text("\(format(position)) / \(format(duration))").font(.mgTitle3.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
             }
-            Text(url.lastPathComponent).font(.caption).foregroundStyle(.tertiary)
+            Text(url.lastPathComponent).font(.mgSubheadline).foregroundStyle(MG.tertiaryLabel)
             Spacer()
         }
         .task(id: url) {
@@ -117,7 +118,7 @@ struct Waveform: View {
                 let rect = CGRect(x: CGFloat(i) * w + w * 0.15, y: (size.height - h) / 2, width: w * 0.7, height: h)
                 let played = Double(i) / Double(peaks.count) < progress
                 ctx.fill(Path(roundedRect: rect, cornerRadius: w * 0.3),
-                         with: .color(played ? Color.accentColor : Color.secondary.opacity(0.5)))
+                         with: .color(played ? MG.accent : MG.tertiaryLabel))
             }
         }
     }
@@ -129,7 +130,7 @@ struct AudioThumb: View {
     @State private var peaks: [Float] = []
 
     var body: some View {
-        Rectangle().fill(.quaternary)
+        Rectangle().fill(MG.fill)
             .overlay { Waveform(peaks: peaks).padding(6) }
             .task(id: url) { peaks = await MediaIO.waveform(url, buckets: 24) }
     }

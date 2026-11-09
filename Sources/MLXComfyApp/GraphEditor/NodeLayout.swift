@@ -5,8 +5,9 @@ import SwiftUI
 /// always agree on where a socket is.
 enum NodeLayout {
     static let width: CGFloat = 250
-    static let header: CGFloat = 30
-    static let row: CGFloat = 26
+    // The design system's sizes: rows 24 tall, a 28 pt title bar.
+    static let header: CGFloat = 28
+    static let row: CGFloat = 24
     static let bottomPadding: CGFloat = 8
     /// A Reroute is a small pill: input socket on the left, output on the right.
     static let rerouteSize = CGSize(width: 44, height: 22)
@@ -95,38 +96,5 @@ enum NodeLayout {
     /// Row index of an input socket (for spreading parallel wire runs).
     static func socketIndex(_ node: GraphNode, _ schema: NodeSchema, _ name: String) -> Int {
         rows(node, schema).sockets.firstIndex { $0.name == name } ?? 0
-    }
-}
-
-extension SocketType {
-    var color: Color {
-        switch self {
-        case .model: return Color(red: 0.70, green: 0.58, blue: 0.95)
-        case .conditioning: return Color(red: 1.00, green: 0.68, blue: 0.22)
-        case .latent: return Color(red: 0.98, green: 0.47, blue: 0.80)
-        case .image: return Color(red: 0.33, green: 0.68, blue: 0.98)
-        case .mask: return Color(red: 0.40, green: 0.80, blue: 0.45)
-        case .string: return Color(red: 0.55, green: 0.80, blue: 0.70)
-        case .video: return Color(red: 0.95, green: 0.45, blue: 0.35)
-        case .audio: return Color(red: 0.30, green: 0.78, blue: 0.85)
-        default: return Color.gray
-        }
-    }
-}
-
-extension NodeSchema {
-    var tint: Color {
-        switch category {
-        case "loaders": return SocketType.model.color
-        case "conditioning": return SocketType.conditioning.color
-        case "latent": return SocketType.latent.color
-        case "sampling": return Color(red: 0.45, green: 0.55, blue: 1.0)
-        case "image": return SocketType.image.color
-        case "subgraph": return Color(red: 0.62, green: 0.45, blue: 0.95)
-        case "utils": return Color(red: 0.95, green: 0.80, blue: 0.30)
-        case "video": return SocketType.video.color
-        case "audio": return SocketType.audio.color
-        default: return .gray
-        }
     }
 }

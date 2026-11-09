@@ -71,8 +71,9 @@ struct InspectorView: View {
                   let group = model.editorGraph.groups?.first(where: { $0.id == gid }) {
             GroupInspector(group: group)
         } else if model.selection.count > 1 {
-            ContentUnavailableView("\(model.selection.count) nodes selected", systemImage: "square.on.square",
-                                   description: Text("Select a single node to edit its values."))
+            MGEmptyState(symbol: "square.on.square", title: "\(model.selection.count) nodes selected",
+                         message: "Select a single node to edit its values, or use Graph › Align and Arrange.")
+                .background(MG.groupedBackground)
         } else {
             WorkflowInspector()
         }
@@ -87,10 +88,13 @@ struct WorkflowInspector: View {
     var body: some View {
         @Bindable var model = model
         let doc = model.active
-        Form {
-            Section("Workflow") {
-                TextField("Name", text: $name)
-                    .onSubmit { rename(doc) }
+        MGForm(padding: 12) {
+            MGSection("Workflow") {
+                MGFormRow("Name") {
+                    TextField("Name", text: $name)
+                        .onSubmit { rename(doc) }
+                        .frame(maxWidth: 180)
+                }
                 LabeledContent("File") {
                     Text(doc.fileURL.map { $0.path.replacingOccurrences(of: model.library.workflows.path + "/", with: "") }
                          ?? "Not saved")
@@ -104,22 +108,23 @@ struct WorkflowInspector: View {
                 }
                 .controlSize(.small)
             }
-            Section("Run") {
-                Stepper(value: $model.batchCount, in: 1...16) {
-                    LabeledContent("Batch", value: "\(model.batchCount) run\(model.batchCount == 1 ? "" : "s")")
+            MGSection("Run") {
+                MGFormRow("Batch") {
+                    Text("\(model.batchCount) run\(model.batchCount == 1 ? "" : "s")").foregroundStyle(MG.secondaryLabel)
+                    Stepper("", value: $model.batchCount, in: 1...16).labelsHidden()
                 }
                 Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
                 if let err = model.validationError {
-                    Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    Label(err, systemImage: "exclamationmark.triangle").font(.mgSubheadline).foregroundStyle(MG.warning)
                 }
             }
-            Section {
+            MGSection {
                 ForEach(AddOn.allCases.filter { model.canAdd($0) || model.isActive($0) }, id: \.self) { a in
                     HStack {
                         Text(a.title.replacingOccurrences(of: "…", with: ""))
                         Spacer()
                         if model.isActive(a) {
-                            Image(systemName: "checkmark").foregroundStyle(.green)
+                            Image(systemName: "checkmark").foregroundStyle(MG.success)
                             if a == .inpaint || a == .reference || a == .lora || a == .firstFrame {
                                 Button("Change") { model.add(a) }.controlSize(.small)
                             }
@@ -133,9 +138,9 @@ struct WorkflowInspector: View {
                 Text("Add to Workflow")
             } footer: {
                 Text("Splices a ready-made chain into the graph, wired to its sampler. Also in the Graph menu and the canvas's context menu.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.mgSubheadline).foregroundStyle(.secondary)
             }
-            Section("Model") {
+            MGSection("Model") {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
                         if model.modelLoading { ProgressView().controlSize(.mini) }
@@ -144,16 +149,16 @@ struct WorkflowInspector: View {
                 }
             }
         }
-        .formStyle(.grouped)
         .safeAreaInset(edge: .bottom) {
             Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
                 Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate", systemImage: "sparkles")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.mg(.prominent))
             .controlSize(.large)
             .padding(12)
-            .background(.bar)
+            .mgChrome(MG.barTint, material: .headerView)
+            .overlay(alignment: .top) { MGDivider() }
         }
         .onAppear { name = doc.name }
         .onChange(of: doc.id) { _, _ in name = model.active.name }
@@ -178,11 +183,14 @@ struct NodeInspector: View {
         let b = LiteralBindings(model: model, undoManager: undoManager, editor: true)
         let schema = model.schema(for: node)
         let bound = model.boundInputs[node.id] ?? [:]
-        Form {
-            Section {
-                TextField("Title", text: Binding(get: { node.title ?? "" },
-                                                 set: { model.setTitle($0, node: node.id, undoManager: undoManager) }),
-                          prompt: Text(schema?.displayName ?? node.type))
+        MGForm(padding: 12) {
+            MGSection {
+                MGFormRow("Title") {
+                    TextField("Title", text: Binding(get: { node.title ?? "" },
+                                                     set: { model.setTitle($0, node: node.id, undoManager: undoManager) }),
+                              prompt: Text(schema?.displayName ?? node.type))
+                        .frame(maxWidth: 180)
+                }
                 LabeledContent("Type", value: node.type == Graph.subgraphType ? "Subgraph" : (schema?.displayName ?? node.type))
                 LabeledContent("ID", value: node.id)
                 if let state = model.nodeStates[model.nodeStatePrefix + node.id] {
@@ -190,7 +198,7 @@ struct NodeInspector: View {
                 }
             }
             if node.type == Graph.subgraphType {
-                Section {
+                MGSection {
                     HStack {
                         Button("Open Subgraph") { model.enterSubgraph(node.id) }
                         Button("Expand") { model.expandSubgraph(node.id, undoManager: undoManager) }
@@ -198,13 +206,13 @@ struct NodeInspector: View {
                     if let def = model.graph.subgraphDef(for: node)?.def {
                         Text("\(def.graph.nodes.count) nodes inside; \(def.inputs.count) input\(def.inputs.count == 1 ? "" : "s"), "
                              + "\(def.outputs.count) output\(def.outputs.count == 1 ? "" : "s").")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.mgSubheadline).foregroundStyle(.secondary)
                     }
                 }
             }
             NodeExtras(node: node)
             if let schema {
-                Section("Inputs") {
+                MGSection("Inputs") {
                     ForEach(schema.inputs, id: \.name) { spec in
                         if case .link(let src, let out)? = node.inputs[spec.name] {
                             LabeledContent(spec.name, value: "← \(src).\(out)")
@@ -214,13 +222,13 @@ struct NodeInspector: View {
                             editor(spec, b)
                         } else {
                             LabeledContent(spec.name) {
-                                Text("not connected").foregroundStyle(spec.optional ? Color.secondary : Color.red)
+                                Text("not connected").foregroundStyle(spec.optional ? MG.secondaryLabel : MG.destructive)
                             }
                         }
                     }
                 }
                 if !schema.outputs.isEmpty {
-                    Section("Outputs") {
+                    MGSection("Outputs") {
                         ForEach(schema.outputs, id: \.name) { o in
                             LabeledContent(o.name, value: o.type.rawValue)
                         }
@@ -228,20 +236,18 @@ struct NodeInspector: View {
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     @ViewBuilder
     func editor(_ spec: InputSpec, _ b: LiteralBindings) -> some View {
         switch (spec.type, spec.widget) {
         case (.string, .text(multiline: true)?):
-            VStack(alignment: .leading) {
-                Text(spec.name).font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: b.string(node.id, spec.name)).frame(minHeight: 120)
-                    .scrollContentBackground(.hidden)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(spec.name).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                MGTextEditor(text: b.string(node.id, spec.name)).frame(minHeight: 120)
             }
         case (.string, .filePath?):
-            HStack {
+            MGFormRow(spec.name) {
                 TextField(spec.name, text: b.string(node.id, spec.name))
                 Button("Choose…") {
                     let panel = NSOpenPanel()
@@ -250,22 +256,33 @@ struct NodeInspector: View {
                 }
             }
         case (.string, .choice(let options)?):
-            Picker(spec.name, selection: b.string(node.id, spec.name)) {
-                ForEach(options, id: \.self) { Text($0).tag($0) }
+            MGFormRow(spec.name) {
+                Picker(spec.name, selection: b.string(node.id, spec.name)) {
+                    ForEach(options, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
             }
         case (.string, _):
-            TextField(spec.name, text: b.string(node.id, spec.name))
+            MGFormRow(spec.name) { TextField(spec.name, text: b.string(node.id, spec.name)).frame(maxWidth: 180) }
         case (.int, .seed?):
-            HStack {
+            MGFormRow(spec.name) {
                 TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+                    .multilineTextAlignment(.trailing).frame(maxWidth: 120)
                 Button { b.int(node.id, spec.name).wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
                     Image(systemName: "dice")
-                }.buttonStyle(.borderless)
+                }.buttonStyle(.mg(.icon))
             }
         case (.int, _):
-            TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+            MGFormRow(spec.name) {
+                TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+                    .multilineTextAlignment(.trailing).frame(maxWidth: 120)
+            }
         case (.float, _):
-            TextField(spec.name, value: b.double(node.id, spec.name), format: .number)
+            MGFormRow(spec.name) {
+                TextField(spec.name, value: b.double(node.id, spec.name), format: .number)
+                    .multilineTextAlignment(.trailing).frame(maxWidth: 120)
+            }
         case (.bool, _):
             Toggle(spec.name, isOn: b.bool(node.id, spec.name))
         default:
@@ -292,11 +309,21 @@ struct SettingsView: View {
     @AppStorage("showModelWires") private var showModelWires = false
     @AppStorage("snapToGrid") private var snapToGrid = true
     @AppStorage("showMinimap") private var showMinimap = true
+    @AppStorage("appearance") private var appearance = MGAppearance.system.rawValue
 
     var body: some View {
         @Bindable var model = model
-        Form {
-            Section("Library") {
+        MGForm {
+            MGSection("Appearance") {
+                MGFormRow("Appearance") {
+                    MGSegmentedPicker(selection: $appearance,
+                                      options: MGAppearance.allCases.map { ($0.rawValue, $0.title) })
+                        .frame(width: 240)
+                }
+            } footer: {
+                Text("MetalGraphics Frosted Glass, in \(MGFonts.description). System follows macOS.")
+            }
+            MGSection("Library") {
                 LabeledContent("Workflows, presets") {
                     HStack {
                         Text(model.library.root.path).lineLimit(1).truncationMode(.middle)
@@ -309,9 +336,10 @@ struct SettingsView: View {
                         }
                     }
                 }
+            } footer: {
                 Text("Saved workflows live in its workflows folder, your presets in presets. Open tabs and their unsaved changes are kept separately and come back on the next launch.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            MGSection("Folders") {
             LabeledContent("Qwen-Image folder") {
                 HStack {
                     Text(model.modelPath).lineLimit(1).truncationMode(.middle)
@@ -331,19 +359,21 @@ struct SettingsView: View {
                     }
                 }
             }
-            Text("Each workflow saves into its own subfolder of the output folder; Save nodes pointed elsewhere keep their own directory.")
-                .font(.caption).foregroundStyle(.secondary)
-            Section("Graph Editor") {
-                Picker("Wires", selection: $wireStyle) {
-                    ForEach(WireStyle.allCases) { Text($0.title).tag($0.rawValue) }
+            } footer: {
+                Text("Each workflow saves into its own subfolder of the output folder; Save nodes pointed elsewhere keep their own directory.")
+            }
+            MGSection("Graph Editor") {
+                MGFormRow("Wires") {
+                    MGSegmentedPicker(selection: $wireStyle, options: WireStyle.allCases.map { ($0.rawValue, $0.title) })
+                        .frame(width: 340)
                 }
                 Toggle("Show model wires", isOn: $showModelWires)
-                Text("Hidden model wires show while you hover or select either end; the input names the model it comes from.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("Snap nodes to the grid (hold ⌘ while dragging to place freely)", isOn: $snapToGrid)
+                Toggle("Snap nodes to the grid", isOn: $snapToGrid)
                 Toggle("Show minimap", isOn: $showMinimap)
+            } footer: {
+                Text("Hidden model wires show while you hover or select either end; the input names the model it comes from. Hold ⌘ while dragging to place a node freely.")
             }
-            Section("Memory") {
+            MGSection("Memory") {
                 @Bindable var model = model
                 let total = Double(ProcessInfo.processInfo.physicalMemory)
                 LabeledContent("Models may use") {
@@ -353,22 +383,20 @@ struct SettingsView: View {
                             .frame(width: 56, alignment: .trailing)
                     }
                 }
+            } footer: {
                 Text("When a model doesn't fit, the least recently used one is unloaded first. Models used by the running job are never unloaded.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Prompt Styles") {
+            MGSection("Prompt Styles") {
                 StylesEditor()
             }
-            Section("Prompt Assistant") {
+            MGSection("Prompt Assistant") {
                 AssistantPromptEditor(title: "Enhance", key: "enhance", fallback: PromptAssistant.enhanceSystem)
                 AssistantPromptEditor(title: "Enhance with a reference image", key: "edit",
                                       fallback: PromptAssistant.editSystem)
                 AssistantPromptEditor(title: "Describe Image", key: "describe", fallback: PromptAssistant.describeSystem)
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 560)
-        .padding()
+        .frame(width: 600, height: 720)
     }
 }
 
@@ -385,7 +413,7 @@ struct Thumbnail: View {
             if let image {
                 Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill)
             } else {
-                Rectangle().fill(.quaternary)
+                Rectangle().fill(MG.fill)
             }
             if let mask {
                 Image(decorative: mask, scale: 1).resizable().aspectRatio(contentMode: .fill).opacity(0.55)
@@ -434,15 +462,15 @@ struct AssistantPromptEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.callout)
+                Text(title).font(.mgCallout)
                 Spacer()
                 if !text.isEmpty { Button("Use Default") { text = "" }.controlSize(.small) }
                 else { Button("Customize") { text = fallback }.controlSize(.small) }
             }
             if text.isEmpty {
-                Text(fallback).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                Text(fallback).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(3)
             } else {
-                TextEditor(text: $text).font(.callout).frame(minHeight: 80).scrollContentBackground(.hidden)
+                MGTextEditor(text: $text).font(.mgCallout).frame(minHeight: 80)
             }
         }
     }
@@ -457,14 +485,14 @@ struct StylesEditor: View {
         ForEach($model.styles) { $style in
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    TextField("Name", text: $style.name).font(.callout.weight(.medium))
+                    TextField("Name", text: $style.name).font(.mgCallout.weight(.medium))
                     TextField("Template with {prompt}", text: $style.template, axis: .vertical)
-                        .font(.caption).lineLimit(1...3)
+                        .font(.mgSubheadline).lineLimit(1...3)
                 }
                 Button(role: .destructive) { model.styles.removeAll { $0.id == style.id } } label: {
                     Image(systemName: "minus.circle")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.mg(.icon))
             }
         }
         HStack {
@@ -492,25 +520,37 @@ struct GroupInspector: View {
     let group: GraphGroup
 
     var body: some View {
-        Form {
-            Section("Group") {
-                TextField("Title", text: Binding(get: { group.title }, set: { t in
-                    model.updateGroup(group.id, actionName: "Rename Group", undoManager: undoManager) { $0.title = t }
-                }))
-                Picker("Color", selection: Binding(get: { group.color }, set: { c in
-                    model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c }
-                })) {
-                    ForEach(AppModel.groupColors, id: \.self) { Text($0.capitalized).tag($0) }
+        MGForm(padding: 12) {
+            MGSection("Group") {
+                MGFormRow("Title") {
+                    TextField("Title", text: Binding(get: { group.title }, set: { t in
+                        model.updateGroup(group.id, actionName: "Rename Group", undoManager: undoManager) { $0.title = t }
+                    }))
+                    .frame(maxWidth: 180)
+                }
+                MGFormRow("Color") {
+                    HStack(spacing: 6) {
+                        ForEach(AppModel.groupColors, id: \.self) { c in
+                            Circle().fill(GraphGroup(id: "", title: "", x: 0, y: 0, width: 0, height: 0, color: c).tint)
+                                .frame(width: 16, height: 16)
+                                .overlay(Circle().strokeBorder(MG.label, lineWidth: group.color == c ? 2 : 0))
+                                .onTapGesture {
+                                    model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c }
+                                }
+                                .help(c.capitalized)
+                        }
+                    }
                 }
                 LabeledContent("Nodes inside", value: "\(model.nodes(in: group.id).count)")
             }
-            Section {
-                Button("Delete Group") { model.deleteGroup(group.id, withNodes: false, undoManager: undoManager) }
-                Button("Delete Group and Its Nodes", role: .destructive) {
-                    model.deleteGroup(group.id, withNodes: true, undoManager: undoManager)
+            MGSection {
+                HStack {
+                    Button("Delete Group") { model.deleteGroup(group.id, withNodes: false, undoManager: undoManager) }
+                    Button("Delete Group and Its Nodes", role: .destructive) {
+                        model.deleteGroup(group.id, withNodes: true, undoManager: undoManager)
+                    }
                 }
             }
         }
-        .formStyle(.grouped)
     }
 }

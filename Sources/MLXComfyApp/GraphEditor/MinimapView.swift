@@ -35,15 +35,14 @@ struct MinimapView: View {
             for n in nodes {
                 let r = map(n.frame)
                 ctx.fill(Path(roundedRect: r, cornerRadius: 1.5), with: .color(n.color.opacity(n.selected ? 1 : 0.7)))
-                if n.selected { ctx.stroke(Path(roundedRect: r.insetBy(dx: -1, dy: -1), cornerRadius: 2), with: .color(.accentColor)) }
+                if n.selected { ctx.stroke(Path(roundedRect: r.insetBy(dx: -1, dy: -1), cornerRadius: 2), with: .color(MG.accent)) }
             }
             let v = map(visible)
-            ctx.fill(Path(roundedRect: v, cornerRadius: 3), with: .color(.primary.opacity(0.06)))
-            ctx.stroke(Path(roundedRect: v, cornerRadius: 3), with: .color(.primary.opacity(0.5)), lineWidth: 1)
+            ctx.fill(Path(roundedRect: v, cornerRadius: 3), with: .color(MG.selection))
+            ctx.stroke(Path(roundedRect: v, cornerRadius: 3), with: .color(MG.accent), lineWidth: 1)
         }
         .frame(width: Self.size.width, height: Self.size.height)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1)))
+        .mgGlass(.floatingPanel, radius: MGRadius.lg)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged { v in moveTo(unmap(v.location)) })
         .help("Click or drag to move around the graph")

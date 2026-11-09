@@ -18,23 +18,22 @@ struct PlotSheet: View {
         let x = axis(xKey, xText, xReplace, candidates)
         let y = yKey.isEmpty ? nil : axis(yKey, yText, yReplace, candidates)
         VStack(alignment: .leading, spacing: 0) {
-            Form {
+            MGForm {
+                Text("XY Plot").font(.mgTitle3)
                 axisSection("X axis (columns)", key: $xKey, text: $xText, replace: $xReplace, result: x,
                             candidates: candidates, optional: false)
                 axisSection("Y axis (rows)", key: $yKey, text: $yText, replace: $yReplace, result: y,
                             candidates: candidates, optional: true)
-                Section {
-                    Text("Each cell is queued as its own job; text encoding and other unchanged steps are reused from "
-                         + "the cache. The finished grid is saved as one PNG with the graph embedded.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                Text("Each cell is queued as its own job; text encoding and other unchanged steps are reused from "
+                     + "the cache. The finished grid is saved as one PNG with the graph embedded.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                    .padding(.horizontal, 10)
             }
-            .formStyle(.grouped)
             HStack {
                 if case .success(let xa)? = x, y == nil || { if case .success = y! { return true }; return false }() {
                     let rows: Int = { if case .success(let ya)? = y { return ya.values.count }; return 1 }()
                     Text("\(xa.values.count) × \(rows) = \(xa.values.count * rows) images")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MG.secondaryLabel)
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -45,13 +44,16 @@ struct PlotSheet: View {
                     model.enqueuePlot(PlotSpec(x: xa, y: ya))
                     dismiss()
                 }
+                .buttonStyle(.mg(.prominent))
                 .keyboardShortcut(.defaultAction)
                 .disabled(!ready(x, y))
             }
             .padding(16)
-            .background(.bar)
+            .mgChrome(MG.barTint, material: .headerView)
+            .overlay(alignment: .top) { MGDivider() }
         }
-        .frame(width: 520)
+        .frame(width: 540, height: 560)
+        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
         .onAppear { setDefaults(candidates) }
     }
 
@@ -59,20 +61,24 @@ struct PlotSheet: View {
     func axisSection(_ title: String, key: Binding<String>, text: Binding<String>, replace: Binding<Bool>,
                      result: Result<PlotAxis, Error>?, candidates: [(node: String, input: String, type: SocketType, label: String)],
                      optional: Bool) -> some View {
-        Section(title) {
-            Picker("Input", selection: key) {
-                if optional { Text("None").tag("") }
-                ForEach(candidates, id: \.label) { c in Text(c.label).tag("\(c.node)\u{1F}\(c.input)") }
+        MGSection(title) {
+            MGFormRow("Input") {
+                Picker("Input", selection: key) {
+                    if optional { Text("None").tag("") }
+                    ForEach(candidates, id: \.label) { c in Text(c.label).tag("\(c.node)\u{1F}\(c.input)") }
+                }
+                .labelsHidden()
+                .fixedSize()
             }
             if !key.wrappedValue.isEmpty, let c = candidate(key.wrappedValue, candidates) {
-                TextField("Values", text: text, prompt: Text(placeholder(c.type)))
+                MGFormRow("Values") { TextField("Values", text: text, prompt: Text(placeholder(c.type))).frame(maxWidth: 280) }
                 if c.type == .string {
                     Toggle("Search and replace in the current text", isOn: replace)
                 }
                 switch result {
-                case .failure(let e)?: Text(String(describing: e)).font(.caption).foregroundStyle(.red)
-                case .success(let a)?: Text(a.labels.joined(separator: " · ")).font(.caption)
-                    .foregroundStyle(.secondary).lineLimit(2)
+                case .failure(let e)?: Text(String(describing: e)).font(.mgSubheadline).foregroundStyle(MG.destructive)
+                case .success(let a)?: Text(a.labels.joined(separator: " · ")).font(.mgSubheadline)
+                    .foregroundStyle(MG.secondaryLabel).lineLimit(2)
                 case nil: EmptyView()
                 }
             }
