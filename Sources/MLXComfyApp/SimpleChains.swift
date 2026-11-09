@@ -364,4 +364,25 @@ extension AppModel {
             if !used { g.nodes.removeAll { $0.id == ref.id } }
         }
     }
+
+    /// Points the Video graph at another video model. Switching family resets the clip settings to that model's
+    /// (Wan: 832×480 at 16 fps, up to 5 s; LTX: 768×512 at 24 fps).
+    func setVideoModel(path: String, undoManager: UndoManager?) {
+        guard let loader = firstNode(ofType: "LoadModel"), case .value(.string(let old))? = loader.inputs["path"],
+              old != path else { return }
+        let family = VideoFamily.of(path: path), changed = family != VideoFamily.of(path: old)
+        let latent = firstNode(ofType: "EmptyVideoLatent")
+        UserDefaults.standard.set(family.rawValue, forKey: "videoFamily")
+        mutate(changed ? "Change Video Model" : "Switch Wan Variant", undoManager: undoManager) { g in
+            try? g.setValue(.string(path), node: loader.id, input: "path")
+            guard changed, let latent else { return }
+            let (w, h, fps) = family == .wan ? (832, 480, 16.0) : (768, 512, 24.0)
+            try? g.setValue(.int(w), node: latent.id, input: "width")
+            try? g.setValue(.int(h), node: latent.id, input: "height")
+            try? g.setValue(.double(fps), node: latent.id, input: "fps")
+            if family == .wan, case .value(.double(let s))? = latent.inputs["seconds"], s > 5 {
+                try? g.setValue(.double(5), node: latent.id, input: "seconds")
+            }
+        }
+    }
 }

@@ -213,23 +213,46 @@ struct VideoPanel: View {
     var body: some View {
         @Bindable var model = model
         let b = LiteralBindings(model: model, undoManager: undoManager)
+        let choices = store.videoChoices
         let installed = store.installed(.video)
         let loader = model.firstNode(ofType: "LoadModel")
         let prompt = model.firstNode(ofType: "TextEncode")
         let latent = model.firstNode(ofType: "EmptyVideoLatent")
         let sampler = model.firstNode(ofType: "VideoSampler")
+        let loaderPath: String = {
+            if let loader, case .value(.string(let p))? = loader.inputs["path"] { return p }
+            return ""
+        }()
+        let wan = VideoFamily.of(path: loaderPath) == .wan
+        let hasWan = choices.wanT2V != nil || choices.wanI2V != nil
 
         if installed == nil {
             MediaModePanel(mode: .video)
         } else {
             Form {
+                if hasWan && choices.ltx != nil {
+                    Section {
+                        Picker("Model", selection: Binding(
+                            get: { wan ? VideoFamily.wan : .ltx },
+                            set: { f in
+                                let path = f == .wan
+                                    ? (model.firstFramePath != nil ? choices.wanI2V ?? choices.wanT2V : choices.wanT2V ?? choices.wanI2V)
+                                    : choices.ltx
+                                if let path { model.setVideoModel(path: path.path, undoManager: undoManager) }
+                            })) {
+                            Text("LTX-2.3 · with sound").tag(VideoFamily.ltx)
+                            Text("Wan 2.2 A14B · silent").tag(VideoFamily.wan)
+                        }
+                    }
+                }
                 Section("Prompt") {
                     if let prompt {
                         TextEditor(text: b.string(prompt.id, "prompt"))
                             .font(.body)
                             .frame(minHeight: 120)
                             .scrollContentBackground(.hidden)
-                        Text("Describe the action, camera and sound: the model also generates the soundtrack.")
+                        Text(wan ? "Describe the subject, the motion and the camera. Wan makes silent clips."
+                                 : "Describe the action, camera and sound: the model also generates the soundtrack.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -242,42 +265,53 @@ struct VideoPanel: View {
                                 Text("The clip starts from this image.").font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("Remove", role: .destructive) { model.clearFirstFrame(undoManager: undoManager) }
+                            Button("Remove", role: .destructive) {
+                                model.clearFirstFrame(undoManager: undoManager)
+                                if wan, let t2v = choices.wanT2V { model.setVideoModel(path: t2v.path, undoManager: undoManager) }
+                            }
                         }
-                    } else {
-                        Button("Choose Image…") { chooseFirstFrame() }
-                        Text("Optional: animate a still image instead of starting from text alone.")
+                    } else if wan && choices.wanI2V == nil {
+                        Text("Download Wan 2.2 I2V in the Models window to animate an image.")
                             .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Button("Choose Image…") { chooseFirstFrame(wanI2V: wan ? choices.wanI2V : nil) }
+                        Text(wan && choices.wanT2V == nil ? "Required: Wan 2.2 I2V animates a still image."
+                                                          : "Optional: animate a still image instead of starting from text alone.")
+                            .font(.caption).foregroundStyle(wan && choices.wanT2V == nil ? .orange : .secondary)
                     }
                 }
                 if let latent {
                     Section("Clip") {
+                        let presets = wan ? GraphTemplates.wanSizePresets : GraphTemplates.videoSizePresets
                         let w = b.int(latent.id, "width"), h = b.int(latent.id, "height")
                         Picker("Size", selection: Binding(
-                            get: { GraphTemplates.videoSizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1 },
+                            get: { presets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1 },
                             set: { i in
                                 guard i >= 0 else { return }
-                                let p = GraphTemplates.videoSizePresets[i]
+                                let p = presets[i]
                                 model.mutate("Change Size", undoManager: undoManager) { g in
                                     try? g.setValue(.int(p.width), node: latent.id, input: "width")
                                     try? g.setValue(.int(p.height), node: latent.id, input: "height")
                                 }
                             })) {
-                            ForEach(GraphTemplates.videoSizePresets.indices, id: \.self) { i in
-                                let p = GraphTemplates.videoSizePresets[i]
-                                Text("\(p.name) · \(p.width)×\(p.height)").tag(i)
+                            ForEach(presets.indices, id: \.self) { i in
+                                Text("\(presets[i].name) · \(presets[i].width)×\(presets[i].height)").tag(i)
                             }
                             Text("Custom").tag(-1)
                         }
                         let secs = b.double(latent.id, "seconds")
                         LabeledContent("Length") {
                             HStack {
-                                Slider(value: secs, in: 1...10, step: 0.5)
+                                Slider(value: secs, in: wan ? 1...5 : 1...10, step: wan ? 0.25 : 0.5)
                                 Text(String(format: "%.1f s", secs.wrappedValue)).monospacedDigit().frame(width: 44, alignment: .trailing)
                             }
                         }
-                        Picker("Frame rate", selection: b.double(latent.id, "fps")) {
-                            ForEach([24.0, 25, 30], id: \.self) { Text("\(Int($0)) fps").tag($0) }
+                        if wan {
+                            LabeledContent("Frame rate", value: "16 fps")
+                        } else {
+                            Picker("Frame rate", selection: b.double(latent.id, "fps")) {
+                                ForEach([24.0, 25, 30], id: \.self) { Text("\(Int($0)) fps").tag($0) }
+                            }
                         }
                     }
                 }
@@ -292,20 +326,35 @@ struct VideoPanel: View {
                             .help("New random seed")
                         }
                         Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
-                        Stepper(value: b.int(sampler.id, "steps"), in: 0...8) {
-                            let s = b.int(sampler.id, "steps").wrappedValue
-                            LabeledContent("Steps", value: s == 0 ? "Model default (8 + 3)" : "\(s) + 3")
+                        if wan {
+                            let quality = b.string(sampler.id, "quality")
+                            Picker("Quality", selection: Binding(
+                                get: { quality.wrappedValue.isEmpty ? "fast" : quality.wrappedValue },
+                                set: { quality.wrappedValue = $0; b.int(sampler.id, "steps").wrappedValue = 0 })) {
+                                Text("Fast · 4 steps").tag("fast")
+                                Text("Full · 40 steps").tag("full")
+                            }
+                            Text(quality.wrappedValue == "full"
+                                 ? "The official sampler with guidance: about 20× slower than Fast."
+                                 : "Lightning distillation: about 5–10 minutes for 5 s at 832×480.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Stepper(value: b.int(sampler.id, "steps"), in: 0...8) {
+                                let s = b.int(sampler.id, "steps").wrappedValue
+                                LabeledContent("Steps", value: s == 0 ? "Model default (8 + 3)" : "\(s) + 3")
+                            }
                         }
                     }
                 }
                 Section("Model") {
-                    if let installed, let loader {
+                    if let loader {
                         let path = b.string(loader.id, "path")
                         LabeledContent("Folder") {
                             Text((path.wrappedValue as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                         }
-                        if URL(fileURLWithPath: path.wrappedValue).standardizedFileURL != installed.standardizedFileURL {
-                            Button("Use \(installed.lastPathComponent)") { path.wrappedValue = installed.path }
+                        if !FileManager.default.fileExists(atPath: ModelPaths.resolve(path.wrappedValue).path),
+                           let fallback = wan ? (choices.wanT2V ?? choices.wanI2V) : (choices.ltx ?? installed) {
+                            Button("Use \(fallback.lastPathComponent)") { path.wrappedValue = fallback.path }
                         }
                     }
                 }
@@ -324,10 +373,13 @@ struct VideoPanel: View {
         }
     }
 
-    func chooseFirstFrame() {
+    /// Picks the first frame; with Wan selected, switches the graph to the I2V model.
+    func chooseFirstFrame(wanI2V: URL?) {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.image]
-        if p.runModal() == .OK, let u = p.url { model.setFirstFrame(u, undoManager: undoManager) }
+        guard p.runModal() == .OK, let u = p.url else { return }
+        model.setFirstFrame(u, undoManager: undoManager)
+        if let wanI2V { model.setVideoModel(path: wanI2V.path, undoManager: undoManager) }
     }
 }
 

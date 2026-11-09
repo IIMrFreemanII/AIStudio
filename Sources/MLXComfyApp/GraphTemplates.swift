@@ -1,5 +1,6 @@
 import Foundation
 import GraphRuntime
+import MLXDiffusionCore
 import NodesStandard
 
 enum GraphTemplates {
@@ -34,11 +35,13 @@ enum GraphTemplates {
     }
 
     /// The graph behind the Video mode: model → prompt → empty clip → video sampler → decode → save (with sound).
-    static func textToVideo(modelPath: String, outputDirectory: String,
+    static func textToVideo(modelPath: String, outputDirectory: String, family: VideoFamily? = nil,
                             prompt: String = "A red fox trotting through fresh snow at sunrise, its breath steaming, birds calling in the distance")
         -> Graph
     {
         func link(_ n: String, _ o: String) -> NodeInput { .link(node: n, output: o) }
+        let wan = (family ?? VideoFamily.of(path: modelPath)) == .wan
+        let (w, h, fps) = wan ? (832, 480, 16.0) : (768, 512, 24.0)
         return Graph(nodes: [
             GraphNode(id: "model", type: "LoadModel", inputs: ["path": .value(.string(modelPath))],
                       position: GraphPoint(x: 40, y: 140)),
@@ -46,8 +49,8 @@ enum GraphTemplates {
                       inputs: ["model": link("model", "model"), "prompt": .value(.string(prompt))],
                       position: GraphPoint(x: 340, y: 40)),
             GraphNode(id: "latent", type: "EmptyVideoLatent",
-                      inputs: ["width": .value(.int(768)), "height": .value(.int(512)), "seconds": .value(.double(5)),
-                               "fps": .value(.double(24))],
+                      inputs: ["width": .value(.int(w)), "height": .value(.int(h)), "seconds": .value(.double(5)),
+                               "fps": .value(.double(fps))],
                       position: GraphPoint(x: 340, y: 300)),
             GraphNode(id: "sampler", type: "VideoSampler",
                       inputs: ["model": link("model", "model"), "conditioning": link("prompt", "conditioning"),
@@ -147,6 +150,14 @@ enum GraphTemplates {
         ("Small 3:2 (fast)", 512, 320),
     ]
 
+    /// Wan 2.2 sizes (multiples of 16; trained at 832×480 and 1280×720).
+    static let wanSizePresets: [(name: String, width: Int, height: Int)] = [
+        ("Landscape 16:9", 832, 480),
+        ("Portrait 9:16", 480, 832),
+        ("Square 1:1", 624, 624),
+        ("Small 16:9 (fast)", 512, 288),
+    ]
+
     static let sizePresets: [(name: String, width: Int, height: Int)] = [
         ("Square 1:1", 1024, 1024),
         ("Portrait 3:4", 896, 1184),
@@ -154,4 +165,14 @@ enum GraphTemplates {
         ("Portrait 9:16", 768, 1344),
         ("Landscape 16:9", 1344, 768),
     ]
+}
+
+/// Which video model family a graph's model folder holds (the Video panel adapts its settings to it).
+enum VideoFamily: String {
+    case ltx, wan
+
+    static func of(path: String) -> VideoFamily {
+        guard !path.isEmpty else { return .ltx }
+        return ModelRegistry.className(at: ModelPaths.resolve(path)) == "WanPipeline" ? .wan : .ltx
+    }
 }

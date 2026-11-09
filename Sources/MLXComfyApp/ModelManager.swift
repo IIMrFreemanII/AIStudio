@@ -128,6 +128,26 @@ final class ModelStore {
         return nil
     }
 
+    /// The installed folder of one catalog entry.
+    func installedURL(_ id: String) -> URL? {
+        if case .installed(let u)? = status[id] { return u }
+        return nil
+    }
+
+    /// The video models the Video panel can switch between.
+    var videoChoices: (ltx: URL?, wanT2V: URL?, wanI2V: URL?) {
+        (installedURL("ltx-2.3"), installedURL("wan-2.2-t2v"), installedURL("wan-2.2-i2v"))
+    }
+
+    /// The video model a new Video graph starts with: the family last chosen in the Video panel, if installed.
+    func preferredVideoPath() -> String? {
+        let c = videoChoices
+        if UserDefaults.standard.string(forKey: "videoFamily") == VideoFamily.wan.rawValue, let u = c.wanT2V ?? c.wanI2V {
+            return u.path
+        }
+        return (c.ltx ?? c.wanT2V ?? c.wanI2V ?? installed(.video))?.path
+    }
+
     // MARK: downloads
 
     /// Fetches the file list so the user sees the real size before agreeing to download.

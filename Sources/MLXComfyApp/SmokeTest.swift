@@ -311,6 +311,48 @@ extension SmokeTest {
             && model.displayedMedia?.kind == .video
     }
 
+    /// `--smoke-wan`: the Video mode with Wan 2.2 T2V (fast, 512×288, 2 s): switch modes and model, generate, check
+    /// previews, the frame count, that the clip is silent, that Wan replaced the other models, then switch back.
+    static func runWan(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let wan = ModelStore().modelsDirectory.appendingPathComponent("wan-2.2-t2v")
+        guard ModelRegistry.className(at: wan) == "WanPipeline" else { say("no Wan 2.2 T2V at \(wan.path)"); return false }
+        _ = try? await model.engine.preload(modelPath: model.modelPath)
+        let before = model.engine.loadedModelsSnapshot().map(\.name)
+        model.setSimpleMode(.video, videoModelPath: wan.path, undoManager: nil)
+        guard model.simpleMode == .video, let latent = model.firstNode(ofType: "EmptyVideoLatent"),
+              VideoFamily.of(path: wan.path) == .wan else { say("video graph not set up"); return false }
+        model.mutate("Small", undoManager: nil) { g in
+            try? g.setValue(.int(512), node: latent.id, input: "width")
+            try? g.setValue(.int(288), node: latent.id, input: "height")
+            try? g.setValue(.double(2), node: latent.id, input: "seconds")
+        }
+        model.previewCount = 0
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return false }
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard case .done(let secs)? = model.queue.first(where: { $0.id == item.id })?.status else {
+            say("job failed: \(model.lastError ?? "?")"); return false
+        }
+        let after = model.engine.loadedModelsSnapshot().map(\.name)
+        say(String(format: "job done in %.1fs, previews %d", secs, model.previewCount))
+        say("loaded before: \(before), after: \(after)")
+        guard let video = model.history.first(where: { $0.kind == .video && $0.url.lastPathComponent.hasPrefix("video") })?.url,
+              let clip = try? await MediaIO.readVideo(video) else { say("no video in history"); return false }
+        say(String(format: "%@: %dx%d, %d frames at %.0f fps, audio %.2fs; displayed %@", video.lastPathComponent,
+                   clip.width, clip.height, clip.frameCount, clip.fps, clip.audio?.duration ?? 0,
+                   model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
+        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
+        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
+        say("back to image graph: \(back)")
+        return model.previewCount > 0 && clip.frameCount == 33 && clip.width == 512 && clip.height == 288
+            && (clip.audio?.duration ?? 0) < 0.1 && after.contains { $0.contains("wan-2.2-t2v") }
+            && !after.contains { $0.contains("qwen") } && back && model.displayedMedia?.kind == .video
+    }
+
     /// `--smoke-sound`: the Sound mode end to end: switch modes (graph swap), generate a short clip, check history
     /// and the file, then switch back to Image.
     static func runSound(_ model: AppModel) async -> Bool {

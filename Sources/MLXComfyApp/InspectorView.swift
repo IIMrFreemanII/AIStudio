@@ -90,7 +90,7 @@ struct SimplePanel: View {
         VStack(spacing: 0) {
             Picker("Mode", selection: Binding(
                 get: { model.simpleMode },
-                set: { model.setSimpleMode($0, videoModelPath: store.installed(.video)?.path,
+                set: { model.setSimpleMode($0, videoModelPath: store.preferredVideoPath(),
                                            soundModelPath: store.installed(.sound)?.path,
                                            musicModelPath: store.installed(.music)?.path,
                                            speechModelPath: store.installed(.speech)?.path, undoManager: undoManager) })) {

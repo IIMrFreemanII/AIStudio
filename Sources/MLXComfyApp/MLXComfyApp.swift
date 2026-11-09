@@ -41,6 +41,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if CommandLine.arguments.contains("--smoke-wan") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runWan(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
         if CommandLine.arguments.contains("--smoke-media") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }

@@ -92,6 +92,8 @@ public enum MediaIO {
 
         var audioInput: AVAssetWriterInput?
         var track = audio ?? clip.audio
+        // A clip of at most one sample is the "no soundtrack" placeholder (Video Decode of a silent model).
+        if let a = track, a.samples.dim(-1) <= 1 { track = nil }
         if var a = track {
             if a.sampleRate > 48000 { a = MediaOps.resample(a, to: 48000) }
             a = MediaOps.fit(a, seconds: clip.duration)
@@ -307,18 +309,39 @@ public enum MediaIO {
         ])
         reader.add(output)
         guard reader.startReading() else { throw MediaError.reader(reader.error.map { "\($0)" } ?? "start") }
-        var samples: [Float] = []
         let limit = maxSeconds.map { Int($0 * Double(rate)) * channels }
-        while let buffer = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buffer) {
-            let length = CMBlockBufferGetDataLength(block)
-            var chunk = [Float](repeating: 0, count: length / 4)
-            chunk.withUnsafeMutableBytes { _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!) }
-            samples += chunk
-            if let limit, samples.count >= limit { samples = Array(samples.prefix(limit)); break }
+        let samples: [Float] = try await blockingRead {
+            var samples: [Float] = []
+            while let buffer = output.copyNextSampleBuffer(), let block = CMSampleBufferGetDataBuffer(buffer) {
+                let length = CMBlockBufferGetDataLength(block)
+                var chunk = [Float](repeating: 0, count: length / 4)
+                chunk.withUnsafeMutableBytes {
+                    _ = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: $0.baseAddress!)
+                }
+                samples += chunk
+                if let limit, samples.count >= limit { samples = Array(samples.prefix(limit)); break }
+            }
+            return samples
         }
         let frames = samples.count / channels
         let x = MLXArray(Array(samples.prefix(frames * channels)), [frames, channels]).transposed(1, 0)
         return AudioClip(samples: x, sampleRate: rate)
+    }
+
+    /// AVAssetReader's sample loop blocks its thread. Run on Swift's shared async pool, a history full of audio
+    /// thumbnails can tie up every pool thread and stall all other async work, so the loops run here instead
+    /// (at most four at a time).
+    static let readQueue = DispatchQueue(label: "mlxcomfy.media-read", qos: .userInitiated, attributes: .concurrent)
+    static let readSlots = DispatchSemaphore(value: 4)
+
+    static func blockingRead<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { cont in
+            readQueue.async {
+                readSlots.wait()
+                defer { readSlots.signal() }
+                cont.resume(with: Result { try work() })
+            }
+        }
     }
 
     /// Decodes a video to frames (at most `maxFrames`), with its soundtrack if it has one.
@@ -332,6 +355,7 @@ public enum MediaIO {
         ])
         reader.add(output)
         guard reader.startReading() else { throw MediaError.reader(reader.error.map { "\($0)" } ?? "start") }
+        let (frames, count, w, h) = try await blockingRead { () -> ([Float], Int, Int, Int) in
         var frames: [Float] = []
         var count = 0
         var (w, h) = (0, 0)
@@ -353,6 +377,8 @@ public enum MediaIO {
             }
             CVPixelBufferUnlockBaseAddress(pb, .readOnly)
             count += 1
+        }
+        return (frames, count, w, h)
         }
         guard count > 0 else { throw MediaError.reader("no frames") }
         let audio = try? await readAudio(url, maxSeconds: Double(count) / max(fps, 1))

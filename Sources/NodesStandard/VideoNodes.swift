@@ -47,6 +47,8 @@ public struct VideoSamplerNode: NodeImplementation {
             // 0 = the model's default schedule.
             InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 50, step: 1)),
             InputSpec("image", .image, optional: true),
+            // fast = the model's distilled few-step mode; full = its original sampler with guidance (Wan only).
+            InputSpec("quality", .string, default: .string("fast"), widget: .choice(VideoQuality.allCases.map(\.rawValue))),
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}
@@ -58,8 +60,9 @@ public struct VideoSamplerNode: NodeImplementation {
         let steps = try inputs.int("steps")
         let seed = UInt64(truncatingIfNeeded: try inputs.int("seed"))
         let image = inputs.optionalObject("image", as: MLXArray.self)
+        let quality = VideoQuality(rawValue: (try? inputs.string("quality")) ?? "fast") ?? .fast
         let out = try model.sampleVideo(conditioning: cond, latent: latent, seed: seed, steps: steps > 0 ? steps : nil,
-                                        image: image) { step in
+                                        image: image, quality: quality) { step in
             context.progress(step: step.index + 1, total: step.count, preview: step.preview)
         }
         return ["latent": .object(out)]

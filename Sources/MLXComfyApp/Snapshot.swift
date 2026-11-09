@@ -23,7 +23,8 @@ enum Snapshot {
         let model = AppModel(persistSettings: false, autoloadModel: false)
         model.outputDirectory = projectOutputs.path
         model.modelStatus = "Qwen-Image 2.1 (qwen-turbo-mlx)"
-        if let first = model.history.first { model.show(first) }
+        // Start from the newest image (smoke tests leave audio and video items on top of the history).
+        if let first = model.history.first(where: { $0.kind == .image }) ?? model.history.first { model.show(first) }
 
         // 1. Image workspace, idle with a result.
         model.workspace = .image
@@ -102,10 +103,12 @@ enum Snapshot {
         let defaults = UserDefaults.standard
         let hadGrid = defaults.object(forKey: "historyGrid")
         defaults.set(true, forKey: "historyGrid")
-        if model.history.count >= 2 {
-            model.history[1].isFavorite = true
-            model.show(model.history[0])
-            model.compare(with: model.history[1].url)
+        // Compare works on images: use the two newest image items (smoke tests leave audio and video on top).
+        let images = model.history.indices.filter { model.history[$0].kind == .image }
+        if images.count >= 2 {
+            model.history[images[1]].isFavorite = true
+            model.show(model.history[images[0]])
+            model.compare(with: model.history[images[1]].url)
             for (i, mode) in CompareMode.allCases.enumerated() {
                 model.compareMode = mode
                 await render(model, to: dir.appendingPathComponent("\(16 + i)-compare-\(mode.rawValue.lowercased().replacingOccurrences(of: " ", with: "-")).png"))

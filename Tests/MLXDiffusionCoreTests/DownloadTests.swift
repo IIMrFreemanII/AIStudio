@@ -197,3 +197,32 @@ func makeRepo() throws -> URL {
     // Nothing found: the path as given, so the error names it.
     #expect(ModelPaths.resolve("/nowhere/missing").path == "/nowhere/missing")
 }
+
+/// The Wan 2.2 entries fetch the 4-bit T2V (not the example videos or the bundled Python runtime) and the 8-bit I2V,
+/// each with its own pair of Lightning LoRAs, and the I2V entry adds the tokenizer its repo lacks.
+@Test func wanCatalogEntriesSelectThePipelineFiles() throws {
+    let t2v = try #require(ModelCatalog.entries.first { $0.id == "wan-2.2-t2v" })
+    let repo = ["LICENSE", "README.md", "common/t5_encoder.safetensors", "common/tokenizer.json", "common/vae.safetensors",
+                "examples/q4.mp4", "pyproject.toml", "q4/config.json", "q4/high_noise_model.safetensors",
+                "q4/low_noise_model.safetensors", "src/mlx_video/models/wan_2/vae.py",
+                "src/mlx_video/models/wan_2/README.md"].map { RemoteFile(path: $0, size: 1) }
+    let picked = Set(HFAPI.select(repo, include: t2v.include, exclude: t2v.exclude).map(\.path))
+    #expect(picked == ["LICENSE", "README.md", "common/t5_encoder.safetensors", "common/tokenizer.json",
+                       "common/vae.safetensors", "q4/config.json", "q4/high_noise_model.safetensors",
+                       "q4/low_noise_model.safetensors"])
+    let loras = ["Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors",
+                 "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors",
+                 "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/high_noise_model.safetensors",
+                 "Wan2.2-T2V-A14B-4steps-lora-rank64-Seko-V1.1/low_noise_model.safetensors",
+                 "Wan2.2-T2V-A14B-4steps-250928-dyno/Wan2.2-T2V-A14B-4steps-250928-dyno-high-lightx2v.safetensors"]
+        .map { RemoteFile(path: $0, size: 1) }
+    let t2vLoRA = HFAPI.select(loras, include: t2v.parts[1].include, exclude: t2v.parts[1].exclude).map(\.path)
+    #expect(t2vLoRA.count == 2 && t2vLoRA.allSatisfy { $0.contains("T2V") && $0.contains("Seko-V1.1") })
+    #expect(t2v.parts[1].subfolder == "lora" && t2v.manifest?["class"] == "WanPipeline")
+
+    let i2v = try #require(ModelCatalog.entries.first { $0.id == "wan-2.2-i2v" })
+    let i2vLoRA = HFAPI.select(loras, include: i2v.parts[1].include, exclude: i2v.parts[1].exclude).map(\.path)
+    #expect(i2vLoRA.count == 2 && i2vLoRA.allSatisfy { $0.contains("I2V") })
+    #expect(HFAPI.select(repo, include: i2v.parts[2].include, exclude: []).map(\.path) == ["common/tokenizer.json"])
+    #expect(i2v.manifest?["class"] == "WanPipeline")
+}

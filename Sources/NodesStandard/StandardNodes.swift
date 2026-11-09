@@ -7,6 +7,7 @@ import KokoroSpeech
 import LTX2
 import QwenImage21
 import StableAudio
+import Wan
 
 /// The built-in node library and the model loaders it relies on.
 public enum StandardNodes {
@@ -30,6 +31,7 @@ public enum StandardNodes {
         StableAudioPipeline.register()
         ACEStepPipeline.register()
         KokoroPipeline.register()
+        WanPipeline.register()
         let r = NodeRegistry()
         r.register(all)
         return r

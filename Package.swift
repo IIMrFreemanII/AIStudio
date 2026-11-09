@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "StableAudio", targets: ["StableAudio"]),
         .library(name: "ACEStep", targets: ["ACEStep"]),
         .library(name: "KokoroSpeech", targets: ["KokoroSpeech"]),
+        .library(name: "Wan", targets: ["Wan"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
@@ -23,6 +24,7 @@ let package = Package(
         .executable(name: "ace-probe-vae", targets: ["ace-probe-vae"]),
         .executable(name: "kokoro-probe-g2p", targets: ["kokoro-probe-g2p"]),
         .executable(name: "kokoro-probe-model", targets: ["kokoro-probe-model"]),
+        .executable(name: "wan-probe", targets: ["wan-probe"]),
         .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
         .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
     ],
@@ -199,6 +201,35 @@ let package = Package(
             name: "kokoro-probe-model",
             dependencies: ["Kokoro", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
         ),
+        // T5 v1.1 / umT5 XXL text encoder (Wan's umT5, Flux's T5).
+        .target(
+            name: "T5Text",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        // Wan 2.2 A14B (video): the 14B DiT experts, the Wan 2.1 VAE and the pipeline.
+        .target(
+            name: "WanTransformer",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .target(
+            name: "WanVAE",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .target(
+            name: "Wan",
+            dependencies: [
+                "MLXDiffusionCore", "T5Text", "WanTransformer", "WanVAE",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
+            ]
+        ),
+        // Development probe: runs the Wan modules on dumped reference inputs and reports the error.
+        .executableTarget(
+            name: "wan-probe",
+            dependencies: ["Wan", "T5Text", "WanTransformer", "WanVAE", "MLXDiffusionCore",
+                           .product(name: "MLX", package: "mlx-swift")]
+        ),
         .target(name: "GraphRuntime"),
         .target(
             name: "NodesStandard",
@@ -210,6 +241,7 @@ let package = Package(
                 "StableAudio",
                 "ACEStep",
                 "KokoroSpeech",
+                "Wan",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
@@ -221,6 +253,7 @@ let package = Package(
                 "StableAudio",
                 "ACEStep",
                 "KokoroSpeech",
+                "Wan",
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
@@ -258,6 +291,10 @@ let package = Package(
         .testTarget(
             name: "ACEStepTests",
             dependencies: ["ACEStep", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "WanTests",
+            dependencies: ["Wan", "WanTransformer", "T5Text", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
             name: "LTX2Tests",

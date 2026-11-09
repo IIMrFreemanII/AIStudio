@@ -224,8 +224,24 @@ public protocol VideoDiffusionModel: VideoModel {
     /// Samples a clip; `image` (`[H, W, 3|4]` in `[0, 1]`) pins the first frame (image-to-video).
     func sampleVideo(conditioning: Conditioning, latent: VideoLatent, seed: UInt64, steps: Int?, image: MLXArray?,
                      onStep: ((VideoSamplerStep) throws -> Void)?) throws -> VideoLatent
+    /// Same, with a quality choice for models that have a fast distilled mode and a full one.
+    func sampleVideo(conditioning: Conditioning, latent: VideoLatent, seed: UInt64, steps: Int?, image: MLXArray?,
+                     quality: VideoQuality, onStep: ((VideoSamplerStep) throws -> Void)?) throws -> VideoLatent
     /// Latents → frames (and the soundtrack, for models that generate one).
     func decodeVideo(_ latent: VideoLatent) throws -> VideoClip
+}
+
+/// `fast`: the model's distilled few-step mode (its default); `full`: the original many-step sampler with guidance.
+public enum VideoQuality: String, Sendable, CaseIterable {
+    case fast, full
+}
+
+extension VideoDiffusionModel {
+    /// Models with a single mode ignore the quality.
+    public func sampleVideo(conditioning: Conditioning, latent: VideoLatent, seed: UInt64, steps: Int?, image: MLXArray?,
+                            quality: VideoQuality, onStep: ((VideoSamplerStep) throws -> Void)?) throws -> VideoLatent {
+        try sampleVideo(conditioning: conditioning, latent: latent, seed: seed, steps: steps, image: image, onStep: onStep)
+    }
 }
 
 extension VideoDiffusionModel {
