@@ -1,0 +1,113 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "qwen-turbo-mlx"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "A red fox standing in fresh snow at sunrise, detailed fur, photograph"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "height" : 1024,
+          "width" : 1024
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "latent" : {
+            "node" : "latent",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "Sampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VAEDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "mlxcomfy",
+          "image" : {
+            "node" : "decode",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1220,
+          "y" : 140
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "qwen-txt2img",
+  "modelName" : "Qwen-Image 2.1",
+  "models" : [
+    "qwen-image-2.1-turbo"
+  ],
+  "name" : "Text to Image",
+  "order" : 10,
+  "summary" : "Fast 8-step pictures; good at writing text into the image.",
+  "symbol" : "photo"
+}

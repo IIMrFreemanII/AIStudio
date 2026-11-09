@@ -13,6 +13,8 @@ struct NodeActions {
     var inputDragEnded: (_ input: String, _ location: CGPoint) -> Void
     /// Double-click on the header (subgraph instances: enter it).
     var open: (() -> Void)? = nil
+    /// Double-click on a result shown in the node.
+    var openResult: ((NodeResult) -> Void)? = nil
     var menu: NodeMenu = NodeMenu()
 }
 
@@ -36,6 +38,9 @@ struct NodeView: View {
     /// Inside a subgraph: inputs fed from outside (input → port) and outputs exposed (output → port).
     var boundInputs: [String: String] = [:]
     var exposedOutputs: [String: String] = [:]
+    /// The node's latest output (Save / Preview nodes), and the live step preview while it samples.
+    var result: NodeResult? = nil
+    var livePreview: CGImage? = nil
 
     var body: some View {
         let rows = NodeLayout.rows(node, schema)
@@ -54,6 +59,13 @@ struct NodeView: View {
                     .frame(height: NodeLayout.widgetHeight(spec))
                     .padding(.horizontal, 10)
             }
+            if NodeLayout.showsResult(schema) {
+                NodeResultView(result: result, kind: NodeLayout.resultKind(schema))
+                    .frame(height: NodeLayout.resultHeight)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 4)
+                    .onTapGesture(count: 2) { if let result { actions.openResult?(result) } }
+            }
             Spacer(minLength: 0)
         }
         .frame(width: NodeLayout.width, height: NodeLayout.height(node, schema), alignment: .top)
@@ -62,6 +74,18 @@ struct NodeView: View {
         .shadow(color: .black.opacity(selected ? 0.35 : 0.2), radius: selected ? 10 : 5, y: 2)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
         .contextMenu { NodeMenuItems(menu: actions.menu) }
+        .overlay(alignment: .top) {
+            // The sampler's live preview hangs under the node while it runs, so the node's size doesn't jump.
+            if let livePreview, !NodeLayout.showsResult(schema) {
+                Image(decorative: livePreview, scale: 1)
+                    .resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: NodeLayout.width - 20, maxHeight: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .shadow(radius: 6)
+                    .offset(y: NodeLayout.height(node, schema) + 8)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     var borderColor: Color {
@@ -211,5 +235,38 @@ struct NodeMenuItems: View {
             Divider()
             Button("Delete", role: .destructive, action: delete)
         }
+    }
+}
+
+/// The result area of a Save / Preview node: the image, a video poster with a play badge, or a waveform.
+struct NodeResultView: View {
+    let result: NodeResult?
+    let kind: MediaKind
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05))
+            if let result {
+                switch result.kind {
+                case .image:
+                    if let img = result.image {
+                        Image(decorative: img, scale: 1).resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
+                    }
+                case .video:
+                    if let img = result.image {
+                        Image(decorative: img, scale: 1).resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
+                    }
+                    Image(systemName: "play.fill").font(.system(size: 14)).foregroundStyle(.white)
+                        .padding(9).background(.black.opacity(0.55), in: Circle())
+                case .audio:
+                    if let url = result.url { AudioThumb(url: url).padding(6) }
+                }
+            } else {
+                Image(systemName: kind == .video ? "film" : kind == .audio ? "waveform" : "photo")
+                    .font(.system(size: 22, weight: .light)).foregroundStyle(.tertiary)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .help(result?.url?.lastPathComponent.appending(" — double-click to open") ?? "The result shows here after a run")
     }
 }

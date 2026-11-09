@@ -39,11 +39,22 @@ enum NodeLayout {
         return row
     }
 
+    /// Output nodes that show their result inside the card.
+    static let resultTypes: [String: MediaKind] = [
+        "SaveImage": .image, "PreviewImage": .image, "SaveVideo": .video, "PreviewVideo": .video,
+        "SaveAudio": .audio, "PreviewAudio": .audio,
+    ]
+    static let resultHeight: CGFloat = 170
+
+    static func showsResult(_ schema: NodeSchema) -> Bool { resultTypes[schema.type] != nil }
+    static func resultKind(_ schema: NodeSchema) -> MediaKind { resultTypes[schema.type] ?? .image }
+
     static func height(_ node: GraphNode, _ schema: NodeSchema) -> CGFloat {
         if isReroute(node) { return rerouteSize.height }
         if isNote(node) { return noteHeight }
         let r = rows(node, schema)
-        return header + CGFloat(r.socketRowCount) * row + r.widgets.map(widgetHeight).reduce(0, +) + bottomPadding
+        return header + CGFloat(r.socketRowCount) * row + r.widgets.map(widgetHeight).reduce(0, +)
+            + (showsResult(schema) ? resultHeight + 4 : 0) + bottomPadding
     }
 
     static func origin(_ node: GraphNode) -> CGPoint {

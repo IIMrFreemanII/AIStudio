@@ -1,0 +1,134 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "wan-2.2-i2v"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "A red fox trotting through fresh snow at sunrise, its breath steaming, birds calling in the distance"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "fps" : 16,
+          "height" : 480,
+          "seconds" : 5,
+          "width" : 832
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyVideoLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "image" : {
+            "node" : "first_frame",
+            "output" : "image"
+          },
+          "latent" : {
+            "node" : "latent",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "VideoSampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VideoDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "audio" : {
+            "node" : "decode",
+            "output" : "audio"
+          },
+          "directory" : "{output}",
+          "filename_prefix" : "video",
+          "video" : {
+            "node" : "decode",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 1220,
+          "y" : 140
+        },
+        "type" : "SaveVideo"
+      },
+      {
+        "id" : "first_frame",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 380
+        },
+        "type" : "LoadImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "wan-i2v",
+  "modelName" : "Wan 2.2 I2V A14B",
+  "models" : [
+    "wan-2.2-i2v"
+  ],
+  "name" : "Wan Image to Video",
+  "order" : 120,
+  "summary" : "Animate a picture with Wan: it becomes the first frame.",
+  "symbol" : "film.stack"
+}

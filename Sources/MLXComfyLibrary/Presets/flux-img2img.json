@@ -1,0 +1,148 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "flux-1-dev"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "An oil painting of the same scene, thick brush strokes"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "height" : 0,
+          "width" : 0
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "denoise" : 0.75,
+          "latent" : {
+            "node" : "img2img_encode",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "Sampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VAEDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "mlxcomfy",
+          "image" : {
+            "node" : "decode",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1220,
+          "y" : 140
+        },
+        "type" : "SaveImage"
+      },
+      {
+        "id" : "refimage",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : -80
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "img2img_encode",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "megapixels" : 1,
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 420
+        },
+        "type" : "VAEEncode"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "flux-img2img",
+  "modelName" : "FLUX.1 [dev]",
+  "models" : [
+    "flux-1-dev"
+  ],
+  "name" : "Flux Image to Image",
+  "order" : 70,
+  "summary" : "Redraw a picture from the prompt; the Sampler's denoise sets how much.",
+  "symbol" : "photo.on.rectangle"
+}

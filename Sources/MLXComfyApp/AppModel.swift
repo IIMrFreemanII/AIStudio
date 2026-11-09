@@ -3,14 +3,9 @@ import Foundation
 import GraphRuntime
 import ImageIO
 import MLXDiffusionCore
+import MLXComfyLibrary
 import NodesStandard
 import Observation
-
-enum Workspace: String, CaseIterable, Identifiable {
-    case image = "Image"
-    case graph = "Graph"
-    var id: String { rawValue }
-}
 
 enum NodeRunState: Equatable {
     case pending
@@ -37,6 +32,9 @@ struct QueueItem: Identifiable, Equatable {
     /// Set for the cells of an XY plot: which plot, and the cell index (row-major).
     var groupID: UUID? = nil
     var cell: Int? = nil
+    /// The tab that queued it (its results and node states go there), and that tab's name at the time.
+    var docID: UUID? = nil
+    var workflow: String = ""
 
     static func == (a: QueueItem, b: QueueItem) -> Bool { a.id == b.id && a.status == b.status }
 
@@ -55,36 +53,69 @@ struct HistoryItem: Identifiable, Hashable {
     /// The first Text Encode prompt from the embedded graph (filled in the background).
     var prompt: String?
     var isFavorite = false
+    /// The workflow subfolder it was saved in (nil: the output folder itself).
+    var workflow: String? = nil
     var id: URL { url }
 }
 
 @MainActor @Observable
 final class AppModel {
-    // MARK: document
+    // MARK: tabs
 
-    var graph: Graph
-    var selection: Set<String> = []
-    /// Subgraph instances entered in the editor, outermost first (empty = the top-level graph).
-    var editingPath: [String] = []
-    /// The group selected in the editor, if any (at the current editing level).
-    var selectedGroup: String?
-    var workspace: Workspace = .image
-    var documentURL: URL?
+    /// The open workflows, in tab order; there is always at least one.
+    var tabs: [WorkflowDocument]
+    var activeTabID: UUID
+    var active: WorkflowDocument { tabs.first { $0.id == activeTabID } ?? tabs[0] }
+    var activeUndoManager: UndoManager { active.undoManager }
+
+    // The active tab's document state, so editing code reads like there is one graph.
+    var graph: Graph {
+        get { active.graph }
+        set { active.graph = newValue }
+    }
+    var selection: Set<String> {
+        get { active.selection }
+        set { active.selection = newValue }
+    }
+    var editingPath: [String] {
+        get { active.editingPath }
+        set { active.editingPath = newValue }
+    }
+    var selectedGroup: String? {
+        get { active.selectedGroup }
+        set { active.selectedGroup = newValue }
+    }
+    var documentURL: URL? { active.fileURL }
+    /// Bumped on every undoable change, so the Undo / Redo menu items refresh.
+    var undoRevision = 0
 
     // MARK: run state
 
     var queue: [QueueItem] = []
-    var nodeStates: [String: NodeRunState] = [:]
-    var previewImage: CGImage?
-    var displayedImage: CGImage?
-    var displayedURL: URL?
-    /// A video or audio result shown in the canvas (nil for images).
-    var displayedMedia: (url: URL, kind: MediaKind)? {
-        get { displayedMediaURL.map { ($0, displayedMediaKind) } }
-        set { displayedMediaURL = newValue?.url; displayedMediaKind = newValue?.kind ?? .image }
+    /// The tab whose job is running.
+    var runningDocID: UUID?
+    var nodeStates: [String: NodeRunState] {
+        get { active.nodeStates }
+        set { active.nodeStates = newValue }
     }
-    var displayedMediaURL: URL?
-    var displayedMediaKind: MediaKind = .image
+    var previewImage: CGImage? {
+        get { active.previewImage }
+        set { active.previewImage = newValue }
+    }
+    var displayedImage: CGImage? {
+        get { active.displayedImage }
+        set { active.displayedImage = newValue }
+    }
+    var displayedURL: URL? {
+        get { active.displayedURL }
+        set { active.displayedURL = newValue }
+    }
+    /// A video or audio result shown in the results pane (nil for images).
+    var displayedMedia: (url: URL, kind: MediaKind)? {
+        get { active.displayedMediaURL.map { ($0, active.displayedMediaKind) } }
+        set { active.displayedMediaURL = newValue?.url; active.displayedMediaKind = newValue?.kind ?? .image }
+    }
+    var displayedMediaURL: URL? { active.displayedMediaURL }
     /// Models held in memory (refreshed with the memory gauge).
     var loadedModels: [LoadedModel] = []
     /// Share of RAM models may occupy before the least recently used is unloaded.
@@ -95,25 +126,6 @@ final class AppModel {
             Task { await engine.setBudget(fraction: f) }
         }
     }
-    /// The Simple panel's mode.
-    /// A Simple-panel mode that has no graph of its own yet (music, speech, sound until their models land).
-    var pendingMode: SimpleMode?
-    /// Image or video follows the graph (a Video Sampler means video), so undo and opening files switch it too.
-    var simpleMode: SimpleMode {
-        if let pendingMode { return pendingMode }
-        return Self.mode(of: graph)
-    }
-
-    /// Which Simple-panel mode a graph belongs to, from the nodes it uses.
-    static func mode(of g: Graph) -> SimpleMode {
-        if g.nodes.contains(where: { $0.type == "VideoSampler" }) { return .video }
-        if g.nodes.contains(where: { $0.type == "TextToAudio" }) { return .sound }
-        if g.nodes.contains(where: { $0.type == "TextToMusic" }) { return .music }
-        if g.nodes.contains(where: { $0.type == "TextToSpeech" }) { return .speech }
-        return .image
-    }
-    /// The graph each mode had when the user switched away, restored on switching back.
-    @ObservationIgnored var modeGraphs: [SimpleMode: Graph] = [:]
     var lastError: String?
     var history: [HistoryItem] = []
     var randomizeSeed = true
@@ -131,23 +143,28 @@ final class AppModel {
 
     /// The assistant task in progress (Enhance / Describe), if any.
     var assistantMode: PromptAssistant.Mode?
+    /// The Text Encode node it writes into.
+    var assistantNode: String?
     @ObservationIgnored var assistantTask: Task<Void, Never>?
     @ObservationIgnored var assistantRun: UUID?
 
     // MARK: batch & compare
 
-    /// Prompt styles (built-in ones until edited) and the one applied to the Simple prompt at queue time.
+    /// Prompt styles (built-in ones until edited); each Text Encode picks one (stored in the graph's metadata).
     var styles: [PromptStyle] = PromptStyle.builtIn {
         didSet { if persistSettings, let d = try? JSONEncoder().encode(styles) { UserDefaults.standard.set(d, forKey: "promptStyles") } }
-    }
-    var selectedStyleName: String? {
-        didSet { if persistSettings { UserDefaults.standard.set(selectedStyleName, forKey: "promptStyle") } }
     }
     /// XY plots in progress, by group ID.
     @ObservationIgnored var plots: [UUID: PlotJob] = [:]
     /// A/B compare: the image shown against the displayed one, and how.
-    var compareURL: URL?
-    var compareImage: CGImage?
+    var compareURL: URL? {
+        get { active.compareURL }
+        set { active.compareURL = newValue }
+    }
+    var compareImage: CGImage? {
+        get { active.compareImage }
+        set { active.compareImage = newValue }
+    }
     var compareMode: CompareMode = .split
     /// Prompts read from history PNGs, so reloads don't re-read files.
     @ObservationIgnored var promptCache: [URL: String] = [:]
@@ -156,6 +173,27 @@ final class AppModel {
     @ObservationIgnored let registry = StandardNodes.makeRegistry()
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var memoryTimer: Timer?
+    @ObservationIgnored var sessionTimer: Timer?
+    @ObservationIgnored var lastManifest: SessionManifest?
+    /// The model downloads/installs, for resolving presets' model folders (set by the window).
+    @ObservationIgnored weak var store: ModelStore?
+
+    // MARK: library
+
+    /// Where workflows, presets and assets live.
+    let library: LibraryPaths
+    var workflowTree: WorkflowFolder
+    var presets: [Preset] = []
+    /// The preset gallery sheet.
+    var showPresetGallery = false
+    /// The results pane under the graph, and the full-window viewer.
+    var showResultsPane = true
+    var viewerResult: NodeResult?
+    /// The Node Library asked the editor to add a node.
+    var nodeAddRequest: NodeAddRequest?
+    var showSavePresetSheet = false
+    /// The Load Image node whose mask is being painted.
+    var maskEditorTarget: MaskEditorTarget?
     /// Live previews received during the current/last run (for the smoke test).
     @ObservationIgnored var previewCount = 0
 
@@ -174,7 +212,10 @@ final class AppModel {
     @ObservationIgnored let persistSettings: Bool
     @ObservationIgnored let autoloadModel: Bool
 
-    init(persistSettings: Bool = true, autoloadModel: Bool = true) {
+    /// `library` nil: the user's library (or a throwaway one when the app runs a smoke test or snapshot);
+    /// `restoreSession` false starts with one new tab.
+    init(persistSettings: Bool = true, autoloadModel: Bool = true, library: LibraryPaths? = nil,
+         restoreSession: Bool? = nil) {
         self.persistSettings = persistSettings
         self.autoloadModel = autoloadModel
         let defaults = UserDefaults.standard
@@ -183,14 +224,22 @@ final class AppModel {
             ?? (NSHomeDirectory() as NSString).appendingPathComponent("Pictures/MLXComfyUI")
         modelPath = path
         outputDirectory = out
-        graph = GraphTemplates.textToImage(modelPath: path, outputDirectory: out)
+        let lib = library ?? Self.launchLibrary()
+        self.library = lib
+        lib.ensure()
+        workflowTree = WorkflowStore(root: lib.workflows).tree()
+        let first = WorkflowDocument(name: "Untitled", graph: GraphTemplates.textToImage(modelPath: path, outputDirectory: out))
+        tabs = [first]
+        activeTabID = first.id
         if persistSettings {
             if let d = defaults.data(forKey: "promptStyles"), let s = try? JSONDecoder().decode([PromptStyle].self, from: d) {
                 styles = s
             }
-            selectedStyleName = defaults.string(forKey: "promptStyle")
             if defaults.object(forKey: "memoryBudget") != nil { memoryBudget = defaults.double(forKey: "memoryBudget") }
         }
+        reloadPresets()
+        if restoreSession ?? (persistSettings && !Self.isAutomatedRun) { restoreTabs() }
+        if persistSettings { startSessionAutosave() }
         reloadHistory()
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -224,17 +273,25 @@ final class AppModel {
 
     // MARK: undoable edits
 
-    /// Replaces the document graph, registering the inverse with `undoManager`.
-    func setGraph(_ new: Graph, actionName: String, undoManager: UndoManager?) {
-        let old = graph
+    /// Replaces a tab's graph (the active one by default), registering the inverse with `undoManager`.
+    func setGraph(_ new: Graph, in doc: WorkflowDocument? = nil, actionName: String, undoManager: UndoManager?) {
+        let doc = doc ?? active
+        let old = doc.graph
         guard old != new else { return }
-        graph = new
-        if !editingPath.isEmpty, levelGraph(editingPath) == nil { editingPath = []; selection = [] }
-        selection = selection.filter { id in editorGraph.nodes.contains { $0.id == id } }
-        if let g = selectedGroup, !(editorGraph.groups ?? []).contains(where: { $0.id == g }) { selectedGroup = nil }
-        undoManager?.registerUndo(withTarget: self) { target in
+        doc.graph = new
+        undoRevision &+= 1
+        if doc === active {
+            if !editingPath.isEmpty, levelGraph(editingPath) == nil { editingPath = []; selection = [] }
+            selection = selection.filter { id in editorGraph.nodes.contains { $0.id == id } }
+            if let g = selectedGroup, !(editorGraph.groups ?? []).contains(where: { $0.id == g }) { selectedGroup = nil }
+        } else {
+            doc.editingPath = []
+            doc.selection = []
+            doc.selectedGroup = nil
+        }
+        undoManager?.registerUndo(withTarget: doc) { [weak self] target in
             MainActor.assumeIsolated {
-                target.setGraph(old, actionName: actionName, undoManager: undoManager)
+                self?.setGraph(old, in: target, actionName: actionName, undoManager: undoManager)
             }
         }
         undoManager?.setActionName(actionName)
@@ -247,10 +304,11 @@ final class AppModel {
     }
 
     /// Records an edit whose live updates already happened (e.g. a drag) as one undo step.
-    func commitLiveEdit(from start: Graph, actionName: String, undoManager: UndoManager?) {
-        let end = graph
-        graph = start
-        setGraph(end, actionName: actionName, undoManager: undoManager)
+    func commitLiveEdit(from start: Graph, in doc: WorkflowDocument? = nil, actionName: String, undoManager: UndoManager?) {
+        let doc = doc ?? active
+        let end = doc.graph
+        doc.graph = start
+        setGraph(end, in: doc, actionName: actionName, undoManager: undoManager)
     }
 
     // MARK: node helpers
@@ -361,8 +419,8 @@ final class AppModel {
                     for id in samplers { try? graph.setValue(.int(newSeed), node: id, input: "seed") }
                 }
             }
-            g = prepared(g, seed: seed ?? i)
-            queue.append(QueueItem(graph: g, title: title(for: g), seed: seed))
+            g = prepared(g, seed: seed ?? i, workflow: active.name)
+            queue.append(QueueItem(graph: g, title: title(for: g), seed: seed, docID: active.id, workflow: active.name))
         }
         processQueue()
     }
@@ -371,7 +429,7 @@ final class AppModel {
     func previewVoice(_ voice: String, speed: Double, modelPath: String) {
         let g = GraphTemplates.voicePreview(modelPath: modelPath, voice: voice, speed: speed)
         let name = SpeechVoices.all.first { $0.id == voice }?.label ?? voice
-        queue.append(QueueItem(graph: g, title: "Voice preview: \(name)", seed: nil))
+        queue.append(QueueItem(graph: g, title: "Voice preview: \(name)", seed: nil, docID: active.id, workflow: active.name))
         processQueue()
     }
 
@@ -388,12 +446,22 @@ final class AppModel {
         return "Untitled graph"
     }
 
+    /// The tab a queue item belongs to (the active one if that tab was closed).
+    func document(for item: QueueItem) -> WorkflowDocument {
+        tabs.first { $0.id == item.docID } ?? active
+    }
+
+    func document(id: UUID?) -> WorkflowDocument? { tabs.first { $0.id == id } }
+
     func processQueue() {
         guard runTask == nil, let idx = queue.firstIndex(where: { $0.status == .pending }) else { return }
         let item = queue[idx]
         queue[idx].status = .running(step: 0, total: 0)
-        nodeStates = Dictionary(uniqueKeysWithValues: item.graph.nodes.map { ($0.id, NodeRunState.pending) })
-        previewImage = nil
+        let doc = document(for: item)
+        runningDocID = doc.id
+        doc.nodeStates = Dictionary(uniqueKeysWithValues: item.graph.nodes.map { ($0.id, NodeRunState.pending) })
+        doc.previewImage = nil
+        doc.previewNode = nil
         runTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -412,16 +480,18 @@ final class AppModel {
     }
 
     private func handle(_ event: EngineEvent, item: UUID) {
+        guard let qi = queue.first(where: { $0.id == item }) else { return }
+        let doc = document(for: qi)
         switch event {
         case .started: break
-        case .nodeStarted(let n): setState(.running(step: 0, total: 0), n)
-        case .nodeCached(let n): setState(.cached, n)
+        case .nodeStarted(let n): setState(.running(step: 0, total: 0), n, in: doc)
+        case .nodeCached(let n): setState(.cached, n, in: doc)
         case .progress(let n, let step, let total, let preview):
-            setState(.running(step: step, total: total), n)
-            if let preview { previewImage = preview; previewCount += 1 }
+            setState(.running(step: step, total: total), n, in: doc)
+            if let preview { doc.previewImage = preview; doc.previewNode = n; previewCount += 1 }
             if let i = queue.firstIndex(where: { $0.id == item }) { queue[i].status = .running(step: step, total: total) }
-        case .nodeFinished(let n, let s, let peak): setState(.done(seconds: s, peakMemory: peak), n)
-        case .nodeFailed(let n, let msg): setState(.failed(msg), n)
+        case .nodeFinished(let n, let s, let peak): setState(.done(seconds: s, peakMemory: peak), n, in: doc)
+        case .nodeFailed(let n, let msg): setState(.failed(msg), n, in: doc)
         case .finished, .cancelled: break
         }
     }
@@ -430,17 +500,16 @@ final class AppModel {
         // Let queued progress events land before marking the item finished.
         Task { @MainActor in
             if let i = queue.firstIndex(where: { $0.id == id }) { queue[i].status = status }
-            if let out = outputs.last {
-                displayedImage = out.image
-                displayedURL = out.url
-                displayedMedia = out.kind == .image ? nil : out.url.map { ($0, out.kind) }
-            }
-            // After the line above, so a finished plot's grid replaces the last cell's image.
             let item = queue.first { $0.id == id }
+            let doc = item.map(document(for:)) ?? active
+            doc.record(outputs)
+            // After the line above, so a finished plot's grid replaces the last cell's image.
             if let gid = item?.groupID, let cell = item?.cell {
                 recordPlotCell(gid, cell: cell, image: outputs.last?.image)
             }
-            previewImage = nil
+            doc.previewImage = nil
+            doc.previewNode = nil
+            runningDocID = nil
             runTask = nil
             if !outputs.isEmpty { reloadHistory() }
             processQueue()
@@ -500,21 +569,40 @@ final class AppModel {
         }
     }
 
-    /// Points every LoadModel node at `path` (used when the model folder setting changes).
+    /// Changes the Qwen-Image folder setting; Load Model nodes of the open tabs that used the old folder follow.
     func applyModelPath(_ path: String, undoManager: UndoManager?) {
+        let old = modelPath
         modelPath = path
-        mutate("Change Model", undoManager: undoManager) { g in
-            for n in g.nodes where n.type == "LoadModel" { try? g.setValue(.string(path), node: n.id, input: "path") }
-            g = Self.syncingImg2Img(g)
+        for doc in tabs {
+            var g = doc.graph
+            for n in g.nodes where n.type == "LoadModel" {
+                if case .value(.string(let p))? = n.inputs["path"], p == old {
+                    try? g.setValue(.string(path), node: n.id, input: "path")
+                }
+            }
+            setGraph(Self.syncingImg2Img(g), in: doc, actionName: "Change Model",
+                     undoManager: doc === active ? undoManager : doc.undoManager)
         }
     }
 
     // MARK: history & files
 
+    /// The output folder and its per-workflow subfolders (one level; not `masks`).
     func reloadHistory() {
         let dir = URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath)
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        let fm = FileManager.default
+        let top = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
+                                               options: [.skipsHiddenFiles])) ?? []
+        var urls: [URL] = []
+        for url in top {
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                guard url.lastPathComponent != "masks" else { continue }
+                urls += (try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.contentModificationDateKey],
+                                                     options: [.skipsHiddenFiles])) ?? []
+            } else {
+                urls.append(url)
+            }
+        }
         history = urls.compactMap { url -> HistoryItem? in
             let ext = url.pathExtension.lowercased()
             let kind: MediaKind
@@ -524,8 +612,10 @@ final class AppModel {
             else { return nil }
             let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
+            let folder = url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL
+                ? nil : url.deletingLastPathComponent().lastPathComponent
             return HistoryItem(url: url, date: date, kind: kind, prompt: promptCache[url],
-                               isFavorite: Favorites.isFavorite(url))
+                               isFavorite: Favorites.isFavorite(url), workflow: folder)
         }.sorted { $0.date > $1.date }
         loadHistoryPrompts()
     }
@@ -535,7 +625,6 @@ final class AppModel {
             displayedMedia = (item.url, item.kind)
             displayedURL = item.url
             displayedImage = nil
-            workspace = .image
             if item.kind == .video {
                 let url = item.url
                 Task { if displayedMediaURL == url { displayedImage = await MediaIO.posterFrame(url) } }
@@ -547,7 +636,6 @@ final class AppModel {
            let img = CGImageSourceCreateImageAtIndex(src, 0, nil) {
             displayedImage = img
             displayedURL = item.url
-            workspace = .image
         }
     }
 
@@ -555,79 +643,6 @@ final class AppModel {
     nonisolated static func embeddedGraph(in url: URL) -> Graph? {
         guard let json = ImageArray.readPNGText(url)[StandardNodes.graphMetadataKey] else { return nil }
         return try? JSONDecoder().decode(Graph.self, from: Data(json.utf8))
-    }
-
-    @discardableResult
-    func open(_ url: URL, undoManager: UndoManager?) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        if MediaIO.videoExtensions.contains(ext) || MediaIO.audioExtensions.contains(ext) {
-            // Media metadata loads asynchronously; the graph is restored when it arrives.
-            Task {
-                guard let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey],
-                      let g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8)) else {
-                    lastError = "\(url.lastPathComponent) has no embedded graph"
-                    NSSound.beep()
-                    return
-                }
-                setGraph(g, actionName: "Restore Graph", undoManager: undoManager)
-                selection = []
-                workspace = .graph
-            }
-            return true
-        }
-        let g: Graph?
-        if ext == "png" {
-            g = Self.embeddedGraph(in: url)
-            if g == nil { lastError = "\(url.lastPathComponent) has no embedded graph" }
-        } else {
-            do { g = try Graph.load(url); documentURL = url } catch {
-                lastError = "Could not open \(url.lastPathComponent): \(error)"
-                g = nil
-            }
-        }
-        guard let g else { NSSound.beep(); return false }
-        setGraph(g, actionName: "Restore Graph", undoManager: undoManager)
-        selection = []
-        return true
-    }
-
-    func save(to url: URL) {
-        do {
-            try graph.jsonData().write(to: url, options: .atomic)
-            documentURL = url
-        } catch { lastError = "Could not save: \(error)" }
-    }
-
-    /// Switches the Simple panel's mode; image and video swap the graph for that mode's (kept per mode).
-    func setSimpleMode(_ mode: SimpleMode, videoModelPath: String?, soundModelPath: String? = nil,
-                       musicModelPath: String? = nil, speechModelPath: String? = nil, undoManager: UndoManager?) {
-        switch mode {
-        case .image, .video, .sound, .music, .speech:
-            pendingMode = nil
-            let current = Self.mode(of: graph)
-            guard current != mode else { return }
-            modeGraphs[current] = graph
-            let next = modeGraphs[mode] ?? {
-                switch mode {
-                case .video: return GraphTemplates.textToVideo(modelPath: videoModelPath ?? "", outputDirectory: outputDirectory)
-                case .sound: return GraphTemplates.textToSound(modelPath: soundModelPath ?? "", outputDirectory: outputDirectory)
-                case .music: return GraphTemplates.textToMusic(modelPath: musicModelPath ?? "", outputDirectory: outputDirectory)
-                case .speech: return GraphTemplates.textToSpeech(modelPath: speechModelPath ?? "", outputDirectory: outputDirectory)
-                default: return GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory)
-                }
-            }()
-            setGraph(next, actionName: "Switch to \(mode.rawValue)", undoManager: undoManager)
-            selection = []
-        default:
-            pendingMode = mode
-        }
-    }
-
-    func newGraph(undoManager: UndoManager?) {
-        setGraph(GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory),
-                 actionName: "New Graph", undoManager: undoManager)
-        documentURL = nil
-        selection = []
     }
 
     func trash(_ item: HistoryItem) {

@@ -11,6 +11,8 @@ struct PlotJob {
     let spec: PlotSpec
     let base: Graph
     var images: [Int: CGImage] = [:]
+    var docID: UUID?
+    var workflow = ""
 }
 
 enum CompareMode: String, CaseIterable, Identifiable {
@@ -48,28 +50,55 @@ extension AppModel {
     /// `<name>.txt` files here are the `__name__` wildcard lists.
     static var wildcardDirectory: URL { supportDirectory.appendingPathComponent("wildcards") }
 
-    var selectedStyle: PromptStyle? { styles.first { $0.name == selectedStyleName } }
+    /// The style a Text Encode node applies (kept in the graph's metadata as `style.<node id>`).
+    static func styleKey(_ node: String) -> String { "style.\(node)" }
 
-    /// The graph as it will run: the selected style applied to the first Text Encode prompt, then choices and
-    /// wildcards expanded in every literal prompt (seeded by the job's seed). The templates are kept in
-    /// `metadata` so the saved PNG records how its prompt was made.
-    func prepared(_ graph: Graph, seed: Int) -> Graph {
+    func style(of node: String, in g: Graph? = nil) -> PromptStyle? {
+        guard let name = (g ?? graph).metadata?[Self.styleKey(node)] else { return nil }
+        return styles.first { $0.name == name }
+    }
+
+    /// Sets (or clears) a Text Encode node's style, as an undoable edit.
+    func setStyle(_ name: String?, node: String, undoManager: UndoManager?) {
+        guard graph.metadata?[Self.styleKey(node)] != name else { return }
+        mutate(name == nil ? "Remove Style" : "Set Style", undoManager: undoManager) { g in
+            var meta = g.metadata ?? [:]
+            meta[Self.styleKey(node)] = name
+            g.metadata = meta.isEmpty ? nil : meta
+        }
+    }
+
+    /// Save nodes in the default output folder write into `<output>/<workflow>` instead.
+    static let saveNodeTypes: Set<String> = ["SaveImage", "SaveVideo", "SaveAudio"]
+
+    /// The graph as it will run: each Text Encode's style applied, then choices and wildcards expanded in every
+    /// literal prompt (seeded by the job's seed), and outputs sent to the workflow's folder. The templates and the
+    /// workflow name are kept in `metadata` so the saved file records how it was made.
+    func prepared(_ graph: Graph, seed: Int, workflow: String) -> Graph {
         var g = graph
         let wildcards = PromptTemplate.wildcardFiles(in: Self.wildcardDirectory)
-        let first = g.nodes.first { $0.type == "TextEncode" }?.id
+        var meta = g.metadata ?? [:]
         for n in g.nodes where ["TextEncode", "TextToAudio", "TextToMusic"].contains(n.type) {
             let field = n.type == "TextToMusic" ? "tags" : "prompt"
             guard case .value(.string(let raw))? = n.inputs[field] else { continue }
             var text = raw
-            if n.id == first, let style = selectedStyle { text = style.apply(to: text) }
+            let style = n.type == "TextEncode" ? self.style(of: n.id, in: graph) : nil
+            if let style { text = style.apply(to: text) }
             let expanded = PromptTemplate.expand(text, seed: UInt64(truncatingIfNeeded: seed), wildcards: wildcards)
             guard expanded != raw else { continue }
             try? g.setValue(.string(expanded), node: n.id, input: field)
-            var meta = g.metadata ?? [:]
             meta["prompt_template.\(n.id)"] = raw
-            if n.id == first, let style = selectedStyle { meta["prompt_style"] = style.name }
-            g.metadata = meta
+            if let style { meta["prompt_style"] = style.name }
         }
+        let out = URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath).standardizedFileURL.path
+        let folder = outputFolder(forWorkflow: workflow)
+        for n in g.nodes where Self.saveNodeTypes.contains(n.type) {
+            guard case .value(.string(let d))? = n.inputs["directory"],
+                  URL(fileURLWithPath: (d as NSString).expandingTildeInPath).standardizedFileURL.path == out else { continue }
+            try? g.setValue(.string(folder), node: n.id, input: "directory")
+        }
+        meta["workflow"] = workflow
+        g.metadata = meta
         return g
     }
 
@@ -93,7 +122,7 @@ extension AppModel {
         lastError = nil
         let id = UUID()
         let base = graph
-        plots[id] = PlotJob(id: id, spec: spec, base: base)
+        plots[id] = PlotJob(id: id, spec: spec, base: base, docID: active.id, workflow: active.name)
         for row in 0..<spec.rows {
             for col in 0..<spec.columns {
                 var g = spec.graph(for: base, column: col, row: row)
@@ -104,10 +133,10 @@ extension AppModel {
                 }
                 let sampler = g.nodes.first { $0.type == "Sampler" }
                 let seed: Int? = { if case .value(.int(let s))? = sampler?.inputs["seed"] { return s }; return nil }()
-                g = prepared(g, seed: seed ?? 0)
+                g = prepared(g, seed: seed ?? 0, workflow: active.name)
                 let index = row * spec.columns + col
                 queue.append(QueueItem(graph: g, title: spec.label(column: col, row: row), seed: seed,
-                                       groupID: id, cell: index))
+                                       groupID: id, cell: index, docID: active.id, workflow: active.name))
             }
         }
         processQueue()
@@ -132,20 +161,23 @@ extension AppModel {
                 meta["xy_plot"] = s
             }
             g.metadata = meta
-            let dir = URL(fileURLWithPath: (outputDirectory as NSString).expandingTildeInPath)
+            let dir = URL(fileURLWithPath: (outputFolder(forWorkflow: job.workflow) as NSString).expandingTildeInPath)
             let url = Self.nextFilename(in: dir, prefix: "plot")
+            let doc = document(id: job.docID) ?? active
             do {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 try ImageArray.savePNG(grid, to: url, text: [
                     StandardNodes.graphMetadataKey: g.jsonString(), "mlxcomfy.plot": meta["xy_plot"] ?? "",
                 ])
-                displayedImage = grid
-                displayedURL = url
+                doc.displayedImage = grid
+                doc.displayedURL = url
+                doc.displayedMediaURL = nil
+                doc.outputs.append(NodeResult(node: "plot", kind: .image, image: grid, url: url))
                 reloadHistory()
             } catch {
                 lastError = "Could not save the plot: \(error)"
-                displayedImage = grid
-                displayedURL = nil
+                doc.displayedImage = grid
+                doc.displayedURL = nil
             }
         }
     }
@@ -222,7 +254,7 @@ extension AppModel {
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { NSSound.beep(); return }
         compareURL = url
         compareImage = img
-        workspace = .image
+        showResultsPane = true
     }
 
     func endCompare() {

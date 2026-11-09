@@ -3,9 +3,9 @@ import ImageIO
 import MLXDiffusionCore
 import SwiftUI
 
-struct SidebarView: View {
+/// Pending and running jobs, then everything generated (the output folder and its workflow subfolders).
+struct QueuePanel: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
     @State private var query = ""
     @AppStorage("historyFavoritesOnly") private var favoritesOnly = false
     @AppStorage("historyGrid") private var gridLayout = false
@@ -38,13 +38,20 @@ struct SidebarView: View {
         return model.history.filter { item in
             (!favoritesOnly || item.isFavorite)
                 && (q.isEmpty || (item.prompt ?? "").lowercased().contains(q)
-                    || item.url.lastPathComponent.lowercased().contains(q))
+                    || item.url.lastPathComponent.lowercased().contains(q)
+                    || (item.workflow ?? "").lowercased().contains(q))
         }
     }
 
     var body: some View {
         let rows = queueRows
         let hasPlots = rows.contains { if case .plot = $0 { return true }; return false }
+        VStack(spacing: 0) {
+        PanelHeader(title: "Queue & History") { EmptyView() }
+        TextField("Search prompts and workflows", text: $query)
+            .textFieldStyle(.roundedBorder)
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
         List {
             if !model.queue.isEmpty {
                 Section {
@@ -111,30 +118,29 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .searchable(text: $query, placement: .sidebar, prompt: "Search prompts")
+        }
     }
 }
 
 /// Click to show, ⌘-click to compare with the shown image, and the context menu.
 struct HistoryActions: ViewModifier {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
     let item: HistoryItem
 
     func body(content: Content) -> some View {
         content
             .contentShape(Rectangle())
+            .onTapGesture(count: 2) { model.endCompare(); model.show(item); model.openViewer() }
             .onTapGesture {
                 if NSEvent.modifierFlags.contains(.command) { model.compare(with: item.url) }
                 else { model.endCompare(); model.show(item) }
             }
             .contextMenu {
-                Button("Show Image") { model.endCompare(); model.show(item) }
+                Button("Show in Results") { model.endCompare(); model.show(item) }
+                Button("Open in Viewer") { model.endCompare(); model.show(item); model.openViewer() }
                 Button("Compare with Shown Image") { model.compare(with: item.url) }
                     .disabled(model.displayedImage == nil || model.displayedURL == item.url)
-                Button("Restore Graph") {
-                    if model.open(item.url, undoManager: undoManager) { model.workspace = .graph }
-                }
+                Button("Restore Graph in New Tab") { model.open(item.url) }
                 Button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.toggleFavorite(item) }
                 Divider()
                 Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
@@ -187,6 +193,9 @@ struct QueueRow: View {
             statusIcon.frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title).lineLimit(1).font(.callout)
+                if !item.workflow.isEmpty {
+                    Text(item.workflow).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
                 switch item.status {
                 case .running(let step, let total) where total > 0:
                     ProgressView(value: Double(step), total: Double(total))
@@ -244,6 +253,7 @@ struct HistoryRow: View {
                 HStack(spacing: 4) {
                     if item.isFavorite { Image(systemName: "star.fill").foregroundStyle(.yellow) }
                     if compared { Text("B").fontWeight(.bold).foregroundStyle(Color.accentColor) }
+                    if let w = item.workflow { Text(w).lineLimit(1); Text("·") }
                     Text(item.date, format: .relative(presentation: .named))
                 }
                 .font(.caption2).foregroundStyle(.secondary)

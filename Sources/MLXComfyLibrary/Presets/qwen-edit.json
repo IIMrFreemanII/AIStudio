@@ -1,0 +1,128 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "qwen-turbo-mlx"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "Make it winter: snow on the ground and falling flakes"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "height" : 0,
+          "width" : 0
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "latent" : {
+            "node" : "latent",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "Sampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VAEDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "mlxcomfy",
+          "image" : {
+            "node" : "decode",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1220,
+          "y" : 140
+        },
+        "type" : "SaveImage"
+      },
+      {
+        "id" : "refimage",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : -80
+        },
+        "type" : "LoadImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "qwen-edit",
+  "modelName" : "Qwen-Image 2.1",
+  "models" : [
+    "qwen-image-2.1-turbo"
+  ],
+  "name" : "Edit an Image",
+  "order" : 20,
+  "summary" : "Choose a picture and describe the change; the rest is kept.",
+  "symbol" : "wand.and.rays"
+}

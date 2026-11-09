@@ -98,6 +98,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if CommandLine.arguments.contains("--smoke-workflows") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runWorkflows(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let dir = SmokeTest.argument("--export-presets") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = PresetExport.run(AppDelegate.model!, to: URL(fileURLWithPath: dir))
+                exit(ok ? 0 : 1)
+            }
+        }
         if let dir = Snapshot.requestedDirectory {
             Task { @MainActor in
                 await Snapshot.renderAll(to: dir)
@@ -107,6 +121,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Open tabs and their unsaved changes come back on the next launch.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { AppDelegate.model?.saveSession() }
+    }
 }
 
 @main
@@ -123,6 +142,7 @@ struct MLXComfyApp: App {
                 .frame(minWidth: 1000, minHeight: 640)
                 .onAppear {
                     AppDelegate.model = model
+                    model.store = store
                     store.adopt(model.modelPath)
                 }
         }
@@ -146,22 +166,43 @@ struct MLXComfyApp: App {
 
 struct AppCommands: Commands {
     let model: AppModel
-    @Environment(\.undoManager) private var undoManager
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Graph") { model.newGraph(undoManager: undoManager) }
+            Button("New Workflow from Preset…") { model.showPresetGallery = true }
                 .keyboardShortcut("n")
-            Button("Open…") { openPanel() }
+            Button("New Tab") { model.newTab() }
+                .keyboardShortcut("t")
+            Button("Open…") { Self.openPanel(model: model) }
                 .keyboardShortcut("o")
+            Divider()
+            Button("Close Tab") { TabCommands.close(model.active, model: model) }
+                .keyboardShortcut("w")
         }
         CommandGroup(replacing: .saveItem) {
-            Button("Save Graph…") { savePanel() }
+            Button("Save") { TabCommands.save(model.active, model: model) }
                 .keyboardShortcut("s")
+            Button("Save As…") { TabCommands.saveAs(model.active, model: model) }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            Button("Save as Preset…") { model.showSavePresetSheet = true }
+        }
+        // Each tab has its own undo history.
+        CommandGroup(replacing: .undoRedo) {
+            let _ = (model.undoRevision, model.activeTabID)
+            Button(model.activeUndoManager.canUndo ? "Undo \(model.activeUndoManager.undoActionName)" : "Undo") {
+                model.activeUndoManager.undo()
+            }
+            .keyboardShortcut("z")
+            .disabled(!model.activeUndoManager.canUndo)
+            Button(model.activeUndoManager.canRedo ? "Redo \(model.activeUndoManager.redoActionName)" : "Redo") {
+                model.activeUndoManager.redo()
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+            .disabled(!model.activeUndoManager.canRedo)
         }
         CommandMenu("Generate") {
-            Button("Queue Prompt") { model.enqueue(undoManager: undoManager) }
+            Button("Queue Workflow") { model.enqueue(undoManager: model.activeUndoManager) }
                 .keyboardShortcut(.return, modifiers: .command)
             Button("Cancel Current") { model.cancelCurrent() }
                 .keyboardShortcut(".", modifiers: .command)
@@ -175,23 +216,25 @@ struct AppCommands: Commands {
             Button("Unload Models") { model.unloadModels() }
         }
         CommandMenu("Graph") {
+            let undo = model.activeUndoManager
             Button("Add Node…") {
-                model.workspace = .graph
                 model.paletteLocation = nil
                 model.showPalette = true
             }
             .keyboardShortcut("k")
-            Button("Duplicate") { model.duplicateSelection(undoManager: undoManager) }
+            Menu("Add to Workflow") { AddToWorkflowItems(model: model) }
+            Divider()
+            Button("Duplicate") { model.duplicateSelection(undoManager: undo) }
                 .keyboardShortcut("d")
                 .disabled(model.selection.isEmpty)
-            Button("Group Selection") { model.groupSelection(undoManager: undoManager) }
+            Button("Group Selection") { model.groupSelection(undoManager: undo) }
                 .keyboardShortcut("g")
                 .disabled(model.selection.isEmpty)
-            Button("Collapse to Subgraph") { model.collapseSelection(undoManager: undoManager) }
+            Button("Collapse to Subgraph") { model.collapseSelection(undoManager: undo) }
                 .keyboardShortcut("g", modifiers: [.command, .option])
                 .disabled(model.selection.isEmpty)
             Button("Expand Subgraph") {
-                if let id = model.selection.first { model.expandSubgraph(id, undoManager: undoManager) }
+                if let id = model.selection.first { model.expandSubgraph(id, undoManager: undo) }
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
             .disabled(model.selection.count != 1
@@ -199,25 +242,28 @@ struct AppCommands: Commands {
             Button("Exit Subgraph") { model.exitSubgraph() }
                 .keyboardShortcut(.upArrow, modifiers: .command)
                 .disabled(model.editingPath.isEmpty)
+        }
+        CommandGroup(after: .toolbar) {
+            Button(model.showResultsPane ? "Hide Results Pane" : "Show Results Pane") { model.showResultsPane.toggle() }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+            Button("Open Result in Viewer") { model.openViewer() }
+                .keyboardShortcut("y")
+                .disabled(model.displayedResult == nil)
             Divider()
-            Button("Show Image") { model.workspace = .image }
-                .keyboardShortcut("1")
-            Button("Show Graph") { model.workspace = .graph }
-                .keyboardShortcut("2")
+            Button("Show Next Tab") { model.selectTab(offset: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+            Button("Show Previous Tab") { model.selectTab(offset: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+            Divider()
         }
     }
 
-    @MainActor func openPanel() {
+    @MainActor static func openPanel(model: AppModel) {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json, .png]
-        panel.message = "Open a graph JSON file, or a PNG saved by MLXComfyUI to restore its graph."
-        if panel.runModal() == .OK, let url = panel.url { model.open(url, undoManager: undoManager) }
-    }
-
-    @MainActor func savePanel() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = model.documentURL?.lastPathComponent ?? "graph.json"
-        if panel.runModal() == .OK, let url = panel.url { model.save(to: url) }
+        panel.allowedContentTypes = [.json, .png, .mpeg4Movie, .quickTimeMovie, .wav, .mpeg4Audio]
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = model.library.workflows
+        panel.message = "Open a workflow, or a PNG, video or sound made by MLXComfyUI to restore its graph."
+        if panel.runModal() == .OK { for url in panel.urls { model.open(url) } }
     }
 }

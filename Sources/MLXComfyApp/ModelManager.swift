@@ -345,7 +345,7 @@ struct ModelManagerView: View {
     func row(_ entry: CatalogEntry) -> some View {
         let status = store.status[entry.id] ?? .notInstalled
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: SimpleMode.allCases.first { $0.catalogKind == entry.kind }?.symbol ?? "cube")
+            Image(systemName: entry.kind.symbol)
                 .font(.title3).frame(width: 24).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {

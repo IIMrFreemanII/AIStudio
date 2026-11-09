@@ -2,7 +2,7 @@ import Foundation
 import GraphRuntime
 import MLXDiffusionCore
 
-/// Enhance / Describe in the Simple panel: runs the model's language model directly (not through the queue) and
+/// Enhance / Describe on a Text Encode node: runs the model's language model directly (not through the queue) and
 /// streams the answer into the first Text Encode's prompt. The whole replacement is one undo step.
 extension AppModel {
     /// User-edited system prompts, keyed like ``PromptAssistant/messages(mode:prompt:hasImage:instruction:overrides:)``.
@@ -19,24 +19,39 @@ extension AppModel {
         return out
     }
 
-    var canEnhance: Bool {
-        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { return false }
+    /// The Text Encode node the assistant writes into (`node`, else the first one).
+    func assistantTarget(_ node: String?) -> GraphNode? {
+        if let node { return graph[node].flatMap { $0.type == "TextEncode" ? $0 : nil } }
+        return firstNode(ofType: "TextEncode")
+    }
+
+    /// The image linked to a Text Encode's `image` input (the reference it edits), if it is a Load Image.
+    func assistantImage(for te: GraphNode) -> String? {
+        guard case .link(let src, _)? = te.inputs["image"], let n = graph[src], n.type == "LoadImage",
+              case .value(.string(let p))? = n.inputs["path"], !p.isEmpty else { return nil }
+        return p
+    }
+
+    func canEnhance(_ node: String? = nil) -> Bool {
+        guard assistantMode == nil, let te = assistantTarget(node) else { return false }
         if case .link? = te.inputs["prompt"] { return false }  // driven by another node
         return !(literal(te.id, "prompt")?.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    var canDescribe: Bool {
-        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { return false }
+    func canDescribe(_ node: String? = nil) -> Bool {
+        guard assistantMode == nil, let te = assistantTarget(node) else { return false }
         if case .link? = te.inputs["prompt"] { return false }
-        return referenceImagePath != nil
+        return assistantImage(for: te) != nil
     }
 
-    /// Starts Enhance or Describe. `completion` (for the smoke test) gets the final prompt, or nil on failure.
-    func runAssistant(_ mode: PromptAssistant.Mode, undoManager: UndoManager?,
+    /// Starts Enhance or Describe on a Text Encode (`node`, else the first). `completion` (for the smoke test) gets
+    /// the final prompt, or nil on failure.
+    func runAssistant(_ mode: PromptAssistant.Mode, node: String? = nil, undoManager: UndoManager?,
                       completion: ((String?) -> Void)? = nil) {
-        guard assistantMode == nil, let te = firstNode(ofType: "TextEncode") else { completion?(nil); return }
+        guard assistantMode == nil, let te = assistantTarget(node) else { completion?(nil); return }
         let current = literal(te.id, "prompt")?.description ?? ""
-        let image = referenceImagePath
+        let image = assistantImage(for: te)
+        let doc = active
         if mode == .describe && image == nil { completion?(nil); return }
         // Describe starts from the image alone; the old prompt usually belongs to something else.
         let (system, user) = PromptAssistant.messages(mode: mode, prompt: mode == .describe ? "" : current,
@@ -50,6 +65,7 @@ extension AppModel {
         lastError = nil
         let path = assistantModelPath
         let nodeID = te.id
+        assistantNode = nodeID
         assistantTask = Task { [weak self] in
             guard let self else { return }
             var result: String?
@@ -59,7 +75,7 @@ extension AppModel {
                     options: options) { partial in
                     Task { @MainActor [weak self] in
                         guard let self, self.assistantRun == run else { return }
-                        self.setPromptLive(PromptAssistant.clean(partial), node: nodeID)
+                        self.setPromptLive(PromptAssistant.clean(partial), node: nodeID, in: doc)
                     }
                 }
                 result = PromptAssistant.clean(text)
@@ -68,12 +84,13 @@ extension AppModel {
                 lastError = "Prompt assistant: \(error)"
             }
             assistantRun = nil
-            if let result, !result.isEmpty { setPromptLive(result, node: nodeID) }
-            if graph != start {
-                commitLiveEdit(from: start, actionName: mode == .describe ? "Describe Image" : "Enhance Prompt",
+            if let result, !result.isEmpty { setPromptLive(result, node: nodeID, in: doc) }
+            if doc.graph != start {
+                commitLiveEdit(from: start, in: doc, actionName: mode == .describe ? "Describe Image" : "Enhance Prompt",
                                undoManager: undoManager)
             }
             assistantMode = nil
+            assistantNode = nil
             assistantTask = nil
             completion?(result)
         }
@@ -82,10 +99,10 @@ extension AppModel {
     /// Stops the assistant; the text written so far stays (one undo step restores the previous prompt).
     func stopAssistant() { assistantTask?.cancel() }
 
-    private func setPromptLive(_ text: String, node: String) {
-        guard var n = graph[node] else { return }
+    private func setPromptLive(_ text: String, node: String, in doc: WorkflowDocument) {
+        guard var n = doc.graph[node] else { return }
         n.inputs["prompt"] = .value(.string(text))
-        graph[node] = n
+        doc.graph[node] = n
     }
 }
 

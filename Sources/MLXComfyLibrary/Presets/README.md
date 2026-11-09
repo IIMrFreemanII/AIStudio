@@ -1,0 +1,8 @@
+Built-in presets (one workflow per JSON file), bundled with the app.
+
+They are generated from the app's graph templates and Add to Workflow chains, so they stay in step with them:
+
+    build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --export-presets Sources/MLXComfyLibrary/Presets
+
+Load Model paths are model folder names and output directories are `{output}`; the app fills both in when a
+preset is opened.

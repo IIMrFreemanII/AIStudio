@@ -3,6 +3,8 @@ import AppKit
 import GraphRuntime
 import ImageIO
 import MLXDiffusionCore
+import MLXComfyLibrary
+import NodesStandard
 import SwiftUI
 
 /// Bindings onto literal node inputs, with undo.
@@ -63,159 +65,76 @@ struct InspectorView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        if model.workspace == .graph, model.selection.count == 1, let id = model.selection.first,
-           let node = model.editorGraph[id] {
+        if model.selection.count == 1, let id = model.selection.first, let node = model.editorGraph[id] {
             NodeInspector(node: node)
-        } else if model.workspace == .graph, model.selection.isEmpty, let gid = model.selectedGroup,
+        } else if model.selection.isEmpty, let gid = model.selectedGroup,
                   let group = model.editorGraph.groups?.first(where: { $0.id == gid }) {
             GroupInspector(group: group)
-        } else if model.workspace == .graph, model.selection.count > 1 {
+        } else if model.selection.count > 1 {
             ContentUnavailableView("\(model.selection.count) nodes selected", systemImage: "square.on.square",
                                    description: Text("Select a single node to edit its values."))
         } else {
-            SimplePanel()
+            WorkflowInspector()
         }
     }
 }
 
-/// Simple mode: edits the first TextEncode / EmptyLatent / Sampler nodes of whatever graph is loaded.
-struct SimplePanel: View {
+/// Nothing selected: the workflow itself — name and file, how it runs, and what can be added to it.
+struct WorkflowInspector: View {
     @Environment(AppModel.self) private var model
-    @Environment(ModelStore.self) private var store
-    @Environment(\.undoManager) private var undoManager
-    @State private var showMaskEditor = false
-    @State private var dropTargeted = false
+    @State private var name = ""
 
     var body: some View {
         @Bindable var model = model
-        VStack(spacing: 0) {
-            Picker("Mode", selection: Binding(
-                get: { model.simpleMode },
-                set: { model.setSimpleMode($0, videoModelPath: store.preferredVideoPath(),
-                                           soundModelPath: store.installed(.sound)?.path,
-                                           musicModelPath: store.installed(.music)?.path,
-                                           speechModelPath: store.installed(.speech)?.path, undoManager: undoManager) })) {
-                ForEach(SimpleMode.allCases) { Label($0.rawValue, systemImage: $0.symbol).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 4)
-            switch model.simpleMode {
-            case .image: imagePanel
-            case .video: VideoPanel()
-            case .sound: SoundPanel()
-            case .music: MusicPanel()
-            case .speech: SpeechPanel()
-            default: MediaModePanel(mode: model.simpleMode)
-            }
-        }
-    }
-
-    @ViewBuilder var imagePanel: some View {
-        @Bindable var model = model
-        let b = LiteralBindings(model: model, undoManager: undoManager)
-        let prompt = model.firstNode(ofType: "TextEncode")
-        let latent = model.firstNode(ofType: "EmptyLatent")
-        let sampler = model.firstNode(ofType: "Sampler")
-        let flux = ImageFamily.of(path: model.modelPath) == .flux
-        let choices = store.imageChoices
-
+        let doc = model.active
         Form {
-            if let qwen = choices.qwen, let fluxURL = choices.flux {
-                Section {
-                    Picker("Model", selection: Binding(
-                        get: { flux ? ImageFamily.flux : .qwen },
-                        set: { f in model.setImageModel(path: (f == .flux ? fluxURL : qwen).path, undoManager: undoManager) })) {
-                        Text("Qwen-Image 2.1 · edits").tag(ImageFamily.qwen)
-                        Text("FLUX.1 [dev] · LoRAs").tag(ImageFamily.flux)
-                    }
+            Section("Workflow") {
+                TextField("Name", text: $name)
+                    .onSubmit { rename(doc) }
+                LabeledContent("File") {
+                    Text(doc.fileURL.map { $0.path.replacingOccurrences(of: model.library.workflows.path + "/", with: "") }
+                         ?? "Not saved")
+                        .lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary)
                 }
+                HStack {
+                    Button(doc.fileURL == nil ? "Save…" : "Save") { TabCommands.save(doc, model: model) }
+                        .disabled(doc.fileURL != nil && !doc.isDirty)
+                    Button("Save As…") { TabCommands.saveAs(doc, model: model) }
+                    Button("Save as Preset…") { model.showSavePresetSheet = true }
+                }
+                .controlSize(.small)
             }
-            Section("Prompt") {
-                if let prompt {
-                    TextEditor(text: b.string(prompt.id, "prompt"))
-                        .font(.body)
-                        .frame(minHeight: 120)
-                        .scrollContentBackground(.hidden)
-                        .disabled(model.assistantMode != nil)
-                    assistantBar
-                    stylePicker
-                } else {
-                    missing("TextEncode")
-                }
-            }
-
-            if prompt != nil { referenceSection }
-
-            if sampler != nil { loraSection(b) }
-
-            Section("Size") {
-                if let latent {
-                    let w = b.int(latent.id, "width"), h = b.int(latent.id, "height")
-                    Picker("Preset", selection: Binding(
-                        get: {
-                            if w.wrappedValue == 0 && h.wrappedValue == 0 { return -2 }
-                            return GraphTemplates.sizePresets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1
-                        },
-                        set: { i in
-                            guard i >= 0 || i == -2 else { return }
-                            let (pw, ph) = i == -2 ? (0, 0) : (GraphTemplates.sizePresets[i].width, GraphTemplates.sizePresets[i].height)
-                            model.mutate("Change Size", undoManager: undoManager) { g in
-                                try? g.setValue(.int(pw), node: latent.id, input: "width")
-                                try? g.setValue(.int(ph), node: latent.id, input: "height")
-                            }
-                        })) {
-                        if model.referenceImagePath != nil { Text("Match reference image").tag(-2) }
-                        ForEach(GraphTemplates.sizePresets.indices, id: \.self) { i in
-                            Text(GraphTemplates.sizePresets[i].name).tag(i)
-                        }
-                        Text("Custom").tag(-1)
-                    }
-                    HStack {
-                        TextField("Width", value: w, format: .number.grouping(.never))
-                        Text("×").foregroundStyle(.secondary)
-                        TextField("Height", value: h, format: .number.grouping(.never))
-                    }
-                    .multilineTextAlignment(.trailing)
-                } else {
-                    missing("EmptyLatent")
-                }
-            }
-
-            Section("Sampling") {
-                if let sampler {
-                    HStack {
-                        TextField("Seed", value: b.int(sampler.id, "seed"), format: .number.grouping(.never))
-                        Button { b.int(sampler.id, "seed").wrappedValue = Int.random(in: 0...Int(Int32.max)) } label: {
-                            Image(systemName: "dice")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("New random seed")
-                    }
-                    Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
-                    Stepper(value: b.int(sampler.id, "steps"), in: 0...100) {
-                        let s = b.int(sampler.id, "steps").wrappedValue
-                        LabeledContent("Steps", value: s == 0 ? (flux ? "Model default (28)" : "Model default") : "\(s)")
-                    }
-                    if flux {
-                        let g = b.double(sampler.id, "guidance")
-                        Stepper(value: Binding(get: { g.wrappedValue > 0 ? g.wrappedValue : 3.5 },
-                                               set: { g.wrappedValue = $0 }), in: 1...10, step: 0.5) {
-                            LabeledContent("Guidance", value: String(format: "%.1f", g.wrappedValue > 0 ? g.wrappedValue : 3.5))
-                        }
-                        .help("How closely the image follows the prompt (FLUX.1 [dev] default 3.5)")
-                    }
-                } else {
-                    missing("Sampler")
-                }
-                if sampler != nil { hiResControls(b) }
+            Section("Run") {
                 Stepper(value: $model.batchCount, in: 1...16) {
-                    LabeledContent("Batch", value: "\(model.batchCount) image\(model.batchCount == 1 ? "" : "s")")
+                    LabeledContent("Batch", value: "\(model.batchCount) run\(model.batchCount == 1 ? "" : "s")")
+                }
+                Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
+                if let err = model.validationError {
+                    Label(err, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
             }
-
+            Section {
+                ForEach(AddOn.allCases.filter { model.canAdd($0) || model.isActive($0) }, id: \.self) { a in
+                    HStack {
+                        Text(a.title.replacingOccurrences(of: "…", with: ""))
+                        Spacer()
+                        if model.isActive(a) {
+                            Image(systemName: "checkmark").foregroundStyle(.green)
+                            if a == .inpaint || a == .reference || a == .lora || a == .firstFrame {
+                                Button("Change") { model.add(a) }.controlSize(.small)
+                            }
+                            Button("Remove") { model.remove(a) }.controlSize(.small)
+                        } else {
+                            Button("Add") { model.add(a) }.controlSize(.small)
+                        }
+                    }
+                }
+            } header: {
+                Text("Add to Workflow")
+            } footer: {
+                Text("Splices a ready-made chain into the graph, wired to its sampler. Also in the Graph menu and the canvas's context menu.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Model") {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
@@ -223,277 +142,36 @@ struct SimplePanel: View {
                         Text(model.modelStatus).lineLimit(1).truncationMode(.middle)
                     }
                 }
-                LabeledContent("Folder") {
-                    Text((model.modelPath as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
-                }
-                Button("Choose Model Folder…") { chooseModel() }
             }
         }
         .formStyle(.grouped)
         .safeAreaInset(edge: .bottom) {
-            Button { model.enqueue(undoManager: undoManager) } label: {
+            Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
                 Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate", systemImage: "sparkles")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .keyboardShortcut(.return, modifiers: .command)
             .padding(12)
             .background(.bar)
         }
+        .onAppear { name = doc.name }
+        .onChange(of: doc.id) { _, _ in name = model.active.name }
+        .onChange(of: doc.name) { _, n in name = n }
     }
 
-    @ViewBuilder var referenceSection: some View {
-        let b = LiteralBindings(model: model, undoManager: undoManager)
-        Section {
-            if let path = model.referenceImagePath {
-                HStack(spacing: 10) {
-                    Thumbnail(path: path, maskPath: model.maskPath).frame(width: 64, height: 64)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
-                        Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
-                             : model.isOutpainting ? "Outpainting: the new border is generated."
-                             : model.isImg2Img ? "Image to image: the picture is redrawn from the prompt."
-                             : "Editing: describe the change in the prompt.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                HStack {
-                    Button(model.maskPath == nil ? "Paint Mask…" : "Edit Mask…") { showMaskEditor = true }
-                    if model.maskPath != nil { Button("Clear Mask") { model.clearMask(undoManager: undoManager) } }
-                    if model.maskPath == nil && !model.isOutpainting {
-                        Button("Extend…") {
-                            model.setOutpaint(left: 256, top: 0, right: 256, bottom: 0, undoManager: undoManager)
-                        }
-                        .help("Outpaint: grow the canvas and fill the new border")
-                    }
-                    Spacer()
-                    Button("Remove", role: .destructive) { model.clearReferenceImage(undoManager: undoManager) }
-                }
-                if model.maskPath != nil, model.graph[AppModel.inpaintIDs.feather] != nil {
-                    featherSlider(AppModel.inpaintIDs.feather, b)
-                }
-                if model.isOutpainting { outpaintControls(b) }
-                if model.isImg2Img, let sampler = model.firstNode(ofType: "Sampler") {
-                    let d = b.double(sampler.id, "denoise")
-                    LabeledContent("Strength") {
-                        HStack {
-                            Slider(value: d, in: 0.1...1, step: 0.05)
-                            Text(String(format: "%.2f", d.wrappedValue)).monospacedDigit().frame(width: 36)
-                        }
-                    }
-                    .help("How much of the picture is redrawn: low keeps the composition, 1 ignores it")
-                }
-            } else {
-                VStack(spacing: 6) {
-                    Image(systemName: "photo.badge.plus").font(.title2).foregroundStyle(.secondary)
-                    Text(ImageFamily.of(path: model.modelPath) == .flux ? "Drop an image to redraw it, inpaint or extend it"
-                         : "Drop an image to edit it or use it as a reference").font(.caption)
-                        .foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button("Choose…") { chooseReference() }.controlSize(.small)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(RoundedRectangle(cornerRadius: 8).strokeBorder(
-                    dropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
-                    style: StrokeStyle(lineWidth: dropTargeted ? 2 : 1, dash: [5, 4])))
-                .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-                    _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
-                        guard let url else { return }
-                        Task { @MainActor in model.setReferenceImage(url, undoManager: undoManager) }
-                    }
-                    return true
-                }
-            }
-        } header: {
-            Text("Reference Image")
-        }
-        .sheet(isPresented: $showMaskEditor) {
-            if let path = model.referenceImagePath {
-                MaskEditorView(imageURL: URL(fileURLWithPath: path),
-                               existingMask: model.maskPath.map { URL(fileURLWithPath: $0) },
-                               saveDirectory: model.maskDirectory) { url in
-                    model.setMask(url, undoManager: undoManager)
-                }
-            }
-        }
-    }
-
-    /// The style applied to the prompt when queued, and a reminder of the template syntax.
-    @ViewBuilder var stylePicker: some View {
-        @Bindable var model = model
-        Picker("Style", selection: $model.selectedStyleName) {
-            Text("None").tag(String?.none)
-            ForEach(model.styles) { Text($0.name).tag(String?.some($0.name)) }
-        }
-        if let style = model.selectedStyle {
-            Text(style.template).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-        }
-        // verbatim: as a Markdown string, __name__ would render as bold "name".
-        Text(verbatim: "{a|b|c} picks one option per image; __name__ picks a line from wildcards/name.txt.")
-            .font(.caption2).foregroundStyle(.tertiary)
-    }
-
-    /// Enhance / Describe, or progress and Stop while the assistant writes.
-    @ViewBuilder var assistantBar: some View {
-        HStack(spacing: 8) {
-            if let mode = model.assistantMode {
-                ProgressView().controlSize(.small)
-                Text(mode == .describe ? "Describing the image…" : "Rewriting the prompt…")
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-                Button("Stop") { model.stopAssistant() }
-            } else {
-                Button { model.runAssistant(.enhance, undoManager: undoManager) } label: {
-                    Label("Enhance", systemImage: "wand.and.stars")
-                }
-                .disabled(!model.canEnhance)
-                .help(model.referenceImagePath != nil
-                      ? "Rewrite the edit instruction as a clear, specific one for this image"
-                      : "Rewrite the idea as a detailed prompt")
-                if model.referenceImagePath != nil {
-                    Button { model.runAssistant(.describe, undoManager: undoManager) } label: {
-                        Label("Describe Image", systemImage: "text.viewfinder")
-                    }
-                    .disabled(!model.canDescribe)
-                    .help("Write a prompt that describes the reference image")
-                }
-                Spacer()
-            }
-        }
-        .controlSize(.small)
-    }
-
-    func featherSlider(_ node: String, _ b: LiteralBindings) -> some View {
-        let f = b.int(node, "feather")
-        return LabeledContent("Feather") {
-            HStack {
-                Slider(value: Binding(get: { Double(f.wrappedValue) }, set: { f.wrappedValue = Int($0.rounded()) }),
-                       in: 0...96)
-                Text("\(f.wrappedValue) px").monospacedDigit().frame(width: 48, alignment: .trailing)
-            }
-        }
-        .help("Softens the edge where the generated area meets the original")
-    }
-
-    @ViewBuilder func outpaintControls(_ b: LiteralBindings) -> some View {
-        let pad = AppModel.outpaintIDs.pad
-        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
-            GridRow {
-                sideStepper("Left", b.int(pad, "left"))
-                sideStepper("Right", b.int(pad, "right"))
-            }
-            GridRow {
-                sideStepper("Top", b.int(pad, "top"))
-                sideStepper("Bottom", b.int(pad, "bottom"))
-            }
-        }
-        featherSlider(AppModel.outpaintIDs.feather, b)
-        HStack {
-            Text(outpaintSizeText(b)).font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Stop Extending") { model.clearOutpaint(undoManager: undoManager) }
-        }
-    }
-
-    func sideStepper(_ label: String, _ v: Binding<Int>) -> some View {
-        Stepper(value: v, in: 0...1024, step: 64) {
-            LabeledContent(label, value: "\(v.wrappedValue)")
-        }
-    }
-
-    func outpaintSizeText(_ b: LiteralBindings) -> String {
-        let pad = AppModel.outpaintIDs.pad
-        let dx = b.int(pad, "left").wrappedValue + b.int(pad, "right").wrappedValue
-        let dy = b.int(pad, "top").wrappedValue + b.int(pad, "bottom").wrappedValue
-        guard let path = model.referenceImagePath, let size = Thumbnail.pixelSize(path) else {
-            return "+\(dx) × +\(dy) px"
-        }
-        let w = size.width + dx, h = size.height + dy
-        return "Output \(w) × \(h) (" + String(format: "%.1f", Double(w * h) / 1_048_576) + " MP)"
-    }
-
-    @ViewBuilder func hiResControls(_ b: LiteralBindings) -> some View {
-        Toggle("Hi-res fix", isOn: Binding(get: { model.isHiResEnabled },
-                                           set: { model.setHiRes($0, undoManager: undoManager) }))
-            .help("Upscale the result and refine it with a second, low-denoise pass")
-        if model.isHiResEnabled {
-            let ids = AppModel.hiresIDs
-            let scale = b.double(ids.scale, "factor"), denoise = b.double(ids.sampler, "denoise")
-            LabeledContent("Upscale") {
-                HStack {
-                    Slider(value: scale, in: 1.25...2, step: 0.25)
-                    Text(String(format: "%.2g×", scale.wrappedValue)).monospacedDigit().frame(width: 48, alignment: .trailing)
-                }
-            }
-            LabeledContent("Denoise") {
-                HStack {
-                    Slider(value: denoise, in: 0.2...0.7, step: 0.05)
-                    Text(String(format: "%.2f", denoise.wrappedValue)).monospacedDigit().frame(width: 48, alignment: .trailing)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder func loraSection(_ b: LiteralBindings) -> some View {
-        Section("LoRA") {
-            ForEach(model.simpleLoRAs, id: \.id) { n in
-                let path: String = { if case .value(.string(let p))? = n.inputs["path"] { return p }; return "" }()
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
-                        Spacer()
-                        Button { model.removeLoRA(n.id, undoManager: undoManager) } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless).help("Remove this LoRA")
-                    }
-                    let st = b.double(n.id, "strength")
-                    HStack {
-                        Slider(value: st, in: -1...2, step: 0.05)
-                        Text(String(format: "%.2f", st.wrappedValue)).monospacedDigit().frame(width: 40)
-                    }
-                }
-            }
-            Button("Add LoRA…") { chooseLoRA() }
-                .help("Apply a LoRA file (.safetensors) to the model: kohya, diffusers/PEFT and ai-toolkit formats")
-        }
-    }
-
-    func chooseLoRA() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "safetensors") ?? .data]
-        panel.message = "Choose a LoRA (.safetensors) made for the current model."
-        if panel.runModal() == .OK, let url = panel.url { model.addLoRA(url, undoManager: undoManager) }
-    }
-
-    func chooseReference() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
-        if panel.runModal() == .OK, let url = panel.url { model.setReferenceImage(url, undoManager: undoManager) }
-    }
-
-    func missing(_ type: String) -> some View {
-        Text(model.graph.subgraphs?.isEmpty == false
-             ? "No \(type) node at the top level. Nodes inside a subgraph are edited in the graph."
-             : "This graph has no \(type) node.")
-            .foregroundStyle(.secondary)
-    }
-
-    func chooseModel() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.message = "Choose a diffusers-layout model folder (with model_index.json)."
-        if panel.runModal() == .OK, let url = panel.url {
-            model.applyModelPath(url.path, undoManager: undoManager)
-            model.preloadModel()
-        }
+    func rename(_ doc: WorkflowDocument) {
+        let n = WorkflowStore.sanitize(name)
+        guard n != doc.name else { return }
+        if let url = doc.fileURL { model.renameWorkflow(url, to: n) } else { doc.name = model.uniqueTabName(n) }
+        name = doc.name
     }
 }
 
 /// Graph mode: every literal input of the selected node.
 struct NodeInspector: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
+    private var undoManager: UndoManager? { model.activeUndoManager }
     let node: GraphNode
 
     var body: some View {
@@ -524,6 +202,7 @@ struct NodeInspector: View {
                     }
                 }
             }
+            NodeExtras(node: node)
             if let schema {
                 Section("Inputs") {
                     ForEach(schema.inputs, id: \.name) { spec in
@@ -608,12 +287,28 @@ struct NodeInspector: View {
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
+    private var undoManager: UndoManager? { model.activeUndoManager }
 
     var body: some View {
         @Bindable var model = model
         Form {
-            LabeledContent("Model folder") {
+            Section("Library") {
+                LabeledContent("Workflows, presets") {
+                    HStack {
+                        Text(model.library.root.path).lineLimit(1).truncationMode(.middle)
+                        Button("Show") { NSWorkspace.shared.open(model.library.root) }
+                        Button("Change…") {
+                            let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false
+                            p.canCreateDirectories = true
+                            p.message = "Choose the folder for your workflows and presets (used from the next launch)."
+                            if p.runModal() == .OK, let u = p.url { UserDefaults.standard.set(u.path, forKey: "libraryRoot") }
+                        }
+                    }
+                }
+                Text("Saved workflows live in its workflows folder, your presets in presets. Open tabs and their unsaved changes are kept separately and come back on the next launch.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            LabeledContent("Qwen-Image folder") {
                 HStack {
                     Text(model.modelPath).lineLimit(1).truncationMode(.middle)
                     Button("Choose…") {
@@ -632,7 +327,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            Text("New graphs save into the output folder; existing SaveImage nodes keep their own directory.")
+            Text("Each workflow saves into its own subfolder of the output folder; Save nodes pointed elsewhere keep their own directory.")
                 .font(.caption).foregroundStyle(.secondary)
             Section("Memory") {
                 @Bindable var model = model
@@ -779,7 +474,7 @@ struct StylesEditor: View {
 /// The selected group: title, color, delete.
 struct GroupInspector: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
+    private var undoManager: UndoManager? { model.activeUndoManager }
     let group: GraphGroup
 
     var body: some View {

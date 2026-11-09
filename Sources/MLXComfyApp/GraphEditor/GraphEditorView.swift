@@ -13,7 +13,9 @@ struct WireDrag {
 /// The node editor for the current editing level (the top-level graph, or a subgraph entered with a double-click).
 struct GraphEditorView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.undoManager) private var undoManager
+    /// The tab shown (the view is rebuilt per tab, and keeps the tab's zoom and pan in it).
+    let doc: WorkflowDocument
+    private var undoManager: UndoManager? { model.activeUndoManager }
 
     @State private var zoom: CGFloat = 0.9
     @State private var pan = CGSize(width: 40, height: 60)
@@ -45,6 +47,13 @@ struct GraphEditorView: View {
                         backgroundTap(at: v.location)
                     }))
 
+                    .contextMenu {
+                        Button("Add Node…") { model.paletteLocation = nil; model.showPalette = true }
+                        Menu("Add to Workflow") { AddToWorkflowItems(model: model) }
+                        Divider()
+                        Button("Fit Graph to Window") { fitToContent() }
+                    }
+
                 ForEach(level.groups ?? []) { group in groupView(group) }
 
                 Canvas { ctx, _ in drawWires(&ctx, level) }
@@ -64,14 +73,35 @@ struct GraphEditorView: View {
             }
             .coordinateSpace(name: "canvas")
             .clipped()
+            .dropDestination(for: String.self) { items, loc in
+                let types = items.filter { $0.hasPrefix(NodeAddRequest.dragPrefix) }.map { String($0.dropFirst(NodeAddRequest.dragPrefix.count)) }
+                for (i, t) in types.enumerated() {
+                    var p = toGraph(loc)
+                    p.y += Double(i) * 40
+                    model.addNode(type: t, at: p, undoManager: undoManager)
+                }
+                return !types.isEmpty
+            }
             .overlay(alignment: .bottomTrailing) { zoomControls.padding(12) }
-            .overlay(alignment: .bottomLeading) { MiniPreview().padding(12) }
             .overlay(alignment: .bottom) { RunStatusPill().padding(.bottom, 16) }
             .overlay(alignment: .topLeading) { topBar.padding(12) }
             .onAppear {
                 viewSize = geo.size
+                if let v = doc.viewport {
+                    zoom = v.zoom
+                    pan = v.pan
+                    didInitialFit = true
+                }
                 fitOnceIfSized()
                 installScrollMonitor()
+            }
+            .onChange(of: zoom) { _, z in doc.viewport = (z, pan) }
+            .onChange(of: pan) { _, p in doc.viewport = (zoom, p) }
+            .onChange(of: model.nodeAddRequest) { _, req in
+                guard let req else { return }
+                model.addNode(type: req.type, at: toGraph(CGPoint(x: viewSize.width / 2 - 120, y: viewSize.height / 2 - 60)),
+                              undoManager: undoManager)
+                model.nodeAddRequest = nil
             }
             .onChange(of: geo.size) { _, s in
                 viewSize = s
@@ -135,12 +165,15 @@ struct GraphEditorView: View {
                      actions: actions(for: node))
                 .scaleEffect(zoom, anchor: .topLeading)
         } else if let schema = model.schema(for: node) {
-            NodeView(node: node, schema: schema, state: model.nodeStates[model.nodeStatePrefix + node.id],
+            let flat = model.nodeStatePrefix + node.id
+            NodeView(node: node, schema: schema, state: doc.nodeStates[flat],
                      selected: selected,
                      bindings: LiteralBindings(model: model, undoManager: undoManager, editor: true),
                      actions: actions(for: node),
                      boundInputs: model.boundInputs[node.id] ?? [:],
-                     exposedOutputs: model.exposedOutputs[node.id] ?? [:])
+                     exposedOutputs: model.exposedOutputs[node.id] ?? [:],
+                     result: doc.nodeResults[flat],
+                     livePreview: doc.previewNode == flat ? doc.previewImage : nil)
                 .scaleEffect(zoom, anchor: .topLeading)
         } else {
             unknownNode(node)
@@ -324,6 +357,7 @@ struct GraphEditorView: View {
             },
             inputDragEnded: { _, loc in finishWire(at: loc, actionIfDropped: "Disconnect") },
             open: isInstance ? { model.enterSubgraph(node.id) } : nil,
+            openResult: { r in model.show(r, in: doc); model.openViewer(r) },
             menu: NodeMenu(
                 open: isInstance ? { model.enterSubgraph(node.id) } : nil,
                 expand: isInstance ? { model.expandSubgraph(node.id, undoManager: undoManager) } : nil,
@@ -511,7 +545,7 @@ struct GraphEditorView: View {
     func installScrollMonitor() {
         guard scrollMonitor == nil else { return }
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard let loc = hoverLocation, model.workspace == .graph, !model.showPalette else { return event }
+            guard let loc = hoverLocation, model.viewerResult == nil, !model.showPalette else { return event }
             if event.modifierFlags.contains(.command) {
                 setZoom(zoom * exp(event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 0.01 : 0.1)), around: loc)
             } else {
@@ -551,26 +585,6 @@ struct GridBackground: View {
                 }
                 x += spacing
             }
-        }
-    }
-}
-
-/// Small live result in the corner of the graph; click to open the image workspace.
-struct MiniPreview: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        if let img = model.previewImage ?? model.displayedImage {
-            Image(decorative: img, scale: 1)
-                .resizable()
-                .interpolation(.medium)
-                .aspectRatio(contentMode: .fit)
-                .frame(maxWidth: 180, maxHeight: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.25)))
-                .shadow(radius: 8)
-                .onTapGesture { model.workspace = .image }
-                .help("Show image (⌘1)")
         }
     }
 }

@@ -262,6 +262,11 @@ let package = Package(
         ),
         .target(name: "GraphRuntime"),
         .target(
+            name: "MLXComfyLibrary",
+            dependencies: ["GraphRuntime"],
+            resources: [.copy("Presets")]
+        ),
+        .target(
             name: "NodesStandard",
             dependencies: [
                 "GraphRuntime",
@@ -300,6 +305,7 @@ let package = Package(
                 "MLXDiffusionCore",
                 "GraphRuntime",
                 "NodesStandard",
+                "MLXComfyLibrary",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             // AVKit's SwiftUI VideoPlayer needs the framework linked explicitly in a SwiftPM executable.
@@ -341,6 +347,10 @@ let package = Package(
         .testTarget(
             name: "GraphRuntimeTests",
             dependencies: ["GraphRuntime"]
+        ),
+        .testTarget(
+            name: "MLXComfyLibraryTests",
+            dependencies: ["MLXComfyLibrary", "GraphRuntime", "NodesStandard"]
         ),
     ],
     swiftLanguageModes: [.v5]

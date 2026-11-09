@@ -46,12 +46,13 @@ extension AppModel {
     var nodeStatePrefix: String { editingPath.isEmpty ? "" : editingPath.joined(separator: "/") + "/" }
 
     /// Run state for a flattened node id, also shown on every subgraph instance that contains it.
-    func setState(_ state: NodeRunState, _ id: String) {
-        nodeStates[id] = state
+    func setState(_ state: NodeRunState, _ id: String, in doc: WorkflowDocument? = nil) {
+        let doc = doc ?? active
+        doc.nodeStates[id] = state
         var parts = id.split(separator: "/").map(String.init)
         while parts.count > 1 {
             parts.removeLast()
-            nodeStates[parts.joined(separator: "/")] = state
+            doc.nodeStates[parts.joined(separator: "/")] = state
         }
     }
 
@@ -81,7 +82,6 @@ extension AppModel {
         editingPath.append(id)
         selection = []
         selectedGroup = nil
-        workspace = .graph
     }
 
     /// Leaves the current subgraph (or goes back to `level` entries deep), selecting the instance left.
@@ -249,16 +249,17 @@ extension AppModel {
 
 extension AppModel {
     /// "Subgraph 1 › Sampler" for a flattened id like `subgraph/sampler`.
-    func displayName(flatID: String) -> String {
+    func displayName(flatID: String, in doc: WorkflowDocument? = nil) -> String {
         let parts = flatID.split(separator: "/").map(String.init)
-        var level = graph
+        let root = (doc ?? active).graph
+        var level = root
         var names: [String] = []
         for (i, id) in parts.enumerated() {
             guard let n = level[id] else { return flatID }
-            let s = schema(for: n)
+            let s = n.type == Graph.subgraphType ? root.subgraphSchema(n) : registry.schema(n.type)
             names.append(n.title ?? s?.displayName ?? id)
             if i < parts.count - 1 {
-                guard let (_, def) = graph.subgraphDef(for: n) else { return flatID }
+                guard let (_, def) = root.subgraphDef(for: n) else { return flatID }
                 level = def.graph
             }
         }

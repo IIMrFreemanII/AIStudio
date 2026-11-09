@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import GraphRuntime
 import MLX
+import MLXComfyLibrary
 import MLXDiffusionCore
 import NodesStandard
 
@@ -164,9 +166,7 @@ extension SmokeTest {
         model.setLiteral(.string("a {red|arctic} fox sitting in fresh snow"), node: te.id, input: "prompt", undoManager: nil)
         model.setLiteral(.int(512), node: latent.id, input: "width", undoManager: nil)
         model.setLiteral(.int(512), node: latent.id, input: "height", undoManager: nil)
-        let previousStyle = model.selectedStyleName
-        model.selectedStyleName = "Watercolor"
-        defer { model.selectedStyleName = previousStyle }  // the real app persists this setting
+        model.setStyle("Watercolor", node: te.id, undoManager: nil)
         do {
             let spec = PlotSpec(x: try PlotAxis.parse("1, 2", type: .int, node: sampler.id, input: "seed"),
                                 y: try PlotAxis.parse("2, 4", type: .int, node: sampler.id, input: "steps"))
@@ -247,15 +247,17 @@ extension SmokeTest {
         guard clip.frameCount == 48, abs((clip.audio?.duration ?? 0) - 2) < 0.1, abs((sound?.duration ?? 0) - 3) < 0.1,
               meta[StandardNodes.graphMetadataKey] != nil else { say("media check failed"); return false }
 
-        // Restore the graph from the MP4.
-        model.newGraph(undoManager: nil)
-        _ = model.open(video, undoManager: nil)
+        // Restore the graph from the MP4, in a new tab.
+        let tabsBefore = model.tabs.count
+        model.newTab()
+        _ = model.open(video)
         for _ in 0..<50 where model.graph["save_video"] == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
-        say("graph restored from MP4: \(model.graph["save_video"] != nil && model.graph["attach"] != nil)")
-        guard model.graph["attach"] != nil else { return false }
+        say("graph restored from MP4 in a new tab: \(model.graph["save_video"] != nil && model.graph["attach"] != nil), "
+            + "tabs \(tabsBefore) → \(model.tabs.count)")
+        guard model.graph["attach"] != nil, model.tabs.count == tabsBefore + 2 else { return false }
 
         // Eviction: the image model's estimate plus 30 GB exceeds the budget, so it must be unloaded.
-        model.newGraph(undoManager: nil)
+        model.newTab()
         let path = model.modelPath
         _ = try? await model.engine.preload(modelPath: path)
         let before = model.engine.loadedModelsSnapshot().map(\.name)
@@ -277,8 +279,9 @@ extension SmokeTest {
         guard ModelRegistry.className(at: ltx) == "LTX2Pipeline" else { say("no LTX-2.3 at \(ltx.path)"); return false }
         _ = try? await model.engine.preload(modelPath: model.modelPath)
         let before = model.engine.loadedModelsSnapshot().map(\.name)
-        model.setSimpleMode(.video, videoModelPath: ltx.path, undoManager: nil)
-        guard model.simpleMode == .video, let latent = model.firstNode(ofType: "EmptyVideoLatent") else {
+        let imageTab = model.activeTabID
+        guard let tab = openPreset(model, "ltx-t2v", expecting: ltx),
+              let latent = model.firstNode(ofType: "EmptyVideoLatent") else {
             say("video graph not set up"); return false
         }
         model.mutate("Small", undoManager: nil) { g in
@@ -304,12 +307,15 @@ extension SmokeTest {
         say(String(format: "%@: %dx%d, %d frames, audio %.2fs; displayed %@", video.lastPathComponent, clip.width,
                    clip.height, clip.frameCount, clip.audio?.duration ?? 0,
                    model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
-        model.setSimpleMode(.image, videoModelPath: ltx.path, undoManager: nil)
-        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
-        say("back to image graph: \(back)")
+        let onNode = tab.nodeResults["save"]?.kind == .video
+        say("result on the Save Video node: \(onNode); saved in \(video.deletingLastPathComponent().lastPathComponent)/ for tab “\(tab.name)”")
+        let shown = model.displayedMedia?.kind == .video
+        model.activate(imageTab)
+        let back = model.firstNode(ofType: "Sampler") != nil
+        say("back to the image tab: \(back)")
         return model.previewCount > 0 && clip.frameCount == 49 && (clip.audio?.duration ?? 0) > 1.9
             && after.contains { $0.contains("ltx-2.3") } && !after.contains { $0.contains("qwen") } && back
-            && model.displayedMedia?.kind == .video
+            && shown && onNode
     }
 
     /// `--smoke-wan`: the Video mode with Wan 2.2 T2V (fast, 512×288, 2 s): switch modes and model, generate, check
@@ -320,8 +326,9 @@ extension SmokeTest {
         guard ModelRegistry.className(at: wan) == "WanPipeline" else { say("no Wan 2.2 T2V at \(wan.path)"); return false }
         _ = try? await model.engine.preload(modelPath: model.modelPath)
         let before = model.engine.loadedModelsSnapshot().map(\.name)
-        model.setSimpleMode(.video, videoModelPath: wan.path, undoManager: nil)
-        guard model.simpleMode == .video, let latent = model.firstNode(ofType: "EmptyVideoLatent"),
+        let imageTab = model.activeTabID
+        guard let tab = openPreset(model, "wan-t2v", expecting: wan),
+              let latent = model.firstNode(ofType: "EmptyVideoLatent"),
               VideoFamily.of(path: wan.path) == .wan else { say("video graph not set up"); return false }
         model.mutate("Small", undoManager: nil) { g in
             try? g.setValue(.int(512), node: latent.id, input: "width")
@@ -346,12 +353,14 @@ extension SmokeTest {
         say(String(format: "%@: %dx%d, %d frames at %.0f fps, audio %.2fs; displayed %@", video.lastPathComponent,
                    clip.width, clip.height, clip.frameCount, clip.fps, clip.audio?.duration ?? 0,
                    model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
-        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
-        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
-        say("back to image graph: \(back)")
+        let onNode = tab.nodeResults["save"]?.kind == .video
+        let shown = model.displayedMedia?.kind == .video
+        model.activate(imageTab)
+        let back = model.firstNode(ofType: "Sampler") != nil
+        say("result on the node: \(onNode); back to the image tab: \(back)")
         return model.previewCount > 0 && clip.frameCount == 33 && clip.width == 512 && clip.height == 288
             && (clip.audio?.duration ?? 0) < 0.1 && after.contains { $0.contains("wan-2.2-t2v") }
-            && !after.contains { $0.contains("qwen") } && back && model.displayedMedia?.kind == .video
+            && !after.contains { $0.contains("qwen") } && back && shown && onNode
     }
 
     /// `--smoke-flux`: the Image mode with FLUX.1 [dev] (512², 8 steps): switch model (Qwen evicted), apply a synthetic
@@ -435,8 +444,8 @@ extension SmokeTest {
         func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
         let dir = ModelStore().modelsDirectory.appendingPathComponent("stable-audio-open-small")
         guard ModelRegistry.className(at: dir) == "StableAudioPipeline" else { say("no Stable Audio at \(dir.path)"); return false }
-        model.setSimpleMode(.sound, videoModelPath: nil, soundModelPath: dir.path, undoManager: nil)
-        guard model.simpleMode == .sound, let gen = model.firstNode(ofType: "TextToAudio") else {
+        let imageTab = model.activeTabID
+        guard let tab = openPreset(model, "sound", expecting: dir), let gen = model.firstNode(ofType: "TextToAudio") else {
             say("sound graph not set up"); return false
         }
         model.mutate("Short", undoManager: nil) { g in try? g.setValue(.double(4), node: gen.id, input: "seconds") }
@@ -456,11 +465,12 @@ extension SmokeTest {
                    url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
                    meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
                    model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
-        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
-        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
-        say("back to image graph: \(back)")
+        let shown = model.displayedMedia?.kind == .audio && tab.nodeResults["save"]?.kind == .audio
+        model.activate(imageTab)
+        let back = model.firstNode(ofType: "Sampler") != nil
+        say("shown on the node and in the pane: \(shown); back to the image tab: \(back)")
         return abs(clip.duration - 4) < 0.05 && clip.sampleRate == 44100 && clip.channels == 2
-            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+            && meta[StandardNodes.graphMetadataKey] != nil && shown && back
     }
 
     /// `--smoke-music`: the Music mode end to end: switch modes, generate a short instrumental (planner on), check the
@@ -469,8 +479,8 @@ extension SmokeTest {
         func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
         let dir = ModelStore().modelsDirectory.appendingPathComponent("ace-step-1.5")
         guard ModelRegistry.className(at: dir) == "ACEStepPipeline" else { say("no ACE-Step at \(dir.path)"); return false }
-        model.setSimpleMode(.music, videoModelPath: nil, musicModelPath: dir.path, undoManager: nil)
-        guard model.simpleMode == .music, let gen = model.firstNode(ofType: "TextToMusic") else {
+        let imageTab = model.activeTabID
+        guard let tab = openPreset(model, "music", expecting: dir), let gen = model.firstNode(ofType: "TextToMusic") else {
             say("music graph not set up"); return false
         }
         model.mutate("Short", undoManager: nil) { g in try? g.setValue(.double(10), node: gen.id, input: "seconds") }
@@ -493,11 +503,12 @@ extension SmokeTest {
                    secs, maxTotal, url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
                    meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
                    model.displayedMedia.map { $0.kind.rawValue } ?? "none", title))
-        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
-        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
-        say("back to image graph: \(back)")
+        let shown = model.displayedMedia?.kind == .audio && tab.nodeResults["save"]?.kind == .audio
+        model.activate(imageTab)
+        let back = model.firstNode(ofType: "Sampler") != nil
+        say("shown on the node and in the pane: \(shown); back to the image tab: \(back)")
         return abs(clip.duration - 10) < 0.05 && clip.sampleRate == 48000 && clip.channels == 2 && maxTotal > 8
-            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+            && meta[StandardNodes.graphMetadataKey] != nil && shown && back
     }
 
     /// `--smoke-speech`: the Speech mode end to end: a voice preview (shown, not saved), then a generated clip in
@@ -506,8 +517,8 @@ extension SmokeTest {
         func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
         let dir = ModelStore().modelsDirectory.appendingPathComponent("kokoro-82m")
         guard ModelRegistry.className(at: dir) == "KokoroPipeline" else { say("no Kokoro at \(dir.path)"); return false }
-        model.setSimpleMode(.speech, videoModelPath: nil, speechModelPath: dir.path, undoManager: nil)
-        guard model.simpleMode == .speech, model.firstNode(ofType: "TextToSpeech") != nil else {
+        let imageTab = model.activeTabID
+        guard let tab = openPreset(model, "speech", expecting: dir), model.firstNode(ofType: "TextToSpeech") != nil else {
             say("speech graph not set up"); return false
         }
         func wait(_ id: UUID) async -> QueueItem.Status? {
@@ -536,10 +547,197 @@ extension SmokeTest {
                    url.lastPathComponent, clip.duration, clip.sampleRate, clip.channels,
                    meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no",
                    model.displayedMedia.map { $0.kind.rawValue } ?? "none"))
-        model.setSimpleMode(.image, videoModelPath: nil, undoManager: nil)
-        let back = model.simpleMode == .image && model.firstNode(ofType: "Sampler") != nil
-        say("back to image graph: \(back)")
+        let shown = model.displayedMedia?.kind == .audio && tab.nodeResults["save"]?.kind == .audio
+        model.activate(imageTab)
+        let back = model.firstNode(ofType: "Sampler") != nil
+        say("shown on the node and in the pane: \(shown); back to the image tab: \(back)")
         return previewShown && model.history.count > historyBefore && clip.duration > 4 && clip.sampleRate == 24000
-            && meta[StandardNodes.graphMetadataKey] != nil && model.displayedMedia?.kind == .audio && back
+            && meta[StandardNodes.graphMetadataKey] != nil && shown && back
+    }
+}
+
+extension SmokeTest {
+    /// Opens a built-in preset in a new tab and checks it points at `folder`.
+    static func openPreset(_ model: AppModel, _ id: String, expecting folder: URL) -> WorkflowDocument? {
+        guard let p = model.preset(id: id) else { print("[smoke] no preset \(id)"); return nil }
+        let doc = model.openPreset(p)
+        let path: String? = model.firstNode(ofType: "LoadModel").flatMap { n in
+            if case .value(.string(let s))? = n.inputs["path"] { return s }; return nil
+        }
+        let ok = path.map { URL(fileURLWithPath: $0).standardizedFileURL == folder.standardizedFileURL } ?? false
+        print("[smoke] opened preset \(id) in tab “\(doc.name)”, model \(path ?? "none") \(ok ? "✓" : "≠ \(folder.path)")")
+        fflush(stdout)
+        return ok ? doc : nil
+    }
+}
+
+extension SmokeTest {
+    /// `--smoke-workflows` (no model needed; runs against a throwaway library): tabs with their own undo, saving,
+    /// renaming, moving and duplicating workflows, the restored session, presets, every Add to Workflow chain, the
+    /// per-workflow output folder with results on the nodes, and the menu shortcuts.
+    static func runWorkflows(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        var failures: [String] = []
+        func check(_ ok: Bool, _ what: String) {
+            say((ok ? "✓ " : "✗ ") + what)
+            if !ok { failures.append(what) }
+        }
+        let settle = { try? await Task.sleep(nanoseconds: 150_000_000) }  // lets undo groups close
+        say("library \(model.library.root.path)")
+        check(model.tabs.count == 1 && model.active.name == "Untitled" && !model.active.isDirty, "starts with one clean tab")
+
+        // Tabs and undo.
+        let first = model.active
+        guard let te = model.firstNode(ofType: "TextEncode") else { say("no TextEncode"); return false }
+        model.setLiteral(.string("a fox in tab one"), node: te.id, input: "prompt", undoManager: model.activeUndoManager)
+        await settle()
+        let second = model.newTab()
+        check(model.tabs.count == 2 && model.activeTabID == second.id && second.name == "Untitled 2", "⌘T opens “Untitled 2”")
+        model.setLiteral(.string("a fox in tab two"), node: te.id, input: "prompt", undoManager: model.activeUndoManager)
+        await settle()
+        check(first.isDirty && second.isDirty, "edits mark both tabs dirty")
+        model.activeUndoManager.undo()
+        await settle()
+        check(!second.isDirty && first.literalPrompt(te.id) == "a fox in tab one", "undo in tab two leaves tab one alone")
+        model.activeUndoManager.redo()
+        model.activate(first.id)
+        check(model.graph == first.graph && model.literal(te.id, "prompt")?.description == "a fox in tab one",
+              "switching tabs switches the graph")
+
+        // Saving and the library.
+        check(model.saveActive() == false, "an untitled tab needs a name to save")
+        check(model.saveAs(first, name: "Smoke Fox"), "save as “Smoke Fox”")
+        let url = model.library.workflows.appendingPathComponent("Smoke Fox.json")
+        check(FileManager.default.fileExists(atPath: url.path) && !first.isDirty && first.name == "Smoke Fox",
+              "file written, tab clean and named after it")
+        check(model.workflowTree.workflows.map(\.name) == ["Smoke Fox"], "library lists it")
+        model.setLiteral(.int(512), node: "latent", input: "width", undoManager: nil)
+        check(first.isDirty && model.saveActive() && !first.isDirty && (try? Graph.load(url)) == first.graph, "⌘S saves in place")
+        model.renameWorkflow(url, to: "Arctic Fox")
+        check(first.name == "Arctic Fox" && first.fileURL?.lastPathComponent == "Arctic Fox.json", "rename follows the open tab")
+        model.newWorkflowFolder(in: nil)
+        let folder = model.library.workflows.appendingPathComponent("New Folder")
+        model.moveWorkflow(first.fileURL!, to: folder)
+        check(first.fileURL?.deletingLastPathComponent().lastPathComponent == "New Folder", "move into a folder follows the tab")
+        model.duplicateWorkflow(first.fileURL!)
+        check(model.workflowTree.allWorkflows.map(\.name).sorted() == ["Arctic Fox", "Arctic Fox 2"], "duplicate")
+        let tabCount = model.tabs.count
+        model.open(first.fileURL!)
+        check(model.tabs.count == tabCount && model.activeTabID == first.id, "opening an open workflow switches to its tab")
+
+        // Presets.
+        check(model.presets.filter(\.isBuiltIn).count >= 15, "\(model.presets.count) presets")
+        let installed = model.installedModelIDs
+        say("models installed: \(installed.sorted().joined(separator: ", "))")
+        for p in model.presets {
+            let doc = model.openPreset(p)
+            let err = model.validationError
+            check(err == nil && doc.presetID == p.id && !doc.isDirty
+                  && !doc.graph.nodes.contains { n in n.inputs.values.contains(.value(.string(Preset.outputPlaceholder))) },
+                  "preset \(p.id) opens as “\(doc.name)”\(p.isAvailable(installed: installed) ? "" : " (model not installed)")"
+                  + (err.map { ": \($0)" } ?? ""))
+            model.closeTab(doc.id)
+        }
+        let fake = Preset(id: "x", name: "x", category: .image, models: ["no-such-model"], modelName: "", summary: "",
+                          symbol: "photo", graph: Graph())
+        check(!fake.isAvailable(installed: installed), "a preset with a missing model is unavailable")
+
+        // Add to Workflow on the text-to-image preset.
+        guard let t2i = model.preset(id: "qwen-txt2img") else { return false }
+        model.openPreset(t2i)
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let picture = cwd.appendingPathComponent("examples/inpaint-mask.png")
+        func groups() -> [String] { (model.graph.groups ?? []).map(\.title).sorted() }
+        model.setHiRes(true, undoManager: nil); model.groupAddedChain(.hires); model.tidyChainGroups()
+        check(model.isHiResEnabled && groups() == ["Hi-res Fix"], "hi-res fix arrives as a group")
+        model.remove(.hires)
+        check(!model.isHiResEnabled && groups().isEmpty, "removing it drops the group")
+        model.setReferenceImage(picture, undoManager: nil)
+        check(model.isActive(.reference) && model.canAdd(.inpaint) && model.canAdd(.outpaint), "reference image")
+        model.setMask(picture, undoManager: nil); model.groupAddedChain(.inpaint); model.tidyChainGroups()
+        check(model.maskPath != nil && groups() == ["Inpainting"], "inpaint mask arrives as a group")
+        model.add(.outpaint)
+        check(model.isOutpainting && model.maskPath == nil && groups() == ["Outpainting"], "outpaint replaces inpainting")
+        model.addLoRA(picture, undoManager: nil)
+        check(model.simpleLoRAs.count == 1, "LoRA spliced before the sampler")
+        model.remove(.lora); model.remove(.outpaint); model.remove(.reference)
+        check(model.validationError == nil && groups().isEmpty && model.referenceImageNode == nil, "everything removed again")
+        if let ltx = model.preset(id: "ltx-t2v") {
+            model.openPreset(ltx)
+            check(model.canAdd(.firstFrame) && !model.canAdd(.hires), "video presets offer a first frame, not hi-res")
+            model.setFirstFrame(picture, undoManager: nil)
+            check(model.isActive(.firstFrame), "first frame")
+        }
+
+        // Styles are per Text Encode node and applied at queue time.
+        model.activate(first.id)
+        model.setStyle("Watercolor", node: te.id, undoManager: nil)
+        let prepared = model.prepared(model.graph, seed: 1, workflow: first.name)
+        let p0: String = { if case .value(.string(let s))? = prepared[te.id]?.inputs["prompt"] { return s }; return "" }()
+        let dir: String = { if case .value(.string(let s))? = prepared["save"]?.inputs["directory"] { return s }; return "" }()
+        check(p0.lowercased().contains("watercolor") && prepared.metadata?["workflow"] == "Arctic Fox"
+              && dir == model.outputFolder(forWorkflow: "Arctic Fox"),
+              "queued graph: style applied, workflow recorded, saved into “<output>/Arctic Fox”")
+        model.setStyle(nil, node: te.id, undoManager: nil)
+
+        // A real (model-free) run in its own tab: results on the nodes and in the workflow's folder.
+        if var g = try? Graph.load(cwd.appendingPathComponent("examples/media-test.json")) {
+            for id in ["save_video", "save_audio"] { try? g.setValue(.string(model.outputDirectory), node: id, input: "directory") }
+            let doc = model.openTab(g, name: "Smoke Media")
+            model.enqueue(undoManager: nil)
+            if let item = model.queue.last {
+                model.activate(first.id)  // the result must land in its own tab, not the active one
+                while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            let onNodes = doc.nodeResults["save_video"]?.kind == .video && doc.nodeResults["save_audio"]?.kind == .audio
+            let files = model.history.filter { $0.workflow == "Smoke Media" }
+            check(onNodes && first.nodeResults.isEmpty, "results shown on the Save nodes of the tab that ran")
+            check(files.count >= 2 && files.allSatisfy { $0.url.deletingLastPathComponent().lastPathComponent == "Smoke Media" },
+                  "outputs saved in “<output>/Smoke Media” and listed with their workflow")
+            check(doc.outputs.count >= 2 && model.viewerItems.isEmpty == false, "the tab keeps its results for the viewer")
+            for f in files { try? FileManager.default.removeItem(at: f.url) }
+            try? FileManager.default.removeItem(at: URL(fileURLWithPath: model.outputFolder(forWorkflow: "Smoke Media")))
+            model.reloadHistory()
+        }
+
+        // Session: drafts and the tab list come back in a new model.
+        let dirty = model.newTab()
+        model.setLiteral(.string("never saved"), node: te.id, input: "prompt", undoManager: nil)
+        model.saveSession()
+        let names = model.tabs.map(\.name)
+        let restored = AppModel(persistSettings: false, autoloadModel: false, library: model.library, restoreSession: true)
+        check(restored.tabs.map(\.name) == names && restored.activeTabID == dirty.id, "tabs restored in order with the active one")
+        let rDirty = restored.tabs.first { $0.id == dirty.id }
+        let rFirst = restored.tabs.first { $0.id == first.id }
+        check(rDirty?.isDirty == true && rDirty?.literalPrompt(te.id) == "never saved" && rDirty?.fileURL == nil,
+              "an unsaved tab comes back from its draft, still marked unsaved")
+        check(rFirst?.fileURL == first.fileURL && rFirst?.isDirty == first.isDirty && rFirst?.graph == first.graph,
+              "a saved tab comes back with its file")
+
+        // Closing the last tab leaves a fresh one.
+        for d in model.tabs { model.closeTab(d.id) }
+        check(model.tabs.count == 1 && model.active.name == "Untitled", "closing every tab leaves a new one")
+
+        // The File menu's ⌘W closes a tab, not the window (exactly one ⌘W item).
+        let cmdW = Self.menuItems(NSApp.mainMenu).filter { $0.keyEquivalent == "w" && $0.keyEquivalentModifierMask == .command }
+        check(cmdW.map(\.title) == ["Close Tab"], "⌘W is Close Tab (found: \(cmdW.map(\.title)))")
+
+        say(failures.isEmpty ? "all workflow checks passed" : "\(failures.count) failed: \(failures.joined(separator: "; "))")
+        return failures.isEmpty
+    }
+
+    static func menuItems(_ menu: NSMenu?) -> [NSMenuItem] {
+        guard let menu else { return [] }
+        return menu.items.flatMap { [$0] + menuItems($0.submenu) }
+    }
+}
+
+extension WorkflowDocument {
+    func literalPrompt(_ node: String) -> String? {
+        if case .value(.string(let s))? = graph[node]?.inputs["prompt"] { return s }
+        return nil
     }
 }

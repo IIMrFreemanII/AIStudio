@@ -1,0 +1,232 @@
+{
+  "category" : "image",
+  "graph" : {
+    "groups" : [
+      {
+        "color" : "green",
+        "height" : 440,
+        "id" : "group1",
+        "title" : "Inpainting",
+        "width" : 1458,
+        "x" : 16,
+        "y" : 346
+      }
+    ],
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "flux-1-dev"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "A small wooden cabin with a lit window"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "height" : 0,
+          "width" : 0
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "denoise" : 1,
+          "latent" : {
+            "node" : "inpaint_latent",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "Sampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VAEDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "mlxcomfy",
+          "image" : {
+            "node" : "inpaint_composite",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1220,
+          "y" : 140
+        },
+        "type" : "SaveImage"
+      },
+      {
+        "id" : "refimage",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : -80
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "inpaint_encode",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "megapixels" : 1,
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 420
+        },
+        "type" : "VAEEncode"
+      },
+      {
+        "id" : "inpaint_mask",
+        "inputs" : {
+          "channel" : "luminance",
+          "invert" : false,
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 620
+        },
+        "type" : "LoadMask"
+      },
+      {
+        "id" : "inpaint_feather",
+        "inputs" : {
+          "feather" : 16,
+          "grow" : 0,
+          "mask" : {
+            "node" : "inpaint_mask",
+            "output" : "mask"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 620
+        },
+        "type" : "FeatherMask"
+      },
+      {
+        "id" : "inpaint_latent",
+        "inputs" : {
+          "latent" : {
+            "node" : "inpaint_encode",
+            "output" : "latent"
+          },
+          "mask" : {
+            "node" : "inpaint_feather",
+            "output" : "mask"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 500
+        },
+        "type" : "SetLatentMask"
+      },
+      {
+        "id" : "inpaint_composite",
+        "inputs" : {
+          "destination" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "mask" : {
+            "node" : "inpaint_feather",
+            "output" : "mask"
+          },
+          "source" : {
+            "node" : "decode",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1200,
+          "y" : 400
+        },
+        "type" : "ImageCompositeMasked"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "flux-inpaint",
+  "modelName" : "FLUX.1 [dev]",
+  "models" : [
+    "flux-1-dev"
+  ],
+  "name" : "Flux Inpaint",
+  "order" : 80,
+  "summary" : "Repaint only the masked part of a picture with Flux.",
+  "symbol" : "paintbrush.pointed"
+}

@@ -1,7 +1,8 @@
 import Foundation
 import GraphRuntime
 
-/// Simple-mode graph rewiring: reference image, inpainting, outpainting and the hi-res fix.
+/// Graph rewiring behind Add to Workflow (and the built-in presets): reference image, inpainting, outpainting and
+/// the hi-res fix.
 ///
 /// Each feature is a chain of nodes with fixed IDs spliced into the standard
 /// `LoadModel → TextEncode → EmptyLatent → Sampler → VAEDecode → SaveImage` graph, so it shows up in the node editor
@@ -289,10 +290,9 @@ extension AppModel {
 
     /// Points the image graph at another image model, rewiring image-to-image as that model needs.
     func setImageModel(path: String, undoManager: UndoManager?) {
-        guard path != modelPath || firstNode(ofType: "LoadModel").map({ n in
-            if case .value(.string(let p))? = n.inputs["path"] { return p != path }; return false
+        guard firstNode(ofType: "LoadModel").map({ n in
+            if case .value(.string(let p))? = n.inputs["path"] { return p != path }; return true
         }) == true else { return }
-        modelPath = path
         mutate("Change Image Model", undoManager: undoManager) { g in
             for n in g.nodes where n.type == "LoadModel" { try? g.setValue(.string(path), node: n.id, input: "path") }
             g = Self.syncingImg2Img(g)
