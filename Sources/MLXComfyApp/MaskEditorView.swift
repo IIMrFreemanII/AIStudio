@@ -16,7 +16,7 @@ struct MaskEditorView: View {
     let saveDirectory: URL
     let onSave: (URL) -> Void
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
     @State private var image: CGImage?
     @State private var baseMask: CGImage?
     @State private var baseOverlay: CGImage?
@@ -33,10 +33,10 @@ struct MaskEditorView: View {
                     .frame(width: 180)
                 HStack(spacing: 6) {
                     Image(systemName: "circle.fill").font(.system(size: 6)).foregroundStyle(MG.secondaryLabel)
-                    Slider(value: $brush, in: 0.01...0.25).frame(width: 140)
+                    MGSlider(value: $brush, in: 0.01...0.25).frame(width: 140)
                     Image(systemName: "circle.fill").font(.system(size: 14)).foregroundStyle(MG.secondaryLabel)
                 }
-                .help("Brush size")
+                .mgHelp("Brush size")
                 Button("Undo Stroke") { _ = strokes.popLast() }
                     .disabled(strokes.isEmpty)
                     .keyboardShortcut("z")
@@ -74,7 +74,7 @@ struct MaskEditorView: View {
                     })
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 } else {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    MGSpinner().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .background(MG.contentBackground)

@@ -35,7 +35,6 @@ struct RerouteView: View {
         }
         .mgShadow(MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
-        .contextMenu { NodeMenuItems(menu: actions.menu) }
     }
 
     func dot(filled: Bool) -> some View {
@@ -72,6 +71,7 @@ struct NoteView: View {
                 .font(.mg(size: 12))
                 .foregroundStyle(MG.label)
                 .scrollContentBackground(.hidden)
+                .mgAppKitScrollIndicators()
                 .padding(.horizontal, 6)
                 .padding(.bottom, 6)
         }
@@ -83,7 +83,6 @@ struct NoteView: View {
             .strokeBorder(selected ? MG.accent : MG.hueYellow.opacity(0.6), lineWidth: selected ? 2 : 0.5))
         .mgShadow(MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
-        .contextMenu { NodeMenuItems(menu: actions.menu) }
     }
 }
 
@@ -149,13 +148,6 @@ struct GroupView: View {
             .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named("canvas"))
                 .onChanged { moveChanged($0.translation) }
                 .onEnded { _ in moveEnded() })
-            .contextMenu {
-                Menu("Color") {
-                    ForEach(AppModel.groupColors, id: \.self) { c in Button(c.capitalized) { setColor(c) } }
-                }
-                Divider()
-                Button("Delete Group") { delete(false) }
-                Button("Delete Group and Its Nodes", role: .destructive) { delete(true) }
-            }
+
     }
 }

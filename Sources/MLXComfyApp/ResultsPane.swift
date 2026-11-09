@@ -19,13 +19,13 @@ struct ResultsPane: View {
                 Spacer()
                 if let url = doc.displayedURL {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
-                        .help("Reveal in Finder")
+                        .mgHelp("Reveal in Finder")
                 }
                 Button { model.openViewer() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
-                    .help("Open in the viewer (double-click the result)")
+                    .mgHelp("Open in the viewer (double-click the result)")
                     .disabled(model.displayedResult == nil)
                 Button { withAnimation { model.showResultsPane = false } } label: { Image(systemName: "chevron.down") }
-                    .help("Hide the results pane (⌥⌘R)")
+                    .mgHelp("Hide the results pane (⌥⌘R)")
             }
             .buttonStyle(.mg(.icon))
             .padding(.leading, 16)
@@ -62,11 +62,11 @@ struct ResultContent: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
                     .padding(padding)
-                    .contextMenu {
+                    .mgContextMenu {
                         if let url = doc.displayedURL {
-                            Button("Open in Viewer") { model.openViewer() }
-                            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                            Button("Copy Image") { Self.copy(image) }
+                            MGMenuItem.button("Open in Viewer", shortcut: KeyboardShortcut("y")) { model.openViewer() }
+                            MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                            MGMenuItem.button("Copy Image") { Self.copy(image) }
                         }
                     }
             } else {
@@ -163,14 +163,14 @@ struct ResultViewer: View {
                     if current?.kind == .image {
                         Text("\(Int(zoom * 100))%").font(.mgSubheadline.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
                         Button { withAnimation { zoom = 1; offset = .zero } } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
-                            .help("Fit (double-click)")
+                            .mgHelp("Fit (double-click)")
                     }
                     if let url = current?.url {
                         Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
-                            .help("Reveal in Finder")
+                            .mgHelp("Reveal in Finder")
                     }
                     Button { close() } label: { Image(systemName: "xmark") }
-                        .help("Close (Esc)")
+                        .mgHelp("Close (Esc)")
                 }
                 .buttonStyle(.mg(.icon))
                 .padding(.horizontal, 14)
@@ -237,7 +237,7 @@ struct ResultViewer: View {
                         .onEnded { _ in offsetStart = nil })
                     .onTapGesture(count: 2) { withAnimation { if zoom == 1 { zoom = 2 } else { zoom = 1; offset = .zero } } }
             } else {
-                ProgressView().tint(.white)
+                MGSpinner(tint: .white)
             }
         }
     }

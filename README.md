@@ -34,7 +34,16 @@ The app is a node graph, as in ComfyUI: every job is a workflow, and the window 
 - **Lines and controls:** 0.5 pt hairlines; rows 24 tall; buttons and fields 22 tall.
 - **Graph:** nodes are cards with a coloured category tile. Each data type has its own palette hue: model purple, conditioning orange, latent pink, image blue, mask green, text mint, video red, audio teal.
 
-macOS doesn't let apps restyle the menu bar, context menus, tooltips, open and save panels, or alerts, so those stay native.
+- **Chrome of its own:** everything inside the windows is drawn by the design system, including what macOS would normally draw:
+  - the window bar (the title and tools in a 52 pt bar beside the traffic lights);
+  - context menus and pop-up menus, with submenus, shortcuts and type-to-select (long lists get a search field);
+  - tooltips, alerts, confirmation dialogs, rename prompts and sheets;
+  - the loaded-models popover;
+  - sliders, steppers, progress bars and spinners, and scroll bars;
+  - the edit menu of text fields (Undo … Select All).
+- **Files:** Open, Save As and choosing an image, video or sound use an in-app picker over the app's own folders (the workflow library, Assets › Input and Output). **Browse in Finder…** hands over to the system's panel for anywhere else; choices that are always elsewhere on disk (Import, folder settings, Add Model Folder) go straight to Finder.
+
+The menu bar, the traffic lights, Finder's panels, the Dock menu and system prompts are drawn by macOS and stay native.
 
 - **Workflow tabs:** several workflows are open at once as tabs above the graph. ⌘T opens a blank text-to-image tab, ⌘N the preset gallery, ⌘W closes a tab (asking to save unsaved changes), ⇧⌘] and ⇧⌘[ switch tabs, and tabs can be dragged to reorder. Each tab has its own undo history and its own results. A dot marks unsaved changes. Every open tab, saved or not, comes back when you reopen the app.
 - **Workflows** (left rail, folder icon): your saved workflows, the `.json` files in `~/Documents/MLXComfyUI/workflows`, in folders. ⌘S saves the current tab there (the first time, it asks for a name), ⇧⌘S saves a copy. Click to open; right-click to rename, duplicate, move to a folder, reveal in Finder or move to the Trash. Drag a workflow onto a folder to move it. Open tabs follow a renamed or moved file.
@@ -106,7 +115,7 @@ build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --smoke-test "a lighthouse at dus
 build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI --snapshot /tmp/snaps
 ```
 
-`--smoke-test` queues one job through the same path as the Generate button and exits with status 0 on success. `--smoke-flux` (FLUX.1 [dev] with a LoRA, then image to image and back to Qwen), `--smoke-wan`, `--smoke-video`, `--smoke-sound`, `--smoke-music` and `--smoke-speech` open the matching preset in a tab and do the same with their installed models. `--smoke-media` checks video/audio I/O and model eviction without any model, and `--smoke-workflows` (no model needed) checks tabs and per-tab undo, saving and the library, the restored session, every preset and Add to Workflow chain (placed in free space), Arrange, Align, copy and paste, deleting wires, adding a node from a dropped wire, collapsing, and results landing on their nodes and in the workflow's folder. Smoke tests and snapshots use a throwaway library (or `--library-root <dir>`), never your workflows or open tabs. `--snapshot` renders the window offscreen to PNG files. `--export-presets Sources/MLXComfyLibrary/Presets` regenerates the built-in presets from the graph templates and Add to Workflow chains. `--open <file>` opens a graph (JSON, or a PNG/MP4/audio file saved by the app) at launch, and `--generate` also queues it, e.g. `open build/MLXComfyUI.app --args --open ~/graph.json --generate`.
+`--smoke-test` queues one job through the same path as the Generate button and exits with status 0 on success. `--smoke-flux` (FLUX.1 [dev] with a LoRA, then image to image and back to Qwen), `--smoke-wan`, `--smoke-video`, `--smoke-sound`, `--smoke-music` and `--smoke-speech` open the matching preset in a tab and do the same with their installed models. `--smoke-media` checks video/audio I/O and model eviction without any model, and `--smoke-workflows` (no model needed) checks tabs and per-tab undo, saving and the library, the restored session, every preset and Add to Workflow chain (placed in free space), Arrange, Align, copy and paste, deleting wires, adding a node from a dropped wire, collapsing, and results landing on their nodes and in the workflow's folder. `--smoke-chrome` (no model needed) drives the design-system chrome with real posted events: context menus on rows, nodes, wires and the canvas with their keyboard, a pop-up picker, the title bar, alerts, the save picker, tooltips and the text edit menu, and checks that no system menu opens. Smoke tests and snapshots use a throwaway library (or `--library-root <dir>`), never your workflows or open tabs. `--snapshot` renders the window offscreen to PNG files. `--export-presets Sources/MLXComfyLibrary/Presets` regenerates the built-in presets from the graph templates and Add to Workflow chains. `--open <file>` opens a graph (JSON, or a PNG/MP4/audio file saved by the app) at launch, and `--generate` also queues it, e.g. `open build/MLXComfyUI.app --args --open ~/graph.json --generate`.
 
 ## Build
 
@@ -247,12 +256,15 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `TorchPickle` (in MLXDiffusionCore) reads the `.pth`/`.pt` weights with a pickle interpreter that only understands tensors and dicts and never executes code.
 - `Sources/GraphRuntime`: graph model (Codable), node schemas and registry, the caching executor, events and cancellation. Also subgraph flattening, collapse and expand (`Subgraphs.swift`), and the Note and Reroute nodes. Also `PromptTemplate` (choices, wildcards, styles) and `PlotAxis` / `PlotSpec` (XY plots). It doesn't depend on MLX.
 - `Sources/NodesStandard`: LoadModel, LoRA, TextEncode, EmptyVideoLatent, VideoSampler, VideoDecode, TextToAudio, TextToMusic, TextToSpeech, the media nodes, PromptAssistant, EmptyLatent, Sampler, VAEEncode, VAEDecode, LoadImage, LoadMask, SetLatentMask, ImageCompositeMasked, FeatherMask, PadImage, ImageScale, SaveImage and PreviewImage.
-- `Sources/MLXComfyLibrary`: the workflow library (`WorkflowStore`: folders, unique names, rename, move, duplicate), the restored session (`SessionStore`: open tabs and their drafts), presets (`Preset`, `PresetCatalog`, with the built-in presets in `Presets/`), input assets (`AssetStore`: import, kinds, relative paths), and the editor's geometry (`GraphGeometry/`: wire routing, the Arrange layout and free-space placement, align and distribute, the node clipboard). Plain Foundation and CoreGraphics, unit-tested.
+- `Sources/MLXComfyLibrary`: the workflow library (`WorkflowStore`: folders, unique names, rename, move, duplicate), the restored session (`SessionStore`: open tabs and their drafts), presets (`Preset`, `PresetCatalog`, with the built-in presets in `Presets/`), input assets (`AssetStore`: import, kinds, relative paths), the editor's geometry (`GraphGeometry/`: wire routing, the Arrange layout and free-space placement, align and distribute, the node clipboard), and the chrome's (`UIGeometry/`: where menus, submenus and tooltips go on screen, scroll thumbs, menu keyboard navigation). Plain Foundation and CoreGraphics, unit-tested.
 - `Sources/MLXComfyApp`: the SwiftUI app.
   - `Design/`: the design system in SwiftUI:
     - `MGTokens.swift`: generated colours, text styles, spacing, radii, shadows and glass;
     - `MGTheme.swift`: JetBrains Mono, appearance, and the `.mgRoot()` every window goes through;
-    - the controls (`MGControls`: buttons, fields, switch, segmented picker, rows; `MGForm`: sections; `MGGlass`);
+    - the controls (`MGControls`: buttons, fields, switch, segmented picker, rows, slider, stepper, progress, spinner; `MGForm`: sections; `MGGlass`);
+    - floating surfaces in borderless child panels (`MGFloating`), with `MGMenu` (one item model for context menus, pop-up pickers and the menu bar), `MGTooltip` (`.mgHelp`) and `.mgPopover`;
+    - `MGPresent.swift`: alerts, confirmation dialogs, prompts and sheets, drawn over the window by a presenter (`.mgPresentationHost`);
+    - `MGWindowChrome.swift` (the title bars), `MGFilePicker.swift`, `MGScroll.swift` (scroll indicators) and `MGTextMenu.swift` (the text edit menu);
     - `MGMappings.swift`: which hue each data type, category and group colour uses.
 
     The tokens come from `design/metalgraphics/tokens.json`, the design system's own export. To re-sync, copy a new one over it and run `swift scripts/sync-design-tokens.swift`. The fonts are in `Resources/Fonts` with their OFL licence.

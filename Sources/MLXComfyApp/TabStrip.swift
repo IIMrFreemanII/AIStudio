@@ -27,7 +27,7 @@ struct TabStrip: View {
             }
             .buttonStyle(.mg(.icon))
             .controlSize(.large)
-            .help("New workflow from a preset (⌘N); ⌘T for a blank text-to-image tab")
+            .mgHelp("New workflow from a preset (⌘N); ⌘T for a blank text-to-image tab")
             .padding(.trailing, 8)
         }
         // The design system's document tab bar: 40 tall, 28 pt pills, a hairline under it.
@@ -72,7 +72,7 @@ struct TabButton: View {
     var body: some View {
         HStack(spacing: 6) {
             if model.runningDocID == doc.id {
-                ProgressView().controlSize(.mini)
+                MGSpinner().controlSize(.mini)
             } else {
                 Image(systemName: doc.fileURL == nil ? "doc" : "doc.text")
                     .font(.system(size: 11)).foregroundStyle(active ? MG.accent : MG.secondaryLabel)
@@ -86,9 +86,9 @@ struct TabButton: View {
                     }
                     .buttonStyle(.mg(.icon))
                     .controlSize(.mini)
-                    .help("Close tab (⌘W)")
+                    .mgHelp("Close tab (⌘W)")
                 } else if doc.isDirty {
-                    Circle().fill(MG.secondaryLabel).frame(width: 7, height: 7).help("Unsaved changes")
+                    Circle().fill(MG.secondaryLabel).frame(width: 7, height: 7).mgHelp("Unsaved changes")
                 }
             }
             .frame(width: 18, height: 18)
@@ -106,61 +106,71 @@ struct TabButton: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { model.activate(doc.id) }
-        .help(doc.fileURL?.path ?? "Not saved yet")
-        .contextMenu {
-            Button("Close Tab") { TabCommands.close(doc, model: model) }
-            Button("Close Other Tabs") {
-                for other in model.tabs where other.id != doc.id { TabCommands.close(other, model: model) }
+        .mgHelp(doc.fileURL?.path ?? "Not saved yet")
+        .mgContextMenu {
+            MGMenuItem.button("Close Tab", shortcut: KeyboardShortcut("w")) { TabCommands.close(doc, model: model) }
+            MGMenuItem.button("Close Other Tabs", enabled: model.tabs.count > 1) {
+                TabCommands.close(model.tabs.filter { $0.id != doc.id }, model: model)
             }
-            Divider()
-            Button("Duplicate Tab") {
-                model.openTab(doc.graph, name: doc.name, presetID: doc.presetID)
-            }
+            MGMenuItem.divider
+            MGMenuItem.button("Duplicate Tab") { model.openTab(doc.graph, name: doc.name, presetID: doc.presetID) }
             if let url = doc.fileURL {
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             }
         }
     }
 }
 
-/// Closing and saving tabs, shared by the tab strip and the menus.
+/// Closing and saving tabs, shared by the tab strip and the menus. Questions go through the window's presenter, so
+/// they finish later: `then` runs once the tab is closed or saved.
 @MainActor
 enum TabCommands {
     /// Closes a tab, asking first when it has unsaved changes.
-    static func close(_ doc: WorkflowDocument, model: AppModel) {
-        guard doc.isDirty else { model.closeTab(doc.id); return }
+    static func close(_ doc: WorkflowDocument, model: AppModel, then: (() -> Void)? = nil) {
+        guard doc.isDirty else { model.closeTab(doc.id); then?(); return }
         model.activate(doc.id)
-        let alert = NSAlert()
-        alert.messageText = "Save changes to “\(doc.name)”?"
-        alert.informativeText = "Your changes are lost if you don't save them."
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Don't Save")
-        alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            if save(doc, model: model) { model.closeTab(doc.id) }
-        case .alertSecondButtonReturn:
-            model.closeTab(doc.id)
-        default:
-            break
-        }
+        model.presenter.alert("Save changes to “\(doc.name)”?", message: "Your changes are lost if you don't save them.",
+                              actions: [
+                                  MGAlertAction(label: "Save") {
+                                      save(doc, model: model) { saved in
+                                          if saved { model.closeTab(doc.id); then?() }
+                                      }
+                                  },
+                                  .destructive("Don't Save") { model.closeTab(doc.id); then?() },
+                                  .cancel(),
+                              ])
+    }
+
+    /// Closes tabs one after another (each dirty one asks); stops at the first Cancel.
+    static func close(_ docs: [WorkflowDocument], model: AppModel) {
+        guard let first = docs.first else { return }
+        close(first, model: model) { close(Array(docs.dropFirst()), model: model) }
     }
 
     /// ⌘S: in place, or asks for a name (in the workflows folder) the first time.
-    @discardableResult
-    static func save(_ doc: WorkflowDocument, model: AppModel) -> Bool {
-        if let url = doc.fileURL { return model.save(doc, to: url) }
-        return saveAs(doc, model: model)
+    static func save(_ doc: WorkflowDocument, model: AppModel, then: ((Bool) -> Void)? = nil) {
+        if let url = doc.fileURL { then?(model.save(doc, to: url)); return }
+        saveAs(doc, model: model, then: then)
     }
 
-    @discardableResult
-    static func saveAs(_ doc: WorkflowDocument, model: AppModel) -> Bool {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.directoryURL = doc.fileURL?.deletingLastPathComponent() ?? model.library.workflows
-        panel.nameFieldStringValue = doc.name + ".json"
-        panel.message = "Workflows are kept in \(model.library.workflows.path) (subfolders are fine)."
-        guard panel.runModal() == .OK, let url = panel.url else { return false }
-        return model.save(doc, to: url)
+    /// Save As: a name and a folder in the workflow library, or anywhere through Finder.
+    static func saveAs(_ doc: WorkflowDocument, model: AppModel, then: ((Bool) -> Void)? = nil) {
+        model.presenter.chooseFile(
+            title: "Save Workflow",
+            message: "Workflows are kept in the library; subfolders are fine.",
+            roots: [MGFileRoot(title: "Workflows", url: model.library.workflows)],
+            mode: .save(name: doc.name, type: .json),
+            startIn: doc.fileURL?.deletingLastPathComponent(),
+            finder: {
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [.json]
+                panel.directoryURL = doc.fileURL?.deletingLastPathComponent() ?? model.library.workflows
+                panel.nameFieldStringValue = doc.name + ".json"
+                return panel.runModal() == .OK ? panel.url.map { [$0] } : nil
+            },
+            onChoose: { urls in
+                guard let url = urls.first else { return }
+                then?(model.save(doc, to: url))
+            })
     }
 }

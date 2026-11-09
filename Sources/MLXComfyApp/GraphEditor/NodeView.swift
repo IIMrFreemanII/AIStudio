@@ -105,7 +105,6 @@ struct NodeView: View {
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(borderColor, lineWidth: borderWidth))
         .mgShadow(selected ? MGShadow.float : MGShadow.control)
         .onTapGesture { actions.select(NSEvent.modifierFlags.contains(.shift) || NSEvent.modifierFlags.contains(.command)) }
-        .contextMenu { NodeMenuItems(menu: actions.menu) }
         .overlay(alignment: .top) {
             // The sampler's live preview hangs under the node while it runs, so the node's size doesn't jump.
             if let livePreview, !NodeLayout.showsResult(schema) {
@@ -142,7 +141,7 @@ struct NodeView: View {
                     .frame(width: 12, height: 20)
                     .contentShape(Rectangle())
                     .onTapGesture(perform: toggle)
-                    .help(node.isCollapsed ? "Expand (⌥C)" : "Collapse (⌥C)")
+                    .mgHelp(node.isCollapsed ? "Expand (⌥C)" : "Collapse (⌥C)")
             }
             if detail > 0 {
                 MGKindBadge(color: schema.tint,
@@ -154,7 +153,7 @@ struct NodeView: View {
             Spacer(minLength: 4)
             if node.isCollapsed && linkCount > 0 && !isRunning {
                 Text("\(linkCount)").font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
-                    .help("\(linkCount) connections")
+                    .mgHelp("\(linkCount) connections")
             }
             if detail > 0 { statusBadge }
         }
@@ -235,7 +234,7 @@ struct NodeView: View {
         switch state {
         case .running(let step, let total)?:
             HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
+                MGSpinner().controlSize(.mini)
                 if total > 0 { Text("\(step)/\(total)").font(.mg(size: 10).monospacedDigit()) }
             }
         case .done(let s, _)?:
@@ -267,7 +266,7 @@ struct NodeView: View {
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("canvas"))
                         .onChanged { actions.inputDragChanged(spec.name, $0.location) }
                         .onEnded { actions.inputDragEnded(spec.name, $0.location) })
-                .help("\(spec.name): \(spec.type.rawValue)")
+                .mgHelp("\(spec.name): \(spec.type.rawValue)")
             if let source = modelSources[spec.name], detail == 2 {
                 // The model wire is hidden: name its source instead.
                 Text("⟵ \(source)")
@@ -277,7 +276,7 @@ struct NodeView: View {
                     .background(SocketType.model.color.opacity(0.15), in: Capsule())
                     .offset(x: -11)
                     .onTapGesture(count: 2) { actions.revealSource?(spec.name) }
-                    .help("\(spec.name) from \(source) — the wire is hidden (View › Show Model Wires). Double-click to show it.")
+                    .mgHelp("\(spec.name) from \(source) — the wire is hidden (View › Show Model Wires). Double-click to show it.")
             } else if detail == 2 {
                 Text(boundInputs[spec.name].map { "\(spec.name) ← \($0)" } ?? spec.name)
                     .font(.mg(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
@@ -299,7 +298,7 @@ struct NodeView: View {
                     DragGesture(minimumDistance: 1, coordinateSpace: .named("canvas"))
                         .onChanged { actions.outputDragChanged(spec.name, $0.location) }
                         .onEnded { actions.outputDragEnded(spec.name, $0.location) })
-                .help("\(spec.name): \(spec.type.rawValue) — drag to an input")
+                .mgHelp("\(spec.name): \(spec.type.rawValue) — drag to an input")
         }
     }
 
@@ -317,7 +316,7 @@ struct NodeView: View {
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
                 .padding(.vertical, 2)
-                .help("Edit in the inspector")
+                .mgHelp("Edit in the inspector")
         case (.bool, _):
             Toggle(spec.name, isOn: bindings.bool(node.id, spec.name)).font(font).toggleStyle(MGCheckboxStyle())
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -344,32 +343,36 @@ struct NodeView: View {
     }
 }
 
-struct NodeMenuItems: View {
-    let menu: NodeMenu
-
-    var body: some View {
-        if let open = menu.open { Button("Open Subgraph", action: open) }
-        if let expand = menu.expand { Button("Expand Subgraph", action: expand) }
-        if menu.open != nil || menu.expand != nil { Divider() }
-        if let toggle = menu.toggleCollapse { Button(menu.isCollapsed ? "Expand Node" : "Collapse Node", action: toggle) }
-        if let copy = menu.copy { Button("Copy", action: copy) }
-        if let duplicate = menu.duplicate { Button("Duplicate", action: duplicate) }
-        if let arrange = menu.arrange { Button("Arrange Selection", action: arrange) }
-        if let align = menu.align {
-            Menu("Align") {
-                ForEach(AlignMode.allCases) { mode in
-                    Button(mode.title) { align(mode) }.disabled(menu.alignCount < mode.minimumCount)
-                    if mode == .right || mode == .bottom { Divider() }
-                }
-            }
-        }
-        if let group = menu.group { Button("Group Selection", action: group) }
-        if let collapse = menu.collapse { Button("Collapse to Subgraph", action: collapse) }
-        if let delete = menu.delete {
-            Divider()
-            Button("Delete", role: .destructive, action: delete)
-        }
+/// A node's context menu.
+@MainActor
+func nodeMenuItems(_ menu: NodeMenu) -> [MGMenuItem] {
+    var items: [MGMenuItem] = []
+    if let open = menu.open { items.append(.button("Open Subgraph", action: open)) }
+    if let expand = menu.expand {
+        items.append(.button("Expand Subgraph", shortcut: KeyboardShortcut("g", modifiers: [.command, .shift]), action: expand))
     }
+    if menu.open != nil || menu.expand != nil { items.append(.divider) }
+    if let toggle = menu.toggleCollapse {
+        items.append(.button(menu.isCollapsed ? "Expand Node" : "Collapse Node",
+                             shortcut: KeyboardShortcut("c", modifiers: .option), action: toggle))
+    }
+    if let copy = menu.copy { items.append(.button("Copy", shortcut: KeyboardShortcut("c"), action: copy)) }
+    if let duplicate = menu.duplicate { items.append(.button("Duplicate", shortcut: KeyboardShortcut("d"), action: duplicate)) }
+    if let arrange = menu.arrange {
+        items.append(.button("Arrange Selection", shortcut: KeyboardShortcut("l", modifiers: [.command, .shift]), action: arrange))
+    }
+    if let align = menu.align {
+        items.append(.menu("Align") { MGMenuItem.alignItems(count: menu.alignCount, align) })
+    }
+    if let group = menu.group { items.append(.button("Group Selection", shortcut: KeyboardShortcut("g"), action: group)) }
+    if let collapse = menu.collapse {
+        items.append(.button("Collapse to Subgraph", shortcut: KeyboardShortcut("g", modifiers: [.command, .option]), action: collapse))
+    }
+    if let delete = menu.delete {
+        items.append(.divider)
+        items.append(.button("Delete", shortcut: KeyboardShortcut(.delete, modifiers: []), destructive: true, action: delete))
+    }
+    return items
 }
 
 /// The result area of a Save / Preview node: the image, a video poster with a play badge, or a waveform.
@@ -401,6 +404,6 @@ struct NodeResultView: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
-        .help(result?.url?.lastPathComponent.appending(" — double-click to open") ?? "The result shows here after a run")
+        .mgHelp(result?.url?.lastPathComponent.appending(" — double-click to open") ?? "The result shows here after a run")
     }
 }

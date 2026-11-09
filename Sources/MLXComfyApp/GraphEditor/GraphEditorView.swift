@@ -83,7 +83,6 @@ struct GraphEditorView: View {
                     }.exclusively(before: SpatialTapGesture(coordinateSpace: .named("canvas")).onEnded { v in
                         backgroundTap(at: v.location, wires: wires)
                     }))
-                    .contextMenu { canvasMenu }
 
                 ForEach(level.groups ?? []) { group in groupView(group) }
 
@@ -108,6 +107,8 @@ struct GraphEditorView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .mgContextMenu(at: { loc in contextItems(at: loc, wires: wires) })
+            .mgTestAnchor("graph-canvas")
             .coordinateSpace(name: "canvas")
             .clipped()
             .onDrop(of: [.fileURL, .plainText], isTargeted: $dropTargeted) { providers, loc in
@@ -206,7 +207,7 @@ struct GraphEditorView: View {
             }
             return .handled
         }
-        .sheet(isPresented: $model.showPalette, onDismiss: { model.pendingWire = nil }) {
+        .mgSheet("node-palette", isPresented: $model.showPalette, onDismiss: { model.pendingWire = nil }) {
             NodePalette(wire: model.pendingWire) { type in
                 if let w = model.pendingWire {
                     model.addNode(type: type, connecting: w, undoManager: undoManager)
@@ -221,14 +222,73 @@ struct GraphEditorView: View {
         }
     }
 
-    @ViewBuilder var canvasMenu: some View {
-        Button("Add Node…") { model.pendingWire = nil; model.paletteLocation = nil; model.showPalette = true }
-        Menu("Add to Workflow") { AddToWorkflowItems(model: model) }
-        Button("Paste") { model.paste(at: hoverLocation.map(toGraph), undoManager: undoManager) }
-            .disabled(!model.canPaste)
-        Divider()
-        Button("Arrange Graph") { model.arrange(selectionOnly: false, undoManager: undoManager) }
-        Button("Fit Graph to Window") { fitToContent() }
+    // MARK: context menus
+
+    /// What a right-click at `loc` (canvas coordinates) offers: the node's, wire's or group's commands, or the canvas's.
+    func contextItems(at loc: CGPoint, wires: [WireInfo]) -> [MGMenuItem] {
+        hoverLocation = loc
+        if let id = node(at: loc), let n = model.editorGraph[id] { return nodeMenuItems(actions(for: n).menu) }
+        if let w = wire(near: loc, in: wires) {
+            selectedWire = w.ref
+            return [
+                .button("Insert Reroute") {
+                    model.insertReroute(into: w.target, input: w.input, at: toGraph(loc), undoManager: undoManager)
+                },
+                .divider,
+                .button("Delete Wire", shortcut: KeyboardShortcut(.delete, modifiers: []), destructive: true) {
+                    model.disconnect(node: w.target, input: w.input, undoManager: undoManager)
+                    selectedWire = nil
+                },
+            ]
+        }
+        if let g = group(at: loc) { return groupItems(g) }
+        return canvasItems(at: loc)
+    }
+
+    func canvasItems(at loc: CGPoint) -> [MGMenuItem] {
+        [
+            .button("Add Node…", shortcut: KeyboardShortcut("k")) {
+                model.pendingWire = nil
+                model.paletteLocation = toGraph(loc)
+                model.showPalette = true
+            },
+            .menu("Add to Workflow") { model.addToWorkflowItems() },
+            .button("Paste", shortcut: KeyboardShortcut("v"), enabled: model.canPaste) {
+                model.paste(at: toGraph(loc), undoManager: undoManager)
+            },
+            .divider,
+            .button("Arrange Graph", shortcut: KeyboardShortcut("l", modifiers: [.command, .shift])) {
+                model.arrange(selectionOnly: false, undoManager: undoManager)
+            },
+            .button("Fit Graph to Window") { fitToContent() },
+        ]
+    }
+
+    /// The group under `loc`: its frame, or the title floating above it.
+    func group(at loc: CGPoint) -> GraphGroup? {
+        (model.editorGraph.groups ?? []).reversed().first { g in
+            let r = viewRect(CGRect(x: g.x, y: g.y, width: g.width, height: g.height))
+            return r.contains(loc) || CGRect(x: r.minX, y: r.minY - 28, width: r.width, height: 28).contains(loc)
+        }
+    }
+
+    func groupItems(_ group: GraphGroup) -> [MGMenuItem] {
+        model.selectedGroup = group.id
+        model.selection = []
+        return [
+            .menu("Color") {
+                for c in AppModel.groupColors {
+                    MGMenuItem.button(c.capitalized, checked: group.color == c) {
+                        model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c }
+                    }
+                }
+            },
+            .divider,
+            .button("Delete Group") { model.deleteGroup(group.id, withNodes: false, undoManager: undoManager) },
+            .button("Delete Group and Its Nodes", destructive: true) {
+                model.deleteGroup(group.id, withNodes: true, undoManager: undoManager)
+            },
+        ]
     }
 
     // MARK: nodes
@@ -834,7 +894,7 @@ struct GraphEditorView: View {
             if !model.editingPath.isEmpty {
                 HStack(spacing: 6) {
                     Button { model.exitSubgraph() } label: { Image(systemName: "chevron.left") }
-                        .help("Back (Esc)")
+                        .mgHelp("Back (Esc)")
                     Button("Graph") { model.exitSubgraph(to: 0) }.buttonStyle(.mg(.borderless))
                     ForEach(Array(model.editingTitles.enumerated()), id: \.offset) { i, title in
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(MG.secondaryLabel)
@@ -870,19 +930,19 @@ struct GraphEditorView: View {
             }
             Divider().frame(height: 16)
             Button { fitToContent() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
-                .help("Fit graph to window")
+                .mgHelp("Fit graph to window")
             Button { model.arrange(selectionOnly: model.selection.count > 1, undoManager: undoManager) } label: {
                 Image(systemName: "rectangle.3.group")
             }
-            .help(model.selection.count > 1 ? "Arrange selection (⇧⌘L)" : "Arrange graph (⇧⌘L)")
+            .mgHelp(model.selection.count > 1 ? "Arrange selection (⇧⌘L)" : "Arrange graph (⇧⌘L)")
             Button { showMinimap.toggle() } label: { Image(systemName: showMinimap ? "map.fill" : "map") }
-                .help(showMinimap ? "Hide minimap" : "Show minimap")
+                .mgHelp(showMinimap ? "Hide minimap" : "Show minimap")
             Button {
                 model.pendingWire = nil
                 model.paletteLocation = nil
                 model.showPalette = true
             } label: { Image(systemName: "plus.square.on.square") }
-                .help("Add node (⌘K or double-click)")
+                .mgHelp("Add node (⌘K or double-click)")
         }
         .buttonStyle(.mg(.icon))
         .padding(.horizontal, 8)
@@ -963,7 +1023,7 @@ struct GridBackground: View {
 /// Node search. With a pending wire it lists only nodes that can connect to it, naming the socket that would.
 struct NodePalette: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
     @State private var query = ""
     var wire: AppModel.PendingWire? = nil
     let add: (String) -> Void
@@ -987,7 +1047,7 @@ struct NodePalette: View {
                         .font(.mg(size: 10, weight: .bold)).foregroundStyle(wire.type.color)
                         .padding(.horizontal, 6).padding(.vertical, 3)
                         .background(wire.type.color.opacity(0.15), in: Capsule())
-                        .help(wire.fromOutput ? "Nodes that take this" : "Nodes that can feed this")
+                        .mgHelp(wire.fromOutput ? "Nodes that take this" : "Nodes that can feed this")
                 }
                 TextField(wire == nil ? "Search nodes" : (wire!.fromOutput ? "Connect to…" : "Feed from…"), text: $query)
                     .textFieldStyle(.plain)

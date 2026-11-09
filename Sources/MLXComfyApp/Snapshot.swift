@@ -108,7 +108,7 @@ enum Snapshot {
             model.selection = [src]
             await render(model, to: dir.appendingPathComponent("7-load-image-inspector.png"))
             model.selection = []
-            await render(MaskEditorView(imageURL: ref, existingMask: mask, saveDirectory: dir) { _ in },
+            await render(sheet(MaskEditorView(imageURL: ref, existingMask: mask, saveDirectory: dir) { _ in }),
                          to: dir.appendingPathComponent("8-mask-editor.png"), size: CGSize(width: 900, height: 760))
             model.add(.outpaint)
             model.setHiRes(true, undoManager: nil)
@@ -121,15 +121,16 @@ enum Snapshot {
         }
         model.closeTab(inpaint.id)
 
-        // 11. Settings; 12. the XY plot sheet; 13. the preset gallery; 14. save as preset.
-        await render(SettingsView().environment(model).environment(store), to: dir.appendingPathComponent("11-settings.png"),
-                     size: CGSize(width: 600, height: 900))
-        await render(PlotSheet().environment(model), to: dir.appendingPathComponent("12-plot-sheet.png"),
-                     size: CGSize(width: 520, height: 620))
-        await render(PresetGallery().environment(model).environment(store), to: dir.appendingPathComponent("13-preset-gallery.png"),
-                     size: CGSize(width: 820, height: 640))
-        await render(SavePresetSheet().environment(model), to: dir.appendingPathComponent("14-save-preset.png"),
-                     size: CGSize(width: 440, height: 360))
+        // 11. Settings; 12–14. the XY plot sheet, the preset gallery and save as preset, on the window.
+        await render(SettingsView().mgWindow("Settings").environment(model).environment(store),
+                     to: dir.appendingPathComponent("11-settings.png"), size: CGSize(width: 600, height: 900))
+        panel(.workflows)
+        for (n, id, view) in [(12, "plot", AnyView(PlotSheet())), (13, "gallery", AnyView(PresetGallery())),
+                              (14, "save-preset", AnyView(SavePresetSheet()))] {
+            model.presenter.present(id: id) { view }
+            await render(model, to: dir.appendingPathComponent("\(n)-\(["plot-sheet", "preset-gallery", "save-preset"][n - 12]).png"))
+            model.presenter.dismiss(id)
+        }
 
         // 15–17. A/B compare in the results pane; 18. the viewer; 19. history as a grid in the Queue panel.
         let images = model.history.indices.filter { model.history[$0].kind == .image }
@@ -218,11 +219,121 @@ enum Snapshot {
         m.closeTab(edit.id)
         let st = ModelStore()
         st.adopt(m.modelPath)
-        await render(ModelManagerView().environment(m).environment(st),
+        await render(ModelManagerView().mgWindow("Models").environment(m).environment(st),
                      to: dir.appendingPathComponent("28-models-window.png"), size: CGSize(width: 680, height: 900))
         m.loadedModels = [LoadedModel(key: "model:/Users/me/models/qwen-turbo-mlx", bytes: 24_100_000_000, pinned: false)]
-        await render(LoadedModelsView().environment(m), to: dir.appendingPathComponent("29-loaded-models.png"),
-                     size: CGSize(width: 340, height: 220))
+        await render(onCanvas(MGPopoverSurface { LoadedModelsView().environment(m) }
+                        .frame(width: 320, height: LoadedModelsView.height(m))),
+                     to: dir.appendingPathComponent("29-loaded-models.png"), size: CGSize(width: 380, height: LoadedModelsView.height(m) + 60))
+
+        await renderChrome(m, to: dir)
+    }
+
+    /// 41–49: the design system's own menus, picker, tooltips, alert, prompt, file pickers and controls.
+    static func renderChrome(_ model: AppModel, to dir: URL) async {
+        let session = MGMenuSession(items: [], window: nil)
+        func menu(_ items: [MGMenuItem], highlighted: Int? = nil, searchable: Bool = false, query: String = "",
+                  width: CGFloat = 0) -> some View {
+            let level = MGMenuLevel(items: items, searchable: searchable)
+            level.query = query
+            level.highlighted = highlighted
+            level.minWidth = width
+            let size = level.size(maxHeight: 420)
+            level.frame = CGRect(origin: .zero, size: size)
+            return MGMenuView(level: level, session: session).frame(width: size.width, height: size.height)
+        }
+        let node = nodeMenuItems(NodeMenu(toggleCollapse: {}, copy: {}, duplicate: {}, arrange: {}, align: { _ in },
+                                          alignCount: 3, group: {}, collapse: {}, delete: {}))
+        let align = MGMenuItem.alignItems(count: 3) { _ in }
+        await render(onCanvas(HStack(alignment: .top, spacing: -6) {
+            menu(node, highlighted: 5)
+            menu(align, highlighted: 1).padding(.top, 5 + 22 * 5)
+        }), to: dir.appendingPathComponent("41-context-menu.png"), size: CGSize(width: 620, height: 380))
+        let models = ["Qwen-Image 2.1", "Qwen-Image Edit", "FLUX.1 [dev]", "FLUX.1 [schnell]", "LTX-Video 2", "Wan 2.2 T2V",
+                      "Wan 2.2 I2V", "Stable Audio Open", "ACE-Step", "Kokoro", "SDXL Turbo", "SD 3.5 Medium", "Qwen3 4B"]
+        await render(onCanvas(VStack(alignment: .leading, spacing: 4) {
+            MGPicker(selection: .constant("Qwen-Image 2.1"), options: models.map { ($0, $0) })
+            menu(models.filter { $0.localizedCaseInsensitiveContains("qw") }.map { MGMenuItem.button($0, checked: $0 == "Qwen-Image 2.1") {} },
+                 highlighted: 0, searchable: true, query: "qw", width: 220)
+        }), to: dir.appendingPathComponent("42-picker-search.png"), size: CGSize(width: 360, height: 260))
+        await render(onCanvas(VStack(alignment: .leading, spacing: 16) {
+            let short = "Queue the current workflow (⌘↩)"
+            MGTooltipView(text: short, card: false).frame(width: MGTooltipController.size(of: short).width,
+                                                          height: MGTooltipController.size(of: short).height)
+            let long = "Qwen-Image 2.1 (qwen-turbo-mlx) — MLX active memory 24.1 of 128 GB · click for loaded models"
+            MGTooltipView(text: long, card: true).frame(width: MGTooltipController.size(of: long).width,
+                                                        height: MGTooltipController.size(of: long).height)
+        }), to: dir.appendingPathComponent("43-tooltips.png"), size: CGSize(width: 480, height: 160))
+
+        // The alert, the rename prompt and both file pickers, on the window.
+        UserDefaults.standard.set(SidebarPanel.workflows.rawValue, forKey: "sidebarPanel")
+        _ = model.newTab()
+        if let te = model.firstNode(ofType: "TextEncode") {
+            model.setLiteral(.string("A lighthouse at dusk"), node: te.id, input: "prompt", undoManager: model.activeUndoManager)
+        }
+        TabCommands.close(model.active, model: model)
+        await render(model, to: dir.appendingPathComponent("44-alert.png"))
+        if let top = model.presenter.top { model.presenter.dismiss(top.id) }
+        model.presenter.present(id: "rename") {
+            MGPromptSheet(title: "Rename “Fox at Sunrise”", actionTitle: "Rename", text: "Fox at Sunrise") { _ in }
+        }
+        await render(model, to: dir.appendingPathComponent("45-rename.png"))
+        model.presenter.dismiss("rename")
+        model.chooseAsset([.image], title: "Image", message: "Images from elsewhere are copied into Assets › Input.") { _ in }
+        await render(model, to: dir.appendingPathComponent("46-file-open.png"))
+        model.presenter.dismiss("file-picker")
+        TabCommands.saveAs(model.active, model: model)
+        await render(model, to: dir.appendingPathComponent("47-file-save.png"))
+        model.presenter.dismiss("file-picker")
+
+        // Controls, and a list with its scroll thumb showing.
+        MGScrollDebug.alwaysVisible = true
+        await render(onCanvas(ControlGallery()), to: dir.appendingPathComponent("48-controls.png"), size: CGSize(width: 560, height: 360))
+        MGScrollDebug.alwaysVisible = false
+    }
+
+    /// Content on the window background, centred (for surfaces rendered on their own).
+    static func onCanvas<V: View>(_ v: V) -> some View {
+        v.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(MG.windowBackground)
+    }
+
+    /// A sheet's content with the presenter's chrome, on the dimmed window background.
+    static func sheet<V: View>(_ v: V) -> some View {
+        v.mgSheetChrome().padding(24).frame(maxWidth: .infinity, maxHeight: .infinity).background(MG.windowBackground)
+            .overlay(MG.scrim.allowsHitTesting(false).opacity(0.0))
+    }
+
+    struct ControlGallery: View {
+        @State private var slider = 0.4
+        @State private var steps = 4
+        @State private var on = true
+        @State private var mode = "Brush"
+
+        var body: some View {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 14) {
+                    MGFormRow("Brush") { MGSlider(value: $slider, in: 0...1).frame(width: 180) }
+                    MGFormRow("Batch") { HStack { Text("\(steps) runs").foregroundStyle(MG.secondaryLabel); MGStepper(value: $steps, in: 1...16) } }
+                    MGFormRow("Style") { MGPicker(selection: $mode, options: [("Brush", "Brush"), ("Eraser", "Eraser")]) }
+                    MGFormRow("Add") { MGMenuButton("Add to Workflow") { MGMenuItem.button("Hi-res Fix") {} } }
+                    MGProgress(value: 0.62).frame(width: 220)
+                    MGProgress().frame(width: 220)
+                    HStack(spacing: 14) {
+                        MGSpinner().controlSize(.mini)
+                        MGSpinner().controlSize(.small)
+                        MGSpinner()
+                    }
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(1..<40) { i in Text("Workflow \(i)").mgRow(selected: i == 3) }
+                    }
+                }
+                .mgScrollIndicators()
+                .frame(width: 200, height: 300)
+                .background(RoundedRectangle(cornerRadius: MGRadius.md).fill(MG.contentBackground))
+            }
+        }
     }
 
     /// 31–40: the graph editor on the inpaint preset with Outpaint and Hi-res added: before and after Arrange, each
@@ -266,8 +377,8 @@ enum Snapshot {
         if let sampler = model.firstNode(ofType: "Sampler") {
             let wire = AppModel.PendingWire(node: sampler.id, socket: "latent", type: .latent, fromOutput: true,
                                             point: GraphPoint(x: 0, y: 0))
-            await render(NodePalette(wire: wire) { _ in }.environment(model), to: dir.appendingPathComponent("40-wire-palette.png"),
-                         size: CGSize(width: 420, height: 360))
+            await render(sheet(NodePalette(wire: wire) { _ in }.environment(model)), to: dir.appendingPathComponent("40-wire-palette.png"),
+                         size: CGSize(width: 480, height: 420))
         }
     }
 

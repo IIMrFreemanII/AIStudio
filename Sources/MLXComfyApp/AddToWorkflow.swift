@@ -1,5 +1,6 @@
 import AppKit
 import GraphRuntime
+import MLXComfyLibrary
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -76,9 +77,9 @@ extension AppModel {
         switch a {
         case .reference:
             // Copied into the input folder first, so the workflow keeps working when the original moves.
-            if let url = Self.chooseFile([.image], message: "Choose the image to edit, redraw or use as a reference."),
-               let copy = importAssets([url]).first {
-                setReferenceImage(copy, undoManager: undo)
+            chooseAsset([.image], title: "Reference Image", message: "Choose the image to edit, redraw or use as a reference.") { copy in
+                self.setReferenceImage(copy, undoManager: undo)
+                self.tidyChainGroups()
             }
         case .inpaint:
             guard let ref = referenceImageNode, let path = referenceImagePath else {
@@ -98,9 +99,9 @@ extension AppModel {
                 addLoRA(url, undoManager: undo)
             }
         case .firstFrame:
-            if let url = Self.chooseFile([.image], message: "Choose the image the clip starts from."),
-               let copy = importAssets([url]).first {
-                setFirstFrame(copy, undoManager: undo)
+            chooseAsset([.image], title: "First Frame", message: "Choose the image the clip starts from.") { copy in
+                self.setFirstFrame(copy, undoManager: undo)
+                self.tidyChainGroups()
             }
         }
         tidyChainGroups()
@@ -147,6 +148,23 @@ extension AppModel {
         }
     }
 
+    /// A file for a Load node from Assets › Input or Output in the app's picker, or from anywhere through Finder;
+    /// files from outside the input folder are copied into it first, so the workflow keeps working when they move.
+    func chooseAsset(_ types: [UTType], title: String, message: String, asMask: Bool = false,
+                     then: @escaping @MainActor (URL) -> Void) {
+        presenter.chooseFile(
+            title: title, message: message,
+            roots: [MGFileRoot(title: "Input", url: library.input),
+                    MGFileRoot(title: "Output", url: URL(fileURLWithPath: outputDirectory))],
+            mode: .open(types: types, multiple: false),
+            finder: { Self.chooseFile(types, message: message).map { [$0] } },
+            onChoose: { urls in
+                guard let url = urls.first else { return }
+                if self.assetStore.relativePath(url) != nil { then(url) }
+                else if let copy = self.importAssets([url], asMask: asMask).first { then(copy) }
+            })
+    }
+
     static func chooseFile(_ types: [UTType], message: String) -> URL? {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = types
@@ -155,18 +173,24 @@ extension AppModel {
     }
 }
 
-/// The Add to Workflow items, for menus and context menus.
-struct AddToWorkflowItems: View {
-    let model: AppModel
-
-    var body: some View {
-        ForEach(AddOn.allCases, id: \.self) { a in
-            if model.isActive(a) && [.outpaint, .hires].contains(a) {
-                Button("Remove \(a.groupTitle ?? a.title)") { model.remove(a) }
-            } else {
-                Button(a == .inpaint && model.isActive(a) ? "Edit Inpaint Mask…" : a.title) { model.add(a) }
-                    .disabled(!model.canAdd(a))
+extension AppModel {
+    /// The Add to Workflow items, for the Graph menu, the canvas menu and the inspector.
+    func addToWorkflowItems() -> [MGMenuItem] {
+        AddOn.allCases.map { a in
+            if isActive(a) && [.outpaint, .hires].contains(a) {
+                return .button("Remove \(a.groupTitle ?? a.title)") { self.remove(a) }
             }
+            return .button(a == .inpaint && isActive(a) ? "Edit Inpaint Mask…" : a.title, enabled: canAdd(a)) { self.add(a) }
+        }
+    }
+}
+
+extension MGMenuItem {
+    /// Align and Distribute, enabled for how many nodes are selected.
+    static func alignItems(count: Int, _ align: @escaping @MainActor (AlignMode) -> Void) -> [MGMenuItem] {
+        AlignMode.allCases.flatMap { mode -> [MGMenuItem] in
+            let item = MGMenuItem.button(mode.title, enabled: count >= mode.minimumCount) { align(mode) }
+            return mode == .right || mode == .bottom ? [item, .divider] : [item]
         }
     }
 }

@@ -7,7 +7,7 @@ import SwiftUI
 /// to the Models window.
 struct PresetGallery: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @State private var query = ""
 
@@ -56,6 +56,7 @@ struct PresetGallery: View {
                 }
                 .padding(18)
             }
+            .mgScrollIndicators()
             .background(MG.groupedBackground)
             MGDivider()
             HStack {
@@ -70,7 +71,6 @@ struct PresetGallery: View {
             .padding(14)
         }
         .frame(width: 820, height: 640)
-        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
     }
 }
 
@@ -116,7 +116,7 @@ struct PresetCard: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { if available { open() } else { NSSound.beep() } }
-        .help(available ? preset.summary : "Needs \(preset.modelName) — get it in the Models window")
+        .mgHelp(available ? preset.summary : "Needs \(preset.modelName) — get it in the Models window")
         .task(id: preset.id) {
             if let url = PresetCatalog.thumbnailURL(preset) { thumbnail = NSImage(contentsOf: url) }
         }
@@ -126,7 +126,7 @@ struct PresetCard: View {
 /// File › Save as Preset…: name, category and a short description; the latest result becomes the card's picture.
 struct SavePresetSheet: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
     @State private var name = ""
     @State private var category: Preset.Category = .image
     @State private var summary = ""
@@ -137,11 +137,7 @@ struct SavePresetSheet: View {
             MGSection {
                 MGFormRow("Name") { TextField("Name", text: $name).frame(maxWidth: 240) }
                 MGFormRow("Category") {
-                    Picker("Category", selection: $category) {
-                        ForEach(Preset.Category.allCases) { Label($0.title, systemImage: $0.symbol).tag($0) }
-                    }
-                    .labelsHidden()
-                    .fixedSize()
+                    MGPicker(selection: $category, options: Preset.Category.allCases.map { ($0, $0.title) })
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Description").foregroundStyle(MG.label)
@@ -152,7 +148,6 @@ struct SavePresetSheet: View {
             }
         }
         .frame(width: 460, height: 360)
-        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Spacer()

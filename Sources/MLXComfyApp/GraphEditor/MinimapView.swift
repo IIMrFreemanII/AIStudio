@@ -45,6 +45,6 @@ struct MinimapView: View {
         .mgGlass(.floatingPanel, radius: MGRadius.lg)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged { v in moveTo(unmap(v.location)) })
-        .help("Click or drag to move around the graph")
+        .mgHelp("Click or drag to move around the graph")
     }
 }

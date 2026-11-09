@@ -16,6 +16,7 @@ struct MGForm<Content: View>: View {
                 .frame(maxWidth: maxWidth)
                 .frame(maxWidth: .infinity)
         }
+        .mgScrollIndicators()
         .scrollContentBackground(.hidden)
         .background(MG.groupedBackground)
     }

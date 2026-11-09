@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Running as a bare SwiftPM executable: become a regular foreground app with a Dock icon and menu bar.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Text fields' edit menu, drawn by the design system (event monitors need the running app).
+        MainActor.assumeIsolated { MGTextMenu.install() }
         // Preview files only live for one session.
         try? FileManager.default.removeItem(at: previewDirectory)
         if CommandLine.arguments.contains("--smoke-sound") {
@@ -106,6 +108,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if CommandLine.arguments.contains("--smoke-chrome") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeChrome.run(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let dir = SmokeTest.argument("--export-presets") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -134,6 +143,8 @@ struct MLXComfyApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @State private var model = AppModel()
     @State private var store = ModelStore()
+    @State private var modelsPresenter = MGPresenter()
+    @State private var settingsPresenter = MGPresenter()
 
     init() {
         // JetBrains Mono, the design system's typeface, before any view draws.
@@ -154,18 +165,24 @@ struct MLXComfyApp: App {
                 }
         }
         .defaultSize(width: 1440, height: 900)
+        .windowStyle(.hiddenTitleBar)
         .commands { AppCommands(model: model) }
 
         Window("Models", id: "models") {
             ModelManagerView()
+                .mgWindow("Models")
+                .mgPresentationHost(modelsPresenter)
                 .environment(model)
                 .environment(store)
                 .mgRoot()
         }
         .defaultSize(width: 680, height: 720)
+        .windowStyle(.hiddenTitleBar)
 
         Settings {
             SettingsView()
+                .mgWindow("Settings")
+                .mgPresentationHost(settingsPresenter)
                 .environment(model)
                 .environment(store)
                 .mgRoot()
@@ -237,18 +254,14 @@ struct AppCommands: Commands {
                 model.showPalette = true
             }
             .keyboardShortcut("k")
-            Menu("Add to Workflow") { AddToWorkflowItems(model: model) }
+            Menu("Add to Workflow") { MGNativeMenuItems(model.addToWorkflowItems()) }
             Divider()
             Button(model.selection.count > 1 ? "Arrange Selection" : "Arrange Graph") {
                 model.arrange(selectionOnly: model.selection.count > 1, undoManager: undo)
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
             Menu("Align") {
-                ForEach(AlignMode.allCases) { mode in
-                    Button(mode.title) { model.alignSelection(mode, undoManager: undo) }
-                        .disabled(model.selection.count < mode.minimumCount)
-                    if mode == .right || mode == .bottom { Divider() }
-                }
+                MGNativeMenuItems(MGMenuItem.alignItems(count: model.selection.count) { model.alignSelection($0, undoManager: undo) })
             }
             Button(model.selectionAllCollapsed ? "Expand Node" : "Collapse Node") {
                 model.toggleCollapsed(model.selection, undoManager: undo)
@@ -308,12 +321,24 @@ struct AppCommands: Commands {
         }
     }
 
+    static let openableTypes: [UTType] = [.json, .png, .mpeg4Movie, .quickTimeMovie, .wav, .mpeg4Audio]
+
+    /// File › Open: the workflow library in the app's picker (Finder for anywhere else).
     @MainActor static func openPanel(model: AppModel) {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json, .png, .mpeg4Movie, .quickTimeMovie, .wav, .mpeg4Audio]
-        panel.allowsMultipleSelection = true
-        panel.directoryURL = model.library.workflows
-        panel.message = "Open a workflow, or a PNG, video or sound made by MLXComfyUI to restore its graph."
-        if panel.runModal() == .OK { for url in panel.urls { model.open(url) } }
+        let message = "Open a workflow, or a PNG, video or sound made by MLXComfyUI to restore its graph."
+        model.presenter.chooseFile(
+            title: "Open", message: message,
+            roots: [MGFileRoot(title: "Workflows", url: model.library.workflows),
+                    MGFileRoot(title: "Output", url: URL(fileURLWithPath: model.outputDirectory))],
+            mode: .open(types: openableTypes, multiple: true),
+            finder: {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = openableTypes
+                panel.allowsMultipleSelection = true
+                panel.directoryURL = model.library.workflows
+                panel.message = message
+                return panel.runModal() == .OK ? panel.urls : nil
+            },
+            onChoose: { urls in for url in urls { model.open(url) } })
     }
 }

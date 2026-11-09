@@ -92,6 +92,7 @@ struct WorkflowInspector: View {
             MGSection("Workflow") {
                 MGFormRow("Name") {
                     TextField("Name", text: $name)
+                        .mgTestAnchor("inspector-name")
                         .onSubmit { rename(doc) }
                         .frame(maxWidth: 180)
                 }
@@ -111,7 +112,7 @@ struct WorkflowInspector: View {
             MGSection("Run") {
                 MGFormRow("Batch") {
                     Text("\(model.batchCount) run\(model.batchCount == 1 ? "" : "s")").foregroundStyle(MG.secondaryLabel)
-                    Stepper("", value: $model.batchCount, in: 1...16).labelsHidden()
+                    MGStepper(value: $model.batchCount, in: 1...16)
                 }
                 Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
                 if let err = model.validationError {
@@ -143,7 +144,7 @@ struct WorkflowInspector: View {
             MGSection("Model") {
                 LabeledContent("Status") {
                     HStack(spacing: 6) {
-                        if model.modelLoading { ProgressView().controlSize(.mini) }
+                        if model.modelLoading { MGSpinner().controlSize(.mini) }
                         Text(model.modelStatus).lineLimit(1).truncationMode(.middle)
                     }
                 }
@@ -257,11 +258,7 @@ struct NodeInspector: View {
             }
         case (.string, .choice(let options)?):
             MGFormRow(spec.name) {
-                Picker(spec.name, selection: b.string(node.id, spec.name)) {
-                    ForEach(options, id: \.self) { Text($0).tag($0) }
-                }
-                .labelsHidden()
-                .fixedSize()
+                MGPicker(selection: b.string(node.id, spec.name), options: options.map { ($0, $0) })
             }
         case (.string, _):
             MGFormRow(spec.name) { TextField(spec.name, text: b.string(node.id, spec.name)).frame(maxWidth: 180) }
@@ -378,7 +375,7 @@ struct SettingsView: View {
                 let total = Double(ProcessInfo.processInfo.physicalMemory)
                 LabeledContent("Models may use") {
                     HStack {
-                        Slider(value: $model.memoryBudget, in: 0.5...0.95, step: 0.05)
+                        MGSlider(value: $model.memoryBudget, in: 0.5...0.95, step: 0.05)
                         Text(String(format: "%.0f GB", total * model.memoryBudget / 1e9)).monospacedDigit()
                             .frame(width: 56, alignment: .trailing)
                     }
@@ -537,7 +534,7 @@ struct GroupInspector: View {
                                 .onTapGesture {
                                     model.updateGroup(group.id, actionName: "Group Color", undoManager: undoManager) { $0.color = c }
                                 }
-                                .help(c.capitalized)
+                                .mgHelp(c.capitalized)
                         }
                     }
                 }

@@ -97,18 +97,16 @@ struct OutputList: View {
                         .foregroundStyle(favoritesOnly ? MG.hueYellow : MG.secondaryLabel)
                 }
                 .buttonStyle(.mg(.icon))
-                .help(favoritesOnly ? "Show everything" : "Show favorites only")
+                .mgHelp(favoritesOnly ? "Show everything" : "Show favorites only")
                 Button { gridLayout.toggle() } label: { Image(systemName: gridLayout ? "list.bullet" : "square.grid.2x2") }
                     .buttonStyle(.mg(.icon))
-                    .help(gridLayout ? "Show as a list" : "Show as a grid")
+                    .mgHelp(gridLayout ? "Show as a list" : "Show as a grid")
             }
             .padding(.horizontal, 12)
-            Picker("Workflow", selection: $workflow) {
-                Text("All workflows").tag(String?.none)
-                ForEach(workflows, id: \.self) { Text($0).tag(String?.some($0)) }
-            }
-            .labelsHidden()
-            .padding(.horizontal, 12)
+            MGPicker(selection: $workflow,
+                     options: [(String?.none, "All workflows")] + workflows.map { (String?.some($0), $0) },
+                     maxWidth: .infinity)
+                .padding(.horizontal, 12)
             List {
                 let items = filteredHistory
                 if model.history.isEmpty {
@@ -160,17 +158,19 @@ struct HistoryActions: ViewModifier {
                 if NSEvent.modifierFlags.contains(.command) { model.compare(with: item.url) }
                 else { model.endCompare(); model.show(item) }
             }
-            .contextMenu {
-                Button("Show in Results") { model.endCompare(); model.show(item) }
-                Button("Open in Viewer") { model.endCompare(); model.show(item); model.openViewer() }
-                Button("Compare with Shown Image") { model.compare(with: item.url) }
-                    .disabled(model.displayedImage == nil || model.displayedURL == item.url)
-                Button("Restore Graph in New Tab") { model.open(item.url) }
-                Button("Copy to Assets › Input") { model.importAssets([item.url]) }
-                Button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.toggleFavorite(item) }
-                Divider()
-                Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-                Button("Move to Trash", role: .destructive) { model.trash(item) }
+            .mgContextMenu {
+                MGMenuItem.button("Show in Results") { model.endCompare(); model.show(item) }
+                MGMenuItem.button("Open in Viewer") { model.endCompare(); model.show(item); model.openViewer() }
+                MGMenuItem.button("Compare with Shown Image",
+                                  enabled: model.displayedImage != nil && model.displayedURL != item.url) {
+                    model.compare(with: item.url)
+                }
+                MGMenuItem.button("Restore Graph in New Tab") { model.open(item.url) }
+                MGMenuItem.button("Copy to Assets › Input") { model.importAssets([item.url]) }
+                MGMenuItem.button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.toggleFavorite(item) }
+                MGMenuItem.divider
+                MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+                MGMenuItem.button("Move to Trash", destructive: true) { model.trash(item) }
             }
             .draggable(item.url)
     }
@@ -186,21 +186,21 @@ struct PlotQueueRow: View {
         let p = model.plotProgress(group)
         HStack(spacing: 8) {
             Group {
-                if p.running { ProgressView().controlSize(.mini) }
+                if p.running { MGSpinner().controlSize(.mini) }
                 else if p.done == p.total { Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success) }
                 else { Image(systemName: "square.grid.3x3").foregroundStyle(.secondary) }
             }
             .frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title).lineLimit(1).font(.mgCallout)
-                ProgressView(value: Double(p.done), total: Double(max(p.total, 1)))
-                    .progressViewStyle(.linear).controlSize(.small)
+                MGProgress(value: Double(p.done), total: Double(max(p.total, 1)))
+                    .frame(maxWidth: .infinity)
                 Text("\(p.done) of \(p.total) images").font(.mgFootnote).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             if p.done < p.total {
                 Button { model.cancelPlot(group) } label: { Image(systemName: "stop.circle") }
-                    .buttonStyle(.mg(.icon, destructive: true)).help("Stop the plot (finished cells are still saved as a grid)")
+                    .buttonStyle(.mg(.icon, destructive: true)).mgHelp("Stop the plot (finished cells are still saved as a grid)")
             } else {
                 Button { model.queue.removeAll { $0.groupID == group } } label: { Image(systemName: "xmark") }
                     .buttonStyle(.mg(.icon)).controlSize(.small)
@@ -224,8 +224,8 @@ struct QueueRow: View {
                 }
                 switch item.status {
                 case .running(let step, let total) where total > 0:
-                    ProgressView(value: Double(step), total: Double(total))
-                        .progressViewStyle(.linear).controlSize(.small)
+                    MGProgress(value: Double(step), total: Double(total))
+                        .frame(maxWidth: .infinity)
                     Text("Step \(step) of \(total)").font(.mgFootnote).foregroundStyle(.secondary)
                 case .running:
                     Text("Running…").font(.mgFootnote).foregroundStyle(.secondary)
@@ -244,10 +244,10 @@ struct QueueRow: View {
             Spacer(minLength: 0)
             if case .running = item.status {
                 Button { model.cancelCurrent() } label: { Image(systemName: "stop.fill") }
-                    .buttonStyle(.mg(.icon, destructive: true)).controlSize(.small).help("Cancel")
+                    .buttonStyle(.mg(.icon, destructive: true)).controlSize(.small).mgHelp("Cancel")
             } else {
                 Button { model.removeFromQueue(item.id) } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.mg(.icon)).controlSize(.small).help("Remove")
+                    .buttonStyle(.mg(.icon)).controlSize(.small).mgHelp("Remove")
             }
         }
         .padding(.vertical, 2)
@@ -256,7 +256,7 @@ struct QueueRow: View {
     @ViewBuilder var statusIcon: some View {
         switch item.status {
         case .pending: Image(systemName: "clock").foregroundStyle(.secondary)
-        case .running: ProgressView().controlSize(.mini)
+        case .running: MGSpinner().controlSize(.mini)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success)
         case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(MG.destructive)
         case .cancelled: Image(systemName: "minus.circle").foregroundStyle(.secondary)

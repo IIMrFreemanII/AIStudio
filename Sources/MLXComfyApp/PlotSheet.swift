@@ -4,7 +4,7 @@ import SwiftUI
 /// Sets up an XY plot: up to two inputs of the current graph and the values each takes.
 struct PlotSheet: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
 
     @State private var xKey = ""
     @State private var xText = ""
@@ -53,7 +53,6 @@ struct PlotSheet: View {
             .overlay(alignment: .top) { MGDivider() }
         }
         .frame(width: 540, height: 560)
-        .presentationBackground { MGGlassBackground(role: .sheet, shape: Rectangle()) }
         .onAppear { setDefaults(candidates) }
     }
 
@@ -63,12 +62,9 @@ struct PlotSheet: View {
                      optional: Bool) -> some View {
         MGSection(title) {
             MGFormRow("Input") {
-                Picker("Input", selection: key) {
-                    if optional { Text("None").tag("") }
-                    ForEach(candidates, id: \.label) { c in Text(c.label).tag("\(c.node)\u{1F}\(c.input)") }
-                }
-                .labelsHidden()
-                .fixedSize()
+                MGPicker(selection: key,
+                         options: (optional ? [("", "None")] : []) + candidates.map { c in ("\(c.node)\u{1F}\(c.input)", c.label) },
+                         maxWidth: 320)
             }
             if !key.wrappedValue.isEmpty, let c = candidate(key.wrappedValue, candidates) {
                 MGFormRow("Values") { TextField("Values", text: text, prompt: Text(placeholder(c.type))).frame(maxWidth: 280) }

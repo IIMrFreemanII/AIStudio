@@ -187,6 +187,8 @@ final class AppModel {
 
     /// Where workflows, presets and assets live.
     let library: LibraryPaths
+    /// The main window's alerts and sheets.
+    let presenter = MGPresenter()
     var workflowTree: WorkflowFolder
     var presets: [Preset] = []
     /// The files in the input folder (Assets › Input).

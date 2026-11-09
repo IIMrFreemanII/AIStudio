@@ -59,7 +59,7 @@ struct SidebarRail: View {
                         }
                 }
                 .buttonStyle(.plain)
-                .help(p.title)
+                .mgHelp(p.title)
             }
             Spacer()
         }
@@ -106,19 +106,17 @@ struct PanelHeader<Trailing: View>: View {
 struct WorkflowsPanel: View {
     @Environment(AppModel.self) private var model
     @State private var query = ""
-    @State private var renaming: URL?
-    @State private var renameText = ""
     @State private var expanded = Set<URL>()
 
     var body: some View {
         VStack(spacing: 0) {
             PanelHeader(title: "Workflows") {
                 Button { model.newWorkflowFolder(in: nil) } label: { Image(systemName: "folder.badge.plus") }
-                    .help("New folder")
+                    .mgHelp("New folder")
                 Button { NSWorkspace.shared.open(model.library.workflows) } label: { Image(systemName: "arrow.up.forward.app") }
-                    .help("Open the workflows folder in Finder")
+                    .mgHelp("Open the workflows folder in Finder")
                 Button { model.reloadWorkflows() } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Refresh")
+                    .mgHelp("Refresh")
             }
             MGSearchField(prompt: "Search workflows", text: $query)
                 .padding(.horizontal, 12)
@@ -141,19 +139,18 @@ struct WorkflowsPanel: View {
                 }
                 .padding(.bottom, 8)
             }
+            .mgScrollIndicators()
             .dropDestination(for: URL.self) { urls, _ in
                 for u in urls where u.pathExtension == "json" { model.moveWorkflow(u, to: model.library.workflows) }
                 return true
             }
         }
         .onAppear { model.reloadWorkflows() }
-        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let url = renaming { model.renameWorkflow(url, to: renameText) }
-                renaming = nil
-            }
-            Button("Cancel", role: .cancel) { renaming = nil }
+    }
+
+    func rename(_ url: URL, name: String) {
+        model.presenter.present(id: "rename") {
+            MGPromptSheet(title: "Rename “\(name)”", actionTitle: "Rename", text: name) { model.renameWorkflow(url, to: $0) }
         }
     }
 
@@ -176,7 +173,7 @@ struct WorkflowsPanel: View {
                         if isOpen { expanded.remove(sub.url) } else { expanded.insert(sub.url) }
                     }
                 }
-                .contextMenu { folderMenu(sub) }
+                .mgContextMenu { folderMenu(sub) }
                 .dropDestination(for: URL.self) { urls, _ in
                     for u in urls { model.moveWorkflow(u, to: sub.url) }
                     return true
@@ -196,36 +193,38 @@ struct WorkflowsPanel: View {
             Spacer()
             if let open {
                 Circle().fill(open.id == model.activeTabID ? MG.accent : MG.tertiaryLabel)
-                    .frame(width: 6, height: 6).help("Open in a tab")
+                    .frame(width: 6, height: 6).mgHelp("Open in a tab")
             }
         }
         .mgRow(selected: active, indent: CGFloat(depth) * 14 + 16)
+        .mgTestAnchor("workflow-row:\(w.name)")
         .onTapGesture { model.open(w.url) }
         .draggable(w.url)
-        .contextMenu {
-            Button("Open") { model.open(w.url) }
-            Button("Rename…") { renameText = w.name; renaming = w.url }
-            Button("Duplicate") { model.duplicateWorkflow(w.url) }
-            Menu("Move to") {
-                Button("Workflows") { model.moveWorkflow(w.url, to: model.library.workflows) }
-                ForEach(allFolders(model.workflowTree), id: \.self) { f in
-                    Button(f.path.replacingOccurrences(of: model.library.workflows.path + "/", with: "")) {
-                        model.moveWorkflow(w.url, to: f)
-                    }
+        .mgContextMenu {
+            MGMenuItem.button("Open") { model.open(w.url) }
+            MGMenuItem.button("Rename…") { rename(w.url, name: w.name) }
+            MGMenuItem.button("Duplicate") { model.duplicateWorkflow(w.url) }
+            MGMenuItem.menu("Move to", icon: nil) {
+                MGMenuItem.button("Workflows", icon: "folder") { model.moveWorkflow(w.url, to: model.library.workflows) }
+                for f in allFolders(model.workflowTree) {
+                    MGMenuItem.button(f.path.replacingOccurrences(of: model.library.workflows.path + "/", with: ""),
+                                      icon: "folder") { model.moveWorkflow(w.url, to: f) }
                 }
             }
-            Divider()
-            Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([w.url]) }
-            Button("Move to Trash", role: .destructive) { model.trashWorkflow(w.url) }
+            MGMenuItem.divider
+            MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([w.url]) }
+            MGMenuItem.button("Move to Trash", destructive: true) { model.trashWorkflow(w.url) }
         }
     }
 
-    @ViewBuilder func folderMenu(_ f: WorkflowFolder) -> some View {
-        Button("New Folder Inside") { model.newWorkflowFolder(in: f.url) }
-        Button("Rename…") { renameText = f.name; renaming = f.url }
-        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([f.url]) }
-        Divider()
-        Button("Move to Trash", role: .destructive) { model.trashWorkflow(f.url) }
+    func folderMenu(_ f: WorkflowFolder) -> [MGMenuItem] {
+        [
+            .button("New Folder Inside") { model.newWorkflowFolder(in: f.url) },
+            .button("Rename…") { rename(f.url, name: f.name) },
+            .button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([f.url]) },
+            .divider,
+            .button("Move to Trash", destructive: true) { model.trashWorkflow(f.url) },
+        ]
     }
 
     func allFolders(_ f: WorkflowFolder) -> [URL] {
@@ -263,18 +262,18 @@ struct PresetsPanel: View {
                                     Spacer()
                                     if !ok {
                                         Button("Get") { openWindow(id: "models") }
-                                            .controlSize(.mini).help("Get \(p.modelName) in the Models window")
+                                            .controlSize(.mini).mgHelp("Get \(p.modelName) in the Models window")
                                     }
                                 }
                                 .mgRow(height: 38)
                                 .opacity(ok ? 1 : 0.55)
                                 .onTapGesture { if ok { model.openPreset(p) } else { NSSound.beep() } }
-                                .help(p.summary)
-                                .contextMenu {
-                                    Button("Open in New Tab") { model.openPreset(p) }.disabled(!ok)
+                                .mgHelp(p.summary)
+                                .mgContextMenu {
+                                    MGMenuItem.button("Open in New Tab", enabled: ok) { model.openPreset(p) }
                                     if !p.isBuiltIn {
-                                        Divider()
-                                        Button("Delete Preset", role: .destructive) { model.deletePreset(p) }
+                                        MGMenuItem.divider
+                                        MGMenuItem.button("Delete Preset", destructive: true) { model.deletePreset(p) }
                                     }
                                 }
                             }
@@ -283,6 +282,7 @@ struct PresetsPanel: View {
                 }
                 .padding(.bottom, 8)
             }
+            .mgScrollIndicators()
             MGDivider()
             Button("Save Current Workflow as Preset…") { model.showSavePresetSheet = true }
                 .buttonStyle(.mg(.borderless)).padding(10)
@@ -321,12 +321,13 @@ struct NodeLibraryPanel: View {
                             .mgRow()
                             .onTapGesture { model.nodeAddRequest = NodeAddRequest(type: s.type) }
                             .draggable(NodeAddRequest.dragPrefix + s.type)
-                            .help("Click to add at the centre of the graph, or drag onto it")
+                            .mgHelp("Click to add at the centre of the graph, or drag onto it")
                         }
                     }
                 }
                 .padding(.bottom, 8)
             }
+            .mgScrollIndicators()
         }
     }
 }
@@ -351,16 +352,16 @@ struct AssetsPanel: View {
             PanelHeader(title: "Assets") {
                 if tab == "input" {
                     Button { importPanel() } label: { Image(systemName: "square.and.arrow.down") }
-                        .help("Import files into the input folder")
+                        .mgHelp("Import files into the input folder")
                     Button { NSWorkspace.shared.open(model.library.input) } label: { Image(systemName: "arrow.up.forward.app") }
-                        .help("Open the input folder in Finder")
-                    Button { model.reloadAssets() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+                        .mgHelp("Open the input folder in Finder")
+                    Button { model.reloadAssets() } label: { Image(systemName: "arrow.clockwise") }.mgHelp("Refresh")
                 } else {
                     Button { NSWorkspace.shared.open(URL(fileURLWithPath: (model.outputDirectory as NSString).expandingTildeInPath)) } label: {
                         Image(systemName: "arrow.up.forward.app")
                     }
-                    .help("Open the output folder in Finder")
-                    Button { model.reloadHistory() } label: { Image(systemName: "arrow.clockwise") }.help("Refresh")
+                    .mgHelp("Open the output folder in Finder")
+                    Button { model.reloadHistory() } label: { Image(systemName: "arrow.clockwise") }.mgHelp("Refresh")
                 }
             }
             MGSegmentedPicker(selection: $tab, options: [("input", "Input"), ("output", "Output")])
@@ -385,8 +386,6 @@ struct InputAssetsView: View {
     @State private var query = ""
     @State private var filter: AssetKind? = nil
     @State private var dropTargeted = false
-    @State private var renaming: URL?
-    @State private var renameText = ""
 
     var body: some View {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -394,15 +393,10 @@ struct InputAssetsView: View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
                 MGSearchField(prompt: "Search files", text: $query)
-                Picker("", selection: $filter) {
-                    Text("All").tag(AssetKind?.none)
-                    Text("Images").tag(AssetKind?.some(.image))
-                    Text("Masks").tag(AssetKind?.some(.mask))
-                    Text("Videos").tag(AssetKind?.some(.video))
-                    Text("Sounds").tag(AssetKind?.some(.audio))
-                }
-                .labelsHidden()
-                .frame(width: 92)
+                MGPicker(selection: $filter, options: [(AssetKind?.none, "All"), (AssetKind?.some(.image), "Images"),
+                                                      (AssetKind?.some(.mask), "Masks"), (AssetKind?.some(.video), "Videos"),
+                                                      (AssetKind?.some(.audio), "Sounds")])
+                    .mgTestAnchor("assets-filter")
             }
             .padding(.horizontal, 12)
             ScrollView {
@@ -429,13 +423,14 @@ struct InputAssetsView: View {
                         .onTapGesture(count: 2) { model.showFile(item.url, kind: item.kind); model.openViewer() }
                         .onTapGesture { model.showFile(item.url, kind: item.kind) }
                         .draggable(item.url)
-                        .help("\(item.relativePath) — drag onto the graph for a Load node, or onto a Load node to use it there")
-                        .contextMenu { menu(item) }
+                        .mgHelp("\(item.relativePath) — drag onto the graph for a Load node, or onto a Load node to use it there")
+                        .mgContextMenu { menu(item) }
                     }
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 10)
             }
+            .mgScrollIndicators()
             .overlay {
                 if dropTargeted {
                     RoundedRectangle(cornerRadius: 10).strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
@@ -452,30 +447,34 @@ struct InputAssetsView: View {
                 return !providers.isEmpty
             }
         }
-        .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
-            TextField("Name", text: $renameText)
-            Button("Rename") {
-                if let url = renaming { model.renameAsset(url, to: renameText) }
-                renaming = nil
-            }
-            Button("Cancel", role: .cancel) { renaming = nil }
-        }
     }
 
-    @ViewBuilder func menu(_ item: AssetItem) -> some View {
-        Button("Add to Workflow as \(item.kind.loadNodeType.replacingOccurrences(of: "Load", with: "Load "))") {
-            model.assetAddRequest = item.url
-        }
+    func menu(_ item: AssetItem) -> [MGMenuItem] {
+        var items: [MGMenuItem] = [
+            .button("Add to Workflow as \(item.kind.loadNodeType.replacingOccurrences(of: "Load", with: "Load "))") {
+                model.assetAddRequest = item.url
+            },
+        ]
         if item.kind == .image && model.canAdd(.reference) {
-            Button("Use as Reference Image") { model.setReferenceImage(item.url, undoManager: model.activeUndoManager) }
+            items.append(.button("Use as Reference Image") {
+                model.setReferenceImage(item.url, undoManager: model.activeUndoManager)
+            })
         }
         if item.kind == .image && model.canAdd(.firstFrame) {
-            Button("Use as First Frame") { model.setFirstFrame(item.url, undoManager: model.activeUndoManager) }
+            items.append(.button("Use as First Frame") { model.setFirstFrame(item.url, undoManager: model.activeUndoManager) })
         }
-        Divider()
-        Button("Rename…") { renameText = item.url.deletingPathExtension().lastPathComponent; renaming = item.url }
-        Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-        Button("Move to Trash", role: .destructive) { model.trashAsset(item.url) }
+        let name = item.url.deletingPathExtension().lastPathComponent
+        items += [
+            .divider,
+            .button("Rename…") {
+                model.presenter.present(id: "rename") {
+                    MGPromptSheet(title: "Rename “\(name)”", actionTitle: "Rename", text: name) { model.renameAsset(item.url, to: $0) }
+                }
+            },
+            .button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) },
+            .button("Move to Trash", destructive: true) { model.trashAsset(item.url) },
+        ]
+        return items
     }
 }
 

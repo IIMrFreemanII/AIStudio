@@ -151,7 +151,7 @@ struct MGSearchField: View {
                         Image(systemName: "xmark.circle.fill").font(.system(size: 11)).foregroundStyle(MG.tertiaryLabel)
                     }
                     .buttonStyle(.plain)
-                    .help("Clear")
+                    .mgHelp("Clear")
                 }
             }
         }
@@ -346,6 +346,7 @@ extension View {
         listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 24)
+            .mgAppKitScrollIndicators()
     }
 
     /// A row inside an `mgList()`: no system chrome or insets.
@@ -365,6 +366,7 @@ struct MGTextEditor: View {
         TextEditor(text: $text)
             .font(.mgBody)
             .scrollContentBackground(.hidden)
+            .mgAppKitScrollIndicators()
             .focused($focused)
             .padding(4)
             .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
@@ -395,5 +397,186 @@ struct MGEmptyState: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: slider, stepper, progress
+
+/// The design system's Slider: a 4 pt track, the accent up to an 18 pt knob. Arrow keys step it.
+struct MGSlider<V: BinaryFloatingPoint>: View where V.Stride: BinaryFloatingPoint {
+    @Binding var value: V
+    let range: ClosedRange<V>
+    var step: V? = nil
+    @Environment(\.isEnabled) private var enabled
+    @State private var dragging = false
+
+    init(value: Binding<V>, in range: ClosedRange<V>, step: V? = nil) {
+        _value = value
+        self.range = range
+        self.step = step
+    }
+
+    var fraction: CGFloat {
+        let span = range.upperBound - range.lowerBound
+        return span > 0 ? CGFloat((value - range.lowerBound) / span) : 0
+    }
+
+    func set(_ f: CGFloat) {
+        let f = min(max(f, 0), 1)
+        var v = range.lowerBound + V(f) * (range.upperBound - range.lowerBound)
+        if let step, step > 0 { v = (v / step).rounded() * step }
+        value = min(max(v, range.lowerBound), range.upperBound)
+    }
+
+    func nudge(_ dir: V) {
+        let s = step ?? (range.upperBound - range.lowerBound) / 20
+        value = min(max(value + dir * s, range.lowerBound), range.upperBound)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let x = fraction * max(w - 18, 0)
+            ZStack(alignment: .leading) {
+                Capsule().fill(MG.fill).frame(height: 4)
+                Capsule().fill(MG.accent).frame(width: x + 9, height: 4)
+                Circle().fill(MG.controlKnob)
+                    .overlay(Circle().strokeBorder(MG.shadow.opacity(0.8), lineWidth: 0.5))
+                    .mgShadow(MGShadow.control)
+                    .frame(width: 18, height: 18)
+                    .scaleEffect(dragging ? 1.06 : 1)
+                    .offset(x: x)
+            }
+            .frame(height: 20)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    guard enabled else { return }
+                    dragging = true
+                    set((g.location.x - 9) / max(w - 18, 1))
+                }
+                .onEnded { _ in dragging = false })
+        }
+        .frame(minWidth: 60, idealWidth: 180)
+        .frame(height: 20)
+        .opacity(enabled ? 1 : 0.4)
+        .animation(.easeOut(duration: 0.1), value: dragging)
+        .focusable()
+        .focusEffectDisabled()
+        .onKeyPress(.leftArrow) { nudge(-1); return .handled }
+        .onKeyPress(.rightArrow) { nudge(1); return .handled }
+        .accessibilityElement()
+        .accessibilityValue(String(format: "%.0f%%", Double(fraction) * 100))
+        .accessibilityAdjustableAction { dir in nudge(dir == .increment ? 1 : -1) }
+    }
+}
+
+/// The design system's Stepper: − and + keys on the fill; a key at the end of the range dims to 0.3.
+struct MGStepper: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step = 1
+    @Environment(\.isEnabled) private var enabled
+
+    init(value: Binding<Int>, in range: ClosedRange<Int>, step: Int = 1) {
+        _value = value
+        self.range = range
+        self.step = step
+    }
+
+    var body: some View {
+        HStack(spacing: 1) {
+            key("minus", enabled: value > range.lowerBound, corners: .leading) {
+                value = max(range.lowerBound, value - step)
+            }
+            key("plus", enabled: value < range.upperBound, corners: .trailing) {
+                value = min(range.upperBound, value + step)
+            }
+        }
+        .padding(1)
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+        .opacity(enabled ? 1 : 0.4)
+        .accessibilityElement()
+        .accessibilityValue("\(value)")
+        .accessibilityAdjustableAction { dir in
+            value = dir == .increment ? min(range.upperBound, value + step) : max(range.lowerBound, value - step)
+        }
+    }
+
+    func key(_ symbol: String, enabled on: Bool, corners: HorizontalEdge, action: @escaping () -> Void) -> some View {
+        let shape = UnevenRoundedRectangle(topLeadingRadius: corners == .leading ? 5 : 0,
+                                           bottomLeadingRadius: corners == .leading ? 5 : 0,
+                                           bottomTrailingRadius: corners == .trailing ? 5 : 0,
+                                           topTrailingRadius: corners == .trailing ? 5 : 0, style: .continuous)
+        return Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold))
+                .frame(width: 24, height: 22)
+                .background(shape.fill(MG.controlButton))
+                .contentShape(shape)
+        }
+        .buttonStyle(.mg(.plain))
+        .opacity(on ? 1 : 0.3)
+        .disabled(!on)
+    }
+}
+
+/// The design system's ProgressView: a 6 pt capsule filled with the accent; without a value, a segment slides along it.
+struct MGProgress: View {
+    var value: Double? = nil
+    var total: Double = 1
+    var tint: Color = MG.accent
+    var height: CGFloat = 6
+    @State private var phase = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(MG.fill)
+                if let value {
+                    Capsule().fill(tint)
+                        .frame(width: max(height, w * CGFloat(min(max(value / max(total, 1e-9), 0), 1))))
+                        .animation(.easeOut(duration: 0.2), value: value)
+                } else {
+                    Capsule().fill(tint).frame(width: w * 0.3)
+                        .offset(x: phase ? w * 0.7 : 0)
+                        .onAppear {
+                            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { phase = true }
+                        }
+                }
+            }
+            .clipShape(Capsule())
+        }
+        .frame(minWidth: 40, idealWidth: 180)
+        .frame(height: height)
+        .accessibilityElement()
+        .accessibilityValue(value.map { String(format: "%.0f%%", $0 / max(total, 1e-9) * 100) } ?? "in progress")
+    }
+}
+
+/// A spinner: a three-quarter accent arc turning (mini 10, small 14, regular 20).
+struct MGSpinner: View {
+    var tint: Color = MG.accent
+    @Environment(\.controlSize) private var size
+    @State private var spin = false
+
+    var diameter: CGFloat {
+        switch size {
+        case .mini: return 10
+        case .small: return 14
+        case .large, .extraLarge: return 28
+        default: return 20
+        }
+    }
+
+    var body: some View {
+        Circle()
+            .trim(from: 0, to: 0.75)
+            .stroke(tint, style: StrokeStyle(lineWidth: max(1.5, diameter / 8), lineCap: .round))
+            .frame(width: diameter, height: diameter)
+            .rotationEffect(.degrees(spin ? 360 : 0))
+            .onAppear { withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true } }
+            .accessibilityLabel("In progress")
     }
 }

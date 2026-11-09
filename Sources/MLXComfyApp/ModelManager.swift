@@ -351,17 +351,18 @@ struct ModelManagerView: View {
         }
         .frame(minWidth: 620, minHeight: 560)
         .onAppear { store.adopt(model.modelPath) }
-        .sheet(item: $confirming) { entry in DownloadConfirmation(entry: entry) }
-        .confirmationDialog("Move \(trashing?.name ?? "") to the Trash?", isPresented: Binding(
-            get: { trashing != nil }, set: { if !$0 { trashing = nil } }), titleVisibility: .visible) {
-            Button("Move to Trash", role: .destructive) { if let e = trashing { store.moveToTrash(e) }; trashing = nil }
-            Button("Cancel", role: .cancel) { trashing = nil }
-        } message: {
-            if let e = trashing, case .installed(let url)? = store.status[e.id] {
-                Text(String(format: "%@ (%.1f GB) goes to the Trash. You can restore it from there.", url.path,
-                            Double(ModelRegistry.weightBytes(at: url)) / 1e9))
-            }
+        .mgSheet("download", item: $confirming) { entry in DownloadConfirmation(entry: entry).environment(store) }
+        .mgConfirmationDialog("Move \(trashing?.name ?? "") to the Trash?", isPresented: Binding(
+            get: { trashing != nil }, set: { if !$0 { trashing = nil } }), message: trashMessage) {
+            [.destructive("Move to Trash") { if let e = trashing { store.moveToTrash(e) }; trashing = nil },
+             .cancel { trashing = nil }]
         }
+    }
+
+    var trashMessage: String? {
+        guard let e = trashing, case .installed(let url)? = store.status[e.id] else { return nil }
+        return String(format: "%@ (%.1f GB) goes to the Trash. You can restore it from there.", url.path,
+                      Double(ModelRegistry.weightBytes(at: url)) / 1e9)
     }
 
     @ViewBuilder
@@ -383,7 +384,7 @@ struct ModelManagerView: View {
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 switch status {
                 case .downloading(let p):
-                    ProgressView(value: p.fraction).controlSize(.small)
+                    MGProgress(value: p.fraction)
                     Text(String(format: "%.1f of %.1f GB · %@", Double(p.done) / 1e9, Double(p.total) / 1e9,
                                 (p.file as NSString).lastPathComponent))
                         .font(.mgFootnote.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
@@ -417,7 +418,7 @@ struct ModelManagerView: View {
         case .downloading:
             Button("Stop") { store.cancel(entry) }
         case .checking:
-            ProgressView().controlSize(.small)
+            MGSpinner().controlSize(.small)
         case .notInstalled, .failed:
             if entry.supported {
                 Button(store.hasPartialDownload(entry) ? "Resume…" : "Download…") {
@@ -433,7 +434,7 @@ struct ModelManagerView: View {
 /// Shows the real size, free space and license, and starts the download only when the user agrees.
 struct DownloadConfirmation: View {
     @Environment(ModelStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.mgDismiss) private var dismiss
     let entry: CatalogEntry
     @State private var accepted = false
 
@@ -471,7 +472,7 @@ struct DownloadConfirmation: View {
                 Text(msg).foregroundStyle(MG.destructive)
                 HStack { Spacer(); Button("Close") { dismiss() } }
             } else {
-                HStack { ProgressView().controlSize(.small); Text("Checking the file list…") }
+                HStack { MGSpinner().controlSize(.small); Text("Checking the file list…") }
                 HStack { Spacer(); Button("Cancel") { dismiss() } }
             }
         }

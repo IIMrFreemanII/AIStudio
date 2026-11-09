@@ -87,7 +87,7 @@ struct MGVisualEffect: NSViewRepresentable {
 struct MGGlassBackground<S: InsettableShape>: View {
     let role: MGGlassRole
     let shape: S
-    var blending: NSVisualEffectView.BlendingMode = .withinWindow
+    @Environment(\.mgGlassBlending) private var blending
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
@@ -111,6 +111,11 @@ private struct OptionalShadow: ViewModifier {
     func body(content: Content) -> some View {
         if let spec { content.mgShadow(spec) } else { content }
     }
+}
+
+extension EnvironmentValues {
+    /// How glass blurs: within the window (overlays in it), or what's behind the window (floating panels).
+    @Entry var mgGlassBlending: NSVisualEffectView.BlendingMode = .withinWindow
 }
 
 extension View {

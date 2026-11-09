@@ -45,18 +45,12 @@ struct NodeExtras: View {
         let installed = ModelCatalog.entries.compactMap { e in store.installedURL(e.id).map { (e, $0) } }
         MGSection("Model") {
             MGFormRow("Model") {
-                Picker("Model", selection: Binding(
-                    get: { URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path },
-                    set: { p in setModel(p) })) {
-                    ForEach(installed, id: \.1.path) { e, url in
-                        Label(e.name, systemImage: e.kind.symbol).tag(url.standardizedFileURL.path)
-                    }
-                    if !installed.contains(where: { $0.1.standardizedFileURL.path == URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path }) {
-                        Text((path.wrappedValue as NSString).lastPathComponent).tag(URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
+                let current = URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path
+                MGPicker(selection: Binding(get: { current }, set: { p in setModel(p) }),
+                         options: installed.map { e, url in (url.standardizedFileURL.path, e.name) }
+                            + (installed.contains { $0.1.standardizedFileURL.path == current }
+                               ? [] : [(current, (path.wrappedValue as NSString).lastPathComponent)]),
+                         maxWidth: 220)
             }
             HStack {
                 Button("Choose Folder…") {
@@ -86,7 +80,7 @@ struct NodeExtras: View {
         let w = b.int(node.id, "width"), h = b.int(node.id, "height")
         MGSection("Size") {
             MGFormRow("Preset") {
-            Picker("Preset", selection: Binding(
+            MGPicker(selection: Binding(
                 get: {
                     if w.wrappedValue == 0 && h.wrappedValue == 0 { return -2 }
                     return presets.firstIndex { $0.width == w.wrappedValue && $0.height == h.wrappedValue } ?? -1
@@ -98,13 +92,9 @@ struct NodeExtras: View {
                         try? g.setValue(.int(pw), node: node.id, input: "width")
                         try? g.setValue(.int(ph), node: node.id, input: "height")
                     }
-                })) {
-                if !video { Text("Match reference image").tag(-2) }
-                ForEach(presets.indices, id: \.self) { i in Text(presets[i].name).tag(i) }
-                Text("Custom").tag(-1)
-            }
-            .labelsHidden()
-            .fixedSize()
+                }),
+                options: (video ? [] : [(-2, "Match reference image")]) + presets.indices.map { ($0, presets[$0].name) }
+                    + [(-1, "Custom")])
             }
         }
     }
@@ -115,7 +105,7 @@ struct NodeExtras: View {
         MGSection("Prompt Tools") {
             if model.assistantMode != nil {
                 HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
+                    MGSpinner().controlSize(.small)
                     Text(model.assistantMode == .describe ? "Describing the image…" : "Rewriting the prompt…")
                         .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
                     Spacer()
@@ -127,24 +117,20 @@ struct NodeExtras: View {
                         Label("Enhance", systemImage: "wand.and.stars")
                     }
                     .disabled(!model.canEnhance(node.id))
-                    .help("Rewrite the idea as a detailed prompt (or the edit instruction as a clear one) with Qwen")
+                    .mgHelp("Rewrite the idea as a detailed prompt (or the edit instruction as a clear one) with Qwen")
                     Button { model.runAssistant(.describe, node: node.id, undoManager: undoManager) } label: {
                         Label("Describe Image", systemImage: "text.viewfinder")
                     }
                     .disabled(!model.canDescribe(node.id))
-                    .help("Write a prompt that describes the image wired to this node")
+                    .mgHelp("Write a prompt that describes the image wired to this node")
                 }
                 .controlSize(.small)
             }
             MGFormRow("Style") {
-                Picker("Style", selection: Binding(
+                MGPicker(selection: Binding(
                     get: { model.graph.metadata?[AppModel.styleKey(node.id)] },
-                    set: { model.setStyle($0, node: node.id, undoManager: undoManager) })) {
-                    Text("None").tag(String?.none)
-                    ForEach(model.styles) { Text($0.name).tag(String?.some($0.name)) }
-                }
-                .labelsHidden()
-                .fixedSize()
+                    set: { model.setStyle($0, node: node.id, undoManager: undoManager) }),
+                         options: [(String?.none, "None")] + model.styles.map { (String?.some($0.name), $0.name) })
             }
             if let style = model.style(of: node.id) {
                 Text(style.template).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(2)
@@ -182,9 +168,11 @@ struct NodeExtras: View {
             }
             HStack {
                 Button("Choose…") {
-                    if let url = AppModel.chooseFile([.image], message: "Choose an image (it is copied into Assets › Input)."),
-                       let copy = model.importAssets([url], asMask: node.type == "LoadMask").first {
-                        b.string(node.id, "path").wrappedValue = model.storedPath(copy)
+                    let binding = b.string(node.id, "path")
+                    model.chooseAsset([.image], title: node.type == "LoadMask" ? "Mask" : "Image",
+                                      message: "Images from elsewhere are copied into Assets › Input.",
+                                      asMask: node.type == "LoadMask") { url in
+                        binding.wrappedValue = model.storedPath(url)
                     }
                 }
                 if isReference, !path.isEmpty, model.hasImageSampler {
@@ -208,9 +196,10 @@ struct NodeExtras: View {
                 Text((stored as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
             }
             Button("Choose…") {
-                if let url = AppModel.chooseFile(isVideo ? [.movie] : [.audio], message: "Choose a file (it is copied into Assets › Input)."),
-                   let copy = model.importAssets([url]).first {
-                    b.string(node.id, "path").wrappedValue = model.storedPath(copy)
+                let binding = b.string(node.id, "path")
+                model.chooseAsset(isVideo ? [.movie] : [.audio], title: isVideo ? "Video" : "Sound",
+                                  message: "Files from elsewhere are copied into Assets › Input.") { url in
+                    binding.wrappedValue = model.storedPath(url)
                 }
             }
             .controlSize(.small)

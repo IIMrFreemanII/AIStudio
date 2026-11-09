@@ -52,7 +52,7 @@ struct CompareView: View {
                         if let difference {
                             image(difference).frame(width: frame.width, height: frame.height)
                         } else {
-                            ProgressView()
+                            MGSpinner()
                         }
                     }
                 }

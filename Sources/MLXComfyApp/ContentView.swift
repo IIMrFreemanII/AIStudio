@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 /// the inspector on the right, and the full-window viewer on top when it's open.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
-    @State private var showInspector = true
+    @AppStorage("showInspector") private var showInspector = true
+    @AppStorage("inspectorWidth") private var inspectorWidth = 330.0
     @State private var dropTargeted = false
     @State private var showPlot = false
     @AppStorage("sidebarPanel") private var panelRaw = SidebarPanel.workflows.rawValue
@@ -13,48 +14,61 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var model = model
-        HStack(spacing: 0) {
-            SidebarRail(selection: Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows },
-                                           set: { panelRaw = $0.rawValue }),
-                        open: $panelOpen)
-            if panelOpen {
-                SidebarPanelView(panel: SidebarPanel(rawValue: panelRaw) ?? .workflows)
-                    .frame(width: 290)
-                    .mgChrome(MG.sidebarTint)
+        VStack(spacing: 0) {
+            MGTitleBar(bar: .unified, title: model.active.name, subtitle: model.active.isDirty ? "Edited" : nil) {
+                EmptyView()
+            } trailing: {
+                toolbarContent
             }
-            MGDivider(vertical: true, gap: true)
-            VStack(spacing: 0) {
-                TabStrip()
-                VSplitView {
-                    GraphEditorView(doc: model.active)
-                        .id(model.activeTabID)
-                        .frame(minHeight: 240)
-                        .overlay(alignment: .bottom) { ErrorBanner() }
-                    if model.showResultsPane {
-                        ResultsPane()
-                            .frame(minHeight: 150, idealHeight: 280, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                SidebarRail(selection: Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows },
+                                               set: { panelRaw = $0.rawValue }),
+                            open: $panelOpen)
+                if panelOpen {
+                    SidebarPanelView(panel: SidebarPanel(rawValue: panelRaw) ?? .workflows)
+                        .frame(width: 290)
+                        .mgChrome(MG.sidebarTint)
+                }
+                MGDivider(vertical: true, gap: true)
+                VStack(spacing: 0) {
+                    TabStrip()
+                    VSplitView {
+                        GraphEditorView(doc: model.active)
+                            .id(model.activeTabID)
+                            .frame(minHeight: 240)
+                            .overlay(alignment: .bottom) { ErrorBanner() }
+                        if model.showResultsPane {
+                            ResultsPane()
+                                .frame(minHeight: 150, idealHeight: 280, maxHeight: .infinity)
+                        }
                     }
                 }
-            }
-            .background(MG.windowBackground)
-            .overlay {
-                if dropTargeted {
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 3, dash: [8, 6]))
-                        .padding(8)
-                        .allowsHitTesting(false)
+                .background(MG.windowBackground)
+                .overlay {
+                    if dropTargeted {
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(MG.accent, style: StrokeStyle(lineWidth: 3, dash: [8, 6]))
+                            .padding(8)
+                            .allowsHitTesting(false)
+                    }
+                }
+                if showInspector {
+                    MGDivider(vertical: true, gap: true)
+                    InspectorView()
+                        .frame(width: inspectorWidth)
+                        .frame(maxHeight: .infinity)
+                        .background(MG.groupedBackground)
+                        .overlay(alignment: .leading) {
+                            MGResizeHandle(width: $inspectorWidth, range: 280...460).offset(x: -3)
+                        }
                 }
             }
         }
-        .inspector(isPresented: $showInspector) {
-            InspectorView()
-                .inspectorColumnWidth(min: 280, ideal: 330, max: 460)
-        }
+        .ignoresSafeArea(.container, edges: .top)
         .overlay {
             if model.viewerResult != nil { ResultViewer().transition(.opacity) }
         }
         .navigationTitle(model.active.name + (model.active.isDirty ? " — Edited" : ""))
-        .toolbar { toolbarContent }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             for provider in providers {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -65,38 +79,48 @@ struct ContentView: View {
             return !providers.isEmpty
         }
         .task { if model.autoloadModel { model.preloadModel() } }
-        .sheet(isPresented: $showPlot) { PlotSheet() }
-        .sheet(isPresented: $model.showPresetGallery) { PresetGallery() }
-        .sheet(item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }
-        .sheet(isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
+        .mgSheet("plot", isPresented: $showPlot) { PlotSheet() }
+        .mgSheet("preset-gallery", isPresented: $model.showPresetGallery) { PresetGallery() }
+        .mgSheet("mask-editor", item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }
+        .mgSheet("save-preset", isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
+        .mgPresentationHost(model.presenter)
     }
 
-    @ToolbarContentBuilder
-    var toolbarContent: some ToolbarContent {
-        @Bindable var model = model
-        ToolbarItemGroup(placement: .primaryAction) {
+    /// The tools in the title row, trailing.
+    @ViewBuilder
+    var toolbarContent: some View {
+        HStack(spacing: 6) {
             MemoryGauge()
+                .padding(.trailing, 6)
             if model.isRunning {
-                Button { model.cancelCurrent() } label: { Label("Cancel", systemImage: "stop.fill") }
+                Button { model.cancelCurrent() } label: { Image(systemName: "stop.fill") }
                     .buttonStyle(.mg(.icon, destructive: true))
-                    .help("Cancel the running job (⌘.)")
+                    .mgHelp("Cancel the running job (⌘.)")
+                    .accessibilityLabel("Cancel")
             }
-            Button { showPlot = true } label: { Label("XY Plot", systemImage: "square.grid.3x3") }
+            Button { showPlot = true } label: { Image(systemName: "square.grid.3x3") }
                 .buttonStyle(.mg(.icon))
-                .help("Queue a grid of results varying one or two inputs")
+                .mgHelp("XY Plot: queue a grid of results varying one or two inputs")
+                .accessibilityLabel("XY Plot")
             Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
                 Label(model.isRunning ? "Queue" : "Generate", systemImage: "sparkles")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.mg(.prominent))
-            .help("Queue the current workflow (⌘↩)")
+            .mgHelp("Queue the current workflow (⌘↩)")
             Button { withAnimation { model.showResultsPane.toggle() } } label: {
-                Label("Results", systemImage: "rectangle.bottomhalf.inset.filled")
+                Image(systemName: "rectangle.bottomhalf.inset.filled")
             }
             .buttonStyle(.mg(.icon))
-            .help("Show or hide the results pane (⌥⌘R)")
-            Button { showInspector.toggle() } label: { Label("Inspector", systemImage: "sidebar.right") }
-                .buttonStyle(.mg(.icon))
+            .mgHelp("Show or hide the results pane (⌥⌘R)")
+            .accessibilityLabel("Results")
+            .mgTestAnchor("results-button")
+            Button { withAnimation(.easeOut(duration: 0.18)) { showInspector.toggle() } } label: {
+                Image(systemName: "sidebar.right")
+            }
+            .buttonStyle(.mg(.icon))
+            .mgHelp("Show or hide the inspector")
+            .accessibilityLabel("Inspector")
         }
     }
 }
@@ -109,22 +133,22 @@ struct MemoryGauge: View {
         gauge
             .contentShape(Rectangle())
             .onTapGesture { showModels.toggle() }
-            .popover(isPresented: $showModels, arrowEdge: .bottom) { LoadedModelsView().environment(model) }
+            .mgPopover(isPresented: $showModels, size: CGSize(width: 320, height: LoadedModelsView.height(model))) {
+                LoadedModelsView().environment(model)
+            }
     }
 
     @ViewBuilder var gauge: some View {
         let total = Double(ProcessInfo.processInfo.physicalMemory)
         let used = Double(model.activeMemory)
         HStack(spacing: 6) {
-            Gauge(value: min(used / total, 1)) { EmptyView() }
-                .gaugeStyle(.accessoryLinearCapacity)
-                .tint(used / total > 0.8 ? MG.destructive : MG.accent)
+            MGProgress(value: min(used / total, 1), tint: used / total > 0.8 ? MG.destructive : MG.accent)
                 .frame(width: 70)
             Text(String(format: "%.1f GB", used / 1e9))
                 .font(.mgSubheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
-        .help("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1e9)) of "
+        .mgHelp("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1e9)) of "
               + "\(String(format: "%.0f", total / 1e9)) GB · click for loaded models")
     }
 }
@@ -153,6 +177,11 @@ struct ErrorBanner: View {
 /// Models in memory, with their estimated size and an Unload button.
 struct LoadedModelsView: View {
     @Environment(AppModel.self) private var model
+
+    /// Its height in the popover (it's sized up front, as floating panels are).
+    static func height(_ model: AppModel) -> CGFloat {
+        14 * 2 + 20 + (model.loadedModels.isEmpty ? 44 : CGFloat(model.loadedModels.count) * 44) + 11 + 62
+    }
 
     var body: some View {
         let total = Double(ProcessInfo.processInfo.physicalMemory)
@@ -193,7 +222,7 @@ struct RunStatusPill: View {
             let doc = model.document(id: model.runningDocID)
             let running = doc?.nodeStates.first { if case .running = $0.value { return true }; return false }
             HStack(spacing: 10) {
-                ProgressView().controlSize(.small)
+                MGSpinner().controlSize(.small)
                 if let doc, doc.id != model.activeTabID {
                     Text(doc.name).font(.mgCallout.weight(.medium))
                 }
