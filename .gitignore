@@ -19,3 +19,6 @@ examples/girl.png
 
 # Test coverage output
 *.profraw
+
+# graphify knowledge graph output
+graphify-out/
