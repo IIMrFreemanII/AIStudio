@@ -44,6 +44,21 @@ import Testing
         }
     }
 
+    /// Two nodes side by side with a narrow gap: the wire stays in the gap instead of detouring under the nodes.
+    @Test func closeNeighboursConnectStraightAcross() {
+        let target = CGRect(x: 265, y: 0, width: 250, height: 260)
+        for style in WireStyle.allCases {
+            for dy: CGFloat in [0, 30] {
+                let a = CGPoint(x: src.maxX, y: 40), b = CGPoint(x: target.minX, y: 40 + dy)
+                let r = WireRouter.route(from: a, to: b, style: style, sourceFrame: src, targetFrame: target)
+                for p in r.sampled(step: 1) {
+                    #expect(p.x >= a.x - 0.01 && p.x <= b.x + 0.01, "\(style) dy \(dy) leaves the gap at \(p)")
+                    #expect(p.y >= min(a.y, b.y) - 0.01 && p.y <= max(a.y, b.y) + 0.01, "\(style) dy \(dy) detours to \(p)")
+                }
+            }
+        }
+    }
+
     @Test func backwardLinkUsesTheGapBetweenNodes() {
         let target = CGRect(x: -100, y: 400, width: 250, height: 100)
         let r = WireRouter.route(from: CGPoint(x: 250, y: 40), to: CGPoint(x: -100, y: 420), style: .rightAngle,

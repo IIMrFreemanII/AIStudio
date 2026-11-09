@@ -127,17 +127,22 @@ public enum WireRouter {
 
     public static func route(from a: CGPoint, to b: CGPoint, style: WireStyle,
                              sourceFrame: CGRect? = nil, targetFrame: CGRect? = nil, lane: Int = 0) -> WireRoute {
-        let forward = b.x - a.x >= 2 * stub + 2 * cornerRadius
+        // Any target to the right is a forward link, however close (two nodes side by side): the stubs and corners
+        // shrink to fit the gap. Only a target to the left needs a detour around the nodes.
+        let gap = b.x - a.x
+        let forward = gap > 0.5
+        let s = forward ? min(stub, gap / 3) : stub
         switch style {
         case .straight:
-            return WireRoute(kind: .polyline, points: [a, CGPoint(x: a.x + stub, y: a.y), CGPoint(x: b.x - stub, y: b.y), b])
+            return WireRoute(kind: .polyline, points: [a, CGPoint(x: a.x + s, y: a.y), CGPoint(x: b.x - s, y: b.y), b])
         case .rightAngle:
             if forward {
                 if abs(a.y - b.y) < 0.5 { return WireRoute(kind: .polyline, points: [a, b]) }
-                let lo = a.x + stub + cornerRadius, hi = b.x - stub - cornerRadius
-                let cx = min(max((a.x + b.x) / 2 + CGFloat(lane) * laneSpacing, lo), hi)
+                let r = min(cornerRadius, gap / 4)
+                let lo = a.x + s + r, hi = b.x - s - r
+                let cx = lo < hi ? min(max((a.x + b.x) / 2 + CGFloat(lane) * laneSpacing, lo), hi) : (a.x + b.x) / 2
                 return WireRoute(kind: .polyline, points: [a, CGPoint(x: cx, y: a.y), CGPoint(x: cx, y: b.y), b],
-                                 cornerRadius: cornerRadius)
+                                 cornerRadius: r)
             }
             let y = detourY(a: a, b: b, sourceFrame: sourceFrame, targetFrame: targetFrame, lane: lane)
             let x1 = a.x + stub + CGFloat(max(lane, 0)) * laneSpacing, x2 = b.x - stub - CGFloat(max(-lane, 0)) * laneSpacing
@@ -146,7 +151,7 @@ public enum WireRouter {
                              cornerRadius: cornerRadius)
         case .curved:
             if forward || (sourceFrame == nil && targetFrame == nil) {
-                let dx = max(abs(b.x - a.x) * 0.5, 50)
+                let dx = max(abs(gap) * 0.5, min(50, max(abs(b.y - a.y) / 2, 8)))
                 return WireRoute(kind: .bezier, points: [a, CGPoint(x: a.x + dx, y: a.y), CGPoint(x: b.x - dx, y: b.y), b])
             }
             // A backward link loops under (or between) the two nodes instead of cutting through them.
