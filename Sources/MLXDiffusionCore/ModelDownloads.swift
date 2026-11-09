@@ -78,6 +78,16 @@ public enum ModelCatalog {
                      licenseURL: "https://www.apache.org/licenses/LICENSE-2.0", folder: "qwen-turbo-mlx",
                      supported: true, notes: "Text-to-image, editing, inpainting and outpainting.",
                      className: "QwenImage21Pipeline"),
+        // The diffusers folders only: the repo's root `flux1-dev.safetensors` and `ae.safetensors` duplicate them.
+        CatalogEntry(id: "flux-1-dev", name: "FLUX.1 [dev] (bf16, 8-bit on first load)", kind: .image,
+                     repo: "black-forest-labs/FLUX.1-dev", revision: "3de623fc3c33e44ffbe2bad470d0f45bccf2eb21",
+                     include: ["model_index.json", "LICENSE.md", "README.md", "scheduler/*", "text_encoder/*",
+                               "text_encoder_2/*", "tokenizer/*", "tokenizer_2/*", "transformer/*", "vae/*"],
+                     approxGB: 33.8, license: "FLUX.1 [dev] Non-Commercial License",
+                     licenseURL: "https://huggingface.co/black-forest-labs/FLUX.1-dev/blob/main/LICENSE.md",
+                     gated: true, folder: "flux-1-dev", supported: true,
+                     notes: "Text-to-image, image-to-image and inpainting, with LoRAs. The model's license is non-commercial. The transformer is quantized to 8-bit once on first use (about 12 GB more on disk).",
+                     className: "FluxPipeline"),
         CatalogEntry(id: "ltx-2.3", name: "LTX-2.3 Distilled (video + audio, 4-bit MLX)", kind: .video,
                      repo: "dgrauet/ltx-2.3-mlx-q4",
                      include: ["*.json", "LICENSE", "README.md", "transformer-distilled-1.1.safetensors",
@@ -201,7 +211,11 @@ public enum HFAPI {
             guard item["type"] as? String == "file", let path = item["path"] as? String else { return nil }
             let lfs = item["lfs"] as? [String: Any]
             let size = (lfs?["size"] as? NSNumber)?.int64Value ?? (item["size"] as? NSNumber)?.int64Value ?? 0
-            return RemoteFile(path: path, size: size, sha256: lfs?["oid"] as? String)
+            // Gated repos listed without access mask the hash ("****…"): only a real SHA-256 is checked.
+            let oid = (lfs?["oid"] as? String).flatMap { o in
+                o.count == 64 && o.allSatisfy(\.isHexDigit) ? o : nil
+            }
+            return RemoteFile(path: path, size: size, sha256: oid)
         }
     }
 

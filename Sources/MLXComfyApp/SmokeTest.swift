@@ -1,5 +1,6 @@
 import Foundation
 import GraphRuntime
+import MLX
 import MLXDiffusionCore
 import NodesStandard
 
@@ -351,6 +352,81 @@ extension SmokeTest {
         return model.previewCount > 0 && clip.frameCount == 33 && clip.width == 512 && clip.height == 288
             && (clip.audio?.duration ?? 0) < 0.1 && after.contains { $0.contains("wan-2.2-t2v") }
             && !after.contains { $0.contains("qwen") } && back && model.displayedMedia?.kind == .video
+    }
+
+    /// `--smoke-flux`: the Image mode with FLUX.1 [dev] (512², 8 steps): switch model (Qwen evicted), apply a synthetic
+    /// no-op LoRA in kohya's fused layout through the LoRA section, generate, then redraw the result image-to-image
+    /// (at about 1 MP), and switch back to Qwen (image-to-image chain removed, reference editing again).
+    static func runFlux(_ model: AppModel) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        let flux = ModelStore().modelsDirectory.appendingPathComponent("flux-1-dev")
+        guard ModelRegistry.className(at: flux) == "FluxPipeline" else { say("no FLUX.1 [dev] at \(flux.path)"); return false }
+        let qwen = model.modelPath
+        _ = try? await model.engine.preload(modelPath: qwen)
+        let before = model.engine.loadedModelsSnapshot().map(\.name)
+
+        // A LoRA with zero up matrices (like a freshly initialised one) in the kohya/BFL fused layout.
+        let lora = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-flux-lora.safetensors")
+        var arrays: [String: MLXArray] = [:]
+        for (name, out) in [("lora_unet_double_blocks_0_img_attn_qkv", 9216), ("lora_unet_single_blocks_0_linear1", 21504)] {
+            arrays[name + ".lora_down.weight"] = MLXRandom.normal([4, 3072], key: MLXRandom.key(1)).asType(.bfloat16)
+            arrays[name + ".lora_up.weight"] = MLXArray.zeros([out, 4], dtype: .bfloat16)
+        }
+        try? save(arrays: arrays, url: lora)
+
+        model.setImageModel(path: flux.path, undoManager: nil)
+        guard let latent = model.firstNode(ofType: "EmptyLatent"), let sampler = model.firstNode(ofType: "Sampler"),
+              let te = model.firstNode(ofType: "TextEncode") else { say("image graph not set up"); return false }
+        model.addLoRA(lora, undoManager: nil)
+        model.mutate("Small", undoManager: nil) { g in
+            try? g.setValue(.int(512), node: latent.id, input: "width")
+            try? g.setValue(.int(512), node: latent.id, input: "height")
+            try? g.setValue(.int(8), node: sampler.id, input: "steps")
+            try? g.setValue(.string("A lighthouse on a rocky coast at dusk, oil painting"), node: te.id, input: "prompt")
+        }
+        say("LoRAs in the panel: \(model.simpleLoRAs.map(\.id))")
+
+        func run() async -> (Double, URL)? {
+            model.previewCount = 0
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return nil }
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard case .done(let secs)? = model.queue.first(where: { $0.id == item.id })?.status,
+                  let url = model.history.first(where: { $0.kind == .image })?.url else {
+                say("job failed: \(model.lastError ?? "?")"); return nil
+            }
+            return (secs, url)
+        }
+        guard let (secs, url) = await run() else { return false }
+        let after = model.engine.loadedModelsSnapshot().map(\.name)
+        let cg = try? ImageArray.load(url)
+        let meta = ImageArray.readPNGText(url)
+        say(String(format: "txt2img done in %.1fs, previews %d: %@ %dx%d, graph embedded %@", secs, model.previewCount,
+                   url.lastPathComponent, cg?.width ?? 0, cg?.height ?? 0, meta[StandardNodes.graphMetadataKey] != nil ? "yes" : "no"))
+        say("loaded before: \(before), after: \(after)")
+        let ok1 = cg?.width == 512 && cg?.height == 512 && meta[StandardNodes.graphMetadataKey] != nil
+            && after.contains { $0.contains("flux-1-dev") } && !after.contains { $0.contains("qwen") }
+
+        model.setReferenceImage(url, undoManager: nil)
+        let i2i = model.isImg2Img
+        say("image-to-image chain: \(i2i)")
+        guard i2i, let (secs2, url2) = await run() else { return false }
+        let cg2 = try? ImageArray.load(url2)
+        say(String(format: "img2img done in %.1fs: %@ %dx%d", secs2, url2.lastPathComponent, cg2?.width ?? 0, cg2?.height ?? 0))
+
+        model.setImageModel(path: qwen, undoManager: nil)
+        let back = !model.isImg2Img && model.referenceImagePath != nil
+            && ImageFamily.of(path: model.firstNode(ofType: "LoadModel").flatMap { n -> String? in
+                if case .value(.string(let p))? = n.inputs["path"] { return p }; return nil
+            } ?? "") == .qwen
+        model.clearReferenceImage(undoManager: nil)
+        for l in model.simpleLoRAs { model.removeLoRA(l.id, undoManager: nil) }
+        say("back to Qwen (reference editing, no image-to-image chain): \(back); LoRAs left \(model.simpleLoRAs.count)")
+        // Image-to-image scales the source to about 1 MP, as inpainting does: 512² → 1024².
+        return ok1 && cg2?.width == 1024 && cg2?.height == 1024 && back && model.simpleLoRAs.isEmpty
     }
 
     /// `--smoke-sound`: the Sound mode end to end: switch modes (graph swap), generate a short clip, check history

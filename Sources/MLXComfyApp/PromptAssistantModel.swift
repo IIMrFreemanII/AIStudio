@@ -48,7 +48,7 @@ extension AppModel {
         assistantRun = run
         assistantMode = mode
         lastError = nil
-        let path = modelPath
+        let path = assistantModelPath
         let nodeID = te.id
         assistantTask = Task { [weak self] in
             guard let self else { return }
@@ -86,5 +86,13 @@ extension AppModel {
         guard var n = graph[node] else { return }
         n.inputs["prompt"] = .value(.string(text))
         graph[node] = n
+    }
+}
+
+extension AppModel {
+    /// The model that writes prompts: the image model when it has a language model (Qwen-Image), else the Qwen-Image
+    /// folder (Flux can't generate text).
+    var assistantModelPath: String {
+        ImageFamily.of(path: modelPath) == .flux ? AppModel.guessModelPath() : modelPath
     }
 }

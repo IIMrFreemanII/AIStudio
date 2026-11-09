@@ -98,6 +98,62 @@ public final class WeightStore {
         return d
     }
 
+    /// A store with the 2-D linear weights of the `*.safetensors` in `source` quantized to `bits` (MLX affine, as
+    /// ``linear(_:dtype:)`` reads them), written once to `cacheURL` and reused afterwards.
+    ///
+    /// The cache records the source files' names and sizes, so replacing the source rebuilds it. `quantize` picks
+    /// which weights to quantize (by default every `*.weight` matrix whose input width divides into groups); all other
+    /// tensors are copied unchanged. Building it reads the source one tensor at a time, so it peaks at about the size
+    /// of the result.
+    public static func quantizedCache(source: URL, cacheURL: URL, bits: Int = 8, groupSize: Int = 64,
+                                      quantize: ((String, MLXArray) -> Bool)? = nil,
+                                      log: (String) -> Void = { _ in }) throws -> WeightStore {
+        let files = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: [.fileSizeKey])
+            .filter { $0.pathExtension == "safetensors" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let fingerprint = try files.map { f in
+            "\(f.lastPathComponent):\(try f.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)"
+        }.joined(separator: ",") + "|q\(bits)g\(groupSize)"
+        if FileManager.default.fileExists(atPath: cacheURL.path),
+           let cached = try? WeightStore(url: cacheURL), cached.metadata["mlxcomfy_source"] == fingerprint {
+            cached.bitsOverride = bits
+            return cached
+        }
+        let shouldQuantize = quantize ?? { key, a in
+            key.hasSuffix(".weight") && a.ndim == 2 && a.dim(1) % groupSize == 0 && a.dim(0) % 32 == 0
+        }
+        var out: [String: MLXArray] = [:]
+        let t0 = Date()
+        for f in files {
+            var source = try loadArrays(url: f)
+            for key in source.keys.sorted() {
+                // Taken out of the map so each source tensor is released once its result is evaluated.
+                guard let a = source.removeValue(forKey: key) else { continue }
+                if shouldQuantize(key, a) {
+                    let (wq, scales, biases) = quantized(a, groupSize: groupSize, bits: bits)
+                    let base = String(key.dropLast(".weight".count))
+                    out[key] = wq
+                    out[base + ".scales"] = scales
+                    if let biases { out[base + ".biases"] = biases }
+                    eval(wq, scales, biases ?? scales)
+                } else {
+                    out[key] = a
+                    eval(a)
+                }
+            }
+            log(String(format: "quantized %@ (%.0f s)", f.lastPathComponent, Date().timeIntervalSince(t0)))
+        }
+        try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let tmp = cacheURL.deletingPathExtension().appendingPathExtension("partial.safetensors")
+        try? FileManager.default.removeItem(at: tmp)
+        try save(arrays: out, metadata: ["mlxcomfy_source": fingerprint, "quantization_level": "\(bits)"], url: tmp)
+        try? FileManager.default.removeItem(at: cacheURL)
+        try FileManager.default.moveItem(at: tmp, to: cacheURL)
+        let store = WeightStore(arrays: out, metadata: ["mlxcomfy_source": fingerprint])
+        store.bitsOverride = bits
+        return store
+    }
+
     /// Drops tensors (e.g. after a model has taken what it needs) so their memory can be reclaimed.
     public func remove(prefix: String) {
         for k in arrays.keys where k.hasPrefix(prefix) { arrays[k] = nil }

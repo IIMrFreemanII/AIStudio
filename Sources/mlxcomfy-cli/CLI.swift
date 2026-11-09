@@ -6,6 +6,8 @@ import GraphRuntime
 import LTX2
 import StableAudio
 import Wan
+import Flux
+import FluxVAE
 import MLX
 import MLXDiffusionCore
 import NodesStandard
@@ -541,14 +543,25 @@ struct FitPreview: AsyncParsableCommand {
     @Argument var images: [String]
 
     func run() async throws {
-        let vae = try QwenImage21VAE(directory: ModelPaths.resolve(model).appendingPathComponent("vae"))
+        let dir = ModelPaths.resolve(model)
+        // Qwen-Image's VAE returns packed latents directly; Flux's is packed 2×2 after normalisation.
+        let flux = ModelRegistry.className(at: dir) == FluxPipeline.className
+        let qwenVAE = flux ? nil : try QwenImage21VAE(directory: dir.appendingPathComponent("vae"))
+        let fluxVAE = flux ? try FluxVAE(directory: dir.appendingPathComponent("vae")) : nil
         var xs: [MLXArray] = [], ys: [MLXArray] = []
         for path in images {
             let cg = try ImageArray.load(URL(fileURLWithPath: path))
             let scale = min(1, 1024 / Double(max(cg.width, cg.height)))
             let w = Int(Double(cg.width) * scale) / 32 * 32, h = Int(Double(cg.height) * scale) / 32 * 32
             let img = ImageArray.array(from: cg, width: w, height: h)
-            let z = vae.encode((img * 2 - 1).expandedDimensions(axis: 0))[0]  // [h/16, w/16, 64]
+            let input = (img * 2 - 1).expandedDimensions(axis: 0)
+            let z: MLXArray  // [h/16, w/16, 64]
+            if let fluxVAE {
+                z = FluxPipeline.pack(fluxVAE.normalize(fluxVAE.encode(input[0..., 0..., 0..., ..<3])))
+                    .reshaped(h / 16, w / 16, 64)
+            } else {
+                z = qwenVAE!.encode(input)[0]
+            }
             let lh = h / 16, lw = w / 16
             let rgb = img[0..., 0..., ..<3].reshaped(lh, 16, lw, 16, 3).mean(axes: [1, 3])
             xs.append(z.reshaped(-1, 64).asType(.float32))

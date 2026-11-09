@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "ACEStep", targets: ["ACEStep"]),
         .library(name: "KokoroSpeech", targets: ["KokoroSpeech"]),
         .library(name: "Wan", targets: ["Wan"]),
+        .library(name: "Flux", targets: ["Flux"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
@@ -25,6 +26,7 @@ let package = Package(
         .executable(name: "kokoro-probe-g2p", targets: ["kokoro-probe-g2p"]),
         .executable(name: "kokoro-probe-model", targets: ["kokoro-probe-model"]),
         .executable(name: "wan-probe", targets: ["wan-probe"]),
+        .executable(name: "flux-probe", targets: ["flux-probe"]),
         .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
         .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
     ],
@@ -230,6 +232,34 @@ let package = Package(
             dependencies: ["Wan", "T5Text", "WanTransformer", "WanVAE", "MLXDiffusionCore",
                            .product(name: "MLX", package: "mlx-swift")]
         ),
+        // FLUX.1 [dev] (images): the CLIP-L text encoder, the MMDiT transformer, the 16-channel VAE and the pipeline.
+        .target(
+            name: "CLIPText",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .target(
+            name: "FluxTransformer",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .target(
+            name: "FluxVAE",
+            dependencies: ["MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .target(
+            name: "Flux",
+            dependencies: [
+                "MLXDiffusionCore", "T5Text", "CLIPText", "FluxTransformer", "FluxVAE",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
+        ),
+        // Development probe: runs the Flux modules on dumped reference inputs and reports the error.
+        .executableTarget(
+            name: "flux-probe",
+            dependencies: ["Flux", "CLIPText", "FluxTransformer", "FluxVAE", "T5Text", "MLXDiffusionCore",
+                           .product(name: "MLX", package: "mlx-swift"),
+                           .product(name: "Tokenizers", package: "swift-transformers")]
+        ),
         .target(name: "GraphRuntime"),
         .target(
             name: "NodesStandard",
@@ -242,6 +272,7 @@ let package = Package(
                 "ACEStep",
                 "KokoroSpeech",
                 "Wan",
+                "Flux",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
@@ -254,6 +285,8 @@ let package = Package(
                 "ACEStep",
                 "KokoroSpeech",
                 "Wan",
+                "Flux",
+                "FluxVAE",
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
@@ -295,6 +328,11 @@ let package = Package(
         .testTarget(
             name: "WanTests",
             dependencies: ["Wan", "WanTransformer", "T5Text", "MLXDiffusionCore", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "FluxTests",
+            dependencies: ["Flux", "FluxTransformer", "CLIPText", "MLXDiffusionCore",
+                           .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
             name: "LTX2Tests",

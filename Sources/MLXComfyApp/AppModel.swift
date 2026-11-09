@@ -505,6 +505,7 @@ final class AppModel {
         modelPath = path
         mutate("Change Model", undoManager: undoManager) { g in
             for n in g.nodes where n.type == "LoadModel" { try? g.setValue(.string(path), node: n.id, input: "path") }
+            g = Self.syncingImg2Img(g)
         }
     }
 

@@ -15,6 +15,9 @@ extension AppModel {
                               latent: "outpaint_latent", composite: "outpaint_composite")
     static let hiresIDs = (scale: "hires_scale", encode: "hires_encode", sampler: "hires_sampler",
                            decode: "hires_decode")
+    /// Image-to-image for models without reference editing (Flux): reference → VAE Encode → Sampler at a denoise < 1.
+    static let img2imgEncodeID = "img2img_encode"
+    static let defaultImg2ImgStrength = 0.75
 
     static var inpaintChain: [String] {
         let i = inpaintIDs
@@ -84,13 +87,14 @@ extension AppModel {
                 try? g.setValue(.int(0), node: l.id, input: "width")
                 try? g.setValue(.int(0), node: l.id, input: "height")
             }
+            g = Self.syncingImg2Img(g)
         }
     }
 
     func clearReferenceImage(undoManager: UndoManager?) {
         guard let ref = referenceImageNode else { return }
         mutate("Remove Reference Image", undoManager: undoManager) { g in
-            g = Self.removingOutpaint(from: Self.removingInpaint(from: g))
+            g = Self.removingImg2Img(from: Self.removingOutpaint(from: Self.removingInpaint(from: g)))
             g.nodes.removeAll { $0.id == ref.id }
             for i in g.nodes.indices {
                 for (k, v) in g.nodes[i].inputs { if case .link(ref.id, _) = v { g.nodes[i].inputs[k] = nil } }
@@ -120,7 +124,7 @@ extension AppModel {
                 try? g.setValue(.string(url.path), node: ids.mask, input: "path")
                 return
             }
-            g = Self.removingOutpaint(from: g)
+            g = Self.removingImg2Img(from: Self.removingOutpaint(from: g))
             let sp = sampler.position ?? GraphPoint(x: 640, y: 120)
             let link = { (n: String, o: String) in NodeInput.link(node: n, output: o) }
             let savePos = g[consumer.node]?.position ?? GraphPoint(x: 1220, y: 140)
@@ -158,7 +162,7 @@ extension AppModel {
 
     func clearMask(undoManager: UndoManager?) {
         guard graph[Self.inpaintIDs.mask] != nil else { return }
-        mutate("Clear Mask", undoManager: undoManager) { g in g = Self.removingInpaint(from: g) }
+        mutate("Clear Mask", undoManager: undoManager) { g in g = Self.syncingImg2Img(Self.removingInpaint(from: g)) }
     }
 
     static func removingInpaint(from graph: Graph) -> Graph {
@@ -185,7 +189,7 @@ extension AppModel {
                 }
                 return
             }
-            g = Self.removingInpaint(from: g)
+            g = Self.removingImg2Img(from: Self.removingInpaint(from: g))
             guard let consumer = finalImageConsumer(in: g),
                   case .link(let decodeID, let decodeOut)? = g[consumer.node]?.inputs[consumer.input] else { return }
             let sp = sampler.position ?? GraphPoint(x: 640, y: 120)
@@ -226,11 +230,117 @@ extension AppModel {
 
     func clearOutpaint(undoManager: UndoManager?) {
         guard isOutpainting else { return }
-        mutate("Stop Extending Canvas", undoManager: undoManager) { g in g = Self.removingOutpaint(from: g) }
+        mutate("Stop Extending Canvas", undoManager: undoManager) { g in g = Self.syncingImg2Img(Self.removingOutpaint(from: g)) }
     }
 
     static func removingOutpaint(from graph: Graph) -> Graph {
         removingChain(from: graph, ids: outpaintChain, latent: outpaintIDs.latent, composite: outpaintIDs.composite)
+    }
+
+    // MARK: image-to-image (Flux)
+
+    var isImg2Img: Bool { graph[Self.img2imgEncodeID] != nil }
+
+    /// Adds or removes the image-to-image chain so it is present exactly when the graph's model can't use a reference
+    /// image for editing (Flux), there is a reference image, and no inpaint or outpaint chain owns the Sampler's latent.
+    static func syncingImg2Img(_ graph: Graph) -> Graph {
+        var g = graph
+        guard let model = g.nodes.first(where: { $0.type == "LoadModel" }),
+              let sampler = g.nodes.first(where: { $0.type == "Sampler" }) else { return g }
+        let path: String = { if case .value(.string(let p))? = model.inputs["path"] { return p }; return "" }()
+        let ref: String? = g.nodes.first(where: { $0.type == "TextEncode" }).flatMap { te in
+            if case .link(let src, _)? = te.inputs["image"], g[src]?.type == "LoadImage" { return src }
+            return nil
+        }
+        let want = ImageFamily.of(path: path) == .flux && ref != nil && g[inpaintIDs.mask] == nil
+            && g[outpaintIDs.pad] == nil
+        if !want { return g[img2imgEncodeID] == nil ? g : removingImg2Img(from: g) }
+        guard g[img2imgEncodeID] == nil, let ref else { return g }
+        let sp = sampler.position ?? GraphPoint(x: 640, y: 120)
+        g.nodes.append(GraphNode(id: img2imgEncodeID, type: "VAEEncode",
+                                 inputs: ["model": .link(node: model.id, output: "model"),
+                                          "image": .link(node: ref, output: "image"),
+                                          "megapixels": .value(.double(1))],
+                                 position: GraphPoint(x: sp.x - 300, y: sp.y + 300)))
+        var s = g[sampler.id]!
+        s.inputs["latent"] = .link(node: img2imgEncodeID, output: "latent")
+        if case .value(.double(let d))? = s.inputs["denoise"], d < 1 {} else {
+            s.inputs["denoise"] = .value(.double(defaultImg2ImgStrength))
+        }
+        g[sampler.id] = s
+        return g
+    }
+
+    /// Removes the image-to-image chain: Sampler ← Empty Latent at full denoise.
+    static func removingImg2Img(from graph: Graph) -> Graph {
+        var g = graph
+        guard g[img2imgEncodeID] != nil else { return g }
+        g.nodes.removeAll { $0.id == img2imgEncodeID }
+        let emptyLatent = g.nodes.first { $0.type == "EmptyLatent" }
+        for i in g.nodes.indices {
+            for (k, v) in g.nodes[i].inputs {
+                guard case .link(img2imgEncodeID, _) = v else { continue }
+                g.nodes[i].inputs[k] = emptyLatent.map { .link(node: $0.id, output: "latent") }
+                if g.nodes[i].type == "Sampler" { g.nodes[i].inputs["denoise"] = .value(.double(1)) }
+            }
+        }
+        return g
+    }
+
+    /// Points the image graph at another image model, rewiring image-to-image as that model needs.
+    func setImageModel(path: String, undoManager: UndoManager?) {
+        guard path != modelPath || firstNode(ofType: "LoadModel").map({ n in
+            if case .value(.string(let p))? = n.inputs["path"] { return p != path }; return false
+        }) == true else { return }
+        modelPath = path
+        mutate("Change Image Model", undoManager: undoManager) { g in
+            for n in g.nodes where n.type == "LoadModel" { try? g.setValue(.string(path), node: n.id, input: "path") }
+            g = Self.syncingImg2Img(g)
+        }
+    }
+
+    // MARK: LoRAs
+
+    /// The LoRA nodes between the model loader and the Sampler, in order from the loader.
+    var simpleLoRAs: [GraphNode] {
+        guard let sampler = firstNode(ofType: "Sampler") else { return [] }
+        var chain: [GraphNode] = []
+        var input = sampler.inputs["model"]
+        while case .link(let id, _)? = input, let n = graph[id], n.type == "LoRA" {
+            chain.insert(n, at: 0)
+            input = n.inputs["model"]
+        }
+        return chain
+    }
+
+    /// Adds a LoRA after the last one (or after the model loader) for every Sampler that used that model.
+    func addLoRA(_ url: URL, strength: Double = 1, undoManager: UndoManager?) {
+        guard let sampler = firstNode(ofType: "Sampler"), let head = sampler.inputs["model"] else {
+            lastError = "This graph has no Sampler to apply a LoRA to."; return
+        }
+        mutate("Add LoRA", undoManager: undoManager) { g in
+            var n = 1
+            while g["lora\(n)"] != nil { n += 1 }
+            let id = "lora\(n)"
+            let p = sampler.position ?? GraphPoint(x: 640, y: 120)
+            g.nodes.append(GraphNode(id: id, type: "LoRA",
+                                     inputs: ["model": head, "path": .value(.string(url.path)),
+                                              "strength": .value(.double(strength))],
+                                     position: GraphPoint(x: p.x - 300 + Double(n - 1) * 40, y: p.y - 200 - Double(n - 1) * 40)))
+            for i in g.nodes.indices where g.nodes[i].type == "Sampler" && g.nodes[i].inputs["model"] == head {
+                g.nodes[i].inputs["model"] = .link(node: id, output: "model")
+            }
+        }
+    }
+
+    func removeLoRA(_ id: String, undoManager: UndoManager?) {
+        guard let node = graph[id], node.type == "LoRA" else { return }
+        mutate("Remove LoRA", undoManager: undoManager) { g in
+            g.nodes.removeAll { $0.id == id }
+            for i in g.nodes.indices {
+                for (k, v) in g.nodes[i].inputs { if case .link(id, _) = v { g.nodes[i].inputs[k] = node.inputs["model"] } }
+            }
+        }
     }
 
     // MARK: hi-res fix
@@ -262,7 +372,8 @@ extension AppModel {
                                    "megapixels": .value(.double(0))],
                           position: GraphPoint(x: sv.x + 280, y: sv.y - 260)),
                 GraphNode(id: ids.sampler, type: "Sampler",
-                          inputs: ["model": link(model.id, "model"), "conditioning": link(condNode, condOut),
+                          inputs: ["model": sampler.inputs["model"] ?? link(model.id, "model"),
+                                   "conditioning": link(condNode, condOut),
                                    "latent": link(ids.encode, "latent"),
                                    "seed": sampler.inputs["seed"] ?? .value(.int(0)),
                                    // An evenly spaced schedule: the checkpoint's distilled one ends at σ 0.41, so any

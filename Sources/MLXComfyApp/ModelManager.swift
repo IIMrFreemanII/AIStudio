@@ -134,6 +134,9 @@ final class ModelStore {
         return nil
     }
 
+    /// The image models the Image panel can switch between.
+    var imageChoices: (qwen: URL?, flux: URL?) { (installedURL("qwen-image-2.1-turbo"), installedURL("flux-1-dev")) }
+
     /// The video models the Video panel can switch between.
     var videoChoices: (ltx: URL?, wanT2V: URL?, wanI2V: URL?) {
         (installedURL("ltx-2.3"), installedURL("wan-2.2-t2v"), installedURL("wan-2.2-i2v"))
@@ -194,9 +197,12 @@ final class ModelStore {
             var lastUpdate = Date.distantPast
             do {
                 var before: Int64 = 0  // bytes of the parts already fetched, so progress spans the whole entry
-                for (part, files) in zip(entry.parts, lists) {
+                for (part, planned) in zip(entry.parts, lists) {
                     let source = HTTPByteSource(repo: part.repo, revision: part.revision,
                                                 token: part.gated ? HFToken.read() : nil)
+                    // A gated repo listed before access was granted hides its checksums; list it again now.
+                    let files = part.gated
+                        ? HFAPI.select(try await source.list(), include: part.include, exclude: part.exclude) : planned
                     let offset = before
                     try await ModelDownloader.download(files, to: partFolder(entry, part), from: source) { p in
                         // Progress arrives per chunk; publish a few times a second.

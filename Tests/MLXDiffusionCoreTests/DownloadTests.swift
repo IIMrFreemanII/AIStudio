@@ -52,12 +52,12 @@ func makeRepo() throws -> URL {
     let json = """
         [{"type":"directory","path":"vae"},
          {"type":"file","path":"vae/config.json","size":512},
-         {"type":"file","path":"vae/model.safetensors","size":134,"lfs":{"oid":"abc123","size":644000000}},
+         {"type":"file","path":"vae/model.safetensors","size":134,"lfs":{"oid":"abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd","size":644000000}},
          {"type":"file","path":"README.md","size":2000}]
         """
     let files = try HFAPI.parseTree(Data(json.utf8))
     #expect(files.count == 3)
-    #expect(files[1] == RemoteFile(path: "vae/model.safetensors", size: 644_000_000, sha256: "abc123"))
+    #expect(files[1] == RemoteFile(path: "vae/model.safetensors", size: 644_000_000, sha256: "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abcd"))
     let picked = HFAPI.select(files, include: [], exclude: ["*.md"])
     #expect(picked.map(\.path) == ["vae/config.json", "vae/model.safetensors"])
     #expect(HFAPI.select(files, include: ["*.safetensors"], exclude: []).count == 1)
@@ -225,4 +225,29 @@ func makeRepo() throws -> URL {
     #expect(i2vLoRA.count == 2 && i2vLoRA.allSatisfy { $0.contains("I2V") })
     #expect(HFAPI.select(repo, include: i2v.parts[2].include, exclude: []).map(\.path) == ["common/tokenizer.json"])
     #expect(i2v.manifest?["class"] == "WanPipeline")
+}
+
+/// FLUX.1 [dev] fetches the diffusers folders and skips the duplicate single-file checkpoints at the repo root.
+@Test func fluxCatalogEntrySkipsTheRootCheckpoints() throws {
+    let flux = try #require(ModelCatalog.entries.first { $0.id == "flux-1-dev" })
+    let repo = [".gitattributes", "LICENSE.md", "README.md", "ae.safetensors", "dev_grid.jpg", "flux1-dev.safetensors",
+                "model_index.json", "scheduler/scheduler_config.json", "text_encoder/model.safetensors",
+                "text_encoder_2/model-00001-of-00002.safetensors", "tokenizer/vocab.json", "tokenizer_2/spiece.model",
+                "transformer/diffusion_pytorch_model-00001-of-00003.safetensors", "vae/config.json"]
+        .map { RemoteFile(path: $0, size: 1) }
+    let picked = Set(HFAPI.select(repo, include: flux.include, exclude: flux.exclude).map(\.path))
+    #expect(picked == Set(repo.map(\.path)).subtracting([".gitattributes", "ae.safetensors", "dev_grid.jpg",
+                                                           "flux1-dev.safetensors"]))
+    #expect(flux.gated && flux.className == "FluxPipeline" && flux.kind == .image)
+}
+
+/// A gated repo listed without access shows its LFS hashes as asterisks; those must not be used as checksums.
+@Test func maskedGatedHashesAreNotChecksums() throws {
+    let json = """
+    [{"type":"file","path":"a.safetensors","size":10,"lfs":{"oid":"\(String(repeating: "*", count: 64))","size":10}},
+     {"type":"file","path":"b.safetensors","size":10,"lfs":{"oid":"\(String(repeating: "ab", count: 32))","size":10}}]
+    """
+    let files = try HFAPI.parseTree(Data(json.utf8))
+    #expect(files[0].sha256 == nil && files[0].size == 10)
+    #expect(files[1].sha256 == String(repeating: "ab", count: 32))
 }

@@ -176,3 +176,13 @@ enum VideoFamily: String {
         return ModelRegistry.className(at: ModelPaths.resolve(path)) == "WanPipeline" ? .wan : .ltx
     }
 }
+
+/// Image model families the Image panel adapts to (read from the folder's `model_index.json` class name).
+enum ImageFamily: String {
+    case qwen, flux
+
+    static func of(path: String) -> ImageFamily {
+        let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        return ModelRegistry.className(at: url) == "FluxPipeline" ? .flux : .qwen
+    }
+}

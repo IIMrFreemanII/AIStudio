@@ -156,28 +156,6 @@ struct CausalConv3d {
     }
 }
 
-/// Unpadded stride-1 2D convolution of `x` `[N, H, W, C]`, computed in horizontal bands when the unrolled patch
-/// buffer would be large (each band reads the `kh − 1` rows below it, so the result is identical).
-func bandedConv2d(_ x: MLXArray, _ w: MLXArray) -> MLXArray {
-    let (n, h, wd, c) = (x.dim(0), x.dim(1), x.dim(2), x.dim(3))
-    let kh = w.dim(1), kw = w.dim(2)
-    let hOut = h - kh + 1
-    let rowCost = n * (wd - kw + 1) * c * kh * kw  // unrolled elements per output row
-    let budget = 64 << 20
-    guard rowCost * hOut > budget else { return conv2d(x, w) }
-    let band = max(8, budget / max(rowCost, 1))
-    var parts: [MLXArray] = []
-    var r = 0
-    while r < hOut {
-        let r1 = min(hOut, r + band)
-        let o = conv2d(x[0..., r ..< (r1 + kh - 1)], w)
-        eval(o)
-        parts.append(o)
-        r = r1
-    }
-    return concatenated(parts, axis: 1)
-}
-
 /// Applies `op` to `[N, H, W, C]` one image at a time when the images are large (bounds the 2D convolutions'
 /// patch buffers), else to the whole batch.
 func framewise(_ x: MLXArray, _ op: (MLXArray) -> MLXArray) -> MLXArray {

@@ -66,6 +66,17 @@ public protocol DiffusionModel: GenerativeModel {
     /// A scheduler configured for this model, with its default schedule (`steps == nil` → checkpoint default).
     func makeScheduler(steps: Int?) -> FlowMatchEuler
 
+    /// The schedule for an image of this pixel size (models with a resolution-dependent shift override this).
+    func makeScheduler(steps: Int?, width: Int, height: Int) -> FlowMatchEuler
+
+    /// Flow velocity at `guidance` (guidance-distilled models such as Flux; `nil` = the model's default). Models
+    /// without a guidance input ignore it.
+    func velocity(_ latents: MLXArray, conditioning: Conditioning, sigma: Float, width: Int, height: Int,
+                  guidance: Float?) throws -> MLXArray
+
+    /// The guidance value used when none is given, for models that take one (shown in the UI).
+    var defaultGuidance: Float? { get }
+
     /// Flow velocity prediction.
     func velocity(_ latents: MLXArray, conditioning: Conditioning, sigma: Float, width: Int, height: Int) throws
         -> MLXArray
@@ -106,6 +117,15 @@ extension DiffusionModel {
     }
 
     public func latentPreview(_ latents: MLXArray, width: Int, height: Int) -> MLXArray? { nil }
+
+    public func makeScheduler(steps: Int?, width: Int, height: Int) -> FlowMatchEuler { makeScheduler(steps: steps) }
+
+    public func velocity(_ latents: MLXArray, conditioning: Conditioning, sigma: Float, width: Int, height: Int,
+                         guidance: Float?) throws -> MLXArray {
+        try velocity(latents, conditioning: conditioning, sigma: sigma, width: width, height: height)
+    }
+
+    public var defaultGuidance: Float? { nil }
 }
 
 public enum DiffusionError: Error, CustomStringConvertible {
@@ -129,8 +149,8 @@ extension DiffusionModel {
     /// - With `latent.noiseMask`, the unmasked area is reset after every step to the source re-noised to the next
     ///   sigma, so only the masked area is generated, in context; at the final sigma it equals the source exactly.
     public func sample(conditioning: Conditioning, latent: Latent, seed: UInt64, steps: Int?, denoise: Float = 1,
-                       onStep: ((SamplerStep) throws -> Void)? = nil) throws -> Latent {
-        let scheduler = makeScheduler(steps: steps)
+                       guidance: Float? = nil, onStep: ((SamplerStep) throws -> Void)? = nil) throws -> Latent {
+        let scheduler = makeScheduler(steps: steps, width: latent.width, height: latent.height)
         let noise = noise(seed: seed, width: latent.width, height: latent.height)
         var start = 0
         var x: MLXArray
@@ -149,7 +169,7 @@ extension DiffusionModel {
             try Task.checkCancellation()
             let sigma = scheduler.sigmas[i]
             let v = try velocity(x, conditioning: conditioning, sigma: sigma, width: latent.width,
-                                 height: latent.height)
+                                 height: latent.height, guidance: guidance)
             var x0 = scheduler.predictX0(v, sample: x, index: i)
             x = scheduler.step(v, sample: x, index: i)
             if let mask, let source = latent.data?.asType(.float32) {
@@ -317,8 +337,15 @@ public final class ModelRegistry {
     /// Size of the weight files in a model folder (recursively): the estimate used for the memory budget.
     public static func weightBytes(at url: URL) -> Int {
         guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        // A quantized cache `.mlxcomfy-cache/<folder>-q<bits>.safetensors` is loaded instead of `<folder>/`.
+        let cacheDir = url.appendingPathComponent(".mlxcomfy-cache")
+        let replaced = Set(((try? FileManager.default.contentsOfDirectory(atPath: cacheDir.path)) ?? [])
+            .filter { $0.hasSuffix(".safetensors") && !$0.hasSuffix(".partial.safetensors") }
+            .compactMap { name in name.range(of: "-q", options: .backwards).map { String(name[..<$0.lowerBound]) } })
         var total = 0
         for case let f as URL in e where ["safetensors", "bin", "gguf", "npz", "pth", "pt"].contains(f.pathExtension.lowercased()) {
+            let rel = f.standardizedFileURL.path.dropFirst(url.standardizedFileURL.path.count + 1)
+            if let top = rel.split(separator: "/").first, rel.contains("/"), replaced.contains(String(top)) { continue }
             total += (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         }
         return total

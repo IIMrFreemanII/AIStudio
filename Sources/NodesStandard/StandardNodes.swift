@@ -8,6 +8,7 @@ import LTX2
 import QwenImage21
 import StableAudio
 import Wan
+import Flux
 
 /// The built-in node library and the model loaders it relies on.
 public enum StandardNodes {
@@ -32,6 +33,7 @@ public enum StandardNodes {
         ACEStepPipeline.register()
         KokoroPipeline.register()
         WanPipeline.register()
+        FluxPipeline.register()
         let r = NodeRegistry()
         r.register(all)
         return r
@@ -99,7 +101,10 @@ public struct TextEncodeNode: NodeImplementation {
             return ["conditioning": .object(try video.encodeVideoPrompt(try inputs.string("prompt")))]
         }
         let model: DiffusionModel = try inputs.object("model")
-        let images = ["image", "image2"].compactMap { inputs.optionalObject($0, as: MLXArray.self) }
+        // Models without reference conditioning (Flux) use a connected image only through the latent path
+        // (image-to-image, inpainting), so the prompt ignores it instead of failing.
+        let images = model.maxConditionImages == 0 ? []
+            : ["image", "image2"].compactMap { inputs.optionalObject($0, as: MLXArray.self) }
         return ["conditioning": .object(try model.encodePrompt(try inputs.string("prompt"), images: images))]
     }
 }
@@ -131,6 +136,8 @@ public struct SamplerNode: NodeImplementation {
             InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1)),
             // < 1 with a VAE-encoded input latent: img2img strength. Inpainting (masked latent) uses 1.
             InputSpec("denoise", .float, default: .double(1), widget: .number(min: 0, max: 1, step: 0.05)),
+            // Distilled guidance for models that take it (Flux); 0 = the model's default. Others ignore it.
+            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 20, step: 0.5)),
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}
@@ -150,8 +157,9 @@ public struct SamplerNode: NodeImplementation {
         let steps = try inputs.int("steps")
         let seed = UInt64(truncatingIfNeeded: try inputs.int("seed"))
         let denoise = Float(try inputs.float("denoise"))
+        let guidance = Float((try? inputs.float("guidance")) ?? 0)
         let out = try model.sample(conditioning: cond, latent: latent, seed: seed, steps: steps > 0 ? steps : nil,
-                                   denoise: denoise) {
+                                   denoise: denoise, guidance: guidance > 0 ? guidance : nil) {
             step in
             context.progress(step: step.index + 1, total: step.count, preview: LatentPreview(
                 model: model, latents: step.predicted, width: size.width, height: size.height))

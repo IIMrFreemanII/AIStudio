@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import AppKit
 import GraphRuntime
 import ImageIO
@@ -118,8 +119,20 @@ struct SimplePanel: View {
         let prompt = model.firstNode(ofType: "TextEncode")
         let latent = model.firstNode(ofType: "EmptyLatent")
         let sampler = model.firstNode(ofType: "Sampler")
+        let flux = ImageFamily.of(path: model.modelPath) == .flux
+        let choices = store.imageChoices
 
         Form {
+            if let qwen = choices.qwen, let fluxURL = choices.flux {
+                Section {
+                    Picker("Model", selection: Binding(
+                        get: { flux ? ImageFamily.flux : .qwen },
+                        set: { f in model.setImageModel(path: (f == .flux ? fluxURL : qwen).path, undoManager: undoManager) })) {
+                        Text("Qwen-Image 2.1 · edits").tag(ImageFamily.qwen)
+                        Text("FLUX.1 [dev] · LoRAs").tag(ImageFamily.flux)
+                    }
+                }
+            }
             Section("Prompt") {
                 if let prompt {
                     TextEditor(text: b.string(prompt.id, "prompt"))
@@ -135,6 +148,8 @@ struct SimplePanel: View {
             }
 
             if prompt != nil { referenceSection }
+
+            if sampler != nil { loraSection(b) }
 
             Section("Size") {
                 if let latent {
@@ -182,7 +197,15 @@ struct SimplePanel: View {
                     Toggle("Randomize seed each run", isOn: $model.randomizeSeed)
                     Stepper(value: b.int(sampler.id, "steps"), in: 0...100) {
                         let s = b.int(sampler.id, "steps").wrappedValue
-                        LabeledContent("Steps", value: s == 0 ? "Model default" : "\(s)")
+                        LabeledContent("Steps", value: s == 0 ? (flux ? "Model default (28)" : "Model default") : "\(s)")
+                    }
+                    if flux {
+                        let g = b.double(sampler.id, "guidance")
+                        Stepper(value: Binding(get: { g.wrappedValue > 0 ? g.wrappedValue : 3.5 },
+                                               set: { g.wrappedValue = $0 }), in: 1...10, step: 0.5) {
+                            LabeledContent("Guidance", value: String(format: "%.1f", g.wrappedValue > 0 ? g.wrappedValue : 3.5))
+                        }
+                        .help("How closely the image follows the prompt (FLUX.1 [dev] default 3.5)")
                     }
                 } else {
                     missing("Sampler")
@@ -230,6 +253,7 @@ struct SimplePanel: View {
                         Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
                         Text(model.maskPath != nil ? "Inpainting: only the painted area changes."
                              : model.isOutpainting ? "Outpainting: the new border is generated."
+                             : model.isImg2Img ? "Image to image: the picture is redrawn from the prompt."
                              : "Editing: describe the change in the prompt.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
@@ -250,10 +274,21 @@ struct SimplePanel: View {
                     featherSlider(AppModel.inpaintIDs.feather, b)
                 }
                 if model.isOutpainting { outpaintControls(b) }
+                if model.isImg2Img, let sampler = model.firstNode(ofType: "Sampler") {
+                    let d = b.double(sampler.id, "denoise")
+                    LabeledContent("Strength") {
+                        HStack {
+                            Slider(value: d, in: 0.1...1, step: 0.05)
+                            Text(String(format: "%.2f", d.wrappedValue)).monospacedDigit().frame(width: 36)
+                        }
+                    }
+                    .help("How much of the picture is redrawn: low keeps the composition, 1 ignores it")
+                }
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: "photo.badge.plus").font(.title2).foregroundStyle(.secondary)
-                    Text("Drop an image to edit it or use it as a reference").font(.caption)
+                    Text(ImageFamily.of(path: model.modelPath) == .flux ? "Drop an image to redraw it, inpaint or extend it"
+                         : "Drop an image to edit it or use it as a reference").font(.caption)
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button("Choose…") { chooseReference() }.controlSize(.small)
                 }
@@ -398,6 +433,36 @@ struct SimplePanel: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder func loraSection(_ b: LiteralBindings) -> some View {
+        Section("LoRA") {
+            ForEach(model.simpleLoRAs, id: \.id) { n in
+                let path: String = { if case .value(.string(let p))? = n.inputs["path"] { return p }; return "" }()
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text((path as NSString).lastPathComponent).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Button { model.removeLoRA(n.id, undoManager: undoManager) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless).help("Remove this LoRA")
+                    }
+                    let st = b.double(n.id, "strength")
+                    HStack {
+                        Slider(value: st, in: -1...2, step: 0.05)
+                        Text(String(format: "%.2f", st.wrappedValue)).monospacedDigit().frame(width: 40)
+                    }
+                }
+            }
+            Button("Add LoRA…") { chooseLoRA() }
+                .help("Apply a LoRA file (.safetensors) to the model: kohya, diffusers/PEFT and ai-toolkit formats")
+        }
+    }
+
+    func chooseLoRA() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "safetensors") ?? .data]
+        panel.message = "Choose a LoRA (.safetensors) made for the current model."
+        if panel.runModal() == .OK, let url = panel.url { model.addLoRA(url, undoManager: undoManager) }
     }
 
     func chooseReference() {
