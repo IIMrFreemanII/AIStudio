@@ -747,6 +747,125 @@ extension SmokeTest {
         }
         try? FileManager.default.removeItem(at: other)
 
+        // Graph editor: tidy splices, Arrange, align, copy/paste, wires, collapse.
+        /// Pairs of nodes whose cards overlap, and nodes lying on a group they don't belong to.
+        func clashes() -> [String] {
+            let level = model.editorGraph
+            let frames = level.nodes.compactMap { n in model.frame(of: n).map { (n.id, $0) } }
+            var out: [String] = []
+            for i in frames.indices { for j in frames.indices where j > i && frames[i].1.intersects(frames[j].1) {
+                out.append("\(frames[i].0)×\(frames[j].0)")
+            } }
+            for g in level.groups ?? [] {
+                let r = CGRect(x: g.x, y: g.y, width: g.width, height: g.height)
+                let members = model.nodes(in: g.id)
+                for (id, f) in frames where !members.contains(id) && f.intersects(r) { out.append("\(id)×\(g.title)") }
+            }
+            return out
+        }
+        /// Data links point right, except into and out of groups (a chain like Outpainting both feeds the sampler
+        /// and takes the decoded image, so one of its links must loop back).
+        func leftToRight() -> Bool {
+            let level = model.editorGraph
+            let grouped = Set((level.groups ?? []).flatMap { model.nodes(in: $0.id) })
+            return model.layoutEdges(level).filter { !$0.weak && !grouped.contains($0.source) && !grouped.contains($0.target) }
+                .allSatisfy { e in
+                guard let a = level[e.source].flatMap(model.frame(of:)), let b = level[e.target].flatMap(model.frame(of:)) else { return true }
+                return a.maxX < b.minX
+            }
+        }
+        var spliceClashes: [String] = []
+        for p in model.presets where p.category == .image && p.isBuiltIn {
+            model.openPreset(p)
+            if model.canAdd(.hires) { model.setHiRes(true, undoManager: nil); model.groupAddedChain(.hires) }
+            if model.referenceImageNode == nil, model.canAdd(.reference) { model.setReferenceImage(picture, undoManager: nil) }
+            if model.canAdd(.outpaint) { model.add(.outpaint) }
+            spliceClashes += clashes().map { "\(p.id): \($0)" }
+        }
+        check(spliceClashes.isEmpty, "Add to Workflow places chains in free space" + (spliceClashes.isEmpty ? "" : " — \(spliceClashes)"))
+        guard let inpaint = model.preset(id: "qwen-inpaint") else { return false }
+        let editorTab = model.openPreset(inpaint)
+        if model.canAdd(.outpaint) { model.add(.outpaint) }
+        if model.canAdd(.hires) { model.setHiRes(true, undoManager: nil); model.groupAddedChain(.hires) }
+        await settle()
+        // In this headless run undo groups don't close between steps; start Arrange on a clean history.
+        model.activeUndoManager.removeAllActions()
+        let beforeArrange = model.graph
+        model.arrange(selectionOnly: false, undoManager: model.activeUndoManager)
+        await settle()
+        let backwards = model.layoutEdges(model.editorGraph).filter { e in
+            guard !e.weak, let a = model.editorGraph[e.source].flatMap(model.frame(of:)),
+                  let b = model.editorGraph[e.target].flatMap(model.frame(of:)) else { return false }
+            return a.maxX >= b.minX
+        }.map { "\($0.source)→\($0.target)" }
+        check(model.graph != beforeArrange && clashes().isEmpty && leftToRight(),
+              "Arrange Graph: no overlaps, every data link points right"
+                + " (changed \(model.graph != beforeArrange), clashes \(clashes()), backwards \(backwards))")
+        let undoName = model.activeUndoManager.undoActionName
+        model.activeUndoManager.undo()
+        await settle()
+        check(model.graph == beforeArrange, "Arrange is one undo step (undid “\(undoName)”, nodes moved back: "
+              + "\(model.graph.nodes.filter { beforeArrange[$0.id]?.position == $0.position }.count)/\(model.graph.nodes.count), "
+              + "groups equal \(model.graph.groups == beforeArrange.groups))")
+        model.activeUndoManager.redo(); await settle()
+
+        let sampler = model.graph.nodes.first { $0.type == "Sampler" }!.id
+        let decode = model.graph.nodes.first { $0.type == "VAEDecode" && $0.inputs["latent"] == .link(node: sampler, output: "latent") }!.id
+        let latentNode = model.graph.nodes.first { $0.type == "EmptyLatent" || $0.type == "VAEEncode" }!.id
+        model.selection = [sampler, decode, latentNode]
+        model.alignSelection(.top, undoManager: model.activeUndoManager)
+        let tops = Set([sampler, decode, latentNode].compactMap { model.graph[$0]?.position?.y })
+        check(tops.count == 1, "Align Top Edges")
+
+        // Copy two linked nodes into another tab: new tab keeps their ids, internal link intact, external links dropped.
+        model.selection = [sampler, decode]
+        let clip = model.clipboardForSelection()!
+        let pasteTab = model.openTab(Graph(), name: "Paste")
+        model.insert(clip, at: GraphPoint(x: 0, y: 0), keepExternalLinks: false, actionName: "Paste", undoManager: nil)
+        check(model.graph.nodes.count == 2 && model.graph[decode]?.inputs["latent"] == .link(node: sampler, output: "latent")
+              && model.graph[sampler]?.inputs["model"] == nil && model.selection == [sampler, decode],
+              "copy and paste into another tab keeps the link between the copies")
+        model.insert(clip, at: GraphPoint(x: 0, y: 400), keepExternalLinks: false, actionName: "Paste", undoManager: nil)
+        check(model.graph.nodes.count == 4 && model.graph["\(decode)_2"]?.inputs["latent"] == .link(node: "\(sampler)_2", output: "latent"),
+              "pasting again renames the copies")
+        model.closeTab(pasteTab.id)
+
+        // Wires.
+        model.activate(editorTab.id)
+        model.disconnect(node: decode, input: "latent", undoManager: model.activeUndoManager)
+        await settle()
+        check(model.graph[decode]?.inputs["latent"] == nil, "deleting a selected wire disconnects it")
+        model.activeUndoManager.undo(); await settle()
+        check(model.graph[decode]?.inputs["latent"] == .link(node: sampler, output: "latent"), "…and undo brings it back")
+        let count = model.graph.nodes.count
+        model.addNode(type: "VAEDecode", connecting: AppModel.PendingWire(node: sampler, socket: "latent", type: .latent,
+                                                                         fromOutput: true, point: GraphPoint(x: 2000, y: 0)),
+                      undoManager: model.activeUndoManager)
+        let added = model.selection.first ?? ""
+        check(model.graph.nodes.count == count + 1 && model.graph[added]?.inputs["latent"] == .link(node: sampler, output: "latent")
+              && model.graph[added]?.position?.x == 2000, "a wire dropped on the canvas adds a connected node there")
+        let save = model.graph.nodes.first { $0.type == "SaveImage" }!.id
+        model.addNode(type: "LoadImage", connecting: AppModel.PendingWire(node: save, socket: "image", type: .image,
+                                                                         fromOutput: false, point: GraphPoint(x: 2000, y: 600)),
+                      undoManager: model.activeUndoManager)
+        let feeder = model.selection.first ?? ""
+        check(model.graph[feeder]?.type == "LoadImage" && model.graph[save]?.inputs["image"] == .link(node: feeder, output: "image"),
+              "a wire dragged back from an input adds a node that feeds it")
+        await settle()
+        model.activeUndoManager.undo(); await settle()
+        check(model.graph[feeder] == nil && model.graph[save]?.inputs["image"] != .link(node: feeder, output: "image"),
+              "adding and connecting is one undo step")
+
+        // Collapse survives saving.
+        model.toggleCollapsed([sampler], undoManager: nil)
+        check(model.graph[sampler]?.isCollapsed == true && model.frame(of: model.graph[sampler]!)?.height == NodeLayout.header,
+              "a collapsed node is just its title bar")
+        check(model.saveAs(editorTab, name: "Smoke Editor"), "save the arranged workflow")
+        let reloaded = editorTab.fileURL.flatMap { try? Graph.load($0) }
+        check(reloaded?[sampler]?.isCollapsed == true && reloaded?[decode]?.collapsed == nil, "collapse is saved with the workflow")
+        model.toggleCollapsed([sampler], undoManager: nil)
+        check(model.graph[sampler]?.collapsed == nil, "expanding removes the flag")
+
         // Session: drafts and the tab list come back in a new model.
         let dirty = model.newTab()
         model.setLiteral(.string("never saved"), node: te.id, input: "prompt", undoManager: nil)

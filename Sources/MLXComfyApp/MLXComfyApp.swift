@@ -1,5 +1,6 @@
 import AppKit
 import NodesStandard
+import MLXComfyLibrary
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -167,6 +168,10 @@ struct MLXComfyApp: App {
 struct AppCommands: Commands {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @AppStorage("wireStyle") private var wireStyle = WireStyle.rightAngle.rawValue
+    @AppStorage("showModelWires") private var showModelWires = false
+    @AppStorage("showMinimap") private var showMinimap = true
+    @AppStorage("snapToGrid") private var snapToGrid = true
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -218,12 +223,38 @@ struct AppCommands: Commands {
         CommandMenu("Graph") {
             let undo = model.activeUndoManager
             Button("Add Node…") {
+                model.pendingWire = nil
                 model.paletteLocation = nil
                 model.showPalette = true
             }
             .keyboardShortcut("k")
             Menu("Add to Workflow") { AddToWorkflowItems(model: model) }
             Divider()
+            Button(model.selection.count > 1 ? "Arrange Selection" : "Arrange Graph") {
+                model.arrange(selectionOnly: model.selection.count > 1, undoManager: undo)
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            Menu("Align") {
+                ForEach(AlignMode.allCases) { mode in
+                    Button(mode.title) { model.alignSelection(mode, undoManager: undo) }
+                        .disabled(model.selection.count < mode.minimumCount)
+                    if mode == .right || mode == .bottom { Divider() }
+                }
+            }
+            Button(model.selectionAllCollapsed ? "Expand Node" : "Collapse Node") {
+                model.toggleCollapsed(model.selection, undoManager: undo)
+            }
+            .keyboardShortcut("c", modifiers: .option)
+            .disabled(model.selection.isEmpty)
+            Toggle("Snap to Grid", isOn: $snapToGrid)
+            Divider()
+            Button("Copy Nodes") { model.copySelection() }
+                .disabled(model.selection.isEmpty)
+            Button("Cut Nodes") { model.cutSelection(undoManager: undo) }
+                .disabled(model.selection.isEmpty)
+            Button("Paste Nodes") { model.paste(undoManager: undo) }
+            Button("Paste Nodes with Connections") { model.paste(keepExternalLinks: true, undoManager: undo) }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
             Button("Duplicate") { model.duplicateSelection(undoManager: undo) }
                 .keyboardShortcut("d")
                 .disabled(model.selection.isEmpty)
@@ -249,6 +280,13 @@ struct AppCommands: Commands {
             Button("Open Result in Viewer") { model.openViewer() }
                 .keyboardShortcut("y")
                 .disabled(model.displayedResult == nil)
+            Divider()
+            Picker("Wire Style", selection: $wireStyle) {
+                ForEach(WireStyle.allCases) { Text($0.title).tag($0.rawValue) }
+            }
+            Toggle("Show Model Wires", isOn: $showModelWires)
+                .keyboardShortcut("m", modifiers: [.command, .option])
+            Toggle("Show Minimap", isOn: $showMinimap)
             Divider()
             Button("Show Next Tab") { model.selectTab(offset: 1) }
                 .keyboardShortcut("]", modifiers: [.command, .shift])

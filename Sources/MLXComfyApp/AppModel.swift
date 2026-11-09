@@ -139,6 +139,11 @@ final class AppModel {
     var modelStatus: String = "Model not loaded"
     var modelLoading = false
 
+    // MARK: graph editor requests
+
+    /// A wire dropped on empty canvas, waiting for the palette to pick a node to connect.
+    var pendingWire: PendingWire?
+
     // MARK: prompt assistant
 
     /// The assistant task in progress (Enhance / Describe), if any.
@@ -369,27 +374,11 @@ final class AppModel {
     }
 
     func duplicateSelection(undoManager: UndoManager?) {
-        let ids = selection
-        guard !ids.isEmpty else { return }
-        var mapping: [String: String] = [:]
-        var copies: [GraphNode] = []
-        let level = editorGraph
-        for node in level.nodes where ids.contains(node.id) {
-            var n = 2
-            while level[node.id + "_\(n)"] != nil || mapping.values.contains(node.id + "_\(n)") { n += 1 }
-            mapping[node.id] = node.id + "_\(n)"
-        }
-        for node in level.nodes where ids.contains(node.id) {
-            var c = node
-            c.id = mapping[node.id]!
-            c.position = GraphPoint(x: (node.position?.x ?? 0) + 40, y: (node.position?.y ?? 0) + 40)
-            for (name, input) in c.inputs {
-                if case .link(let src, let out) = input, let m = mapping[src] { c.inputs[name] = .link(node: m, output: out) }
-            }
-            copies.append(c)
-        }
-        mutateEditor("Duplicate", undoManager: undoManager) { g in g.nodes += copies }
-        selection = Set(copies.map(\.id))
+        guard let clip = clipboardForSelection() else { return }
+        // Duplicates keep their inputs from nodes outside the selection.
+        insert(NodeClipboard(nodes: clip.nodes, subgraphs: clip.subgraphs, origin: clip.origin),
+               at: GraphPoint(x: clip.origin.x + 40, y: clip.origin.y + 40), keepExternalLinks: true,
+               actionName: "Duplicate", undoManager: undoManager)
     }
 
     /// Validation error for the current graph, or nil when it can run.

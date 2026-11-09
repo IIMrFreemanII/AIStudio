@@ -36,7 +36,8 @@ enum Snapshot {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
-        let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab"].map { ($0, defaults.object(forKey: $0)) }
+        let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab", "wireStyle", "showModelWires", "showMinimap",
+                     "snapToGrid"].map { ($0, defaults.object(forKey: $0)) }
         defer { for (k, v) in saved { if let v { defaults.set(v, forKey: k) } else { defaults.removeObject(forKey: k) } } }
 
         let model = makeModel(projectOutputs)
@@ -113,6 +114,7 @@ enum Snapshot {
             panel(nil)
             await render(model, to: dir.appendingPathComponent("10-workflow-inspector.png"))
             print("graph: " + model.graph.jsonString())
+            await renderEditor(model, inpaint, to: dir)
         }
         model.closeTab(inpaint.id)
 
@@ -218,6 +220,52 @@ enum Snapshot {
         m.loadedModels = [LoadedModel(key: "model:/Users/me/models/qwen-turbo-mlx", bytes: 24_100_000_000, pinned: false)]
         await render(LoadedModelsView().environment(m), to: dir.appendingPathComponent("29-loaded-models.png"),
                      size: CGSize(width: 340, height: 220))
+    }
+
+    /// 31–40: the graph editor on the inpaint preset with Outpaint and Hi-res added: before and after Arrange, each
+    /// wire style, hidden and shown model wires, collapsed nodes, zoomed out with the minimap, the wire-drop palette.
+    static func renderEditor(_ model: AppModel, _ doc: WorkflowDocument, to dir: URL) async {
+        let d = UserDefaults.standard
+        d.set(WireStyle.rightAngle.rawValue, forKey: "wireStyle")
+        d.set(false, forKey: "showModelWires")
+        d.set(true, forKey: "showMinimap")
+        panel(nil)
+        model.showResultsPane = false
+        model.selection = []
+        doc.viewport = nil
+        await render(model, to: dir.appendingPathComponent("31-editor-spliced.png"))
+        model.arrange(selectionOnly: false, undoManager: nil)
+        doc.viewport = nil
+        await render(model, to: dir.appendingPathComponent("32-editor-arranged.png"))
+        for style in [WireStyle.curved, .straight] {
+            d.set(style.rawValue, forKey: "wireStyle")
+            await render(model, to: dir.appendingPathComponent("\(style == .curved ? 33 : 34)-wires-\(style.rawValue).png"))
+        }
+        d.set(WireStyle.rightAngle.rawValue, forKey: "wireStyle")
+        if let loader = model.firstNode(ofType: "LoadModel") { model.selection = [loader.id] }
+        await render(model, to: dir.appendingPathComponent("35-model-selected.png"))
+        if let sampler = model.firstNode(ofType: "Sampler") { model.selection = [sampler.id] }
+        d.set(true, forKey: "showModelWires")
+        await render(model, to: dir.appendingPathComponent("36-model-wires-shown-path.png"))
+        d.set(false, forKey: "showModelWires")
+        model.selection = []
+        let collapse = model.graph.nodes.filter { ["LoadModel", "EmptyLatent", "TextEncode", "FeatherMask"].contains($0.type) }.map(\.id)
+        model.toggleCollapsed(Set(collapse), undoManager: nil)
+        await render(model, to: dir.appendingPathComponent("37-collapsed.png"))
+        model.toggleCollapsed(Set(collapse), undoManager: nil)
+        // Zoomed in on the left of the graph so the rest is off screen (minimap shows), then far out.
+        for (n, z) in [(38, 0.5), (39, 0.3)] as [(Int, CGFloat)] {
+            doc.viewport = (z, CGSize(width: 40, height: 60))
+            await render(model, to: dir.appendingPathComponent("\(n)-zoom-\(Int(z * 100)).png"))
+        }
+        doc.viewport = nil
+        model.showResultsPane = true
+        if let sampler = model.firstNode(ofType: "Sampler") {
+            let wire = AppModel.PendingWire(node: sampler.id, socket: "latent", type: .latent, fromOutput: true,
+                                            point: GraphPoint(x: 0, y: 0))
+            await render(NodePalette(wire: wire) { _ in }.environment(model), to: dir.appendingPathComponent("40-wire-palette.png"),
+                         size: CGSize(width: 420, height: 360))
+        }
     }
 
     static func render<V: View>(_ view: V, to url: URL, size: CGSize) async {

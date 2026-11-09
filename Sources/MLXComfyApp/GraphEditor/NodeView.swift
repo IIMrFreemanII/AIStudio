@@ -1,5 +1,6 @@
 import AppKit
 import GraphRuntime
+import MLXComfyLibrary
 import SwiftUI
 
 /// Callbacks a node card raises; locations are in the editor's "canvas" (view) coordinate space.
@@ -15,6 +16,10 @@ struct NodeActions {
     var open: (() -> Void)? = nil
     /// Double-click on a result shown in the node.
     var openResult: ((NodeResult) -> Void)? = nil
+    /// The header chevron (nil for nodes that can't collapse).
+    var toggleCollapse: (() -> Void)? = nil
+    /// Double-click on a hidden model wire's chip: show the node it comes from.
+    var revealSource: ((_ input: String) -> Void)? = nil
     var menu: NodeMenu = NodeMenu()
 }
 
@@ -22,7 +27,14 @@ struct NodeActions {
 struct NodeMenu {
     var open: (() -> Void)? = nil
     var expand: (() -> Void)? = nil
+    var toggleCollapse: (() -> Void)? = nil
+    var isCollapsed = false
+    var copy: (() -> Void)? = nil
     var duplicate: (() -> Void)? = nil
+    /// With several nodes selected.
+    var arrange: (() -> Void)? = nil
+    var align: ((AlignMode) -> Void)? = nil
+    var alignCount = 0
     var group: (() -> Void)? = nil
     var collapse: (() -> Void)? = nil
     var delete: (() -> Void)? = nil
@@ -41,34 +53,52 @@ struct NodeView: View {
     /// The node's latest output (Save / Preview nodes), and the live step preview while it samples.
     var result: NodeResult? = nil
     var livePreview: CGImage? = nil
+    /// The editor's zoom: zoomed out, widgets turn into plain values and titles grow so they stay readable.
+    var zoom: CGFloat = 1
+    /// Model inputs whose wire is hidden: input → the node it comes from.
+    var modelSources: [String: String] = [:]
+    /// Links in and out (shown on a collapsed node).
+    var linkCount = 0
+
+    /// 2: full detail; 1: values as text, no socket labels; 0: just the title (and result).
+    var detail: Int { zoom >= 0.6 ? 2 : zoom >= 0.35 ? 1 : 0 }
 
     var body: some View {
         let rows = NodeLayout.rows(node, schema)
         VStack(spacing: 0) {
             header
-            ForEach(0..<rows.socketRowCount, id: \.self) { i in
-                HStack(spacing: 0) {
-                    if i < rows.sockets.count { inputSocket(rows.sockets[i]) }
-                    Spacer(minLength: 4)
-                    if i < rows.outputs.count { outputSocket(rows.outputs[i]) }
+            if !node.isCollapsed {
+                if detail == 0 {
+                    bigTitle(rows)
+                } else {
+                    ForEach(0..<rows.socketRowCount, id: \.self) { i in
+                        HStack(spacing: 0) {
+                            if i < rows.sockets.count { inputSocket(rows.sockets[i]) }
+                            Spacer(minLength: 4)
+                            if i < rows.outputs.count { outputSocket(rows.outputs[i]) }
+                        }
+                        .frame(height: NodeLayout.row)
+                    }
+                    ForEach(rows.widgets, id: \.name) { spec in
+                        Group {
+                            if detail == 2 { widget(spec) } else { plainValue(spec) }
+                        }
+                        .frame(height: NodeLayout.widgetHeight(spec))
+                        .padding(.horizontal, 10)
+                    }
                 }
-                .frame(height: NodeLayout.row)
+                if NodeLayout.showsResult(schema) {
+                    NodeResultView(result: result, kind: NodeLayout.resultKind(schema))
+                        .frame(height: NodeLayout.resultHeight)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 4)
+                        .onTapGesture(count: 2) { if let result { actions.openResult?(result) } }
+                }
+                Spacer(minLength: 0)
             }
-            ForEach(rows.widgets, id: \.name) { spec in
-                widget(spec)
-                    .frame(height: NodeLayout.widgetHeight(spec))
-                    .padding(.horizontal, 10)
-            }
-            if NodeLayout.showsResult(schema) {
-                NodeResultView(result: result, kind: NodeLayout.resultKind(schema))
-                    .frame(height: NodeLayout.resultHeight)
-                    .padding(.horizontal, 8)
-                    .padding(.top, 4)
-                    .onTapGesture(count: 2) { if let result { actions.openResult?(result) } }
-            }
-            Spacer(minLength: 0)
         }
-        .frame(width: NodeLayout.width, height: NodeLayout.height(node, schema), alignment: .top)
+        .frame(width: NodeLayout.frameWidth(node), height: NodeLayout.height(node, schema), alignment: .top)
+        .overlay { if node.isCollapsed { collapsedSockets(rows) } }
         .background(RoundedRectangle(cornerRadius: 9).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(borderColor, lineWidth: borderWidth))
         .shadow(color: .black.opacity(selected ? 0.35 : 0.2), radius: selected ? 10 : 5, y: 2)
@@ -99,27 +129,100 @@ struct NodeView: View {
         return selected ? 2 : 1
     }
 
+    var title: String { node.title ?? schema.displayName }
+
     var header: some View {
         HStack(spacing: 6) {
-            Circle().fill(schema.tint).frame(width: 8, height: 8)
+            if let toggle = actions.toggleCollapse, detail > 0 {
+                Image(systemName: node.isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(width: 12, height: 20)
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: toggle)
+                    .help(node.isCollapsed ? "Expand (⌥C)" : "Collapse (⌥C)")
+            } else {
+                Circle().fill(schema.tint).frame(width: 8, height: 8)
+            }
             if node.type == Graph.subgraphType {
                 Image(systemName: "square.stack.3d.up").font(.system(size: 10)).foregroundStyle(schema.tint)
             }
-            Text(node.title ?? schema.displayName).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            Text(title).font(.system(size: detail == 2 ? 12 : min(12 / zoom, 22), weight: .semibold)).lineLimit(1)
+                .minimumScaleFactor(0.5)
             Spacer(minLength: 4)
-            statusBadge
+            if node.isCollapsed && linkCount > 0 && !isRunning {
+                Text("\(linkCount)").font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary)
+                    .help("\(linkCount) connections")
+            }
+            if detail > 0 { statusBadge }
         }
         .padding(.horizontal, 10)
         .frame(height: NodeLayout.header)
         .background(
-            UnevenRoundedRectangle(topLeadingRadius: 9, topTrailingRadius: 9)
-                .fill(schema.tint.opacity(0.22)))
+            UnevenRoundedRectangle(topLeadingRadius: 9, bottomLeadingRadius: node.isCollapsed ? 9 : 0,
+                                   bottomTrailingRadius: node.isCollapsed ? 9 : 0, topTrailingRadius: 9)
+                .fill(schema.tint.opacity(detail == 0 ? 0.55 : 0.22)))
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .named("canvas"))
-                .onChanged { actions.dragChanged($0.translation) }
-                .onEnded { _ in actions.dragEnded() })
+        .gesture(moveGesture)
         .onTapGesture(count: 2) { actions.open?() }
+    }
+
+    var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("canvas"))
+            .onChanged { actions.dragChanged($0.translation) }
+            .onEnded { _ in actions.dragEnded() }
+    }
+
+    var isRunning: Bool {
+        if case .running? = state { return true }
+        return false
+    }
+
+    /// Zoomed far out: the title across the whole card, big enough to read.
+    func bigTitle(_ rows: NodeLayout.Rows) -> some View {
+        let h = NodeLayout.height(node, schema) - NodeLayout.header - (NodeLayout.showsResult(schema) ? NodeLayout.resultHeight + 4 : 0)
+        return Text(title)
+            .font(.system(size: min(13 / zoom, 56), weight: .semibold))
+            .foregroundStyle(schema.tint)
+            .multilineTextAlignment(.center)
+            .minimumScaleFactor(0.3)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity)
+            .frame(height: max(0, h - NodeLayout.bottomPadding))
+            .contentShape(Rectangle())
+            .gesture(moveGesture)
+    }
+
+    /// A collapsed node: one dot at each end for all its links.
+    func collapsedSockets(_ rows: NodeLayout.Rows) -> some View {
+        HStack {
+            if let first = rows.sockets.first {
+                socketDot(first.type, filled: rows.sockets.contains { NodeLayout.isLinked(node, $0.name) })
+                    .offset(x: -11).allowsHitTesting(false)
+            }
+            Spacer()
+            if let first = rows.outputs.first {
+                socketDot(first.type, filled: true).offset(x: 11).allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Zoomed out: a widget's value as plain text (cheaper than a live field, and readable).
+    func plainValue(_ spec: InputSpec) -> some View {
+        let value: String = {
+            switch bindings.get(node.id, spec.name) {
+            case .int(let i)?: return String(i)
+            case .double(let d)?: return d.formatted(.number.precision(.fractionLength(0...3)))
+            case .bool(let b)?: return b ? "on" : "off"
+            case .string(let s)?: return s.isEmpty ? "—" : s
+            default: return "—"
+            }
+        }()
+        return HStack(spacing: 6) {
+            Text(spec.name).foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            Text(verbatim: value).lineLimit(1).truncationMode(.middle)
+        }
+        .font(.system(size: 11))
     }
 
     @ViewBuilder var statusBadge: some View {
@@ -159,17 +262,31 @@ struct NodeView: View {
                         .onChanged { actions.inputDragChanged(spec.name, $0.location) }
                         .onEnded { actions.inputDragEnded(spec.name, $0.location) })
                 .help("\(spec.name): \(spec.type.rawValue)")
-            Text(boundInputs[spec.name].map { "\(spec.name) ← \($0)" } ?? spec.name)
-                .font(.system(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
-                .lineLimit(1).offset(x: -11)
+            if let source = modelSources[spec.name], detail == 2 {
+                // The model wire is hidden: name its source instead.
+                Text("⟵ \(source)")
+                    .font(.system(size: 10, weight: .medium)).foregroundStyle(SocketType.model.color)
+                    .lineLimit(1)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(SocketType.model.color.opacity(0.15), in: Capsule())
+                    .offset(x: -11)
+                    .onTapGesture(count: 2) { actions.revealSource?(spec.name) }
+                    .help("\(spec.name) from \(source) — the wire is hidden (View › Show Model Wires). Double-click to show it.")
+            } else if detail == 2 {
+                Text(boundInputs[spec.name].map { "\(spec.name) ← \($0)" } ?? spec.name)
+                    .font(.system(size: 11)).foregroundStyle(boundInputs[spec.name] != nil ? schema.tint : .secondary)
+                    .lineLimit(1).offset(x: -11)
+            }
         }
     }
 
     func outputSocket(_ spec: OutputSpec) -> some View {
         HStack(spacing: 2) {
-            Text(exposedOutputs[spec.name].map { "\($0) ← \(spec.name)" } ?? spec.name)
-                .font(.system(size: 11)).foregroundStyle(exposedOutputs[spec.name] != nil ? schema.tint : .secondary)
-                .lineLimit(1).offset(x: 11)
+            if detail == 2 {
+                Text(exposedOutputs[spec.name].map { "\($0) ← \(spec.name)" } ?? spec.name)
+                    .font(.system(size: 11)).foregroundStyle(exposedOutputs[spec.name] != nil ? schema.tint : .secondary)
+                    .lineLimit(1).offset(x: 11)
+            }
             socketDot(spec.type, filled: true)
                 .offset(x: 11)
                 .gesture(
@@ -228,7 +345,18 @@ struct NodeMenuItems: View {
         if let open = menu.open { Button("Open Subgraph", action: open) }
         if let expand = menu.expand { Button("Expand Subgraph", action: expand) }
         if menu.open != nil || menu.expand != nil { Divider() }
+        if let toggle = menu.toggleCollapse { Button(menu.isCollapsed ? "Expand Node" : "Collapse Node", action: toggle) }
+        if let copy = menu.copy { Button("Copy", action: copy) }
         if let duplicate = menu.duplicate { Button("Duplicate", action: duplicate) }
+        if let arrange = menu.arrange { Button("Arrange Selection", action: arrange) }
+        if let align = menu.align {
+            Menu("Align") {
+                ForEach(AlignMode.allCases) { mode in
+                    Button(mode.title) { align(mode) }.disabled(menu.alignCount < mode.minimumCount)
+                    if mode == .right || mode == .bottom { Divider() }
+                }
+            }
+        }
         if let group = menu.group { Button("Group Selection", action: group) }
         if let collapse = menu.collapse { Button("Collapse to Subgraph", action: collapse) }
         if let delete = menu.delete {

@@ -288,6 +288,10 @@ struct NodeInspector: View {
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     private var undoManager: UndoManager? { model.activeUndoManager }
+    @AppStorage("wireStyle") private var wireStyle = WireStyle.rightAngle.rawValue
+    @AppStorage("showModelWires") private var showModelWires = false
+    @AppStorage("snapToGrid") private var snapToGrid = true
+    @AppStorage("showMinimap") private var showMinimap = true
 
     var body: some View {
         @Bindable var model = model
@@ -329,6 +333,16 @@ struct SettingsView: View {
             }
             Text("Each workflow saves into its own subfolder of the output folder; Save nodes pointed elsewhere keep their own directory.")
                 .font(.caption).foregroundStyle(.secondary)
+            Section("Graph Editor") {
+                Picker("Wires", selection: $wireStyle) {
+                    ForEach(WireStyle.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+                Toggle("Show model wires", isOn: $showModelWires)
+                Text("Hidden model wires show while you hover or select either end; the input names the model it comes from.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Snap nodes to the grid (hold ⌘ while dragging to place freely)", isOn: $snapToGrid)
+                Toggle("Show minimap", isOn: $showMinimap)
+            }
             Section("Memory") {
                 @Bindable var model = model
                 let total = Double(ProcessInfo.processInfo.physicalMemory)

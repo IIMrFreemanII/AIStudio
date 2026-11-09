@@ -120,20 +120,18 @@ extension AppModel {
         tidyChainGroups()
     }
 
-    /// Wraps a chain that was just spliced in in a group titled after it (once).
+    /// Lays out a chain that was just spliced in, puts it in free space, and wraps it in a group titled after it (once).
     func groupAddedChain(_ a: AddOn, undoManager: UndoManager? = nil) {
         guard let title = a.groupTitle, !(graph.groups ?? []).contains(where: { $0.title == title }) else { return }
-        let frames = graph.nodes.filter { a.chain.contains($0.id) }.compactMap { n in
-            schema(for: n).map { NodeLayout.frame(n, $0) }
-        }
-        guard let first = frames.first else { return }
-        let box = frames.dropFirst().reduce(first) { $0.union($1) }.insetBy(dx: -24, dy: -24)
         var k = (graph.groups?.count ?? 0) + 1
         while (graph.groups ?? []).contains(where: { $0.id == "group\(k)" }) { k += 1 }
         let color = a == .hires ? "purple" : a == .inpaint ? "green" : "yellow"
-        let group = GraphGroup(id: "group\(k)", title: title, x: box.minX, y: box.minY - 30,
-                               width: box.width, height: box.height + 30, color: color)
-        mutate("Group \(title)", undoManager: undoManager ?? activeUndoManager) { g in g.groups = (g.groups ?? []) + [group] }
+        let id = "group\(k)"
+        mutate("Group \(title)", undoManager: undoManager ?? activeUndoManager) { g in
+            guard let box = placeChain(a.chain, in: &g) else { return }
+            g.groups = (g.groups ?? []) + [GraphGroup(id: id, title: title, x: box.minX, y: box.minY,
+                                                      width: box.width, height: box.height, color: color)]
+        }
     }
 
     /// Drops the labelled groups of chains that are no longer in the graph.

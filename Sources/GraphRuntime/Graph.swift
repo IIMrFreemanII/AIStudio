@@ -82,15 +82,20 @@ public struct GraphNode: Codable, Hashable, Sendable, Identifiable {
     public var title: String?
     public var inputs: [String: NodeInput]
     public var position: GraphPoint?
+    /// Editor only: drawn as just its title bar. Absent (not `false`) when expanded, so saved graphs don't change.
+    public var collapsed: Bool?
 
     public init(id: String, type: String, title: String? = nil, inputs: [String: NodeInput] = [:],
-                position: GraphPoint? = nil) {
+                position: GraphPoint? = nil, collapsed: Bool? = nil) {
         self.id = id
         self.type = type
         self.title = title
         self.inputs = inputs
         self.position = position
+        self.collapsed = collapsed
     }
+
+    public var isCollapsed: Bool { collapsed == true }
 }
 
 /// The document: a set of node instances wired by links stored on their inputs.

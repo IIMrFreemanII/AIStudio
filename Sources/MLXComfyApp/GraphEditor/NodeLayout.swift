@@ -11,6 +11,8 @@ enum NodeLayout {
     /// A Reroute is a small pill: input socket on the left, output on the right.
     static let rerouteSize = CGSize(width: 44, height: 22)
     static let noteHeight: CGFloat = 150
+    /// A collapsed node is just its title bar, this wide; all its sockets meet at the middle of its ends.
+    static let collapsedWidth: CGFloat = 180
 
     static func isReroute(_ node: GraphNode) -> Bool { node.type == Graph.rerouteType }
     static func isNote(_ node: GraphNode) -> Bool { node.type == Graph.noteType }
@@ -49,9 +51,15 @@ enum NodeLayout {
     static func showsResult(_ schema: NodeSchema) -> Bool { resultTypes[schema.type] != nil }
     static func resultKind(_ schema: NodeSchema) -> MediaKind { resultTypes[schema.type] ?? .image }
 
+    static func frameWidth(_ node: GraphNode) -> CGFloat {
+        if isReroute(node) { return rerouteSize.width }
+        return node.isCollapsed && !isNote(node) ? collapsedWidth : width
+    }
+
     static func height(_ node: GraphNode, _ schema: NodeSchema) -> CGFloat {
         if isReroute(node) { return rerouteSize.height }
         if isNote(node) { return noteHeight }
+        if node.isCollapsed { return header }
         let r = rows(node, schema)
         return header + CGFloat(r.socketRowCount) * row + r.widgets.map(widgetHeight).reduce(0, +)
             + (showsResult(schema) ? resultHeight + 4 : 0) + bottomPadding
@@ -65,6 +73,7 @@ enum NodeLayout {
         if isReroute(node) { let o = origin(node); return CGPoint(x: o.x, y: o.y + rerouteSize.height / 2) }
         guard let i = rows(node, schema).sockets.firstIndex(where: { $0.name == name }) else { return nil }
         let o = origin(node)
+        if node.isCollapsed { return CGPoint(x: o.x, y: o.y + header / 2) }
         return CGPoint(x: o.x, y: o.y + header + row * (CGFloat(i) + 0.5))
     }
 
@@ -75,12 +84,17 @@ enum NodeLayout {
         }
         guard let i = schema.outputs.firstIndex(where: { $0.name == name }) else { return nil }
         let o = origin(node)
+        if node.isCollapsed { return CGPoint(x: o.x + collapsedWidth, y: o.y + header / 2) }
         return CGPoint(x: o.x + width, y: o.y + header + row * (CGFloat(i) + 0.5))
     }
 
     static func frame(_ node: GraphNode, _ schema: NodeSchema) -> CGRect {
-        CGRect(origin: origin(node), size: CGSize(width: isReroute(node) ? rerouteSize.width : width,
-                                                  height: height(node, schema)))
+        CGRect(origin: origin(node), size: CGSize(width: frameWidth(node), height: height(node, schema)))
+    }
+
+    /// Row index of an input socket (for spreading parallel wire runs).
+    static func socketIndex(_ node: GraphNode, _ schema: NodeSchema, _ name: String) -> Int {
+        rows(node, schema).sockets.firstIndex { $0.name == name } ?? 0
     }
 }
 
