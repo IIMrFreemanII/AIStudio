@@ -99,6 +99,7 @@ actor Engine {
             case .nodeFailed(let n, let e): onEvent(.nodeFailed(node: n, message: String(describing: e)))
             case .finished(let s): onEvent(.finished(seconds: s))
             case .cancelled: onEvent(.cancelled)
+            case .nodeOutput: break
             }
         }
         var outputs: [EngineOutput] = []

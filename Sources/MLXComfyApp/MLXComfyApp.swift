@@ -16,6 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { MGTextMenu.install() }
         // Preview files only live for one session.
         try? FileManager.default.removeItem(at: previewDirectory)
+        if let url = SmokeTest.argument("--smoke-remote") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runRemote(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if CommandLine.arguments.contains("--smoke-sound") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }

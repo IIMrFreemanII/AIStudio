@@ -95,6 +95,8 @@ public final class KokoroModel {
     public func loadVoice(_ name: String) throws -> MLXArray {
         lock.lock(); defer { lock.unlock() }
         if let v = voices[name] { return v }
+        // Voice names are file stems; a graph from a remote client must not reach outside `voices/`.
+        guard !name.isEmpty, !name.contains("/"), !name.contains("..") else { throw WeightError.missing("voice \(name)") }
         let url = directory.appendingPathComponent("voices/\(name).pt")
         guard let v = try TorchPickle.load(url: url).values.first else { throw WeightError.missing("voice \(name)") }
         let a = v.asType(.float32)

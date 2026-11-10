@@ -68,6 +68,12 @@ struct ContentView: View {
         .overlay {
             if model.viewerResult != nil { ResultViewer().transition(.opacity) }
         }
+        .onChange(of: model.showServersPanel) { _, show in
+            guard show else { return }
+            panelRaw = SidebarPanel.servers.rawValue
+            panelOpen = true
+            model.showServersPanel = false
+        }
         .navigationTitle(model.active.name + (model.active.isDirty ? " — Edited" : ""))
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             for provider in providers {
@@ -102,6 +108,7 @@ struct ContentView: View {
                 .buttonStyle(.mg(.icon))
                 .mgHelp("XY Plot: queue a grid of results varying one or two inputs")
                 .accessibilityLabel("XY Plot")
+            RunTargetPicker()
             Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
                 Label(model.isRunning ? "Queue" : "Generate", systemImage: "sparkles")
                     .labelStyle(.titleAndIcon)

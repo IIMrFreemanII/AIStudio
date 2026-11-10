@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 /// The panels the icon rail switches between.
 enum SidebarPanel: String, CaseIterable, Identifiable {
-    case workflows, presets, assets, queue, nodes
+    case workflows, presets, assets, queue, nodes, servers
     var id: String { rawValue }
 
     var title: String {
@@ -18,6 +18,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         case .assets: return "Assets"
         case .queue: return "Queue"
         case .nodes: return "Node Library"
+        case .servers: return "Servers"
         }
     }
 
@@ -28,6 +29,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         case .assets: return "photo.stack"
         case .queue: return "list.bullet.rectangle"
         case .nodes: return "point.3.connected.trianglepath.dotted"
+        case .servers: return "server.rack"
         }
     }
 }
@@ -80,6 +82,7 @@ struct SidebarPanelView: View {
         case .assets: AssetsPanel()
         case .queue: QueuePanel()
         case .nodes: NodeLibraryPanel()
+        case .servers: ServersPanel()
         }
     }
 }

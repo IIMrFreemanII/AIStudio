@@ -199,6 +199,27 @@ Measured on an M4 Max with 48 GB, at 1024² and 8 steps: about 5.7 s per step an
   - Connect the LoRA model to both TextEncode and Sampler.
   - Chain LoRA nodes to stack them.
 
+## Running on another machine
+
+A tab can run on a server instead of this Mac: another Mac running `mlxcomfy-cli serve` executes the whole graph
+(same models, same results), with live previews, cancel, and results downloaded into the usual output folders. The
+server has a web dashboard (memory, GPU, queue, live run, models, charts, logs). Pick the target in the toolbar next to
+Generate, and add servers in the **Servers** panel.
+
+```bash
+mlxcomfy-cli serve --show-token                 # create and print the token
+mlxcomfy-cli serve                              # listen on 127.0.0.1:8188
+tailscale serve --bg http://127.0.0.1:8188      # publish it on your tailnet as https://<mac>.<tailnet>.ts.net
+mlxcomfy-cli bench-remote https://studio.tail1234.ts.net --token-file token.txt
+```
+
+The app needs https for Tailscale addresses (macOS blocks plain http from apps to `100.x` and `*.ts.net`);
+`scripts/bootstrap-mac-server.sh --tailscale` sets all of this up as a login service.
+
+[docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that
+bill only for GPU seconds), networking with Tailscale or an SSH tunnel, the bootstrap scripts, getting models onto the
+server, the dashboard, and troubleshooting.
+
 ## Graphs
 
 A graph is JSON with a `nodes` list. Each input is either a literal value or a link written as `{"node": "<id>", "output": "<name>"}`. See [examples/txt2img.json](examples/txt2img.json).
@@ -269,9 +290,11 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
 
     The tokens come from `design/metalgraphics/tokens.json`, the design system's own export. To re-sync, copy a new one over it and run `swift scripts/sync-design-tokens.swift`. The fonts are in `Resources/Fonts` with their OFL licence.
   - `AppModel`: the open tabs (`WorkflowDocument`: a graph with its own undo history, editor state and results), the queue, run state and history. `Workflows.swift` holds tabs, opening and saving, the library, presets and the session.
-  - `Engine`: an actor that owns the executor and the loaded models.
+  - `Engine`: an actor that owns the executor and the loaded models; `Backends/` puts it behind `ExecutionBackend` next to `RemoteMLXBackend` (a server), with the Servers panel, the run-target menu and the event coalescer.
   - `GraphEditor/`: the node editor; `TabStrip`, `SidebarRail` (Workflows, Presets, Assets, Queue, Node Library), `QueuePanel` (with the Output list), `Assets.swift` (imports and drops), `ResultsPane` (with the viewer), `PresetGallery`, the inspector (`InspectorView`, `NodeExtras`) and `AddToWorkflow` (the chains in `SimpleChains.swift`).
-- `Sources/mlxcomfy-cli`: the command line front end.
+- `Sources/MLXComfyProtocol`: the remote protocol shared by the server, the app and the tests: 20-byte binary event records (`WireEvent`), JSON control messages, metrics ring buffers, `GraphTransport` (rewrites a graph's files for a server, content-addressed uploads) and `RemoteClient` (URLSession and WebSocket client with resumable transfers and reconnect).
+- `Sources/MLXComfyServer`: `mlxcomfy-cli serve` on Hummingbird: the run queue (`Scheduler`), event fan-out with per-client coalescing and latest-wins previews (`Hub`), uploads (`FileStore`), auth and the path sandbox, and the web dashboard (built from `web/dashboard`, Svelte 5 + uPlot, by `scripts/build-dashboard.sh`).
+- `Sources/mlxcomfy-cli`: the command line front end (including `serve`, `download` and `bench-remote`).
 
 The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transformer_qwenimage21.py` and `autoencoder_kl_qwenimage21.py`.
 

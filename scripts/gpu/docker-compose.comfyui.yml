@@ -1,0 +1,32 @@
+# ComfyUI on an NVIDIA GPU, behind Caddy's bearer-token gate. Started by scripts/bootstrap-gpu-server.sh.
+services:
+  app:
+    build:
+      context: ./comfyui
+      args:
+        COMFYUI_REF: ${COMFYUI_REF:-v0.44.1}
+    restart: unless-stopped
+    volumes:
+      - ${DATA_DIR}/comfyui/models:/opt/ComfyUI/models
+      - ${DATA_DIR}/comfyui/custom_nodes:/opt/ComfyUI/custom_nodes
+      - ${DATA_DIR}/comfyui/input:/opt/ComfyUI/input
+      - ${DATA_DIR}/comfyui/output:/opt/ComfyUI/output
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  gate:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      API_TOKEN: ${API_TOKEN}
+      UPSTREAM: app:8188
+    ports:
+      - ${PUBLISH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:

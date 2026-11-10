@@ -1,0 +1,30 @@
+# vLLM's OpenAI-compatible server (chat / vision models) behind Caddy. MODEL is a Hugging Face repo id.
+services:
+  app:
+    image: vllm/vllm-openai:${VLLM_TAG:-v0.32.0}
+    restart: unless-stopped
+    command: ["--model", "${MODEL}", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    ipc: host
+    volumes:
+      - ${DATA_DIR}/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  gate:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      API_TOKEN: ${API_TOKEN}
+      UPSTREAM: app:8000
+    ports:
+      - ${PUBLISH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:

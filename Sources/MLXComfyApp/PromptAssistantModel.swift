@@ -66,11 +66,13 @@ extension AppModel {
         let path = assistantModelPath
         let nodeID = te.id
         assistantNode = nodeID
+        // Runs where the tab's graphs run (this Mac or its server).
+        let target = backend(doc.backendID)
         assistantTask = Task { [weak self] in
             guard let self else { return }
             var result: String?
             do {
-                let text = try await engine.generateText(
+                let text = try await target.generateText(
                     modelPath: path, system: system, user: user, imagePaths: image.map { [$0] } ?? [],
                     options: options) { partial in
                     Task { @MainActor [weak self] in

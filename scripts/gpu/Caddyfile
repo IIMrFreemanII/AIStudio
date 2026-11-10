@@ -1,0 +1,22 @@
+# Bearer-token gate in front of a server that has no auth of its own (ComfyUI, Ollama, vLLM without --api-key).
+# SITE_ADDRESS is ":8188" (plain HTTP, for use over Tailscale or an SSH tunnel) or a domain name (automatic HTTPS).
+{$SITE_ADDRESS} {
+	@authorized header Authorization "Bearer {$API_TOKEN}"
+	handle @authorized {
+		reverse_proxy {$UPSTREAM} {
+			# Long generations: don't cut the connection.
+			transport http {
+				read_timeout 30m
+				write_timeout 30m
+			}
+		}
+	}
+	handle {
+		respond "unauthorized" 401
+	}
+	encode zstd gzip
+	log {
+		output stdout
+		format console
+	}
+}
