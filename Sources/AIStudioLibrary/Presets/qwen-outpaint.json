@@ -1,0 +1,238 @@
+{
+  "category" : "image",
+  "graph" : {
+    "groups" : [
+      {
+        "color" : "yellow",
+        "height" : 428,
+        "id" : "group1",
+        "title" : "Outpainting",
+        "width" : 958,
+        "x" : 1272,
+        "y" : 96
+      }
+    ],
+    "nodes" : [
+      {
+        "id" : "model",
+        "inputs" : {
+          "path" : "qwen-turbo-mlx"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadModel"
+      },
+      {
+        "id" : "prompt",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "prompt" : "Continue the scene naturally beyond the edges"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 40
+        },
+        "type" : "TextEncode"
+      },
+      {
+        "id" : "latent",
+        "inputs" : {
+          "height" : 0,
+          "width" : 0
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 300
+        },
+        "type" : "EmptyLatent"
+      },
+      {
+        "id" : "sampler",
+        "inputs" : {
+          "conditioning" : {
+            "node" : "prompt",
+            "output" : "conditioning"
+          },
+          "denoise" : 1,
+          "latent" : {
+            "node" : "outpaint_latent",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          },
+          "seed" : 1,
+          "steps" : 0
+        },
+        "position" : {
+          "x" : 640,
+          "y" : 120
+        },
+        "type" : "Sampler"
+      },
+      {
+        "id" : "decode",
+        "inputs" : {
+          "latent" : {
+            "node" : "sampler",
+            "output" : "latent"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 940,
+          "y" : 140
+        },
+        "type" : "VAEDecode"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "aistudio",
+          "image" : {
+            "node" : "outpaint_composite",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 2310,
+          "y" : 150
+        },
+        "type" : "SaveImage"
+      },
+      {
+        "id" : "refimage",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : -80
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "outpaint_pad",
+        "inputs" : {
+          "bottom" : 0,
+          "fill" : "edge",
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "left" : 256,
+          "right" : 256,
+          "top" : 0
+        },
+        "position" : {
+          "x" : 1296,
+          "y" : 150
+        },
+        "type" : "PadImage"
+      },
+      {
+        "id" : "outpaint_feather",
+        "inputs" : {
+          "feather" : 32,
+          "grow" : 0,
+          "mask" : {
+            "node" : "outpaint_pad",
+            "output" : "mask"
+          }
+        },
+        "position" : {
+          "x" : 1626,
+          "y" : 202
+        },
+        "type" : "FeatherMask"
+      },
+      {
+        "id" : "outpaint_encode",
+        "inputs" : {
+          "image" : {
+            "node" : "outpaint_pad",
+            "output" : "image"
+          },
+          "megapixels" : 0,
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 1626,
+          "y" : 358
+        },
+        "type" : "VAEEncode"
+      },
+      {
+        "id" : "outpaint_latent",
+        "inputs" : {
+          "latent" : {
+            "node" : "outpaint_encode",
+            "output" : "latent"
+          },
+          "mask" : {
+            "node" : "outpaint_feather",
+            "output" : "mask"
+          },
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 1956,
+          "y" : 358
+        },
+        "type" : "SetLatentMask"
+      },
+      {
+        "id" : "outpaint_composite",
+        "inputs" : {
+          "destination" : {
+            "node" : "outpaint_pad",
+            "output" : "image"
+          },
+          "mask" : {
+            "node" : "outpaint_feather",
+            "output" : "mask"
+          },
+          "source" : {
+            "node" : "decode",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 1956,
+          "y" : 202
+        },
+        "type" : "ImageCompositeMasked"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "qwen-outpaint",
+  "modelName" : "Qwen-Image 2.1",
+  "models" : [
+    "qwen-image-2.1-turbo"
+  ],
+  "name" : "Outpaint",
+  "order" : 40,
+  "summary" : "Extend a picture past its borders; set the margins on Pad Image.",
+  "symbol" : "arrow.up.left.and.arrow.down.right"
+}

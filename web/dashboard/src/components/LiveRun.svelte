@@ -32,7 +32,7 @@
     {/if}
   </div>
   {#if !run}
-    <p class="empty">Nothing running. Runs queued from MLXComfyUI show here with live previews.</p>
+    <p class="empty">Nothing running. Runs queued from AIStudio show here with live previews.</p>
   {:else}
     <div class="body">
       <div class="preview">

@@ -2,7 +2,7 @@ import Foundation
 import MLX
 
 /// A cheap sampler preview: a linear map from the 128 latent channels to RGB, applied to the middle latent frame.
-/// Fitted by least squares against decoded clips (`mlxcomfy-cli generate-video --fit-preview`).
+/// Fitted by least squares against decoded clips (`aistudio-cli generate-video --fit-preview`).
 public enum LTXPreview {
     /// Weights `[128, 3]` (row-major) followed by the bias `[3]`; empty until fitted.
     static let coefficients: [Float] = LTXPreviewCoefficients.values

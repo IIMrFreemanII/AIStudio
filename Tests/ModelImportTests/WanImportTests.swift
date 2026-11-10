@@ -120,7 +120,7 @@ enum TinyWan {
         for f in ["high_noise_model.safetensors", "low_noise_model.safetensors"] {
             try Data("x".utf8).write(to: lora.appendingPathComponent(f))
         }
-        try writeJSON(["class": "WanPipeline"], dir.appendingPathComponent("mlxcomfy.json"))
+        try writeJSON(["class": "WanPipeline"], dir.appendingPathComponent("aistudio.json"))
         try Data("readme".utf8).write(to: dir.appendingPathComponent("README.md"))
     }
 

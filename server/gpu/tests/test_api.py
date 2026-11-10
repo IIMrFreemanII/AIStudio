@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from mlxcomfy_gpu.api import create_app
-from mlxcomfy_gpu.files import FileStore
-from mlxcomfy_gpu.jobs import JobManager
-from mlxcomfy_gpu.local import LocalRunner
-from mlxcomfy_gpu.wire import Kind, decode_all
+from aistudio_gpu.api import create_app
+from aistudio_gpu.files import FileStore
+from aistudio_gpu.jobs import JobManager
+from aistudio_gpu.local import LocalRunner
+from aistudio_gpu.wire import Kind, decode_all
 
 TOKEN = "t" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -186,7 +186,7 @@ def test_audio_job_returns_a_wav(client):
 
 
 def test_optional_audio_input_is_uploaded_and_used(client):
-    from mlxcomfy_gpu.media import tone, write_wav
+    from aistudio_gpu.media import tone, write_wav
 
     import tempfile
 
@@ -207,9 +207,9 @@ def test_optional_audio_input_is_uploaded_and_used(client):
 
 
 def test_fake_models_give_each_audio_model_its_format(tmp_path, monkeypatch):
-    from mlxcomfy_gpu.tasks import TASKS, make_worker
+    from aistudio_gpu.tasks import TASKS, make_worker
 
-    monkeypatch.setenv("MLXCOMFY_FAKE_MODELS", "1")
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
 
     class Sink:
         def status(self, t): pass
@@ -233,7 +233,7 @@ def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):
     import asyncio
     import os
 
-    from mlxcomfy_gpu.files import FileStore
+    from aistudio_gpu.files import FileStore
 
     stored = []
     store = FileStore(tmp_path, max_bytes=250, on_stored=lambda: stored.append(1))

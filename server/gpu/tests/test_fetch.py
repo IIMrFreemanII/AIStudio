@@ -11,11 +11,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 from fastapi.testclient import TestClient
 
-from mlxcomfy_gpu.api import create_app
-from mlxcomfy_gpu.fetch import Fetcher
-from mlxcomfy_gpu.files import FileStore
-from mlxcomfy_gpu.jobs import JobManager
-from mlxcomfy_gpu.local import LocalRunner
+from aistudio_gpu.api import create_app
+from aistudio_gpu.fetch import Fetcher
+from aistudio_gpu.files import FileStore
+from aistudio_gpu.jobs import JobManager
+from aistudio_gpu.local import LocalRunner
 
 
 def safetensors_bytes(size: int = 300_000) -> bytes:
@@ -186,7 +186,7 @@ def test_deleting_an_upload(client, origin):
 def test_model_import_lists_and_removes_a_fine_tune(client, origin, monkeypatch):
     """A fine-tune from a link, in fake-models mode (the file is kept, no conversion): imported in a thread,
     listed by family, offered in /v1/info, then removed."""
-    monkeypatch.setenv("MLXCOMFY_FAKE_MODELS", "1")
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
     sha = hashlib.sha256(LORA).hexdigest()
     r = client.post("/v1/models/import", json={"family": "flux.1", "id": "realism", "name": "Realism",
                                                 "files": [{"url": f"{origin}/redirect", "sha256": sha}]})
@@ -214,7 +214,7 @@ def test_model_import_lists_and_removes_a_fine_tune(client, origin, monkeypatch)
 def test_a_wan_fine_tune_has_a_file_per_expert(client, origin, monkeypatch, tmp_path):
     """Wan 2.2: each file says which expert it replaces (high → transformer, low → transformer_2); one expert alone
     is fine (the other stays the base's), a file without a role is refused."""
-    monkeypatch.setenv("MLXCOMFY_FAKE_MODELS", "1")
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
     sha = hashlib.sha256(LORA).hexdigest()
 
     def wait(key):

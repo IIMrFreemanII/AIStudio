@@ -1,6 +1,6 @@
 import MLX
 
-/// Linear latent → RGB projection for live step previews, fitted with `mlxcomfy-cli fit-preview` on VAE-encoded
+/// Linear latent → RGB projection for live step previews, fitted with `aistudio-cli fit-preview` on VAE-encoded
 /// images (mean abs error ≈ 6.5/255 at latent resolution). One pixel per latent token, i.e. 1/16 scale.
 enum QwenImage21LatentPreview {
     static let previewWeights: [Float] = [  // 64 rows × RGB, then bias

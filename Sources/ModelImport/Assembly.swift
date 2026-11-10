@@ -79,7 +79,7 @@ extension ModelImporter {
             throw ModelImportError.architectureMismatch(family: familyName, base: baseName, details: details,
                                                         hint: mismatchHint(expect, named: named, base: base))
         }
-        var metadata = ["format": "mlx", "mlxcomfy_import": "1"]
+        var metadata = ["format": "mlx", "aistudio_import": "1"]
         if let bits { metadata["quantization_level"] = "\(bits)" }
         return Prepared(tensors: tensors, metadata: metadata, bytes: tensors.reduce(0) { $0 + $1.byteCount },
                         summary: .init(schema: src.layout.schema, dtype: src.weightDtype, prefix: src.layout.prefix,
@@ -226,7 +226,7 @@ extension ModelImporter {
         var isDirectory: Bool
     }
 
-    /// The visible entries of a folder (hidden caches like `.mlxcomfy-cache` are skipped).
+    /// The visible entries of a folder (hidden caches like `.aistudio-cache` are skipped).
     static func entries(of dir: URL) throws -> [Entry] {
         try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted().compactMap { name in
             guard !name.hasPrefix(".") else { return nil }

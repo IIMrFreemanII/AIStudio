@@ -27,7 +27,7 @@ public enum WanError: Error, CustomStringConvertible {
 ///
 /// Folder layouts: the PocketAiHub T2V (`q4/{config.json, high_noise_model, low_noise_model}` + `common/{t5_encoder,
 /// tokenizer.json, vae}`) or the flat mlx-video layout (all in one folder), plus `lora/**/{high,low}_noise_model
-/// .safetensors` and `mlxcomfy.json` with `"class": "WanPipeline"`.
+/// .safetensors` and `aistudio.json` with `"class": "WanPipeline"`.
 public final class WanPipeline: LoRAVideoModel, @unchecked Sendable {
     public static let className = "WanPipeline"
 

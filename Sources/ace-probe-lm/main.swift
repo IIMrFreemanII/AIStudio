@@ -17,7 +17,7 @@ guard args.count >= 2 else {
 let work = URL(fileURLWithPath: args[1])
 let what = Set(args.dropFirst(2))
 let models = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/MLXComfyUI/models/ace-step-1.5")
+    .appendingPathComponent("Library/Application Support/AIStudio/models/ace-step-1.5")
 let lmDir = models.appendingPathComponent("acestep-5Hz-lm-1.7B")
 let ditDir = models.appendingPathComponent("acestep-v15-turbo")
 let dtypes: [DType] = what.contains("fp32") ? [.float32] : what.contains("bf16") ? [.bfloat16] : [.float32, .bfloat16]

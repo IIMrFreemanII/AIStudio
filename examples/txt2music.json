@@ -1,7 +1,7 @@
 {
   "version": 1,
   "nodes": [
-    { "id": "model", "type": "LoadModel", "inputs": { "path": "~/Library/Application Support/MLXComfyUI/models/ace-step-1.5" },
+    { "id": "model", "type": "LoadModel", "inputs": { "path": "~/Library/Application Support/AIStudio/models/ace-step-1.5" },
       "position": { "x": 40, "y": 140 } },
     { "id": "generate", "type": "TextToMusic", "position": { "x": 340, "y": 60 },
       "inputs": { "model": { "node": "model", "output": "model" },

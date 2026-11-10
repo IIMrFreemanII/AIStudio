@@ -38,13 +38,13 @@ func tempURL(_ ext: String) -> URL {
     let url = tempURL("wav")
     defer { try? FileManager.default.removeItem(at: url) }
     let t = MediaOps.tone(frequency: 440, seconds: 0.5, sampleRate: 24000, channels: 2)
-    try await MediaIO.writeAudio(t, to: url, format: .wav, metadata: ["mlxcomfy.graph": "{\"nodes\":[]}"])
+    try await MediaIO.writeAudio(t, to: url, format: .wav, metadata: ["aistudio.graph": "{\"nodes\":[]}"])
     let back = try await MediaIO.readAudio(url)
     #expect(back.sampleRate == 24000)
     #expect(back.channels == 2)
     #expect(back.frameCount == t.frameCount)
     #expect(abs(back.samples - t.samples).max().item(Float.self) < 1.0 / 16000)
-    #expect(await MediaIO.readMetadata(url)["mlxcomfy.graph"] == "{\"nodes\":[]}")
+    #expect(await MediaIO.readMetadata(url)["aistudio.graph"] == "{\"nodes\":[]}")
 }
 
 @Test func m4aRoundTripKeepsDurationAndMetadata() async throws {
@@ -63,7 +63,7 @@ func tempURL(_ ext: String) -> URL {
     defer { try? FileManager.default.removeItem(at: url) }
     let clip = MediaOps.testPattern(width: 96, height: 64, frames: 24, fps: 12)
     let tone = MediaOps.tone(frequency: 330, seconds: 3, sampleRate: 48000)  // longer than the 2 s video
-    try await MediaIO.writeVideo(clip, audio: tone, to: url, metadata: ["mlxcomfy.graph": "{}"])
+    try await MediaIO.writeVideo(clip, audio: tone, to: url, metadata: ["aistudio.graph": "{}"])
     let back = try await MediaIO.readVideo(url)
     #expect(back.frameCount == 24)
     #expect(back.width == 96 && back.height == 64)
@@ -72,7 +72,7 @@ func tempURL(_ ext: String) -> URL {
     #expect(abs(back.frames - clip.frames).mean().item(Float.self) < 0.06)
     let audio = try #require(back.audio)
     #expect(abs(audio.duration - 2) < 0.1)  // trimmed to the video
-    #expect(await MediaIO.readMetadata(url)["mlxcomfy.graph"] == "{}")
+    #expect(await MediaIO.readMetadata(url)["aistudio.graph"] == "{}")
     #expect(await MediaIO.posterFrame(url) != nil)
 }
 
@@ -88,12 +88,12 @@ func tempURL(_ ext: String) -> URL {
     defer { for u in [source, copy] { try? FileManager.default.removeItem(at: u) } }
     let clip = MediaOps.testPattern(width: 96, height: 64, frames: 12, fps: 16)
     try await MediaIO.writeVideo(clip, to: source)
-    try await MediaIO.remuxVideo(source, to: copy, metadata: ["mlxcomfy.graph": "{\"remote\":1}"])
+    try await MediaIO.remuxVideo(source, to: copy, metadata: ["aistudio.graph": "{\"remote\":1}"])
     // The same compressed samples decode to exactly the same frames (an encode would differ).
     let a = try await MediaIO.readVideo(source), b = try await MediaIO.readVideo(copy)
     #expect(a.frameCount == b.frameCount && abs(a.fps - b.fps) < 0.01)
     #expect(abs(a.frames - b.frames).max().item(Float.self) == 0)
-    #expect(await MediaIO.readMetadata(copy)["mlxcomfy.graph"] == "{\"remote\":1}")
+    #expect(await MediaIO.readMetadata(copy)["aistudio.graph"] == "{\"remote\":1}")
 }
 
 @Test func changingAClipForgetsItsSourceFile() {

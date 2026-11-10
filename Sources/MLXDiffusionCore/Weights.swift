@@ -124,7 +124,7 @@ public final class WeightStore {
             "\(f.lastPathComponent):\(try f.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)"
         }.joined(separator: ",") + "|q\(bits)g\(groupSize)"
         if FileManager.default.fileExists(atPath: cacheURL.path),
-           let cached = try? WeightStore(url: cacheURL), cached.metadata["mlxcomfy_source"] == fingerprint {
+           let cached = try? WeightStore(url: cacheURL), cached.metadata["aistudio_source"] == fingerprint {
             cached.bitsOverride = bits
             return cached
         }
@@ -155,10 +155,10 @@ public final class WeightStore {
         try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let tmp = cacheURL.deletingPathExtension().appendingPathExtension("partial.safetensors")
         try? FileManager.default.removeItem(at: tmp)
-        try save(arrays: out, metadata: ["mlxcomfy_source": fingerprint, "quantization_level": "\(bits)"], url: tmp)
+        try save(arrays: out, metadata: ["aistudio_source": fingerprint, "quantization_level": "\(bits)"], url: tmp)
         try? FileManager.default.removeItem(at: cacheURL)
         try FileManager.default.moveItem(at: tmp, to: cacheURL)
-        let store = WeightStore(arrays: out, metadata: ["mlxcomfy_source": fingerprint])
+        let store = WeightStore(arrays: out, metadata: ["aistudio_source": fingerprint])
         store.bitsOverride = bits
         return store
     }

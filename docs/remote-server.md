@@ -1,14 +1,14 @@
 # Running models on another machine
 
-MLXComfyUI can send work to a server instead of running it on this Mac. There are two kinds of server, and they cost
+AIStudio can send work to a server instead of running it on this Mac. There are two kinds of server, and they cost
 very different amounts:
 
 | Where the models run | What runs there | You pay | Status |
 |---|---|---|---|
-| **Another Mac you own** (studio Mac at home or in the office) | this app's own engine (`mlxcomfy-cli serve`): every model and node, same results as local | nothing extra | ready |
+| **Another Mac you own** (studio Mac at home or in the office) | this app's own engine (`aistudio-cli serve`): every model and node, same results as local | nothing extra | ready |
 | **A rented cloud Mac** (AWS EC2 Mac, Scaleway, MacStadium) | the same server | by the hour, **minimum 24 hours per lease** (Apple's macOS license) | ready |
 | **Serverless NVIDIA GPU on Modal** | the app's GPU server (`server/gpu`: Wan 2.2, FLUX.1 dev on diffusers), called by the *Cloud GPU* nodes | **per second of GPU time actually used**; idle costs nothing | ready (section 7) |
-| **An always-on GPU box** (RunPod/Vast/Lambda pod, your own Linux PC) | the same GPU server behind a token gate (`scripts/bootstrap-gpu-server.sh mlxcomfy-gpu`) | by the hour while it's on | ready (section 7) |
+| **An always-on GPU box** (RunPod/Vast/Lambda pod, your own Linux PC) | the same GPU server behind a token gate (`scripts/bootstrap-gpu-server.sh aistudio-gpu`) | by the hour while it's on | ready (section 7) |
 
 MLX only runs on Apple Silicon, so a Mac server runs *this app's* models (Qwen-Image, FLUX, LTX, Wan, ACE-Step…) and
 a whole tab's graph goes there. On NVIDIA, the app's own Python GPU server runs Wan 2.2 and FLUX.1 dev with Hugging
@@ -57,7 +57,7 @@ The server listens on **127.0.0.1** by default and every request needs the **tok
    tailnet can reach it. In the app use that https URL.
 
    > The app needs **https** for tailnet addresses: macOS's App Transport Security blocks plain `http://` from the
-   > app to `100.x.y.z` and `*.ts.net` (it allows LAN addresses, `.local` names and 127.0.0.1). `mlxcomfy-cli` is not
+   > app to `100.x.y.z` and `*.ts.net` (it allows LAN addresses, `.local` names and 127.0.0.1). `aistudio-cli` is not
    > affected, so `bench-remote http://100.x.y.z:8188` still works if you bind the server there with `--host`.
 2. **SSH tunnel.** Keep the default 127.0.0.1 and forward a port from your laptop:
 
@@ -80,7 +80,7 @@ On the server Mac (over SSH or Screen Sharing), with the repository checked out 
 this script is on the `main` branch):
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/IIMrFreemanII/MLXComfyUI/main/scripts/bootstrap-mac-server.sh
+curl -fsSLO https://raw.githubusercontent.com/IIMrFreemanII/AIStudio/main/scripts/bootstrap-mac-server.sh
 bash bootstrap-mac-server.sh --tailscale
 ```
 
@@ -90,11 +90,11 @@ What it does (and asks before the steps that need your password):
 
 1. Checks for Apple Silicon and **full Xcode** (MLX compiles Metal shaders; the Command Line Tools are not enough) and
    installs the Metal toolchain component if it's missing.
-2. Clones or updates the repository (default `~/MLXComfyUI`) and builds `mlxcomfy-cli` in Release.
-3. Installs the binary with its resource bundles into `~/Library/Application Support/MLXComfyUI/server/bin`.
-4. Creates the token in `~/.config/mlxcomfy/token` (256 random bits, readable only by you) unless one exists.
-5. Installs a **LaunchAgent** (`com.mlxcomfy.server`): starts at login, restarts if it stops, logs to
-   `~/Library/Logs/mlxcomfy-server.log`.
+2. Clones or updates the repository (default `~/AIStudio`) and builds `aistudio-cli` in Release.
+3. Installs the binary with its resource bundles into `~/Library/Application Support/AIStudio/server/bin`.
+4. Creates the token in `~/.config/aistudio/token` (256 random bits, readable only by you) unless one exists.
+5. Installs a **LaunchAgent** (`com.aistudio.server`): starts at login, restarts if it stops, logs to
+   `~/Library/Logs/aistudio-server.log`.
 6. Waits until the server answers `/v1/info` with the token.
 7. Offers `pmset` settings so the Mac never sleeps and restarts after a power failure, and reminds you to turn on
    **automatic login** (System Settings › Users & Groups): after a reboot the service only starts once a user is
@@ -110,35 +110,35 @@ Options: `--host ADDR` (listen elsewhere, e.g. a LAN IP), `--port N`, `--models 
 Show the token whenever you need it:
 
 ```bash
-~/Library/Application\ Support/MLXComfyUI/server/bin/mlxcomfy-cli serve --show-token
+~/Library/Application\ Support/AIStudio/server/bin/aistudio-cli serve --show-token
 ```
 
 ## 4. Put models on it
 
-Models live in the server's models folder (`~/Library/Application Support/MLXComfyUI/models`, the same place the app
+Models live in the server's models folder (`~/Library/Application Support/AIStudio/models`, the same place the app
 uses). Graphs refer to models by **folder name**, so a server can run a graph made on your laptop as long as it has a
 folder with that name.
 
 - **Download on the server** (fastest from a data center):
 
   ```bash
-  mlxcomfy-cli download                       # list the catalog
-  mlxcomfy-cli download qwen-image-2.1-turbo  # by catalog id or folder name
-  HF_TOKEN=hf_... mlxcomfy-cli download flux-1-dev   # gated repos need your Hugging Face token
+  aistudio-cli download                       # list the catalog
+  aistudio-cli download qwen-image-2.1-turbo  # by catalog id or folder name
+  HF_TOKEN=hf_... aistudio-cli download flux-1-dev   # gated repos need your Hugging Face token
   ```
 
   Downloads resume where they stopped and are checked against their SHA-256.
 - **Copy from your Mac**:
 
   ```bash
-  rsync -aP ~/Library/Application\ Support/MLXComfyUI/models/qwen-turbo-mlx you@cloud-mac:Library/Application\ Support/MLXComfyUI/models/
+  rsync -aP ~/Library/Application\ Support/AIStudio/models/qwen-turbo-mlx you@cloud-mac:Library/Application\ Support/AIStudio/models/
   ```
 
 A run that needs a model the server doesn't have is refused right away with the missing folder names.
 
 ## 5. Connect the app
 
-1. In MLXComfyUI open the **Servers** panel (the rack icon in the left rail) and click **+**.
+1. In AIStudio open the **Servers** panel (the rack icon in the left rail) and click **+**.
 2. Enter a name, the URL (`https://<mac>.<tailnet>.ts.net` with Tailscale, `http://127.0.0.1:8188` with a tunnel,
    `http://192.168.x.y:8188` on your LAN, or `https://your.domain`) and the
    token. **Test** shows the server's chip, memory and model count. **Save** stores the token in your Keychain.
@@ -190,7 +190,7 @@ How it fits together (all of it is `server/gpu/modal_app.py`):
   the server, uploading images and the CPU test tasks **never start a GPU**. Modal's proxy auth rejects requests
   without your token before they reach it.
 - **GPU workers**, one per model, each starting on its own GPU type when a job needs it and stopping
-  `MLXCOMFY_IDLE` seconds (default 120) after its last job:
+  `AISTUDIO_IDLE` seconds (default 120) after its last job:
 
   | Task | GPU (default) | Weights read per cold start |
   |---|---|---|
@@ -202,7 +202,7 @@ How it fits together (all of it is `server/gpu/modal_app.py`):
   | Stable Audio 3 medium sound | L40S 48 GB, $1.95/h | ≈ 10 GB |
   | Qwen3-TTS speech (three 1.7B checkpoints) | L40S 48 GB, $1.95/h | ≈ 14 GB |
 
-- A **Volume** (`mlxcomfy-gpu-models`) with the weights, written once by the download step.
+- A **Volume** (`aistudio-gpu-models`) with the weights, written once by the download step.
 
 ### Set it up (once)
 
@@ -213,14 +213,14 @@ pip install modal                      # or: uv tool install modal
 modal setup                            # opens the browser to sign in
 modal secret create huggingface HF_TOKEN=hf_...   # for FLUX.1 dev and Stable Audio 3 (gated: accept their licences on Hugging Face first)
 modal run server/gpu/modal_download.py --models wan22,flux,qwen,audio   # into the Volume, on Modal CPUs; ~20–25 min
-modal deploy server/gpu/modal_app.py   # prints the front desk's URL: https://<you>--mlxcomfy-gpu-api.<region>.modal.run
+modal deploy server/gpu/modal_app.py   # prints the front desk's URL: https://<you>--aistudio-gpu-api.<region>.modal.run
 ```
 
 - `--models` takes `wan22` (both Wan tasks and the Lightning LoRAs, ≈ 140 GB), `flux` (≈ 34 GB), `qwen` (Qwen-Image
   and its Lightning LoRA, ≈ 58 GB, not gated), `audio` (music, sound and speech, ≈ 62 GB), `music`, `sound`, `speech`,
   or single ones (`wan22-t2v`, `wan22-i2v`, `wan22-lightning`, `flux1-dev`, `qwen-image`, `qwen-image-lightning`,
   `ace-step-xl`, `stable-audio-3`, `qwen3-tts`). Finished models are skipped, so it is safe to re-run.
-  Without the Hugging Face secret, use `MLXCOMFY_HF_SECRET= modal run … --models wan22,music,speech`.
+  Without the Hugging Face secret, use `AISTUDIO_HF_SECRET= modal run … --models wan22,music,speech`.
 - Gated models: [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) and
   [Stable Audio 3 medium](https://huggingface.co/stabilityai/stable-audio-3-medium). Accept each licence with the
   Hugging Face account whose token is in the secret. Stable Audio 3 is converted to the diffusers layout during the
@@ -271,10 +271,10 @@ before anything is sent (*This LoRA is for Flux.1 D, not Qwen-Image*); one that 
 - **Upload:** a file from your Mac uploads at your connection's speed (45 MB took about a minute on ours, 612 MB
   about 4½); the node counts it up: *Uploading 230 / 612 MB · 1.9 MB/s · 3 min left*. A broken upload resumes where
   it stopped. Files are named by their SHA-256 and kept on the
-  `mlxcomfy-gpu-uploads` Volume in your Modal account, so later runs, in this session or another, send nothing.
-  Start images and reference clips are kept the same way. The Volume holds up to 20 GB (`MLXCOMFY_UPLOADS_GB=50
+  `aistudio-gpu-uploads` Volume in your Modal account, so later runs, in this session or another, send nothing.
+  Start images and reference clips are kept the same way. The Volume holds up to 20 GB (`AISTUDIO_UPLOADS_GB=50
   modal deploy …` to change it); past that, the least recently used files are deleted. Delete them all with
-  `modal volume rm -r mlxcomfy-gpu-uploads /`. A GPU box keeps uploads in its `data/uploads` folder, with the same
+  `modal volume rm -r aistudio-gpu-uploads /`. A GPU box keeps uploads in its `data/uploads` folder, with the same
   limit.
 - **GPU:** loading a LoRA adds well under a second. A warm container keeps the last 8 loaded, so a re-run only
   switches them on. A 1024×1024, 28-step image took 16 s on the L40S with or without LoRAs (≈ $0.009).
@@ -326,7 +326,7 @@ versions.
 - The **negative** prompt needs guidance: it's used whenever `cfg` is above 1 (the full model's default), and
   ignored in fast mode unless you raise `cfg`, which doubles the time per step. (Wan's NAG trick needs a separate
   cross-attention; Qwen-Image's attention is joint.)
-- On an H100 everything stays bf16; `MLXCOMFY_GPU_QWEN=L40S` stores the transformer's weights in fp8 instead (48 GB).
+- On an H100 everything stays bf16; `AISTUDIO_GPU_QWEN=L40S` stores the transformer's weights in fp8 instead (48 GB).
 - LoRAs and fine-tunes from the library work as for FLUX.
 
 The Wan nodes' **negative** prompt ("blurry, static, distorted hands") works in both modes:
@@ -369,9 +369,9 @@ itself, then the idle window (default 2 min) in case another job follows. The no
 - Wan with **fast** on (the default: Lightning LoRAs, 4 steps, no guidance) needs about a tenth of the GPU time of the
   full 40 steps; turn it off for the most detail.
 - Back-to-back jobs reuse the warm container: no loading, no start-up.
-- To trade money for latency, raise the idle window (`MLXCOMFY_IDLE=600 modal deploy …`); to switch GPUs,
-  `MLXCOMFY_GPU_WAN=A100-80GB`, `MLXCOMFY_GPU_FLUX=L4` (24 GB is too small for FLUX in bf16) or
-  `MLXCOMFY_GPU_AUDIO=A10` (24 GB: enough for speech or sound, tight for music).
+- To trade money for latency, raise the idle window (`AISTUDIO_IDLE=600 modal deploy …`); to switch GPUs,
+  `AISTUDIO_GPU_WAN=A100-80GB`, `AISTUDIO_GPU_FLUX=L4` (24 GB is too small for FLUX in bf16) or
+  `AISTUDIO_GPU_AUDIO=A10` (24 GB: enough for speech or sound, tight for music).
 Measured on Modal's H100 (2026-11-10), 832×480, 81 frames (5 s at 16 fps), fast on:
 
 | | Wan 2.2 Text to Video | Wan 2.2 Image to Video |
@@ -414,14 +414,31 @@ conversion.
 ### Check a deployment without spending GPU time
 
 The front desk also runs three CPU test tasks (`test-video`, `test-image`, `test-audio`): a moving pattern or a tone,
-with progress and a result. `mlxcomfy-cli`'s GPU checks and the app's smoke test use them.
+with progress and a result. `aistudio-cli`'s GPU checks and the app's smoke test use them.
 
 ### Remove everything
 
 ```bash
-modal app stop mlxcomfy-gpu
-modal volume delete mlxcomfy-gpu-models   # the downloaded weights
+modal app stop aistudio-gpu
+modal volume delete aistudio-gpu-models   # the downloaded weights
 ```
+
+### Upgrading a deployment from before the rename
+
+The project used to be called MLXComfyUI, and its Modal app was `mlxcomfy-gpu`. The new app is `aistudio-gpu`, so its
+URL changes from `https://<you>--mlxcomfy-gpu-api.modal.run` to `https://<you>--aistudio-gpu-api.modal.run`. Keep the
+downloaded weights by renaming the Volumes before you deploy, then stop the old apps:
+
+```bash
+modal volume rename mlxcomfy-gpu-models aistudio-gpu-models
+modal volume rename mlxcomfy-gpu-uploads aistudio-gpu-uploads
+modal deploy server/gpu/modal_app.py
+modal app stop mlxcomfy-gpu
+modal app stop mlxcomfy-gpu-download
+```
+
+Then change the connection's URL in AIStudio › Servers. `MLXCOMFY_*` deploy settings (`MLXCOMFY_IDLE` and so on)
+still work as their `AISTUDIO_*` names. The secrets keep their names (`huggingface`, `civitai`).
 
 ### Always-on GPU box (hourly)
 
@@ -429,31 +446,33 @@ The same GPU server runs on any Linux NVIDIA machine you rent by the hour or own
 toolkit), behind a small Caddy gate that requires `Authorization: Bearer <token>`:
 
 ```bash
-scripts/bootstrap-gpu-server.sh mlxcomfy-gpu --download wan22,flux   # FLUX needs HF_TOKEN in the environment
+scripts/bootstrap-gpu-server.sh aistudio-gpu --download wan22,flux   # FLUX needs HF_TOKEN in the environment
 ```
 
 The box serves Wan and FLUX; the music and speech models pin older library versions and run on Modal, where each
 has its own image. It listens on 127.0.0.1 by default (`--public` to publish it, `--domain your.domain` for HTTPS; over Tailscale use
 `tailscale serve` as in section 2) and prints the URL and token for a **GPU server** connection. Here you pay while the
 machine is on, busy or not. The `vllm` and `ollama` profiles start OpenAI-compatible servers for the chat nodes that
-come in M23. Stop a profile with `--down`.
+come in M23. Stop a profile with `--down`. Re-running it on a box set up before the rename (profile `mlxcomfy-gpu`,
+data in `~/mlxcomfy-gpu`) moves the data folder to `~/aistudio-gpu`, stops the old containers and starts the new ones;
+the token stays the same.
 
 ## 8. Operating it
 
 | Task | Command |
 |---|---|
 | Update to the latest code | re-run `bootstrap-mac-server.sh` (same options) |
-| Follow the log | `tail -f ~/Library/Logs/mlxcomfy-server.log` |
-| Restart | `launchctl kickstart -k gui/$(id -u)/com.mlxcomfy.server` |
-| Stop / start | `launchctl bootout gui/$(id -u)/com.mlxcomfy.server` / `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.mlxcomfy.server.plist` |
-| Rotate the token | `rm ~/.config/mlxcomfy/token`, restart, then `mlxcomfy-cli serve --show-token` and update the app |
-| Check speed from your laptop | `mlxcomfy-cli bench-remote https://<mac>.<tailnet>.ts.net --token-file token.txt` |
+| Follow the log | `tail -f ~/Library/Logs/aistudio-server.log` |
+| Restart | `launchctl kickstart -k gui/$(id -u)/com.aistudio.server` |
+| Stop / start | `launchctl bootout gui/$(id -u)/com.aistudio.server` / `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aistudio.server.plist` |
+| Rotate the token | `rm ~/.config/aistudio/token`, restart, then `aistudio-cli serve --show-token` and update the app |
+| Check speed from your laptop | `aistudio-cli bench-remote https://<mac>.<tailnet>.ts.net --token-file token.txt` |
 | See or remove the Tailscale publishing | `tailscale serve status` / `tailscale serve --https=443 off` |
 | Free the upload cache | dashboard › Clients & transfers › Purge |
 | Save money on a cloud Mac | stop/release the host when you're done (the 24 h minimum still applies) |
 
 The server keeps the output folders of the last 200 runs (`--keep-runs`) in
-`~/Library/Application Support/MLXComfyUI/server/runs`; the app has its own copies after downloading.
+`~/Library/Application Support/AIStudio/server/runs`; the app has its own copies after downloading.
 
 ## 9. Security model
 
@@ -471,7 +490,7 @@ The server keeps the output folders of the last 200 runs (`--keep-runs`) in
 
 | Symptom | Cause and fix |
 |---|---|
-| App says "the server refused the token (401)" | Token mismatch: `mlxcomfy-cli serve --show-token` on the server and paste it again in Servers › Edit. |
+| App says "the server refused the token (401)" | Token mismatch: `aistudio-cli serve --show-token` on the server and paste it again in Servers › Edit. |
 | "Connection refused" | Server not running (`tail` the log, `launchctl kickstart`), wrong port, or it listens on 127.0.0.1 and you didn't open the tunnel. |
 | "Timed out" | Tailscale not up on one side, or a firewall in the way. `tailscale ping <server>`. |
 | "…App Transport Security policy requires the use of a secure connection" | The URL is plain `http://` to a Tailscale or public address, which macOS blocks for apps. Use the `https://<mac>.<tailnet>.ts.net` URL from `--tailscale` (section 2), an SSH tunnel, or a LAN address. |

@@ -11,7 +11,7 @@ import Tokenizers
 //   ltx-probe-text bench "<prompt>"        timing + peak memory
 
 let home = FileManager.default.homeDirectoryForCurrentUser
-let models = home.appendingPathComponent("Library/Application Support/MLXComfyUI/models")
+let models = home.appendingPathComponent("Library/Application Support/AIStudio/models")
 let gemmaDir = models.appendingPathComponent("gemma-3-12b-it-4bit")
 let ltxDir = models.appendingPathComponent("ltx-2.3-mlx-q4")
 let args = CommandLine.arguments

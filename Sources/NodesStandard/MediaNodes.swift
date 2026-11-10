@@ -14,11 +14,11 @@ func nextMediaFilename(in dir: URL, prefix: String, ext: String) -> URL {
 }
 
 func mediaMetadata(_ context: ExecutionContext) -> [String: String] {
-    [StandardNodes.graphMetadataKey: context.graph.jsonString(), "mlxcomfy.node": context.nodeID]
+    [StandardNodes.graphMetadataKey: context.graph.jsonString(), "aistudio.node": context.nodeID]
 }
 
 /// Temporary folder for previews (cleared at launch by the app).
-public let previewDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("MLXComfyUI-previews")
+public let previewDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("AIStudio-previews")
 
 // MARK: test signals
 
@@ -155,7 +155,7 @@ public struct SaveVideoNode: NodeImplementation {
             InputSpec("video", .video),
             // Overrides the video's own soundtrack when connected.
             InputSpec("audio", .audio, optional: true),
-            InputSpec("filename_prefix", .string, default: .string("mlxcomfy")),
+            InputSpec("filename_prefix", .string, default: .string("aistudio")),
             InputSpec("directory", .string, default: .string("outputs"), widget: .filePath),
             InputSpec("format", .string, default: .string("mp4"), widget: .choice(["mp4", "mov"])),
             InputSpec("codec", .string, default: .string("h264"), widget: .choice(MediaIO.VideoCodec.allCases.map(\.rawValue))),
@@ -187,7 +187,7 @@ public struct SaveAudioNode: NodeImplementation {
         type: "SaveAudio", displayName: "Save Audio", category: "audio",
         inputs: [
             InputSpec("audio", .audio),
-            InputSpec("filename_prefix", .string, default: .string("mlxcomfy")),
+            InputSpec("filename_prefix", .string, default: .string("aistudio")),
             InputSpec("directory", .string, default: .string("outputs"), widget: .filePath),
             InputSpec("format", .string, default: .string("wav"), widget: .choice(MediaIO.AudioFormat.allCases.map(\.rawValue))),
         ],

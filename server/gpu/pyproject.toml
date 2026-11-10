@@ -1,7 +1,7 @@
 [project]
-name = "mlxcomfy-gpu"
+name = "aistudio-gpu"
 version = "0.1.0"
-description = "MLXComfyUI's GPU server: video, image, music, sound and speech jobs, on Modal or any machine"
+description = "AIStudio's GPU server: video, image, music, sound and speech jobs, on Modal or any machine"
 requires-python = ">=3.11"
 dependencies = ["fastapi==0.162.2", "uvicorn==0.54.0", "websockets", "httpx==0.28.1", "numpy", "pillow",
                 "imageio-ffmpeg"]
@@ -23,7 +23,7 @@ modal = ["modal==1.6.3"]
 dev = ["pytest", "httpx"]
 
 [tool.setuptools]
-packages = ["mlxcomfy_gpu", "mlxcomfy_gpu.tasks"]
+packages = ["aistudio_gpu", "aistudio_gpu.tasks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

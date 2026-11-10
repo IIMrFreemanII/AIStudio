@@ -1,7 +1,7 @@
 #!/usr/bin/env swift
-// Generates Sources/MLXComfyApp/Design/MGTokens.swift from the MetalGraphics Frosted Glass design system's tokens.
+// Generates Sources/AIStudioApp/Design/MGTokens.swift from the MetalGraphics Frosted Glass design system's tokens.
 //
-//   swift scripts/sync-design-tokens.swift [design/metalgraphics/tokens.json] [Sources/MLXComfyApp/Design/MGTokens.swift]
+//   swift scripts/sync-design-tokens.swift [design/metalgraphics/tokens.json] [Sources/AIStudioApp/Design/MGTokens.swift]
 //
 // To re-sync: copy the design system's `project/tokens.json` over design/metalgraphics/tokens.json, run this, rebuild.
 // Colours become dynamic NSColors (light and dark), text styles, spacing, radii, shadows and glass parameters Swift
@@ -10,7 +10,7 @@ import Foundation
 
 let args = CommandLine.arguments
 let input = URL(fileURLWithPath: args.count > 1 ? args[1] : "design/metalgraphics/tokens.json")
-let output = URL(fileURLWithPath: args.count > 2 ? args[2] : "Sources/MLXComfyApp/Design/MGTokens.swift")
+let output = URL(fileURLWithPath: args.count > 2 ? args[2] : "Sources/AIStudioApp/Design/MGTokens.swift")
 
 guard let root = try JSONSerialization.jsonObject(with: Data(contentsOf: input)) as? [String: Any] else {
     fatalError("\(input.path) isn't a JSON object")

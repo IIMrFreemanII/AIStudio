@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "MLXComfyUI",
+    name: "AIStudio",
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "MLXDiffusionCore", targets: ["MLXDiffusionCore"]),
@@ -15,9 +15,9 @@ let package = Package(
         .library(name: "Flux", targets: ["Flux"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
-        .library(name: "MLXComfyProtocol", targets: ["MLXComfyProtocol"]),
+        .library(name: "AIStudioProtocol", targets: ["AIStudioProtocol"]),
         .library(name: "NodesRemote", targets: ["NodesRemote"]),
-        .library(name: "MLXComfyServer", targets: ["MLXComfyServer"]),
+        .library(name: "AIStudioServer", targets: ["AIStudioServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
         .executable(name: "ltx-probe-vae", targets: ["ltx-probe-vae"]),
@@ -30,14 +30,14 @@ let package = Package(
         .executable(name: "kokoro-probe-model", targets: ["kokoro-probe-model"]),
         .executable(name: "wan-probe", targets: ["wan-probe"]),
         .executable(name: "flux-probe", targets: ["flux-probe"]),
-        .executable(name: "mlxcomfy-cli", targets: ["mlxcomfy-cli"]),
-        .executable(name: "MLXComfyApp", targets: ["MLXComfyApp"]),
+        .executable(name: "aistudio-cli", targets: ["aistudio-cli"]),
+        .executable(name: "AIStudioApp", targets: ["AIStudioApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.33.0")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMinor(from: "1.4.0")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.0"),
-        // The remote server (`mlxcomfy-cli serve`) only; the app talks to it with URLSession.
+        // The remote server (`aistudio-cli serve`) only; the app talks to it with URLSession.
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.28.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
@@ -270,7 +270,7 @@ let package = Package(
         ),
         .target(name: "GraphRuntime"),
         .target(
-            name: "MLXComfyLibrary",
+            name: "AIStudioLibrary",
             dependencies: ["GraphRuntime"],
             resources: [.copy("Presets")]
         ),
@@ -293,23 +293,23 @@ let package = Package(
         .target(
             name: "NodesRemote",
             dependencies: [
-                "GraphRuntime", "MLXDiffusionCore", "NodesStandard", "MLXComfyProtocol",
+                "GraphRuntime", "MLXDiffusionCore", "NodesStandard", "AIStudioProtocol",
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
         // Wire format shared by the remote server, the app and the tests (no MLX, no networking stack).
         .target(
-            name: "MLXComfyProtocol",
+            name: "AIStudioProtocol",
             dependencies: ["GraphRuntime"]
         ),
-        // `mlxcomfy-cli serve`: runs graphs for remote clients, plus the web dashboard.
+        // `aistudio-cli serve`: runs graphs for remote clients, plus the web dashboard.
         .target(
-            name: "MLXComfyServer",
+            name: "AIStudioServer",
             dependencies: [
                 "GraphRuntime",
                 "NodesStandard",
                 "MLXDiffusionCore",
-                "MLXComfyProtocol",
+                "AIStudioProtocol",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
@@ -320,7 +320,7 @@ let package = Package(
             linkerSettings: [.linkedFramework("IOKit")]
         ),
         .executableTarget(
-            name: "mlxcomfy-cli",
+            name: "aistudio-cli",
             dependencies: [
                 "MLXDiffusionCore",
                 "LTX2",
@@ -334,21 +334,21 @@ let package = Package(
                 "GraphRuntime",
                 "NodesStandard",
                 "NodesRemote",
-                "MLXComfyProtocol",
-                "MLXComfyServer",
+                "AIStudioProtocol",
+                "AIStudioServer",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
         .executableTarget(
-            name: "MLXComfyApp",
+            name: "AIStudioApp",
             dependencies: [
                 "MLXDiffusionCore",
                 "GraphRuntime",
                 "NodesStandard",
                 "NodesRemote",
-                "MLXComfyLibrary",
-                "MLXComfyProtocol",
+                "AIStudioLibrary",
+                "AIStudioProtocol",
                 "ModelImport",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
@@ -396,17 +396,17 @@ let package = Package(
         ),
         .testTarget(
             name: "NodesRemoteTests",
-            dependencies: ["NodesRemote", "NodesStandard", "GraphRuntime", "MLXDiffusionCore", "MLXComfyProtocol",
+            dependencies: ["NodesRemote", "NodesStandard", "GraphRuntime", "MLXDiffusionCore", "AIStudioProtocol",
                            .product(name: "MLX", package: "mlx-swift")]
         ),
         .testTarget(
-            name: "MLXComfyProtocolTests",
-            dependencies: ["MLXComfyProtocol", "GraphRuntime", "NodesStandard"]
+            name: "AIStudioProtocolTests",
+            dependencies: ["AIStudioProtocol", "GraphRuntime", "NodesStandard"]
         ),
         .testTarget(
-            name: "MLXComfyServerTests",
+            name: "AIStudioServerTests",
             dependencies: [
-                "MLXComfyServer", "MLXComfyProtocol", "GraphRuntime", "NodesStandard",
+                "AIStudioServer", "AIStudioProtocol", "GraphRuntime", "NodesStandard",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -414,8 +414,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "MLXComfyLibraryTests",
-            dependencies: ["MLXComfyLibrary", "GraphRuntime", "NodesStandard", "NodesRemote"]
+            name: "AIStudioLibraryTests",
+            dependencies: ["AIStudioLibrary", "GraphRuntime", "NodesStandard", "NodesRemote"]
         ),
         // Converts fine-tuned transformers (Civitai single files, diffusers folders) into the local model layouts.
         .target(

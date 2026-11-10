@@ -1,6 +1,6 @@
-from mlxcomfy_gpu.wire import Kind, decode_all, encode, finished_payload
+from aistudio_gpu.wire import Kind, decode_all, encode, finished_payload
 
-# Same bytes as Tests/MLXComfyProtocolTests/WireEventTests.swift `golden` and web/dashboard/src/lib/protocol.test.ts:
+# Same bytes as Tests/AIStudioProtocolTests/WireEventTests.swift `golden` and web/dashboard/src/lib/protocol.test.ts:
 # a nodeFinished record (node 3, run 7, seq 42, step 5/8, 1.5 s, peak 1024 B), then a preview (node 1, run 7, 2/8).
 GOLDEN = ("0500030007000000" "2a00000005000800" "10000000" "000000000000f83f" "0004000000000000"
           "0a00010007000000" "0000000002000800" "02000000" "ffd8")

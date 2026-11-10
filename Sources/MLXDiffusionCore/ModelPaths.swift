@@ -2,10 +2,11 @@ import Foundation
 
 /// Where model folders live, and how a model path in a graph or on the command line is found.
 public enum ModelPaths {
-    /// `~/Library/Application Support/MLXComfyUI/models`: where the Models window downloads to by default.
+    /// `~/Library/Application Support/AIStudio/models`: where the Models window downloads to by default.
     public static var defaultDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MLXComfyUI/models")
+        LegacyNames.migrateFolders()
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AIStudio/models")
     }
 
     private static let lock = NSLock()

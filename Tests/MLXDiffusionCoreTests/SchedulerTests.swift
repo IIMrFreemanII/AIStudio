@@ -22,7 +22,7 @@ import Testing
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("pngtext-\(UInt32.random(in: 0...UInt32.max)).png")
     defer { try? FileManager.default.removeItem(at: url) }
     let img = MLX.MLXArray.zeros([8, 8, 3])
-    let meta = ["mlxcomfy.graph": "{\"nodes\":[],\"version\":1}", "note": "ünïcödé ✓"]
+    let meta = ["aistudio.graph": "{\"nodes\":[],\"version\":1}", "note": "ünïcödé ✓"]
     try ImageArray.savePNG(img, to: url, text: meta)
     #expect(ImageArray.readPNGText(url) == meta)
     // The image itself must still decode.

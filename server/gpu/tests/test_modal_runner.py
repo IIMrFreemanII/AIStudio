@@ -14,13 +14,13 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from mlxcomfy_gpu.api import create_app
-from mlxcomfy_gpu.files import FileStore
-from mlxcomfy_gpu.jobs import JobManager
-from mlxcomfy_gpu.media import write_png
-from mlxcomfy_gpu.modal_runner import ModalRunner, run_job
-from mlxcomfy_gpu.tasks import Output
-from mlxcomfy_gpu.wire import Kind, decode_all
+from aistudio_gpu.api import create_app
+from aistudio_gpu.files import FileStore
+from aistudio_gpu.jobs import JobManager
+from aistudio_gpu.media import write_png
+from aistudio_gpu.modal_runner import ModalRunner, run_job
+from aistudio_gpu.tasks import Output
+from aistudio_gpu.wire import Kind, decode_all
 
 
 class Aio:
@@ -119,8 +119,8 @@ class State:
 
 @pytest.fixture()
 def env(tmp_path: Path, monkeypatch):
-    from mlxcomfy_gpu import tasks
-    from mlxcomfy_gpu.tasks import Param, TaskSpec
+    from aistudio_gpu import tasks
+    from aistudio_gpu.tasks import Param, TaskSpec
 
     spec = TaskSpec("fake-gpu", "Fake", "image", "fake", "H100",
                     {"prompt": Param("string", ""), "steps": Param("int", 3), "delay": Param("float", 0.02)},
@@ -225,7 +225,7 @@ class FakeVolume:
 def test_inputs_by_reference_come_from_the_uploads_volume(tmp_path):
     """With an uploads Volume the runner sends (name, None) and the worker copies the file from the Volume,
     re-reading it once when this container hasn't seen the upload yet; a missing upload is a job error."""
-    from mlxcomfy_gpu.modal_runner import run_job
+    from aistudio_gpu.modal_runner import run_job
 
     seen = {}
 

@@ -24,8 +24,8 @@
 
 <main class="login">
   <form class="card" onsubmit={submit}>
-    <h1>MLXComfy Server</h1>
-    <p class="secondary">Sign in with the server's token: run <code class="mono">mlxcomfy-cli serve --show-token</code> on the server.</p>
+    <h1>AIStudio Server</h1>
+    <p class="secondary">Sign in with the server's token: run <code class="mono">aistudio-cli serve --show-token</code> on the server.</p>
     <label>
       <span class="muted">Token</span>
       <input type="password" autocomplete="current-password" bind:value={token} required minlength="16" />

@@ -8,7 +8,7 @@ import StableAudio
 
 let work = URL(fileURLWithPath: CommandLine.arguments[1])
 let models = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/MLXComfyUI/models/ace-step-1.5")
+    .appendingPathComponent("Library/Application Support/AIStudio/models/ace-step-1.5")
 
 func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
     guard a.shape == b.shape else {

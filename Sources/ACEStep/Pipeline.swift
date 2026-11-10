@@ -19,7 +19,7 @@ import Tokenizers
 ///
 /// Folder layout (the catalog download of `ACE-Step/Ace-Step1.5`): `acestep-v15-turbo/` (DiT, condition encoder,
 /// code detokenizer, `silence_latent.pt`), `vae/`, `Qwen3-Embedding-0.6B/`, `acestep-5Hz-lm-1.7B/`, and
-/// `mlxcomfy.json` with `"class": "ACEStepPipeline"`.
+/// `aistudio.json` with `"class": "ACEStepPipeline"`.
 public final class ACEStepPipeline: AudioModel, @unchecked Sendable {
     public static let className = "ACEStepPipeline"
 

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import GraphRuntime
 import MLX
-import MLXComfyProtocol
+import AIStudioProtocol
 import MLXDiffusionCore
 @testable import NodesRemote
 @testable import NodesStandard
@@ -382,9 +382,9 @@ final class Locked<T>: @unchecked Sendable {
     func withLock<R>(_ body: (inout T) -> R) -> R { lock.withLock { body(&value) } }
 }
 
-// MARK: - the real sites (opt in: MLXCOMFY_NETWORK_TESTS=1; with xcodebuild TEST_RUNNER_MLXCOMFY_NETWORK_TESTS=1)
+// MARK: - the real sites (opt in: AISTUDIO_NETWORK_TESTS=1; with xcodebuild TEST_RUNNER_AISTUDIO_NETWORK_TESTS=1)
 
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["MLXCOMFY_NETWORK_TESTS"] == "1"))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["AISTUDIO_NETWORK_TESTS"] == "1"))
 struct LoRALinkNetworkTests {
     @Test func huggingFaceFileRepoAndDownload() async throws {
         let r = try await LoRASources.resolve("https://huggingface.co/XLabs-AI/flux-lora-collection/blob/main/realism_lora.safetensors")

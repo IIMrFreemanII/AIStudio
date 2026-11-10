@@ -11,7 +11,7 @@ import Testing
 /// T5's bidirectional relative-position buckets, checked against values from HF transformers (32 buckets, max 128).
 @Test func t5RelativePositionBuckets() throws {
     let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/MLXComfyUI/models/stable-audio-open-small/t5")
+        .appendingPathComponent("Library/Application Support/AIStudio/models/stable-audio-open-small/t5")
     guard FileManager.default.fileExists(atPath: url.appendingPathComponent("model.safetensors").path) else { return }
     let t5 = try T5Encoder(directory: url)
     let b = t5.buckets(200).asArray(Int32.self)

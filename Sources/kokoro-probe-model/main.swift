@@ -10,7 +10,7 @@ import MLXDiffusionCore
 //   bench <case.safetensors> [f32|bf16] [runs]  timing / real-time factor
 let args = CommandLine.arguments
 let models = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/MLXComfyUI/models/kokoro-82m")
+    .appendingPathComponent("Library/Application Support/AIStudio/models/kokoro-82m")
 
 func relL2(_ a: MLXArray, _ b: MLXArray) -> Float {
     let a = a.asType(.float32), b = b.asType(.float32)

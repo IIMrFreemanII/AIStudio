@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import MLXComfyProtocol
+import AIStudioProtocol
 
 /// What `GET /v1/info` of a GPU server (server/gpu) says about itself. Asking never starts a GPU.
 public struct GPUServerInfo: Codable, Sendable, Equatable {

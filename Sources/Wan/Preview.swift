@@ -2,7 +2,7 @@ import Foundation
 import MLX
 
 /// Fast step previews: a linear map from the 16 latent channels to RGB, fitted on a decoded clip with
-/// `mlxcomfy-cli generate-video --fit-preview` (Wan writes `WanPreviewCoefficients.swift`).
+/// `aistudio-cli generate-video --fit-preview` (Wan writes `WanPreviewCoefficients.swift`).
 public enum WanPreview {
     static let coefficients: [Float] = WanPreviewCoefficients.values
 

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds the server's web dashboard (web/dashboard, Svelte) into Sources/MLXComfyServer/Resources/dashboard.
+# Builds the server's web dashboard (web/dashboard, Svelte) into Sources/AIStudioServer/Resources/dashboard.
 # The output is committed, so building the server or bootstrapping a cloud Mac never needs Node.
 # Usage: scripts/build-dashboard.sh [--check]   (--check: type-check and test only)
 set -euo pipefail
