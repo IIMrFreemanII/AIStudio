@@ -20,7 +20,7 @@
 #   --test            install under a temporary name and port, check it answers, then remove it again
 set -euo pipefail
 
-REPO="https://github.com/IIMrFreemanII/MLXComfyUI.git"
+REPO="https://github.com/IIMrFreemanII/AIStudio.git"
 BRANCH="main"
 DIR="$HOME/AIStudio"
 SOURCE=""
