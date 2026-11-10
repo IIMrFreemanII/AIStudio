@@ -219,8 +219,10 @@ struct QueueRow: View {
             statusIcon.frame(width: 16)
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.title).lineLimit(1).font(.mgCallout)
-                if !item.workflow.isEmpty {
-                    Text(item.workflow).font(.mgFootnote).foregroundStyle(.secondary).lineLimit(1)
+                if !item.workflow.isEmpty || item.backendID != BackendID.local {
+                    let target = item.backendID == BackendID.local ? "" : "on \(model.backendName(item.backendID))"
+                    Text([item.workflow, target].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.mgFootnote).foregroundStyle(.secondary).lineLimit(1)
                 }
                 switch item.status {
                 case .running(let step, let total) where total > 0:

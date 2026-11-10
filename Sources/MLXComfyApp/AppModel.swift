@@ -35,6 +35,8 @@ struct QueueItem: Identifiable, Equatable {
     /// The tab that queued it (its results and node states go there), and that tab's name at the time.
     var docID: UUID? = nil
     var workflow: String = ""
+    /// Where it runs: "local" or a server connection id.
+    var backendID: String = BackendID.local
 
     static func == (a: QueueItem, b: QueueItem) -> Bool { a.id == b.id && a.status == b.status }
 
@@ -176,7 +178,15 @@ final class AppModel {
 
     @ObservationIgnored let engine = Engine()
     @ObservationIgnored let registry = StandardNodes.makeRegistry()
-    @ObservationIgnored private var runTask: Task<Void, Never>?
+    @ObservationIgnored lazy var localBackend = LocalBackend(engine: engine)
+    /// One running job per backend (a local and a remote run can overlap).
+    @ObservationIgnored private var runTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private lazy var coalescer = EventCoalescer.engineEvents { [weak self] batch in
+        guard let self else { return }
+        for (item, event) in batch { self.handle(event, item: item) }
+    }
+    /// Server connections (Servers panel) and the run targets made from them.
+    let connections: ConnectionStore
     @ObservationIgnored private var memoryTimer: Timer?
     @ObservationIgnored var sessionTimer: Timer?
     @ObservationIgnored var lastManifest: SessionManifest?
@@ -195,6 +205,8 @@ final class AppModel {
     var assets: [AssetItem] = []
     /// The preset gallery sheet.
     var showPresetGallery = false
+    /// Set to open the Servers panel (from the run target menu).
+    var showServersPanel = false
     /// The results pane under the graph, and the full-window viewer.
     var showResultsPane = true
     var viewerResult: NodeResult?
@@ -228,6 +240,8 @@ final class AppModel {
          restoreSession: Bool? = nil) {
         self.persistSettings = persistSettings
         self.autoloadModel = autoloadModel
+        connections = ConnectionStore(fileURL: persistSettings && !Self.isAutomatedRun ? ConnectionStore.defaultFileURL : nil,
+                                      registry: StandardNodes.makeRegistry())
         let defaults = UserDefaults.standard
         let path = defaults.string(forKey: "modelPath") ?? AppModel.guessModelPath()
         let out = defaults.string(forKey: "outputDirectory")
@@ -416,7 +430,8 @@ final class AppModel {
                 }
             }
             g = prepared(g, seed: seed ?? i, workflow: active.name)
-            queue.append(QueueItem(graph: g, title: title(for: g), seed: seed, docID: active.id, workflow: active.name))
+            queue.append(QueueItem(graph: g, title: title(for: g), seed: seed, docID: active.id, workflow: active.name,
+                                   backendID: active.backendID))
         }
         processQueue()
     }
@@ -449,21 +464,45 @@ final class AppModel {
 
     func document(id: UUID?) -> WorkflowDocument? { tabs.first { $0.id == id } }
 
+    /// The backend a target id names (a removed or unusable connection falls back to this Mac).
+    func backend(_ id: String) -> ExecutionBackend {
+        if id != BackendID.local, let remote = connections.backend(id) { return remote }
+        return localBackend
+    }
+
+    func backendName(_ id: String) -> String {
+        id == BackendID.local ? "This Mac" : (connections.connection(id)?.name ?? "Removed server")
+    }
+
+    /// Starts the next pending item of every idle backend.
     func processQueue() {
-        guard runTask == nil, let idx = queue.firstIndex(where: { $0.status == .pending }) else { return }
-        let item = queue[idx]
+        var busy = Set(runTasks.keys)
+        for item in queue where item.status == .pending && !busy.contains(item.backendID) {
+            busy.insert(item.backendID)
+            start(item)
+        }
+    }
+
+    private func start(_ item: QueueItem) {
+        guard let idx = queue.firstIndex(where: { $0.id == item.id }) else { return }
+        if item.backendID != BackendID.local && connections.backend(item.backendID) == nil {
+            queue[idx].status = .failed("\(backendName(item.backendID)) has no URL or token; check it in Servers")
+            return processQueue()
+        }
         queue[idx].status = .running(step: 0, total: 0)
         let doc = document(for: item)
         runningDocID = doc.id
         doc.nodeStates = Dictionary(uniqueKeysWithValues: item.graph.nodes.map { ($0.id, NodeRunState.pending) })
         doc.previewImage = nil
         doc.previewNode = nil
-        runTask = Task { [weak self] in
+        let backend = backend(item.backendID)
+        let coalescer = self.coalescer
+        runTasks[item.backendID] = Task { [weak self] in
             guard let self else { return }
             do {
                 let start = Date()
-                let outputs = try await engine.run(item.graph) { event in
-                    Task { @MainActor in self.handle(event, item: item.id) }
+                let outputs = try await backend.run(item.graph, workflow: item.workflow) { event in
+                    coalescer.push((item.id, event))
                 }
                 self.finish(item.id, status: .done(seconds: Date().timeIntervalSince(start)), outputs: outputs)
             } catch is CancellationError {
@@ -494,6 +533,7 @@ final class AppModel {
 
     private func finish(_ id: UUID, status: QueueItem.Status, outputs: [EngineOutput]) {
         // Let queued progress events land before marking the item finished.
+        coalescer.drain()
         Task { @MainActor in
             if let i = queue.firstIndex(where: { $0.id == id }) { queue[i].status = status }
             let item = queue.first { $0.id == id }
@@ -505,18 +545,18 @@ final class AppModel {
             }
             doc.previewImage = nil
             doc.previewNode = nil
-            runningDocID = nil
-            runTask = nil
+            if let backendID = item?.backendID { runTasks[backendID] = nil }
+            runningDocID = queue.first { if case .running = $0.status { return true }; return false }?.docID
             if !outputs.isEmpty { reloadHistory() }
             processQueue()
         }
     }
 
-    func cancelCurrent() { runTask?.cancel() }
+    func cancelCurrent() { runTasks.values.forEach { $0.cancel() } }
 
     func cancelAll() {
         for i in queue.indices where queue[i].status == .pending { queue[i].status = .cancelled }
-        runTask?.cancel()
+        runTasks.values.forEach { $0.cancel() }
         completePlotsIfDone()
     }
 

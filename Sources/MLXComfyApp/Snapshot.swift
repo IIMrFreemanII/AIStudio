@@ -380,6 +380,21 @@ enum Snapshot {
             await render(sheet(NodePalette(wire: wire) { _ in }.environment(model)), to: dir.appendingPathComponent("40-wire-palette.png"),
                          size: CGSize(width: 480, height: 420))
         }
+
+        // 49. The Servers panel with this tab sent to a server (nothing listens there, so it shows offline; the public
+        // plain-http one is never contacted and shows its warning); 50. the editor.
+        let studio = ServerConnection(name: "Studio Mac", baseURL: "http://127.0.0.1:9")
+        let rented = ServerConnection(name: "Rented Mac", baseURL: "http://203.0.113.7:8188")
+        model.connections.save(studio, token: "snapshot")
+        model.connections.save(rented, token: "snapshot")
+        model.active.backendID = studio.id
+        panel(.servers)
+        await model.connections.test(studio.id)
+        await render(model, to: dir.appendingPathComponent("49-servers.png"))
+        await render(sheet(ServerEditor(connection: rented).environment(model)), to: dir.appendingPathComponent("50-server-editor.png"),
+                     size: CGSize(width: 500, height: 360))
+        model.active.backendID = BackendID.local
+        for c in [studio, rented] { model.connections.remove(c.id) }
     }
 
     static let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]

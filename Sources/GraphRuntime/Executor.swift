@@ -38,6 +38,9 @@ public enum ExecutionEvent {
     case nodeProgress(node: String, step: Int, total: Int, preview: Any?)
     case nodeFinished(node: String, seconds: Double, peakMemory: Int?)
     case nodeFailed(node: String, error: Error)
+    /// The values of an output node (files it wrote, images it shows), right after it finished or was cached —
+    /// before the rest of the run completes.
+    case nodeOutput(node: String, values: [String: Value])
     case finished(seconds: Double)
     case cancelled
 }
@@ -185,8 +188,11 @@ public final class GraphExecutor {
     // MARK: execution
 
     /// Runs every output node (or just `targets`) and what they depend on.
+    ///
+    /// `metadataGraph` is the graph nodes see as their document (what Save nodes embed) when it differs from the
+    /// one that runs — a remote server runs a copy with server-side paths but embeds the client's original.
     @discardableResult
-    public func run(_ graph: Graph, targets: [String]? = nil,
+    public func run(_ graph: Graph, targets: [String]? = nil, metadataGraph: Graph? = nil,
                     onEvent: @escaping (ExecutionEvent) -> Void = { _ in }) async throws -> RunResult {
         let start = Date()
         // Models used by this run stay pinned in the resource cache until it ends.
@@ -218,7 +224,10 @@ public final class GraphExecutor {
                     values[node.id] = hit
                     result.cached.append(node.id)
                     onEvent(.nodeCached(node: node.id))
-                    if schema.isOutput { result.outputs[node.id] = hit }
+                    if schema.isOutput {
+                        result.outputs[node.id] = hit
+                        onEvent(.nodeOutput(node: node.id, values: hit))
+                    }
                     continue
                 }
 
@@ -226,7 +235,8 @@ public final class GraphExecutor {
                 onEvent(.nodeStarted(node: node.id))
                 hooks.resetPeakMemory()
                 let t = Date()
-                let ctx = ExecutionContext(nodeID: node.id, graph: graph, resources: resources, emit: onEvent)
+                let ctx = ExecutionContext(nodeID: node.id, graph: metadataGraph ?? graph, resources: resources,
+                                           emit: onEvent)
                 let out: [String: Value]
                 do {
                     out = try await impl.init().execute(inputs, context: ctx)
@@ -245,6 +255,7 @@ public final class GraphExecutor {
                 if schema.isOutput { result.outputs[node.id] = out }
                 onEvent(.nodeFinished(node: node.id, seconds: Date().timeIntervalSince(t),
                                       peakMemory: hooks.peakMemory()))
+                if schema.isOutput { onEvent(.nodeOutput(node: node.id, values: out)) }
             }
         } catch is CancellationError {
             onEvent(.cancelled)

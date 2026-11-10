@@ -77,7 +77,7 @@ public struct LoadVideoNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let n = try inputs.int("max_frames")
-        let clip = try await MediaIO.readVideo(StandardNodes.resolveInputPath(try inputs.string("path")), maxFrames: n > 0 ? n : nil)
+        let clip = try await MediaIO.readVideo(try StandardNodes.inputFile(try inputs.string("path")), maxFrames: n > 0 ? n : nil)
         let silence = AudioClip(samples: MLXArray.zeros([2, max(1, Int(clip.duration * 48000))]), sampleRate: 48000)
         return ["video": .object(clip), "audio": .object(clip.audio ?? silence)]
     }
@@ -91,7 +91,7 @@ public struct LoadAudioNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        ["audio": .object(try await MediaIO.readAudio(StandardNodes.resolveInputPath(try inputs.string("path"))))]
+        ["audio": .object(try await MediaIO.readAudio(try StandardNodes.inputFile(try inputs.string("path"))))]
     }
 }
 
@@ -166,7 +166,7 @@ public struct SaveVideoNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let video: VideoClip = try inputs.object("video")
-        let dir = resolvePath(try inputs.string("directory"))
+        let dir = try StandardNodes.outputDirectory(try inputs.string("directory"))
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = nextMediaFilename(in: dir, prefix: try inputs.string("filename_prefix"), ext: try inputs.string("format"))
         try await MediaIO.writeVideo(video, audio: inputs.optionalObject("audio", as: AudioClip.self), to: url,
@@ -190,7 +190,7 @@ public struct SaveAudioNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let audio: AudioClip = try inputs.object("audio")
-        let dir = resolvePath(try inputs.string("directory"))
+        let dir = try StandardNodes.outputDirectory(try inputs.string("directory"))
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let format = MediaIO.AudioFormat(rawValue: try inputs.string("format")) ?? .wav
         let url = nextMediaFilename(in: dir, prefix: try inputs.string("filename_prefix"), ext: format.rawValue)
@@ -208,8 +208,9 @@ public struct PreviewVideoNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let video: VideoClip = try inputs.object("video")
-        try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
-        let url = previewDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
+        let folder = try StandardNodes.previewFolder()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(UUID().uuidString + ".mp4")
         try await MediaIO.writeVideo(video, to: url, metadata: mediaMetadata(context))
         return ["video_url": .object(url), "preview": .bool(true)]
     }
@@ -223,8 +224,9 @@ public struct PreviewAudioNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let audio: AudioClip = try inputs.object("audio")
-        try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
-        let url = previewDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        let folder = try StandardNodes.previewFolder()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(UUID().uuidString + ".wav")
         try await MediaIO.writeAudio(audio, to: url, format: .wav, metadata: mediaMetadata(context))
         return ["audio_url": .object(url), "preview": .bool(true)]
     }

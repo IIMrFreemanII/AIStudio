@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import GraphRuntime
+import ImageIO
 import MLX
 import MLXComfyLibrary
 import MLXDiffusionCore
@@ -902,5 +903,105 @@ extension WorkflowDocument {
     func literalPrompt(_ node: String) -> String? {
         if case .value(.string(let s))? = graph[node]?.inputs["prompt"] { return s }
         return nil
+    }
+}
+
+extension SmokeTest {
+    /// `--smoke-remote <url> --smoke-token-file <path>`: the same graph on this Mac and on a running
+    /// `mlxcomfy-cli serve`, through the queue like the Generate button. Checks the remote result matches the local
+    /// one pixel for pixel, carries the same embedded graph, lands in history, streamed previews, and that cancelling
+    /// a remote run stops it.
+    static func runRemote(_ model: AppModel, url: String) async -> Bool {
+        func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
+        guard let tokenPath = argument("--smoke-token-file"),
+              let token = try? String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        else { say("needs --smoke-token-file"); return false }
+        let conn = ServerConnection(name: "Smoke server", baseURL: url)
+        model.connections.save(conn, token: token)
+        await model.connections.test(conn.id)
+        guard let info = model.connections.info(conn.id) else {
+            say("server not reachable: \(model.connections.status[conn.id].map { "\($0)" } ?? "?")"); return false
+        }
+        say("server \(info.serverVersion) on \(info.hostName): \(info.models.count) models")
+        guard let te = model.firstNode(ofType: "TextEncode"), let sampler = model.firstNode(ofType: "Sampler"),
+              let latent = model.firstNode(ofType: "EmptyLatent") else { say("graph not set up"); return false }
+        model.setLiteral(.string("a red lighthouse on a cliff at sunset, oil painting"), node: te.id, input: "prompt", undoManager: nil)
+        model.setLiteral(.int(512), node: latent.id, input: "width", undoManager: nil)
+        model.setLiteral(.int(512), node: latent.id, input: "height", undoManager: nil)
+        model.setLiteral(.int(1234), node: sampler.id, input: "seed", undoManager: nil)
+        model.randomizeSeed = false
+
+        func runOnce(on backend: String) async -> (QueueItem.Status?, Double, Int, URL?) {
+            model.active.backendID = backend
+            let previews = model.previewCount
+            let start = Date()
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { return (nil, 0, 0, nil) }
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            return (model.queue.first { $0.id == item.id }?.status, Date().timeIntervalSince(start),
+                    model.previewCount - previews, model.displayedURL)
+        }
+
+        let (localStatus, localSecs, _, localURL) = await runOnce(on: BackendID.local)
+        guard case .done? = localStatus, let localURL else { say("local run failed: \(model.lastError ?? "?")"); return false }
+        say(String(format: "local run %.1fs → %@", localSecs, localURL.lastPathComponent))
+        // One copy of the model at a time: this Mac's engine and the server share the same GPU and memory.
+        await model.engine.unloadModels()
+
+        let (remoteStatus, remoteSecs, previews, remoteURL) = await runOnce(on: conn.id)
+        guard case .done? = remoteStatus, let remoteURL, remoteURL != localURL else {
+            say("remote run failed: \(remoteStatus.map { "\($0)" } ?? "?") \(model.lastError ?? "")"); return false
+        }
+        say(String(format: "remote run %.1fs → %@ (%@), %d previews", remoteSecs, remoteURL.lastPathComponent,
+                   remoteURL.deletingLastPathComponent().path, previews))
+        let diff = pixelDifference(localURL, remoteURL)
+        let localGraph = AppModel.embeddedGraph(in: localURL), remoteGraph = AppModel.embeddedGraph(in: remoteURL)
+        let sameGraph = localGraph != nil && localGraph == remoteGraph
+        let inHistory = model.history.contains { $0.url == remoteURL }
+        let sameFolder = localURL.deletingLastPathComponent() == remoteURL.deletingLastPathComponent()
+        say("max pixel difference \(diff.map(String.init) ?? "n/a"); same embedded graph \(sameGraph); in history \(inHistory); same folder \(sameFolder)")
+
+        // Cancel mid-run.
+        model.active.backendID = conn.id
+        model.setLiteral(.int(4321), node: sampler.id, input: "seed", undoManager: nil)
+        model.enqueue(undoManager: nil)
+        guard let item = model.queue.last else { return false }
+        while true {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard let cur = model.queue.first(where: { $0.id == item.id }) else { return false }
+            if case .running(let step, _) = cur.status, step >= 2 { break }
+            if cur.isFinished { say("finished before it could be cancelled: \(cur.status)"); return false }
+        }
+        let cancelAt = Date()
+        model.cancelCurrent()
+        while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let cancelled = model.queue.first { $0.id == item.id }?.status == .cancelled
+        say(String(format: "cancelled %@ after %.2fs", cancelled ? "yes" : "no", Date().timeIntervalSince(cancelAt)))
+        model.active.backendID = BackendID.local
+        model.connections.remove(conn.id)
+        return diff == 0 && sameGraph && inHistory && sameFolder && previews > 0 && cancelled
+    }
+
+    /// Largest per-channel difference between two images of the same size (nil when they can't be compared).
+    static func pixelDifference(_ a: URL, _ b: URL) -> Int? {
+        func pixels(_ u: URL) -> (Int, Int, [UInt8])? {
+            guard let src = CGImageSourceCreateWithURL(u as CFURL, nil),
+                  let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+            var buf = [UInt8](repeating: 0, count: img.width * img.height * 4)
+            guard let ctx = CGContext(data: &buf, width: img.width, height: img.height, bitsPerComponent: 8,
+                                      bytesPerRow: img.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+            return (img.width, img.height, buf)
+        }
+        guard let (w1, h1, p1) = pixels(a), let (w2, h2, p2) = pixels(b), w1 == w2, h1 == h2 else { return nil }
+        var m = 0
+        for i in 0..<p1.count { m = max(m, abs(Int(p1[i]) - Int(p2[i]))) }
+        return m
     }
 }

@@ -23,6 +23,8 @@ final class WorkflowDocument: Identifiable {
     var fileURL: URL?
     /// The preset it started from, if any.
     var presetID: String?
+    /// Where its runs go: "local" or a server connection id (the toolbar's run target).
+    var backendID: String = BackendID.local
 
     var graph: Graph
     /// The graph as last saved (or as the tab was created); `isDirty` compares against it.

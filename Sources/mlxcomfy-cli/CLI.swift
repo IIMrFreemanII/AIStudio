@@ -21,7 +21,7 @@ struct MLXComfyCLI: AsyncParsableCommand {
         abstract: "MLXComfyUI engine command line.",
         subcommands: [Run.self, Generate.self, GenerateVideo.self, GenerateAudio.self, GenerateMusic.self, TTS.self, ProbeACEStep.self, ProbeStableAudio.self, Nodes.self, GraphFromPNG.self, Compare.self, VAERoundTrip.self,
                       FitPreview.self, MakeTestLoRA.self, Assist.self,
-                      Tokenize.self])
+                      Tokenize.self, Serve.self, Download.self, BenchRemote.self])
 }
 
 func log(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
@@ -95,6 +95,7 @@ struct Run: AsyncParsableCommand {
             case .nodeFailed(let n, let e): log("✗ \(n): \(e)")
             case .finished(let secs): log(String(format: "done in %.1fs (%@)", secs, memoryString()))
             case .cancelled: log("cancelled")
+            case .nodeOutput: break
             }
         }
         for (node, out) in result.outputs.sorted(by: { $0.key < $1.key }) {

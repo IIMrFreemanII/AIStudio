@@ -1,0 +1,26 @@
+# Ollama (OpenAI-compatible at /v1) behind Caddy.
+services:
+  app:
+    image: ollama/ollama:${OLLAMA_TAG:-0.40.14}
+    restart: unless-stopped
+    volumes:
+      - ${DATA_DIR}/ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+  gate:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [app]
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+      API_TOKEN: ${API_TOKEN}
+      UPSTREAM: app:11434
+    ports:
+      - ${PUBLISH}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+volumes:
+  caddy-data:

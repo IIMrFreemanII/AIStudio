@@ -15,6 +15,8 @@ let package = Package(
         .library(name: "Flux", targets: ["Flux"]),
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
+        .library(name: "MLXComfyProtocol", targets: ["MLXComfyProtocol"]),
+        .library(name: "MLXComfyServer", targets: ["MLXComfyServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
         .executable(name: "ltx-probe-vae", targets: ["ltx-probe-vae"]),
@@ -34,6 +36,11 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMinor(from: "0.33.0")),
         .package(url: "https://github.com/huggingface/swift-transformers.git", .upToNextMinor(from: "1.4.0")),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.0"),
+        // The remote server (`mlxcomfy-cli serve`) only; the app talks to it with URLSession.
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.28.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.8.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
+        .package(url: "https://github.com/apple/swift-http-types.git", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -281,6 +288,28 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
+        // Wire format shared by the remote server, the app and the tests (no MLX, no networking stack).
+        .target(
+            name: "MLXComfyProtocol",
+            dependencies: ["GraphRuntime"]
+        ),
+        // `mlxcomfy-cli serve`: runs graphs for remote clients, plus the web dashboard.
+        .target(
+            name: "MLXComfyServer",
+            dependencies: [
+                "GraphRuntime",
+                "NodesStandard",
+                "MLXDiffusionCore",
+                "MLXComfyProtocol",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+            ],
+            resources: [.copy("Resources/dashboard")],
+            linkerSettings: [.linkedFramework("IOKit")]
+        ),
         .executableTarget(
             name: "mlxcomfy-cli",
             dependencies: [
@@ -295,6 +324,8 @@ let package = Package(
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
+                "MLXComfyProtocol",
+                "MLXComfyServer",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
@@ -306,6 +337,7 @@ let package = Package(
                 "GraphRuntime",
                 "NodesStandard",
                 "MLXComfyLibrary",
+                "MLXComfyProtocol",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             // JetBrains Mono (OFL), the design system's typeface.
@@ -349,6 +381,20 @@ let package = Package(
         .testTarget(
             name: "GraphRuntimeTests",
             dependencies: ["GraphRuntime"]
+        ),
+        .testTarget(
+            name: "MLXComfyProtocolTests",
+            dependencies: ["MLXComfyProtocol", "GraphRuntime", "NodesStandard"]
+        ),
+        .testTarget(
+            name: "MLXComfyServerTests",
+            dependencies: [
+                "MLXComfyServer", "MLXComfyProtocol", "GraphRuntime", "NodesStandard",
+                .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
+            ]
         ),
         .testTarget(
             name: "MLXComfyLibraryTests",

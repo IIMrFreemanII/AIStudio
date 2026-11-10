@@ -98,7 +98,7 @@ public struct LoadModelNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let url = ModelPaths.resolve(try inputs.string("path"))
+        let url = try StandardNodes.modelFolder(try inputs.string("path"))
         // Models live in the resource cache so they stay resident across runs and graph edits.
         let model: GenerativeModel = try await context.resources.get(
             "model:\(url.path)", estimatedBytes: ModelRegistry.weightBytes(at: url)) {
@@ -224,7 +224,7 @@ public struct SaveImageNode: NodeImplementation {
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
         let image: MLXArray = try inputs.object("image")
-        let dir = resolvePath(try inputs.string("directory"))
+        let dir = try StandardNodes.outputDirectory(try inputs.string("directory"))
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let prefix = try inputs.string("filename_prefix")
         let url = nextFilename(in: dir, prefix: prefix)
@@ -265,7 +265,7 @@ public struct LoadImageNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let cg = try ImageArray.load(StandardNodes.resolveInputPath(try inputs.string("path")))
+        let cg = try ImageArray.load(try StandardNodes.inputFile(try inputs.string("path")))
         return ["image": .object(ImageArray.array(from: cg))]
     }
 }
@@ -319,7 +319,7 @@ public struct LoadMaskNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let img = ImageArray.array(from: try ImageArray.load(StandardNodes.resolveInputPath(try inputs.string("path"))))
+        let img = ImageArray.array(from: try ImageArray.load(try StandardNodes.inputFile(try inputs.string("path"))))
         var m: MLXArray
         switch try inputs.string("channel") {
         case "alpha": m = img[0..., 0..., 3]
@@ -410,8 +410,102 @@ public struct LoRANode: NodeImplementation {
         let model: DiffusionModel = try inputs.object("model")
         let strength = Float(try inputs.float("strength"))
         if strength == 0 { return ["model": .object(model)] }
-        let (out, report) = try model.applyingLoRA(resolvePath(try inputs.string("path")), strength: strength)
+        let (out, report) = try model.applyingLoRA(try StandardNodes.loraFile(try inputs.string("path")), strength: strength)
         context.progress(step: 1, total: 1, preview: report.description)
         return ["model": .object(out)]
+    }
+}
+
+// MARK: - server sandbox
+
+/// File access rules for graphs run by `mlxcomfy-cli serve`: a graph from the network may only read uploaded
+/// inputs and installed models, and only write into its own run folder. Off (nil roots) in the app and CLI.
+public enum PathSandbox {
+    public struct Roots: Sendable {
+        public var inputs: URL
+        public var models: URL
+        public init(inputs: URL, models: URL) {
+            self.inputs = inputs.resolvingSymlinksInPath().standardizedFileURL
+            self.models = models.resolvingSymlinksInPath().standardizedFileURL
+        }
+    }
+
+    public enum Violation: Error, CustomStringConvertible, Equatable {
+        case outside(String)
+        case missing(String)
+        case noRunFolder
+        public var description: String {
+            switch self {
+            case .outside(let p): return "path not allowed on this server: \(p)"
+            case .missing(let p): return "no such file on this server: \(p)"
+            case .noRunFolder: return "this server runs graphs only through its queue"
+            }
+        }
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _roots: Roots?
+
+    public static var roots: Roots? {
+        get { lock.withLock { _roots } }
+        set { lock.withLock { _roots = newValue } }
+    }
+
+    /// Where Save/Preview nodes of the running graph write (set by the server around each run).
+    @TaskLocal public static var runFolder: URL?
+
+    /// `name` inside `root`: relative, no `..`, and (after resolving symlinks) still inside.
+    public static func contained(_ name: String, in root: URL) throws -> URL {
+        guard !name.isEmpty, !name.hasPrefix("/"), !name.hasPrefix("~"),
+              !name.split(separator: "/").contains("..") else { throw Violation.outside(name) }
+        let url = root.appendingPathComponent(name).resolvingSymlinksInPath().standardizedFileURL
+        guard url.path.hasPrefix(root.path + "/") else { throw Violation.outside(name) }
+        return url
+    }
+
+    static func existing(_ name: String, in roots: [URL]) throws -> URL {
+        var lastError: Error = Violation.missing(name)
+        for root in roots {
+            do {
+                let url = try contained(name, in: root)
+                if FileManager.default.fileExists(atPath: url.path) { return url }
+            } catch { lastError = error }
+        }
+        throw lastError
+    }
+}
+
+extension StandardNodes {
+    /// A Load node's file: under the sandbox only an uploaded input; otherwise ``resolveInputPath(_:)``.
+    public static func inputFile(_ path: String) throws -> URL {
+        guard let roots = PathSandbox.roots else { return resolveInputPath(path) }
+        return try PathSandbox.existing(path, in: [roots.inputs])
+    }
+
+    /// A LoRA file: under the sandbox an uploaded input or a file in the models folder (`loras/x.safetensors`).
+    public static func loraFile(_ path: String) throws -> URL {
+        guard let roots = PathSandbox.roots else { return resolvePath(path) }
+        return try PathSandbox.existing(path, in: [roots.inputs, roots.models])
+    }
+
+    /// A model folder: under the sandbox only a folder name in the models folder.
+    public static func modelFolder(_ path: String) throws -> URL {
+        guard let roots = PathSandbox.roots else { return ModelPaths.resolve(path) }
+        guard !path.contains("/") else { throw PathSandbox.Violation.outside(path) }
+        return try PathSandbox.existing(path, in: [roots.models])
+    }
+
+    /// Where a Save node writes: under the sandbox the run folder, whatever the graph says.
+    public static func outputDirectory(_ path: String) throws -> URL {
+        guard PathSandbox.roots != nil else { return resolvePath(path) }
+        guard let folder = PathSandbox.runFolder else { throw PathSandbox.Violation.noRunFolder }
+        return folder
+    }
+
+    /// Where a Preview node writes its temporary file (under the sandbox the run folder, so clients can fetch it).
+    public static func previewFolder() throws -> URL {
+        guard PathSandbox.roots != nil else { return previewDirectory }
+        guard let folder = PathSandbox.runFolder else { throw PathSandbox.Violation.noRunFolder }
+        return folder
     }
 }
