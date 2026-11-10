@@ -1,6 +1,7 @@
 import AppKit
 import GraphRuntime
 import MLXDiffusionCore
+import NodesRemote
 import NodesStandard
 import SwiftUI
 import UniformTypeIdentifiers
@@ -26,12 +27,83 @@ struct NodeExtras: View {
             case "LoadImage", "LoadMask": imageSection
             case "LoadVideo", "LoadAudio": mediaSection
             case "TextToSpeech": voiceSection
+            case let t where RemoteNodes.types.contains(t): gpuServerSection
+            case "RemoteLoRA":
+                loraLinkPreview
+                Text("A LoRA for the Cloud GPU image node (FLUX.1 dev or Qwen-Image), picked from the library (Models window). One "
+                     + "added from a link is downloaded by the server itself; a file is uploaded with the first job. "
+                     + "Chain up to four; strength 0 skips one.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            case "LoRA":
+                loraLinkPreview
+                Text("A LoRA for this workflow's model, picked from the library (Models window): add one from a "
+                     + "Civitai or Hugging Face link, or a file. One that isn't on this Mac yet is downloaded on the "
+                     + "first run. Trigger words from Civitai show on the node.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             default: EmptyView()
             }
         }
     }
 
     var b: LiteralBindings { LiteralBindings(model: model, undoManager: undoManager, editor: true) }
+
+    /// The picked library LoRA's card.
+    @ViewBuilder var loraLinkPreview: some View {
+        if case .value(.string(let id))? = node.inputs["lora"], !id.isEmpty, let item = model.store?.library.item(id) {
+            LibraryItemCard(node: node, item: item)
+        }
+    }
+
+    // MARK: GPU server (Cloud GPU nodes)
+
+    @ViewBuilder var gpuServerSection: some View {
+        let store = model.connections
+        let servers = store.gpuServers
+        let selection = b.string(node.id, "server")
+        MGSection("GPU Server") {
+            if servers.isEmpty {
+                Text("These nodes run on a GPU server: Modal (billed per second) or your own GPU box.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+                Button("Add a GPU Server…") { model.showServersPanel = true }
+            } else {
+                MGFormRow("Server") {
+                    MGPicker(selection: selection,
+                             options: [("", "First (\(servers[0].name))")] + servers.map { ($0.id, $0.name) }
+                                + (selection.wrappedValue.isEmpty || servers.contains { $0.id == selection.wrappedValue }
+                                   ? [] : [(selection.wrappedValue, "Removed server")]),
+                             maxWidth: 220)
+                }
+                let id = selection.wrappedValue.isEmpty ? servers[0].id : selection.wrappedValue
+                if case .gpuOnline(let info)? = store.status[id], let taskID = RemoteNodes.taskID(forNodeType: node.type),
+                   let task = info.task(taskID) {
+                    Text(task.installed
+                         ? "\(task.gpu)" + (task.pricePerSecond.map { String(format: ", $%.2f per GPU-hour, billed per second", $0 * 3600) } ?? "")
+                         : "\(task.title) isn't downloaded on this server yet: run its download step.")
+                        .font(.mgSubheadline).foregroundStyle(task.installed ? MG.secondaryLabel : MG.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                    // A server with other built-in voices than this app knows: offer its own list.
+                    if let voices = task.params?["voice"]?.choices, voices != RemoteNodes.speechVoices {
+                        MGFormRow("Server voice") {
+                            MGPicker(selection: b.string(node.id, "voice"), options: voices.map { ($0, $0) }, maxWidth: 220)
+                        }
+                    }
+                }
+            }
+            if node.type == "RemoteWanTextToVideo" || node.type == "RemoteWanImageToVideo" {
+                Text("The negative prompt works with fast on too: it steers inside the model (Normalized Attention "
+                     + "Guidance, a few percent slower). With fast off, or guidance above 1, it uses classifier-free "
+                     + "guidance, which runs each step twice.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
+            if node.type == "RemoteTextToSpeech" {
+                Text("Connect a reference clip to clone its voice (a few seconds; its transcript helps). Otherwise it "
+                     + "speaks with the chosen voice, or with \"designed\", a new voice made from the description. "
+                     + "With a built-in voice, the description sets the delivery (\"excited, whispering\").")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { for c in servers where store.status[c.id] == nil || store.status[c.id] == .unknown { await store.test(c.id) } }
+    }
 
     var modelPathOfGraph: String {
         guard let m = model.firstNode(ofType: "LoadModel"), case .value(.string(let p))? = m.inputs["path"] else { return "" }
@@ -42,13 +114,16 @@ struct NodeExtras: View {
 
     @ViewBuilder var modelSection: some View {
         let path = b.string(node.id, "path")
-        let installed = ModelCatalog.entries.compactMap { e in store.installedURL(e.id).map { (e, $0) } }
+        let catalog = ModelCatalog.entries.compactMap { e in store.installedURL(e.id).map { ($0.standardizedFileURL.path, e.name) } }
+        // Fine-tunes installed from links (Models window › Models from Links).
+        let linked = store.library.macModels().map { ($0.url.standardizedFileURL.path, "\($0.title) (fine-tune)") }
+        let installed = catalog + linked
         MGSection("Model") {
             MGFormRow("Model") {
                 let current = URL(fileURLWithPath: path.wrappedValue).standardizedFileURL.path
                 MGPicker(selection: Binding(get: { current }, set: { p in setModel(p) }),
-                         options: installed.map { e, url in (url.standardizedFileURL.path, e.name) }
-                            + (installed.contains { $0.1.standardizedFileURL.path == current }
+                         options: installed
+                            + (installed.contains { $0.0 == current }
                                ? [] : [(current, (path.wrappedValue as NSString).lastPathComponent)]),
                          maxWidth: 220)
             }

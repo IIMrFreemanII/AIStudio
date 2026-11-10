@@ -5,49 +5,64 @@ import Observation
 import Security
 import SwiftUI
 
-/// The Hugging Face token for gated repos, kept in the login Keychain. The user enters it; the app never fills it.
+/// A site's API token kept in the login Keychain: the Hugging Face token (gated repos) and the Civitai API key (LoRA
+/// links). The user enters it; the app never fills it.
 ///
 /// Reading the secret makes macOS ask for permission whenever the app's signature changed (every ad-hoc rebuild), so
-/// it is read only when a gated download needs it, at most once per launch. Showing whether a token is saved only
-/// looks at the item's attributes, which never asks.
-@MainActor
-enum HFToken {
-    static let service = "MLXComfyUI.huggingface"
-    /// The token read (or saved) this launch.
-    private static var cached: String?
+/// it is read only when a download needs it, at most once per launch. Showing whether a token is saved only looks at
+/// the item's attributes, which never asks. Thread-safe: LoRA downloads ask for it off the main thread.
+final class KeychainToken: @unchecked Sendable {
+    static let huggingFace = KeychainToken(service: "MLXComfyUI.huggingface")
+    static let civitai = KeychainToken(service: "MLXComfyUI.civitai")
 
-    static func read() -> String? {
-        if let cached { return cached }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
-        cached = String(data: d, encoding: .utf8)
-        return cached
+    let service: String
+    private let lock = NSLock()
+    private var cached: String?
+
+    init(service: String) { self.service = service }
+
+    func read() -> String? {
+        lock.withLock {
+            if let cached { return cached }
+            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
+            var out: AnyObject?
+            guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data else { return nil }
+            cached = String(data: d, encoding: .utf8)
+            return cached
+        }
     }
 
     /// Whether a token is saved, without reading it (no Keychain prompt).
-    static var isSaved: Bool {
-        if cached != nil { return true }
+    var isSaved: Bool {
+        if lock.withLock({ cached != nil }) { return true }
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
         var out: AnyObject?
         return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
     }
 
-    static func save(_ token: String) {
+    func save(_ token: String) {
         delete()
         guard !token.isEmpty else { return }
-        cached = token
+        lock.withLock { cached = token }
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecValueData as String: Data(token.utf8)]
         SecItemAdd(q as CFDictionary, nil)
     }
 
-    static func delete() {
-        cached = nil
+    func delete() {
+        lock.withLock { cached = nil }
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
     }
+}
+
+/// The Hugging Face token (the name the rest of the app uses).
+enum HFToken {
+    static func read() -> String? { KeychainToken.huggingFace.read() }
+    static var isSaved: Bool { KeychainToken.huggingFace.isSaved }
+    static func save(_ token: String) { KeychainToken.huggingFace.save(token) }
+    static func delete() { KeychainToken.huggingFace.delete() }
 }
 
 /// Installed models: catalog downloads in the models folder, plus folders the user added.
@@ -84,8 +99,11 @@ final class ModelStore {
             UserDefaults.standard.set(modelsDirectory.path, forKey: "modelsDirectory")
             ModelPaths.directory = modelsDirectory
             refresh()
+            library.reload()
         }
     }
+    /// LoRAs (and models) added from links and files: `<models>/library.json`.
+    let library: LinkLibrary
     var manualFolders: [ManualFolder] {
         didSet { if let d = try? JSONEncoder().encode(manualFolders) { UserDefaults.standard.set(d, forKey: "modelFolders") } }
     }
@@ -97,10 +115,11 @@ final class ModelStore {
 
     init() {
         let d = UserDefaults.standard
-        modelsDirectory = d.string(forKey: "modelsDirectory").map { URL(fileURLWithPath: $0) }
-            ?? ModelPaths.defaultDirectory
+        let dir = d.string(forKey: "modelsDirectory").map { URL(fileURLWithPath: $0) } ?? ModelPaths.defaultDirectory
+        ModelPaths.directory = dir
+        library = LinkLibrary(models: { ModelPaths.directory })
+        modelsDirectory = dir
         manualFolders = d.data(forKey: "modelFolders").flatMap { try? JSONDecoder().decode([ManualFolder].self, from: $0) } ?? []
-        ModelPaths.directory = modelsDirectory
         refresh()
     }
 
@@ -279,8 +298,11 @@ struct ModelManagerView: View {
     @Environment(ModelStore.self) private var store
     @State private var confirming: CatalogEntry?
     @State private var trashing: CatalogEntry?
+    @State private var adding: LibraryAddRequest?
     @State private var token = ""
     @State private var tokenSaved = HFToken.isSaved
+    @State private var civitaiKey = ""
+    @State private var civitaiSaved = KeychainToken.civitai.isSaved
 
     var body: some View {
         MGForm(maxWidth: 760) {
@@ -300,6 +322,10 @@ struct ModelManagerView: View {
                 Text("Downloads go to \(store.modelsDirectory.path) and resume if interrupted. Each model has its own license; you accept it before downloading.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
             }
+
+            LibrarySection(kind: .model, adding: $adding)
+
+            LibrarySection(kind: .lora, adding: $adding)
 
             MGSection("Model Folders Added by Hand") {
                 if store.manualFolders.isEmpty {
@@ -345,13 +371,34 @@ struct ModelManagerView: View {
             } header: {
                 Text("Hugging Face Token")
             } footer: {
-                Text("Only needed for gated models (marked with a lock). Create a read token on huggingface.co and accept the model's terms on its page first.")
+                Text("Only needed for gated models (marked with a lock) and gated LoRA links. Create a read token on huggingface.co and accept the model's terms on its page first.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+            }
+
+            MGSection {
+                MGFormRow("API key") {
+                    SecureField("API key", text: $civitaiKey,
+                                prompt: Text(civitaiSaved ? "Saved in the Keychain — type to replace" : "Civitai API key"))
+                        .frame(maxWidth: 320)
+                }
+                HStack {
+                    Button("Save to Keychain") { KeychainToken.civitai.save(civitaiKey); civitaiKey = ""; civitaiSaved = true }
+                        .disabled(civitaiKey.isEmpty)
+                    Button("Remove") { KeychainToken.civitai.delete(); civitaiKey = ""; civitaiSaved = false }
+                        .disabled(!civitaiSaved && civitaiKey.isEmpty)
+                    if civitaiSaved { Label("Saved", systemImage: "checkmark.circle.fill").font(.mgSubheadline).foregroundStyle(MG.success) }
+                }
+            } header: {
+                Text("Civitai API Key")
+            } footer: {
+                Text("For LoRA links from Civitai on this Mac: most files only download with a key. Create one on civitai.com › Account settings › API Keys. Cloud GPU nodes use the server's own key (the civitai Modal secret).")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
             }
         }
         .frame(minWidth: 620, minHeight: 560)
         .onAppear { store.adopt(model.modelPath) }
         .mgSheet("download", item: $confirming) { entry in DownloadConfirmation(entry: entry).environment(store) }
+        .mgSheet("library-add", item: $adding) { r in LibraryAddSheet(request: r, library: store.library).environment(model) }
         .mgConfirmationDialog("Move \(trashing?.name ?? "") to the Trash?", isPresented: Binding(
             get: { trashing != nil }, set: { if !$0 { trashing = nil } }), message: trashMessage) {
             [.destructive("Move to Trash") { if let e = trashing { store.moveToTrash(e) }; trashing = nil },

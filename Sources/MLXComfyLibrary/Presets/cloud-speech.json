@@ -1,0 +1,48 @@
+{
+  "category" : "speech",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "seed" : 1,
+          "text" : "Hello! This voice was made on a cloud GPU. Connect a short recording to the reference input, and I'll speak in that voice instead.",
+          "voice" : "Ryan"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteTextToSpeech"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "audio" : {
+            "node" : "cloud",
+            "output" : "audio"
+          },
+          "directory" : "{output}",
+          "filename_prefix" : "speech",
+          "format" : "wav"
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveAudio"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-speech",
+  "modelName" : "Qwen3-TTS on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Voice Clone & TTS · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 210,
+  "summary" : "Speech in 10 languages: a built-in voice, one designed from a description, or a clone of a clip (connect Load Audio to reference).",
+  "symbol" : "cloud"
+}

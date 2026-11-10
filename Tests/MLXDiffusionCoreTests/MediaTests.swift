@@ -82,3 +82,28 @@ func tempURL(_ ext: String) -> URL {
     #expect(w.count == 20)
     #expect(w.max()! <= 0.5001 && w[10] > 0.45)
 }
+
+@Test func remuxKeepsTheEncodingAndAddsMetadata() async throws {
+    let source = tempURL("mp4"), copy = tempURL("mp4")
+    defer { for u in [source, copy] { try? FileManager.default.removeItem(at: u) } }
+    let clip = MediaOps.testPattern(width: 96, height: 64, frames: 12, fps: 16)
+    try await MediaIO.writeVideo(clip, to: source)
+    try await MediaIO.remuxVideo(source, to: copy, metadata: ["mlxcomfy.graph": "{\"remote\":1}"])
+    // The same compressed samples decode to exactly the same frames (an encode would differ).
+    let a = try await MediaIO.readVideo(source), b = try await MediaIO.readVideo(copy)
+    #expect(a.frameCount == b.frameCount && abs(a.fps - b.fps) < 0.01)
+    #expect(abs(a.frames - b.frames).max().item(Float.self) == 0)
+    #expect(await MediaIO.readMetadata(copy)["mlxcomfy.graph"] == "{\"remote\":1}")
+}
+
+@Test func changingAClipForgetsItsSourceFile() {
+    let url = URL(fileURLWithPath: "/tmp/x.mp4")
+    var clip = VideoClip(frames: MLXArray.zeros([2, 4, 4, 3]), fps: 16, sourceURL: url)
+    #expect(clip.sourceURL == url)
+    let copy = clip
+    clip.audio = MediaOps.tone(frequency: 440, seconds: 0.1, sampleRate: 8000)
+    #expect(clip.sourceURL == nil && copy.sourceURL == url)
+    var other = copy
+    other.frames = other.frames * 0.5
+    #expect(other.sourceURL == nil)
+}

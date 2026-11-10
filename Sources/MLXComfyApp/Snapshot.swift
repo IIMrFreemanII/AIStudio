@@ -1,8 +1,11 @@
 import AppKit
 import GraphRuntime
 import ImageIO
+import MLX
 import MLXComfyLibrary
 import MLXDiffusionCore
+import NodesRemote
+import NodesStandard
 import SwiftUI
 
 /// `MLXComfyApp --snapshot <dir>` renders the main window offscreen in a few representative states and exits.
@@ -395,6 +398,84 @@ enum Snapshot {
                      size: CGSize(width: 500, height: 360))
         model.active.backendID = BackendID.local
         for c in [studio, rented] { model.connections.remove(c.id) }
+
+        // 51. A GPU server in the Servers panel (a Modal deployment with Wan installed, FLUX not yet); 52. adding one;
+        // 53. a Cloud GPU preset with its node selected (the inspector's server picker), after a run.
+        let gpu = ServerConnection(name: "Modal", kind: .gpu, baseURL: "https://you--mlxcomfy-gpu-api.modal.run")
+        model.connections.save(gpu, token: "snapshot")
+        model.connections.save(studio, token: "snapshot")
+        model.connections.checksOnAppear = false
+        let info = try? JSONDecoder().decode(GPUServerInfo.self, from: Data("""
+            {"server":"mlxcomfy-gpu","version":"0.1.0","api":1,"runner":"modal","idleSeconds":120,"tasks":[
+             {"id":"wan22-t2v","title":"Wan 2.2 Text to Video","kind":"video","gpu":"H100","pricePerSecond":0.001097,"installed":true,"inputs":[]},
+             {"id":"wan22-i2v","title":"Wan 2.2 Image to Video","kind":"video","gpu":"H100","pricePerSecond":0.001097,"installed":true,"inputs":["image"]},
+             {"id":"flux1-dev","title":"FLUX.1 dev","kind":"image","gpu":"L40S","pricePerSecond":0.000542,"installed":false,"inputs":[]},
+             {"id":"ace-step-xl","title":"ACE-Step 1.5 XL music","kind":"audio","gpu":"L40S","pricePerSecond":0.000542,"installed":true,"inputs":[]},
+             {"id":"stable-audio-3","title":"Stable Audio 3 sound","kind":"audio","gpu":"L40S","pricePerSecond":0.000542,"installed":true,"inputs":[]},
+             {"id":"qwen3-tts","title":"Qwen3-TTS speech","kind":"audio","gpu":"L40S","pricePerSecond":0.000542,"installed":true,"inputs":[],"optionalInputs":["reference"]},
+             {"id":"test-video","title":"Test pattern video","kind":"video","gpu":"CPU","pricePerSecond":null,"installed":true,"inputs":[]}]}
+            """.utf8))
+        if let info { model.connections.status[gpu.id] = .gpuOnline(info) }
+        await model.connections.test(studio.id)
+        panel(.servers)
+        await render(model, to: dir.appendingPathComponent("51-gpu-server.png"))
+        await render(sheet(ServerEditor(connection: ServerConnection(name: "", kind: .gpu, baseURL: "https://")).environment(model)),
+                     to: dir.appendingPathComponent("52-gpu-server-editor.png"), size: CGSize(width: 500, height: 420))
+        if let preset = model.preset(id: "cloud-wan-t2v") {
+            let doc = model.openPreset(preset)
+            doc.nodeStates = ["cloud": .done(seconds: 61.4, peakMemory: nil), "save": .done(seconds: 0.2, peakMemory: nil)]
+            doc.nodeStatus = ["cloud": "GPU 23.5 s + 48 s loading · ≈ $0.078"]
+            model.selection = ["cloud"]
+            panel(nil)
+            await render(model, to: dir.appendingPathComponent("53-cloud-node.png"))
+            model.selection = []
+            model.closeTab(doc.id)
+        }
+        // 54. The Cloud GPU speech node: voice picker and the clone / design / built-in rule.
+        if let preset = model.preset(id: "cloud-speech") {
+            let doc = model.openPreset(preset)
+            doc.nodeStates = ["cloud": .done(seconds: 4.1, peakMemory: nil), "save": .done(seconds: 0.1, peakMemory: nil)]
+            doc.nodeStatus = ["cloud": "GPU 3.2 s · ≈ $0.0017"]
+            model.selection = ["cloud"]
+            panel(nil)
+            await render(model, to: dir.appendingPathComponent("54-cloud-speech.png"))
+            model.selection = []
+            model.closeTab(doc.id)
+        }
+        // 55. A LoRA from the library, picked in the Cloud GPU LoRA node (a throwaway library, no network).
+        if model.store == nil { model.store = Self.store }
+        if let preset = model.preset(id: "cloud-flux-lora"), let lib = model.store?.library {
+            let savedModels = ModelPaths.directory
+            ModelPaths.directory = FileManager.default.temporaryDirectory.appendingPathComponent("snapshot-library-\(UUID().uuidString)")
+            let thumbDir = ModelPaths.directory.appendingPathComponent("library/thumbs")
+            try? FileManager.default.createDirectory(at: thumbDir, withIntermediateDirectories: true)
+            try? ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.85, 0.55, 0.35, 1.0] as [Float]),
+                                    to: thumbDir.appendingPathComponent("hands.png"))
+            try? Library.save([LibraryEntry(
+                id: "hands", kind: .lora, family: "flux.1", title: "Hands XL · Hand F1D v2.0",
+                link: "https://civitai.com/models/200255?modelVersionId=804967", source: nil, fileName: "Hand v2.safetensors",
+                sha256: nil, bytes: 343_805_376, baseModel: "Flux.1 D", triggerWords: ["Detailed hand", "Hand", "Perfect hand"],
+                thumbnail: "library/thumbs/hands.png", localFile: nil)])
+            lib.reload()
+            let doc = model.openPreset(preset)
+            model.setLiteral(.string("hands"), node: "lora1", input: "lora", undoManager: nil)
+            model.selection = ["lora1"]
+            panel(nil)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            await render(model, to: dir.appendingPathComponent("55-lora-library.png"))
+            model.selection = []
+            model.closeTab(doc.id)
+            // 56. The Models window with that LoRA in its LoRAs section.
+            if let st = model.store {
+                await render(ModelManagerView().mgWindow("Models").environment(model).environment(st),
+                             to: dir.appendingPathComponent("56-models-loras.png"), size: CGSize(width: 760, height: 1400))
+            }
+            try? FileManager.default.removeItem(at: ModelPaths.directory)
+            ModelPaths.directory = savedModels
+            lib.reload()
+        }
+        model.connections.checksOnAppear = true
+        for c in [gpu, studio] { model.connections.remove(c.id) }
     }
 
     static let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]

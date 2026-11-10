@@ -35,6 +35,8 @@ public struct WireEvent: Equatable, Sendable {
         case preview = 10
         /// The run could not start or failed outside a node. Payload: UTF-8 message.
         case runFailed = 11
+        /// What a node is doing besides stepping ("Starting GPU 0:41"). Payload: UTF-8; empty clears it.
+        case nodeStatus = 12
         /// Dashboard: one sample per metric. Payload: time f64, then `MetricID.allCases.count` × f32.
         case metrics = 20
         /// Dashboard: the whole ring buffer. Payload: see ``MetricsHistory``.

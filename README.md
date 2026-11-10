@@ -89,7 +89,8 @@ The menu bar, the traffic lights, Finder's panels, the Dock menu and system prom
 - **Inpainting:** only the masked area is regenerated. Masks painted in the mask editor are saved in `input/masks`. **Feather** (on the Feather Mask node) softens the edge so the change blends in; pixels outside the feathered edge stay identical to the original.
 - **Outpainting:** grows the reference image's canvas (set the pixels per side on the Pad Image node); the new border is generated to match.
 - **Hi-res fix:** upscales the result and refines it with a second pass at low denoise, for example 1024² → 1536².
-- **LoRA:** a `LoRA` node applies a `.safetensors` LoRA to the model, with a strength. Several stack in order. It works with Qwen-Image and FLUX.1 [dev] (kohya, diffusers/PEFT and ai-toolkit files).
+- **Fine-tunes from links:** **Models window › Models from Links › Add from Link…** takes a FLUX.1 dev, Qwen-Image 2.1, Qwen-Image or Wan 2.2 fine-tune: a Civitai checkpoint page or a Hugging Face file or diffusers repo. On this Mac (FLUX.1 dev, Qwen-Image 2.1 and Wan 2.2) it's downloaded and converted by `ModelImport` (BFL / ComfyUI / diffusers names; fp8, bf16 or fp16; GGUF and NF4 refused) to an 8-bit transformer in `<models>/<id>` (about 12 GB for FLUX; Wan's experts quantized like the installed base's), which links the base model's text encoders and VAE (so the base model must be installed). A Wan 2.2 fine-tune comes as a high-noise and a low-noise file (one Civitai version with both, two "High" / "Low" versions, or a diffusers repo); one expert alone keeps the base's other. It then shows in the Load Model menu as *<name> (fine-tune)*, or use the row's **Use in This Workflow**. The same entry can install on your GPU server for the cloud FLUX node, and fine-tunes of the original 20B Qwen-Image install there for the cloud Qwen-Image node (see docs/remote-server.md).
+- **LoRA:** a `LoRA` node applies a LoRA to the model, with a strength. Several stack in order. It works with Qwen-Image, FLUX.1 [dev] and Wan 2.2 (kohya, diffusers/PEFT and ai-toolkit files). Wan 2.2 LoRAs usually come as a high-noise and a low-noise file: a Civitai version with both, "High" / "Low" versions of one model, or a Hugging Face repo with the two files becomes one library entry, and each file goes to its expert; a single file goes to both experts, or to the one its name says. They stack with the Lightning LoRAs in fast mode. LoRAs come from the library: **Models window › LoRAs › Add from Link…** takes a Civitai model page or a Hugging Face file or repo link, previews it (image, base model, size, trigger words, whether it can be downloaded), and installs it on this Mac (`<models>/loras`, checked against the site's SHA-256), on your GPU servers, or both; **Add File…** adds one from disk. The node's menu lists the LoRAs that fit the graph's model (and can add more); its inspector card shows the trigger words (Copy, Add to Prompt). A LoRA not on this Mac yet downloads on first run, with progress on the node. The library is `<models>/library.json`, so the CLI and a Mac server find the same LoRAs; `path` still works for older graphs. Most Civitai files need your API key: Models window › Civitai API Key (kept in the Keychain; `CIVITAI_TOKEN` for the CLI and a Mac server). Gated Hugging Face repos use the Hugging Face token.
 - **FLUX.1 [dev]:** runs 28 steps by default with distilled guidance 3.5 (the Sampler's `guidance`; 0 = the model's default). It has no reference editing, so a reference image is redrawn **image to image** at the Sampler's `denoise`, scaled to about 1 MP. On an M4 Max a 1024² image takes about 3 min 20 s (7 s per step), peaking at about 20 GB; 512² with 8 steps takes about 18 s.
 - **Models** (⇧⌘M): lists the models the app supports, with size and license, and downloads them from Hugging Face when you click Download and accept the license. Downloads resume if interrupted and are checked against their SHA-256. Gated models need a Hugging Face token, which is kept in the Keychain and read only when a gated download starts (at most once per launch). You can also add a folder you downloaded yourself. Models are stored in `~/Library/Application Support/MLXComfyUI/models` (changeable in the window). A model path in a graph or a `--model` option that doesn't exist as given, such as the examples' `qwen-turbo-mlx`, is looked up by name in that folder.
 - **Memory:** models load on first use and stay in memory while they fit. When a new model doesn't fit the budget (80% of RAM by default; change it in Settings), the least recently used one is unloaded first, never one the running job uses. Click the toolbar memory gauge to see loaded models and unload one.
@@ -216,9 +217,28 @@ mlxcomfy-cli bench-remote https://studio.tail1234.ts.net --token-file token.txt
 The app needs https for Tailscale addresses (macOS blocks plain http from apps to `100.x` and `*.ts.net`);
 `scripts/bootstrap-mac-server.sh --tailscale` sets all of this up as a login service.
 
+### Cloud GPU nodes (pay per second)
+
+For models your Mac is slow at, **Cloud GPU** nodes (*Wan 2.2 Text to Video*, *Wan 2.2 Image to Video*, *FLUX.1 dev*,
+*Qwen-Image* (the original 20B), *ACE-Step 1.5 XL Music*, *Stable Audio 3 Sound*, *Qwen3-TTS Speech* with voice
+cloning; cloud FLUX and Qwen-Image take up to four of your own LoRAs through *LoRA (Cloud GPU)* nodes, and fine-tunes
+from the library) send single jobs to the app's
+own GPU server (`server/gpu`: Python, on NVIDIA hardware), and return ordinary images, videos and audio for the local
+nodes after them. On [Modal](https://modal.com) the GPUs start per job
+and stop when idle, so you pay for GPU seconds only; each node shows its status (*Starting GPU 0:41*, steps, live
+previews) and, when done, the GPU time and estimated cost. Videos are saved exactly as the server encoded them.
+
+```bash
+modal run server/gpu/modal_download.py --models wan22,flux,audio   # once: weights into a Modal Volume
+modal deploy server/gpu/modal_app.py                               # then add the URL in Servers › + › GPU server
+```
+
+The same server runs on a GPU box you rent by the hour (`scripts/bootstrap-gpu-server.sh mlxcomfy-gpu`), or locally
+for tests (`python -m mlxcomfy_gpu serve`; on a Mac it uses Metal).
+
 [docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that
 bill only for GPU seconds), networking with Tailscale or an SSH tunnel, the bootstrap scripts, getting models onto the
-server, the dashboard, and troubleshooting.
+server, the dashboard, Modal setup and costs, and troubleshooting.
 
 ## Graphs
 
@@ -294,6 +314,8 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `GraphEditor/`: the node editor; `TabStrip`, `SidebarRail` (Workflows, Presets, Assets, Queue, Node Library), `QueuePanel` (with the Output list), `Assets.swift` (imports and drops), `ResultsPane` (with the viewer), `PresetGallery`, the inspector (`InspectorView`, `NodeExtras`) and `AddToWorkflow` (the chains in `SimpleChains.swift`).
 - `Sources/MLXComfyProtocol`: the remote protocol shared by the server, the app and the tests: 20-byte binary event records (`WireEvent`), JSON control messages, metrics ring buffers, `GraphTransport` (rewrites a graph's files for a server, content-addressed uploads) and `RemoteClient` (URLSession and WebSocket client with resumable transfers and reconnect).
 - `Sources/MLXComfyServer`: `mlxcomfy-cli serve` on Hummingbird: the run queue (`Scheduler`), event fan-out with per-client coalescing and latest-wins previews (`Hub`), uploads (`FileStore`), auth and the path sandbox, and the web dashboard (built from `web/dashboard`, Svelte 5 + uPlot, by `scripts/build-dashboard.sh`).
+- `Sources/NodesRemote`: the Cloud GPU nodes and their client of the GPU server's job API (uploads, a WebSocket of the same binary event records as the Mac server, cancel, result download).
+- `server/gpu`: the GPU server (Python): a FastAPI front desk and workers for Wan 2.2, FLUX.1 dev and Qwen-Image (diffusers), ACE-Step 1.5 XL, Stable Audio 3 and Qwen3-TTS; `modal_app.py` deploys it to Modal, `Dockerfile` to a GPU box; tests with `pytest` (CPU test tasks and tiny random-weight models).
 - `Sources/mlxcomfy-cli`: the command line front end (including `serve`, `download` and `bench-remote`).
 
 The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transformer_qwenimage21.py` and `autoencoder_kl_qwenimage21.py`.

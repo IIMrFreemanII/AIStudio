@@ -1,5 +1,6 @@
 import GraphRuntime
 import MLXComfyLibrary
+import NodesRemote
 import SwiftUI
 
 // The app's colour-coded things on the design system's palette hues: one hue per data type (sockets and wires),
@@ -16,6 +17,7 @@ extension SocketType {
         case .string: return MG.hueMint
         case .video: return MG.hueRed
         case .audio: return MG.hueTeal
+        case .cloudLoRAs: return MG.huePurple  // LoRAs, like the model they change
         default: return MG.hueGray
         }
     }

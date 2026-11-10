@@ -1,0 +1,30 @@
+[project]
+name = "mlxcomfy-gpu"
+version = "0.1.0"
+description = "MLXComfyUI's GPU server: video, image, music, sound and speech jobs, on Modal or any machine"
+requires-python = ">=3.11"
+dependencies = ["fastapi==0.162.2", "uvicorn==0.54.0", "websockets", "httpx==0.28.1", "numpy", "pillow",
+                "imageio-ffmpeg"]
+
+[project.optional-dependencies]
+# The model workers (not needed for the front desk or the CPU test tasks).
+models = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "accelerate==1.15.0", "peft==0.21.2",
+          "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
+# Music (ACE-Step 1.5) and speech (Qwen3-TTS) pin older transformers than `models`: install each in its own
+# environment. ACE-Step itself is not on PyPI: clone github.com/ace-step/ACE-Step-1.5 (the commit in modal_app.py)
+# and put it on PYTHONPATH.
+music = ["torch==2.10.0", "torchaudio==2.10.0", "transformers==4.57.6", "diffusers==0.37.1", "accelerate==1.12.0",
+         "vector-quantize-pytorch==1.27.20", "torchao==0.15.0", "numba==0.63.1", "scipy", "soundfile", "loguru",
+         "einops", "peft==0.18.1", "modelscope", "xxhash", "pytorch-wavelets", "pywavelets", "toml", "diskcache",
+         "pyyaml", "tqdm", "huggingface_hub"]
+speech = ["torch==2.10.0", "torchaudio==2.10.0", "transformers==4.57.3", "accelerate==1.12.0", "qwen-tts==0.1.1",
+          "librosa", "soundfile", "huggingface_hub"]
+modal = ["modal==1.6.3"]
+dev = ["pytest", "httpx"]
+
+[tool.setuptools]
+packages = ["mlxcomfy_gpu", "mlxcomfy_gpu.tasks"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning"]

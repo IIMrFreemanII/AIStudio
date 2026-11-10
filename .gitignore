@@ -22,3 +22,8 @@ examples/girl.png
 
 # graphify knowledge graph output
 graphify-out/
+
+# Python (server/gpu)
+__pycache__/
+*.pyc
+.pytest_cache/

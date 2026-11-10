@@ -18,14 +18,18 @@ public struct AudioClip: @unchecked Sendable {
 
 /// Video frames `[T, H, W, 3]`, float32 in `[0, 1]`, with an optional soundtrack.
 public struct VideoClip: @unchecked Sendable {
-    public var frames: MLXArray
-    public var fps: Double
-    public var audio: AudioClip?
+    public var frames: MLXArray { didSet { sourceURL = nil } }
+    public var fps: Double { didSet { sourceURL = nil } }
+    public var audio: AudioClip? { didSet { sourceURL = nil } }
+    /// The encoded file these frames were read from, while they are unchanged (a remote node's download). Saving
+    /// copies this file instead of encoding the frames again; any change to the clip forgets it.
+    public private(set) var sourceURL: URL?
 
-    public init(frames: MLXArray, fps: Double, audio: AudioClip? = nil) {
+    public init(frames: MLXArray, fps: Double, audio: AudioClip? = nil, sourceURL: URL? = nil) {
         self.frames = frames
         self.fps = fps
         self.audio = audio
+        self.sourceURL = sourceURL
     }
 
     public var frameCount: Int { frames.dim(0) }

@@ -1,0 +1,45 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "prompt" : "A red fox trotting through fresh snow at sunrise, its breath steaming"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteWanTextToVideo"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "video",
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-wan-t2v",
+  "modelName" : "Wan 2.2 A14B on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Wan 2.2 Text to Video · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 130,
+  "summary" : "Wan 2.2 clips on an NVIDIA GPU, billed per second on Modal.",
+  "symbol" : "cloud"
+}

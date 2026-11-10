@@ -251,6 +251,14 @@ public protocol VideoDiffusionModel: VideoModel {
     func decodeVideo(_ latent: VideoLatent) throws -> VideoClip
 }
 
+/// A video model that takes LoRAs. Wan 2.2 A14B has two experts (high-noise and low-noise transformers): a LoRA
+/// file can be for both, for one (`expert` `high` / `low`), or come as a pair (`companion`: the low-noise file).
+public protocol LoRAVideoModel: VideoDiffusionModel {
+    /// A model that shares this one's weights with the LoRA on top (stackable).
+    func applyingLoRA(_ lora: URL, companion: URL?, expert: String?, strength: Float) throws
+        -> (model: GenerativeModel, report: LoRAReport)
+}
+
 /// `fast`: the model's distilled few-step mode (its default); `full`: the original many-step sampler with guidance.
 public enum VideoQuality: String, Sendable, CaseIterable {
     case fast, full

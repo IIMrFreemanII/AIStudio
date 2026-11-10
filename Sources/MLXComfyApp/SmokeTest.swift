@@ -367,6 +367,167 @@ extension SmokeTest {
     /// `--smoke-flux`: the Image mode with FLUX.1 [dev] (512², 8 steps): switch model (Qwen evicted), apply a synthetic
     /// no-op LoRA in kohya's fused layout through the LoRA section, generate, then redraw the result image-to-image
     /// (at about 1 MP), and switch back to Qwen (image-to-image chain removed, reference editing again).
+    /// `--smoke-library-model <link> [--family qwen-image-2.1] [--expect-same]`: a fine-tune from a link (FLUX.1 dev by
+    /// default), through the library: Add (This Mac) → download → convert → a picture with it and with the base
+    /// model, same seed. Uses a throwaway models folder that links your installed base model (never modified); the
+    /// pictures are kept in it for a look, the rest removed. `--expect-same`: the link is the base model's own
+    /// transformer, so the pictures should match (a check of the conversion itself).
+    static func runLibraryModel(_ model: AppModel, link: String) async -> Bool {
+        func say(_ s: String) { print("[smoke-library] \(s)"); fflush(stdout) }
+        guard let lib = model.store?.library else { say("no library"); return false }
+        let family = argument("--family") ?? "flux.1"
+        let expectSame = CommandLine.arguments.contains("--expect-same")
+        guard let baseName = LinkLibrary.macModelBases[family] else { say("no Mac base for \(family)"); return false }
+        let real = ModelPaths.directory
+        let base = real.appendingPathComponent(baseName)
+        guard ModelStore.isComplete(base), ModelRegistry.className(at: base) != nil else {
+            say("no \(LoRASources.familyName(family)) at \(base.path)"); return false
+        }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-library-model")
+        try? FileManager.default.removeItem(at: tmp)
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: tmp.appendingPathComponent(baseName), withDestinationURL: base)
+        ModelPaths.directory = tmp
+        lib.reload()
+        defer { ModelPaths.directory = real; lib.reload() }
+
+        guard let remote = try? await LoRASources.resolve(link, fits: LoRASources.civitaiBaseModels(for: family)) else {
+            say("couldn't resolve \(link)"); return false
+        }
+        say("resolved: \(remote.kind) \(remote.fileName) \(remote.bytes.map { String(format: "%.1f GB", Double($0) / 1e9) } ?? "?")")
+        let began = Date()
+        let id = lib.add(remote, link: link, title: "Smoke fine-tune", family: family, mac: true, servers: [])
+        var last = ""
+        while true {
+            guard let item = lib.item(id) else { say("entry vanished"); return false }
+            let state = lib.macState(item)
+            let line = "\(state)"
+            if line != last && (!line.contains("Downloading") || Int(Date().timeIntervalSince(began)) % 30 == 0) {
+                say(String(format: "[%4.0fs] %@", Date().timeIntervalSince(began), line)); last = line
+            }
+            if state == .installed { break }
+            if case .failed(let why) = state { say("install failed: \(why)"); return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        guard let folder = lib.item(id).flatMap({ Library.localURL($0, models: tmp) }) else { say("no folder"); return false }
+        say(String(format: "installed in %.0fs: %@ (%@)", Date().timeIntervalSince(began), folder.path,
+                   ModelRegistry.className(at: folder) ?? "?"))
+        let inMenu = lib.macModels().contains { $0.url.standardizedFileURL == folder.standardizedFileURL }
+
+        func render(_ path: String) async -> URL? {
+            model.setImageModel(path: path, undoManager: nil)
+            guard let latent = model.firstNode(ofType: "EmptyLatent"), let sampler = model.firstNode(ofType: "Sampler"),
+                  let te = model.firstNode(ofType: "TextEncode") else { say("image graph not set up"); return nil }
+            model.mutate("Smoke", undoManager: nil) { g in
+                try? g.setValue(.int(768), node: latent.id, input: "width")
+                try? g.setValue(.int(768), node: latent.id, input: "height")
+                if family == "flux.1" { try? g.setValue(.int(20), node: sampler.id, input: "steps") }
+                try? g.setValue(.int(42), node: sampler.id, input: "seed")
+                try? g.setValue(.string("portrait photo of a woman with freckles by a window, soft daylight"), node: te.id, input: "prompt")
+            }
+            model.randomizeSeed = false
+            let t0 = Date()
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { say("nothing queued: \(model.lastError ?? "?")"); return nil }
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard case .done? = model.queue.first(where: { $0.id == item.id })?.status,
+                  let url = model.history.first(where: { $0.kind == .image })?.url else {
+                say("render failed: \(model.lastError ?? "?")"); return nil
+            }
+            let keep = tmp.appendingPathComponent((path as NSString).lastPathComponent + ".png")
+            try? FileManager.default.removeItem(at: keep)
+            try? FileManager.default.copyItem(at: url, to: keep)
+            say(String(format: "%@: %.0fs → %@", (path as NSString).lastPathComponent, Date().timeIntervalSince(t0), keep.path))
+            return keep
+        }
+        guard let tuned = await render(folder.path), let plain = await render(base.path) else { return false }
+        let a = (try? ImageArray.load(tuned)).map { ImageArray.array(from: $0) }, b = (try? ImageArray.load(plain)).map { ImageArray.array(from: $0) }
+        let diff = (a != nil && b != nil) ? abs(a! - b!).mean().item(Float.self) : 0
+        say(String(format: "mean difference fine-tune vs base: %.4f (%@); in the Load Model menu: %@", diff,
+                   expectSame ? "should be tiny" : "should differ", inMenu ? "yes" : "no"))
+        lib.removeFromMac(id)
+        let removed = !FileManager.default.fileExists(atPath: folder.path)
+        lib.remove(id)
+        say("removed from this Mac: \(removed); base untouched: \(ModelStore.isComplete(base))")
+        return (expectSame ? diff < 0.02 : diff > 0.01) && inMenu && removed && ModelStore.isComplete(base)
+    }
+
+    /// `--smoke-wan-lora <link>`: a Wan 2.2 LoRA (a high/low pair or one file) from a link, through the library onto
+    /// this Mac, then the Wan text-to-video preset at a small size with and without it (same seed), added with Add to
+    /// Workflow › LoRA. A throwaway models folder links your installed Wan 2.2 T2V; the clips are kept in it.
+    static func runWanLoRA(_ model: AppModel, link: String) async -> Bool {
+        func say(_ s: String) { print("[smoke-wan-lora] \(s)"); fflush(stdout) }
+        guard let lib = model.store?.library, let preset = model.preset(id: "wan-t2v") else { say("no library or preset"); return false }
+        let real = ModelPaths.directory
+        let base = real.appendingPathComponent("wan-2.2-t2v")
+        guard ModelRegistry.className(at: base) == "WanPipeline" else { say("no Wan 2.2 T2V at \(base.path)"); return false }
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-wan-lora")
+        try? FileManager.default.removeItem(at: tmp)
+        try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: tmp.appendingPathComponent("wan-2.2-t2v"), withDestinationURL: base)
+        ModelPaths.directory = tmp
+        lib.reload()
+        defer { ModelPaths.directory = real; lib.reload() }
+
+        guard let remote = try? await LoRASources.resolve(link, fits: LoRASources.civitaiBaseModels(for: "wan-2.2-t2v")) else {
+            say("couldn't resolve \(link)"); return false
+        }
+        say("resolved: \(remote.fileName) + \(remote.companion?.fileName ?? "-") (expert \(remote.expert ?? "both"))")
+        let id = lib.add(remote, link: link, title: "Smoke Wan LoRA", family: "wan-2.2-t2v", mac: true, servers: [])
+        let began = Date()
+        while true {
+            guard let item = lib.item(id) else { return false }
+            let state = lib.macState(item)
+            if state == .installed { break }
+            if case .failed(let why) = state { say("install failed: \(why)"); return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        let pairOnDisk = lib.item(id).flatMap { Library.companionURL($0, models: tmp) } != nil
+        say(String(format: "installed in %.0fs; the pair's second file on disk: %@", Date().timeIntervalSince(began),
+                   pairOnDisk ? "yes" : "no"))
+
+        let doc = model.openPreset(preset)
+        model.mutate("Smoke", undoManager: nil) { g in
+            try? g.setValue(.int(480), node: "latent", input: "width")
+            try? g.setValue(.int(272), node: "latent", input: "height")
+            try? g.setValue(.double(1), node: "latent", input: "seconds")
+            try? g.setValue(.int(7), node: "sampler", input: "seed")
+        }
+        model.randomizeSeed = false
+        func render(_ name: String) async -> URL? {
+            let t0 = Date()
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { return nil }
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard case .done? = model.queue.first(where: { $0.id == item.id })?.status, let url = doc.nodeResults["save"]?.url else {
+                say("\(name) failed: \(model.lastError ?? "?")"); return nil
+            }
+            let keep = tmp.appendingPathComponent("\(name).mp4")
+            try? FileManager.default.copyItem(at: url, to: keep)
+            say(String(format: "%@: %.0fs → %@", name, Date().timeIntervalSince(t0), keep.path))
+            return keep
+        }
+        guard let plain = await render("without-lora") else { return false }
+        guard model.canAdd(.lora) else { say("Add to Workflow › LoRA unavailable on the Wan graph"); return false }
+        model.add(.lora)
+        let node = model.selection.first ?? ""
+        model.setLiteral(.string(id), node: node, input: "lora", undoManager: nil)
+        guard let tuned = await render("with-lora") else { return false }
+        let report = doc.nodeStatus[node] ?? ""
+        let a = try? await MediaIO.readVideo(plain), b = try? await MediaIO.readVideo(tuned)
+        let diff = (a != nil && b != nil) ? abs(a!.frames - b!.frames).mean().item(Float.self) : 0
+        say(String(format: "mean difference with vs without: %.3f; LoRA node: %@", diff, report))
+        lib.remove(id)
+        model.closeTab(doc.id)
+        return pairOnDisk == (remote.companion != nil) && diff > 0.01
+    }
+
     static func runFlux(_ model: AppModel) async -> Bool {
         func say(_ s: String) { print("[smoke] \(s)"); fflush(stdout) }
         let flux = ModelStore().modelsDirectory.appendingPathComponent("flux-1-dev")
@@ -1003,5 +1164,281 @@ extension SmokeTest {
         var m = 0
         for i in 0..<p1.count { m = max(m, abs(Int(p1[i]) - Int(p2[i]))) }
         return m
+    }
+}
+
+// MARK: Cloud GPU (M22)
+
+extension Optional {
+    func asyncMap<T>(_ f: (Wrapped) async -> T?) async -> T? {
+        guard let v = self else { return nil }
+        return await f(v)
+    }
+}
+
+extension SmokeTest {
+    /// The fake GPU server's marks on a clip's middle frame: the top two 8-pixel bands' brightness, the right band's.
+    static func frameMarks(_ url: URL) async -> (top: Float, second: Float, right: Float)? {
+        guard let clip = try? await MediaIO.readVideo(url) else { return nil }
+        let f = clip.frames[clip.frames.dim(0) / 2]  // [H, W, C] in 0…1
+        let w = f.dim(1)
+        return (f[2..<6, 16..<(w - 16), ..<3].mean().item(Float.self), f[10..<14, 16..<(w - 16), ..<3].mean().item(Float.self),
+                f[24..., (w - 6)..<(w - 2), ..<3].mean().item(Float.self))
+    }
+
+    /// `--smoke-gpu <url> --smoke-token-file <file>`: adds a GPU server, then runs the three Cloud GPU presets through
+    /// the queue (small sizes) and checks status lines, steps, previews, the cost line and the saved files.
+    /// Against `python -m mlxcomfy_gpu serve` with `MLXCOMFY_FAKE_MODELS=1` it needs no GPU.
+    static func runGPU(_ model: AppModel, url: String) async -> Bool {
+        func say(_ s: String) { print("[smoke-gpu] \(s)"); fflush(stdout) }
+        guard let tokenPath = argument("--smoke-token-file"),
+              let token = try? String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        else { say("needs --smoke-token-file"); return false }
+        guard let flux = model.preset(id: "cloud-flux") else { say("no cloud presets"); return false }
+        if model.presetAvailable(flux, installed: model.installedModelIDs) { say("preset available without a server"); return false }
+        let conn = ServerConnection(name: "Smoke GPU", kind: .gpu, baseURL: url)
+        model.connections.save(conn, token: token)
+        await model.connections.test(conn.id)
+        guard case .gpuOnline(let info)? = model.connections.status[conn.id] else {
+            say("server not reachable: \(model.connections.status[conn.id].map { "\($0)" } ?? "?")"); return false
+        }
+        say("GPU server \(info.version) (\(info.runner)): \(info.tasks.filter(\.installed).map(\.id).joined(separator: ", "))")
+        guard model.presetAvailable(flux, installed: model.installedModelIDs) else { say("preset still greyed"); return false }
+
+        // A start image for image-to-video.
+        let start = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gpu-start.png")
+        try? ImageArray.savePNG(MLXArray.ones([64, 96, 4]) * MLXArray([0.2, 0.5, 0.9, 1.0] as [Float]), to: start)
+        var ok = true
+        // Two LoRA files for the LoRA preset (the fake server marks the image's top row with their count / 4).
+        let loras = (1...2).map { FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gpu-lora\($0).safetensors") }
+        for (i, url) in loras.enumerated() { try? Data(repeating: UInt8(i + 1), count: 1 << 20).write(to: url) }
+        for (id, video) in [("cloud-flux", false), ("cloud-flux-lora", false), ("cloud-qwen-image", false),
+                            ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
+            guard let p = model.preset(id: id) else { say("\(id): missing"); ok = false; continue }
+            let doc = model.openPreset(p)
+            model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
+            model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+            if video { model.setLiteral(.int(9), node: "cloud", input: "length", undoManager: nil) }
+            if id == "cloud-wan-i2v" { model.setLiteral(.string(start.path), node: "first_frame", input: "path", undoManager: nil) }
+            if id == "cloud-flux-lora" {
+                model.setLiteral(.string(loras[0].path), node: "lora1", input: "path", undoManager: nil)
+                guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
+                model.addCloudLoRA(loras[1], strength: 0.7, undoManager: nil)
+            }
+            if id == "cloud-qwen-image" {  // a LoRA chain on the Qwen-Image node, from Add to Workflow
+                guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
+                model.addCloudLoRA(loras[0], undoManager: nil)
+            }
+            let previews = model.previewCount
+            let began = Date()
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { ok = false; continue }
+            var statuses: Set<String> = []
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                if let s = doc.nodeStatus["cloud"] { statuses.insert(s) }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let finished = model.queue.first { $0.id == item.id }
+            guard case .done? = finished?.status, let result = doc.nodeResults["save"]?.url else {
+                say("\(id): \(finished.map { "\($0.status)" } ?? "?") \(model.lastError ?? "")"); ok = false; continue
+            }
+            let cost = doc.nodeStatus["cloud"] ?? ""
+            let embedded = video ? await MediaIO.readMetadata(result)["mlxcomfy.graph"] : AppModel.embeddedGraph(in: result).map { _ in "png" }
+            var loraOK = true
+            if id == "cloud-flux-lora" || id == "cloud-qwen-image" {
+                let count: Float = id == "cloud-flux-lora" ? 2 : 1
+                let image = (try? ImageArray.load(result)).map { ImageArray.array(from: $0) }
+                let top = image.map { abs($0[0, 0..., ..<3] - count / 4).max().item(Float.self) } ?? 1
+                loraOK = model.cloudLoRAs.map(\.id) == (count == 2 ? ["lora1", "lora2"] : ["lora1"]) && top < 0.01
+                say("\(id): LoRAs \(model.cloudLoRAs.map(\.id)), top row off by \(top)")
+            }
+            let good = cost.hasPrefix("GPU ") && model.previewCount > previews && statuses.contains("Sampling")
+                && embedded != nil && model.history.contains { $0.url == result } && loraOK
+            say(String(format: "%@: %.1fs → %@; statuses %@; final \"%@\"; %d previews; %@", id, Date().timeIntervalSince(began),
+                       result.lastPathComponent, statuses.sorted().joined(separator: " | "), cost,
+                       model.previewCount - previews, good ? "ok" : "MISSING SOMETHING"))
+            ok = ok && good
+            model.closeTab(doc.id)
+        }
+
+        // `--smoke-lora-link <url>`: a LoRA added to the library from a link (a file on a local server the GPU
+        // server may fetch from), picked in a node added with Add to Workflow › LoRA, next to an uploaded file: the
+        // server downloads it itself. The library lives in a throwaway models folder for the test.
+        if let link = argument("--smoke-lora-link"), let host = URL(string: link)?.host,
+           let p = model.preset(id: "cloud-flux-lora"), let lib = model.store?.library,
+           let remote = await { () async -> LoRARemote? in
+               LoRASources.directHosts = [host]
+               return try? await LoRASources.resolve(link)
+           }() {
+            let savedModels = ModelPaths.directory
+            ModelPaths.directory = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-library-\(UUID().uuidString)")
+            lib.reload()
+            let libID = lib.add(remote, link: link, title: "Smoke link LoRA", family: "flux.1", mac: false, servers: [])
+            let doc = model.openPreset(p)
+            model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
+            model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+            model.setLiteral(.string(loras[0].path), node: "lora1", input: "path", undoManager: nil)
+            model.add(.lora)
+            let added = model.selection.first ?? ""
+            model.setLiteral(.string(libID), node: added, input: "lora", undoManager: nil)
+            model.enqueue(undoManager: nil)
+            var statuses: [String] = []
+            if let item = model.queue.last {
+                while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                    if let s = doc.nodeStatus["cloud"], statuses.last != s { statuses.append(s) }
+                    try? await Task.sleep(nanoseconds: 10_000_000)
+                }
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let result = doc.nodeResults["save"]?.url
+            let top = result.flatMap { try? ImageArray.load($0) }.map { abs(ImageArray.array(from: $0)[0, 0..., ..<3] - 0.5).max().item(Float.self) } ?? 1
+            let good = model.cloudLoRAs.map(\.id) == ["lora1", added] && added == "lora2" && top < 0.01
+            let fits = lib.loras(for: "flux.1").map { $0.id } == [libID]
+            say("LoRA from the library (a link): node \(added), top row off by \(top); in the FLUX menu: \(fits); statuses \(statuses.joined(separator: " | ")); \(good && fits ? "ok" : "MISSING SOMETHING")")
+            ok = ok && good && fits
+            model.closeTab(doc.id)
+            lib.remove(libID)
+
+            // A Wan 2.2 LoRA pair (high- and low-noise files) from the library on the cloud Wan node: the server fetches
+            // both (the fake server marks the top row with the slot count, the second with the pairs).
+            if let wanPreset = model.preset(id: "cloud-wan-t2v") {
+                var pair = remote
+                pair.baseModel = "Wan Video 2.2 T2V-A14B"
+                pair.expert = "high"
+                let lowURL = remote.downloadURL.deletingLastPathComponent().appendingPathComponent("link-lora-low.safetensors")
+                pair.companion = LoRAFileRef(downloadURL: lowURL, fileName: "link-lora-low.safetensors", bytes: nil,
+                                             sha256: nil, cacheName: "link-lora-low.safetensors")
+                let pairID = lib.add(pair, link: link, title: "Smoke Wan pair", family: "wan-2.2-t2v", mac: false, servers: [])
+                let wdoc = model.openPreset(wanPreset)
+                model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
+                model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+                model.setLiteral(.int(9), node: "cloud", input: "length", undoManager: nil)
+                let canAdd = model.canAdd(.lora)
+                model.add(.lora)
+                let added = model.selection.first ?? ""
+                model.setLiteral(.string(pairID), node: added, input: "lora", undoManager: nil)
+                let inMenu = lib.loras(for: model.loraFamily(for: model.graph[added]!)).contains { $0.id == pairID }
+                model.enqueue(undoManager: nil)
+                if let item = model.queue.last {
+                    while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                        try? await Task.sleep(nanoseconds: 20_000_000)
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                let marks = await wdoc.nodeResults["save"].flatMap { r in r.url }.asyncMap(frameMarks)
+                let good = canAdd && inMenu && marks.map { abs($0.top - 0.25) < 0.08 && abs($0.second - 0.25) < 0.08 } == true
+                say("Wan LoRA pair from the library: rows \(marks.map { String(format: "%.2f / %.2f", $0.top, $0.second) } ?? "?") (want 0.25 / 0.25); in the menu \(inMenu); \(good ? "ok" : "MISSING SOMETHING \(model.lastError ?? "")")")
+                ok = ok && good
+                model.closeTab(wdoc.id)
+                lib.remove(pairID)
+            }
+
+            // A fine-tune from the same kind of link, installed on the server through the library (the fake server
+            // keeps the file), then picked in the cloud node's model menu: FLUX.1 dev and Qwen-Image.
+            var modelRemote = remote
+            modelRemote.kind = .model
+            for (family, presetID) in [("flux.1", "cloud-flux"), ("qwen-image", "cloud-qwen-image"),
+                                       ("wan-2.2-t2v", "cloud-wan-t2v")] {
+                guard let preset = model.preset(id: presetID) else { ok = false; continue }
+                var fineTune = modelRemote
+                if family.hasPrefix("wan") { fineTune.expert = "low" }  // one expert's file; the other stays the base's
+                let modelID = lib.add(fineTune, link: link, title: "Smoke fine-tune \(family)", family: family,
+                                      mac: false, servers: [conn.id])
+                var waited = 0
+                while lib.item(modelID).map({ lib.serverState($0, conn.id) }) != .installed && waited < 300 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    waited += 1
+                }
+                let installedOnServer = lib.item(modelID).map { lib.serverState($0, conn.id) } == .installed
+                let fdoc = model.openPreset(preset)
+                model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
+                model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+                model.setLiteral(.string(modelID), node: "cloud", input: "model", undoManager: nil)
+                model.enqueue(undoManager: nil)
+                if let item = model.queue.last {
+                    while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                        try? await Task.sleep(nanoseconds: 20_000_000)
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                var right: Float = 1
+                if let url = fdoc.nodeResults["save"]?.url {
+                    if family.hasPrefix("wan") {
+                        right = await frameMarks(url).map { 1 - $0.right } ?? 1
+                    } else if let img = try? ImageArray.load(url) {
+                        right = abs(ImageArray.array(from: img)[0..., 255, ..<3] - 1).max().item(Float.self)
+                    }
+                }
+                let modelOK = installedOnServer && right < (family.hasPrefix("wan") ? 0.08 : 0.01)
+                    && lib.models(for: family).map { $0.id } == [modelID]
+                say("\(family) fine-tune from the library: installed on the server \(installedOnServer), right column off by \(right); \(modelOK ? "ok" : "MISSING SOMETHING")")
+                ok = ok && modelOK
+                model.closeTab(fdoc.id)
+                lib.removeFromServer(modelID, conn.id)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                lib.remove(modelID)
+            }
+            try? FileManager.default.removeItem(at: ModelPaths.directory)
+            ModelPaths.directory = savedModels
+            lib.reload()
+            LoRASources.directHosts = []
+        }
+
+        // Music, sound and speech: each model's own rate and channels, the length asked for, the graph embedded.
+        let audio: [(String, [String: JSONValue], Int, Int, Double?)] = [
+            ("cloud-sound", ["seconds": .double(3)], 44100, 2, 3),
+            ("cloud-music", ["seconds": .double(10), "lyrics": .string("[Instrumental]")], 48000, 2, 10),
+            ("cloud-speech", ["text": .string("Hello from the cloud.")], 24000, 1, nil),
+        ]
+        for (id, literals, rate, channels, seconds) in audio {
+            guard let p = model.preset(id: id) else { say("\(id): missing"); ok = false; continue }
+            let doc = model.openPreset(p)
+            for (k, v) in literals { model.setLiteral(v, node: "cloud", input: k, undoManager: nil) }
+            let began = Date()
+            model.enqueue(undoManager: nil)
+            guard let item = model.queue.last else { ok = false; continue }
+            var statuses: Set<String> = []
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false {
+                if let s = doc.nodeStatus["cloud"] { statuses.insert(s) }
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let finished = model.queue.first { $0.id == item.id }
+            guard case .done? = finished?.status, let result = doc.nodeResults["save"]?.url else {
+                say("\(id): \(finished.map { "\($0.status)" } ?? "?") \(model.lastError ?? "")"); ok = false; continue
+            }
+            let clip = try? await MediaIO.readAudio(result)
+            let cost = doc.nodeStatus["cloud"] ?? ""
+            let embedded = await MediaIO.readMetadata(result)["mlxcomfy.graph"]
+            let lengthOK = clip.map { c in seconds.map { abs(c.duration - $0) < 0.1 } ?? (c.duration > 0.5) } ?? false
+            let good = clip?.sampleRate == rate && clip?.channels == channels && lengthOK && cost.hasPrefix("GPU ")
+                && embedded != nil && model.history.contains { $0.url == result }
+            say(String(format: "%@: %.1fs → %@ (%d Hz, %d ch, %.2f s); statuses %@; final \"%@\"; %@", id,
+                       Date().timeIntervalSince(began), result.lastPathComponent, clip?.sampleRate ?? 0,
+                       clip?.channels ?? 0, clip?.duration ?? 0, statuses.sorted().joined(separator: " | "), cost,
+                       good ? "ok" : "MISSING SOMETHING"))
+            ok = ok && good
+            model.closeTab(doc.id)
+        }
+
+        // A Mac-server target refuses Cloud GPU nodes with a clear message.
+        let mac = ServerConnection(name: "Smoke Mac", baseURL: "http://127.0.0.1:9")
+        model.connections.save(mac, token: "x")
+        let doc = model.openPreset(flux)
+        doc.backendID = mac.id
+        model.enqueue(undoManager: nil)
+        if let item = model.queue.last {
+            while model.queue.first(where: { $0.id == item.id })?.isFinished == false { try? await Task.sleep(nanoseconds: 50_000_000) }
+            let refused: Bool = {
+                if case .failed(let m)? = model.queue.first(where: { $0.id == item.id })?.status { return m.contains("This Mac") }
+                return false
+            }()
+            say("Mac server target refused: \(refused)")
+            ok = ok && refused
+        }
+        model.closeTab(doc.id)
+        for c in [conn, mac] { model.connections.remove(c.id) }
+        return ok
     }
 }

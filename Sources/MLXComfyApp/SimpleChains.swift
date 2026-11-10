@@ -1,5 +1,6 @@
 import Foundation
 import GraphRuntime
+import NodesRemote
 
 /// Graph rewiring behind Add to Workflow (and the built-in presets): reference image, inpainting, outpainting and
 /// the hi-res fix.
@@ -302,8 +303,11 @@ extension AppModel {
     // MARK: LoRAs
 
     /// The LoRA nodes between the model loader and the Sampler, in order from the loader.
+    /// The sampler a local LoRA chain feeds: the image Sampler, else a Wan graph's Video Sampler.
+    var loraSampler: GraphNode? { firstNode(ofType: "Sampler") ?? firstNode(ofType: "VideoSampler") }
+
     var simpleLoRAs: [GraphNode] {
-        guard let sampler = firstNode(ofType: "Sampler") else { return [] }
+        guard let sampler = loraSampler else { return [] }
         var chain: [GraphNode] = []
         var input = sampler.inputs["model"]
         while case .link(let id, _)? = input, let n = graph[id], n.type == "LoRA" {
@@ -314,8 +318,8 @@ extension AppModel {
     }
 
     /// Adds a LoRA after the last one (or after the model loader) for every Sampler that used that model.
-    func addLoRA(_ url: URL, strength: Double = 1, undoManager: UndoManager?) {
-        guard let sampler = firstNode(ofType: "Sampler"), let head = sampler.inputs["model"] else {
+    func addLoRA(_ url: URL?, strength: Double = 1, undoManager: UndoManager?) {
+        guard let sampler = loraSampler, let head = sampler.inputs["model"] else {
             lastError = "This graph has no Sampler to apply a LoRA to."; return
         }
         mutate("Add LoRA", undoManager: undoManager) { g in
@@ -324,10 +328,11 @@ extension AppModel {
             let id = "lora\(n)"
             let p = sampler.position ?? GraphPoint(x: 640, y: 120)
             g.nodes.append(GraphNode(id: id, type: "LoRA",
-                                     inputs: ["model": head, "path": .value(.string(url.path)),
+                                     inputs: ["model": head, "path": .value(.string(url?.path ?? "")),
                                               "strength": .value(.double(strength))],
                                      position: GraphPoint(x: p.x - 300 + Double(n - 1) * 40, y: p.y - 200 - Double(n - 1) * 40)))
-            for i in g.nodes.indices where g.nodes[i].type == "Sampler" && g.nodes[i].inputs["model"] == head {
+            for i in g.nodes.indices where (g.nodes[i].type == "Sampler" || g.nodes[i].type == "VideoSampler")
+                && g.nodes[i].inputs["model"] == head {
                 g.nodes[i].inputs["model"] = .link(node: id, output: "model")
             }
         }
@@ -339,6 +344,60 @@ extension AppModel {
             g.nodes.removeAll { $0.id == id }
             for i in g.nodes.indices {
                 for (k, v) in g.nodes[i].inputs { if case .link(id, _) = v { g.nodes[i].inputs[k] = node.inputs["model"] } }
+            }
+        }
+    }
+
+    // MARK: Cloud GPU LoRAs
+
+    /// The first cloud image node that takes LoRAs (FLUX.1 dev or Qwen-Image, Cloud GPU).
+    var cloudImageNode: GraphNode? {
+        graph.nodes.first { RemoteNodes.libraryFamilies[$0.type] != nil }
+    }
+
+    /// The LoRA (Cloud GPU) nodes feeding the first cloud image node, in order from the first.
+    var cloudLoRAs: [GraphNode] {
+        guard let flux = cloudImageNode else { return [] }
+        var chain: [GraphNode] = []
+        var input = flux.inputs["loras"]
+        while case .link(let id, _)? = input, let n = graph[id], n.type == "RemoteLoRA" {
+            chain.insert(n, at: 0)
+            input = n.inputs["loras"]
+        }
+        return chain
+    }
+
+    /// Adds a LoRA (Cloud GPU) node after the last one, for every cloud image node that used that chain.
+    func addCloudLoRA(_ url: URL?, strength: Double = 1, undoManager: UndoManager?) {
+        guard let flux = cloudImageNode else {
+            lastError = "This graph has no cloud image node to apply a LoRA to."; return
+        }
+        guard cloudLoRAs.count < RemoteNodes.maxFluxLoRAs else {
+            lastError = "A cloud image node takes up to \(RemoteNodes.maxFluxLoRAs) LoRAs."; return
+        }
+        let head = flux.inputs["loras"]
+        mutate("Add LoRA", undoManager: undoManager) { g in
+            var n = 1
+            while g["lora\(n)"] != nil { n += 1 }
+            let id = "lora\(n)"
+            let p = flux.position ?? GraphPoint(x: 640, y: 120)
+            var inputs: [String: NodeInput] = ["path": .value(.string(url?.path ?? "")), "strength": .value(.double(strength))]
+            if let head { inputs["loras"] = head }
+            g.nodes.append(GraphNode(id: id, type: "RemoteLoRA", inputs: inputs,
+                                     position: GraphPoint(x: p.x - 300 + Double(n - 1) * 40, y: p.y - 200 - Double(n - 1) * 40)))
+            for i in g.nodes.indices where RemoteNodes.libraryFamilies[g.nodes[i].type] != nil
+                && g.nodes[i].inputs["loras"] == head {
+                g.nodes[i].inputs["loras"] = .link(node: id, output: "loras")
+            }
+        }
+    }
+
+    func removeCloudLoRA(_ id: String, undoManager: UndoManager?) {
+        guard let node = graph[id], node.type == "RemoteLoRA" else { return }
+        mutate("Remove LoRA", undoManager: undoManager) { g in
+            g.nodes.removeAll { $0.id == id }
+            for i in g.nodes.indices {
+                for (k, v) in g.nodes[i].inputs { if case .link(id, _) = v { g.nodes[i].inputs[k] = node.inputs["loras"] } }
             }
         }
     }

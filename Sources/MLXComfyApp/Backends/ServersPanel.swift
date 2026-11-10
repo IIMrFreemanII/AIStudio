@@ -1,5 +1,6 @@
 import AppKit
 import MLXComfyProtocol
+import NodesRemote
 import SwiftUI
 
 /// Rail panel: the servers this app can send work to.
@@ -21,7 +22,7 @@ struct ServersPanel: View {
                 VStack(alignment: .leading, spacing: 10) {
                     ServerRow(name: "This Mac", detail: "Runs here with MLX", status: nil, isTarget: model.active.backendID == BackendID.local)
                         .onTapGesture { model.active.backendID = BackendID.local }
-                    ForEach(store.connections) { c in
+                    ForEach(store.macServers) { c in
                         ServerRow(name: c.name, detail: c.baseURL, status: store.status[c.id] ?? .unknown,
                                   isTarget: model.active.backendID == c.id, insecure: c.isInsecure)
                             .contentShape(Rectangle())
@@ -40,8 +41,27 @@ struct ServersPanel: View {
                                 }
                             }
                     }
-                    if store.connections.isEmpty {
-                        Text("Add a Mac running `mlxcomfy-cli serve` to run graphs there. Reach it through Tailscale or an SSH tunnel; see docs/remote-server.md.")
+                    if store.macServers.isEmpty {
+                        Text("Add a Mac running `mlxcomfy-cli serve` to run a tab's graphs there.")
+                            .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 8)
+                    }
+                    MGListHeader(title: "GPU Servers").padding(.top, 6)
+                    ForEach(store.gpuServers) { c in
+                        ServerRow(name: c.name, detail: c.baseURL, status: store.status[c.id] ?? .unknown, isTarget: false,
+                                  insecure: c.isInsecure, gpu: true)
+                            .contentShape(Rectangle())
+                            .onTapGesture(count: 2) { editing = c }
+                            .mgContextMenu {
+                                MGMenuItem.button("Check Connection") { Task { await store.test(c.id) } }
+                                MGMenuItem.button("Edit…") { editing = c }
+                                MGMenuItem.divider
+                                MGMenuItem.button("Remove", destructive: true) { store.remove(c.id) }
+                            }
+                    }
+                    if store.gpuServers.isEmpty {
+                        Text("Add a GPU server (Modal, or a GPU box) for the Cloud GPU nodes: Wan 2.2 video and FLUX.1 dev on NVIDIA, billed per second on Modal. See docs/remote-server.md.")
                             .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, 8)
@@ -52,7 +72,7 @@ struct ServersPanel: View {
             .mgScrollIndicators()
         }
         .mgSheet("server-editor", item: $editing) { c in ServerEditor(connection: c).environment(model) }
-        .task { await store.refreshAll() }
+        .task { if store.checksOnAppear { await store.refreshAll() } }
     }
 }
 
@@ -62,12 +82,18 @@ struct ServerRow: View {
     let status: ConnectionStore.Status?
     let isTarget: Bool
     var insecure = false
+    /// A GPU server: not a run target (its nodes pick it).
+    var gpu = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: isTarget ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isTarget ? MG.accent : MG.secondaryLabel)
-                .mgHelp(isTarget ? "This tab runs here" : "Click to run this tab here")
+            if gpu {
+                Image(systemName: "cpu").foregroundStyle(MG.secondaryLabel)
+            } else {
+                Image(systemName: isTarget ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isTarget ? MG.accent : MG.secondaryLabel)
+                    .mgHelp(isTarget ? "This tab runs here" : "Click to run this tab here")
+            }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(name).font(.mgCallout.weight(.medium)).lineLimit(1)
@@ -78,6 +104,8 @@ struct ServerRow: View {
                 case .online(let info)?:
                     Text("\(info.chip) · \(info.memory.total >> 30) GB · \(info.models.count) models")
                         .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                case .gpuOnline(let info)?:
+                    GPUTasksSummary(info: info)
                 case .offline(let message)?:
                     Text(message).font(.mgFootnote).foregroundStyle(MG.destructive).fixedSize(horizontal: false, vertical: true)
                 default: EmptyView()
@@ -101,7 +129,8 @@ struct StatusDot: View {
     var body: some View {
         switch status {
         case .checking: MGSpinner().controlSize(.mini)
-        case .online: Circle().fill(MG.success).frame(width: 7, height: 7).mgHelp("Online").accessibilityLabel("Online")
+        case .online, .gpuOnline:
+            Circle().fill(MG.success).frame(width: 7, height: 7).mgHelp("Online").accessibilityLabel("Online")
         case .offline: Circle().fill(MG.destructive).frame(width: 7, height: 7).mgHelp("Offline").accessibilityLabel("Offline")
         case .unknown: Circle().fill(MG.tertiaryLabel).frame(width: 7, height: 7).mgHelp("Not checked")
             .accessibilityLabel("Not checked")
@@ -109,7 +138,32 @@ struct StatusDot: View {
     }
 }
 
-/// Add / edit a server: name, URL and token, with a connection test.
+/// A GPU server's tasks: which models are installed, on which GPU, at what price.
+struct GPUTasksSummary: View {
+    let info: GPUServerInfo
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(info.tasks.filter { $0.gpu != "CPU" }) { t in
+                HStack(spacing: 4) {
+                    Image(systemName: t.installed ? "checkmark" : "arrow.down.circle")
+                        .foregroundStyle(t.installed ? MG.success : MG.secondaryLabel)
+                        .mgHelp(t.installed ? "Installed" : "Not downloaded on the server yet")
+                    Text(t.title).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(t.gpu + (t.pricePerSecond.map { String(format: " · $%.2f/h", $0 * 3600) } ?? ""))
+                        .foregroundStyle(MG.secondaryLabel)
+                }
+            }
+            Text(info.runner == "modal" ? "Modal: billed per second, idle after \(info.idleSeconds ?? 120) s"
+                 : "GPU box (\(info.runner))")
+                .foregroundStyle(MG.tertiaryLabel)
+        }
+        .font(.mgFootnote)
+    }
+}
+
+/// Add / edit a server: kind, name, URL and token, with a connection test.
 struct ServerEditor: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mgDismiss) private var dismiss
@@ -124,15 +178,28 @@ struct ServerEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(isNew ? "Add Server" : "Edit Server").font(.mgHeadline)
+            if isNew {
+                MGSegmentedPicker(selection: $connection.kind,
+                                  options: ServerConnection.Kind.allCases.map { ($0, $0.label) })
+                Text(connection.kind == .gpu
+                     ? "Runs the Cloud GPU nodes (Wan 2.2, FLUX.1 dev) on NVIDIA: on Modal, billed per second, or on a GPU box."
+                     : "Another Mac running `mlxcomfy-cli serve`: a tab's whole graph runs there.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
             MGSection {
                 MGFormRow("Name") {
-                    TextField("Name", text: $connection.name, prompt: Text("Studio Mac")).frame(width: 260)
+                    TextField("Name", text: $connection.name,
+                              prompt: Text(connection.kind == .gpu ? "Modal" : "Studio Mac")).frame(width: 260)
                 }
                 MGFormRow("URL") {
-                    TextField("URL", text: $connection.baseURL, prompt: Text("http://100.64.0.2:8188")).frame(width: 260)
+                    TextField("URL", text: $connection.baseURL,
+                              prompt: Text(connection.kind == .gpu ? "https://you--mlxcomfy-gpu-api.modal.run"
+                                           : "https://studio.tail1234.ts.net")).frame(width: 260)
                 }
                 MGFormRow("Token") {
-                    SecureField("Token", text: $token, prompt: Text(isNew ? "from mlxcomfy-cli serve" : "unchanged"))
+                    SecureField("Token", text: $token,
+                                prompt: Text(!isNew ? "unchanged" : connection.kind == .gpu ? "wk-….ws-… (Modal proxy token)"
+                                             : "from mlxcomfy-cli serve"))
                         .frame(width: 260)
                 }
             }
@@ -173,12 +240,19 @@ struct ServerEditor: View {
         let t = token.isEmpty ? (ConnectionToken.read(connection.id) ?? "") : token
         testing = true
         defer { testing = false }
-        let client = RemoteClient(endpoint: .init(baseURL: url, token: t), hello: ClientHello(role: .app, name: "test"))
-        defer { client.close() }
         do {
-            let info = try await client.info()
+            switch try await ConnectionStore.check(kind: connection.kind, url: url, token: t) {
+            case .online(let info):
+                result = "Connected: \(info.hostName), \(info.chip), \(info.memory.total >> 30) GB, \(info.models.count) models, server \(info.serverVersion)"
+            case .gpuOnline(let info):
+                let tasks = info.tasks.filter { $0.gpu != "CPU" }
+                let ready = tasks.filter(\.installed).map(\.title)
+                result = "Connected (\(info.runner == "modal" ? "Modal" : info.runner), server \(info.version)): "
+                    + (ready.isEmpty ? "no models downloaded yet — run the download step"
+                       : "\(ready.joined(separator: ", ")) ready") + ". No GPU was started."
+            default: result = nil
+            }
             ok = true
-            result = "Connected: \(info.hostName), \(info.chip), \(info.memory.total >> 30) GB, \(info.models.count) models, server \(info.serverVersion)"
         } catch {
             ok = false
             result = ConnectionStore.describe(error)
@@ -197,7 +271,7 @@ struct RunTargetPicker: View {
             MGMenuItem.button("This Mac", icon: "laptopcomputer", checked: current == BackendID.local) {
                 model.active.backendID = BackendID.local
             }
-            for c in model.connections.connections {
+            for c in model.connections.macServers {
                 MGMenuItem.button(c.name, icon: "server.rack", checked: current == c.id) { model.active.backendID = c.id }
             }
             MGMenuItem.divider

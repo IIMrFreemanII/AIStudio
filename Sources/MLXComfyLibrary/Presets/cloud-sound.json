@@ -1,0 +1,48 @@
+{
+  "category" : "sound",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "prompt" : "Heavy rain on a tin roof, distant rolling thunder, water dripping from the gutter",
+          "seconds" : 20,
+          "seed" : 1
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteTextToSound"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "audio" : {
+            "node" : "cloud",
+            "output" : "audio"
+          },
+          "directory" : "{output}",
+          "filename_prefix" : "sound",
+          "format" : "wav"
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveAudio"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-sound",
+  "modelName" : "Stable Audio 3 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Sound Effect · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 200,
+  "summary" : "Sound effects and ambience up to six minutes, 44.1 kHz stereo, on an NVIDIA GPU.",
+  "symbol" : "cloud"
+}

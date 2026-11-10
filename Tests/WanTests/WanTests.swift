@@ -58,3 +58,11 @@ import Testing
     let t = 128 - 4 * (128 / 6), hw = 2 * (128 / 6)
     #expect(t / 2 + hw / 2 + hw / 2 == half)
 }
+
+@Test func diffusersLoRANamesMapToWansOwn() {
+    #expect(WanPipeline.officialName("blocks.3.attn1.to_q") == "blocks.3.self_attn.q")
+    #expect(WanPipeline.officialName("blocks.3.attn2.to_out.0") == "blocks.3.cross_attn.o")
+    #expect(WanPipeline.officialName("blocks.0.ffn.net.0.proj") == "blocks.0.ffn.0")
+    #expect(WanPipeline.officialName("blocks.0.ffn.net.2") == "blocks.0.ffn.2")
+    #expect(WanPipeline.officialName("blocks.7.self_attn.k") == "blocks.7.self_attn.k")
+}

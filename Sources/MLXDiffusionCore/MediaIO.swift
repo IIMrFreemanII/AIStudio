@@ -67,6 +67,19 @@ public enum MediaIO {
     // MARK: writing video
 
     /// Encodes `clip` (and `audio`, or the clip's own soundtrack) as MP4/MOV, trimming audio to the video length.
+    /// Copies an encoded video into an MP4/MOV container without decoding it, with the app's metadata added (the
+    /// samples are passed through unchanged).
+    public static func remuxVideo(_ source: URL, to url: URL, metadata: [String: String] = [:]) async throws {
+        try? FileManager.default.removeItem(at: url)
+        let asset = AVURLAsset(url: source)
+        guard let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            throw MediaError.reader("can't copy \(source.lastPathComponent)")
+        }
+        session.metadata = metadataItems(metadata)
+        session.shouldOptimizeForNetworkUse = true
+        try await session.export(to: url, as: url.pathExtension.lowercased() == "mov" ? .mov : .mp4)
+    }
+
     public static func writeVideo(_ clip: VideoClip, audio: AudioClip? = nil, to url: URL, codec: VideoCodec = .h264,
                                   quality: Double = 0.7, metadata: [String: String] = [:]) async throws {
         try? FileManager.default.removeItem(at: url)
@@ -253,7 +266,7 @@ public enum MediaIO {
     }
 
     /// 16-bit PCM WAV with an `mlxc` chunk holding the metadata JSON.
-    static func wavData(_ clip: AudioClip, metadata: [String: String]) -> Data {
+    public static func wavData(_ clip: AudioClip, metadata: [String: String] = [:]) -> Data {
         let x = (MLX.clip(clip.samples, min: -1, max: 1).transposed(1, 0) * 32767).round().asType(.int16)
         eval(x)
         let pcm = x.asArray(Int16.self)

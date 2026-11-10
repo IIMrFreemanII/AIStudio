@@ -169,9 +169,15 @@ public struct SaveVideoNode: NodeImplementation {
         let dir = try StandardNodes.outputDirectory(try inputs.string("directory"))
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = nextMediaFilename(in: dir, prefix: try inputs.string("filename_prefix"), ext: try inputs.string("format"))
-        try await MediaIO.writeVideo(video, audio: inputs.optionalObject("audio", as: AudioClip.self), to: url,
-                                     codec: MediaIO.VideoCodec(rawValue: try inputs.string("codec")) ?? .h264,
-                                     quality: try inputs.float("quality"), metadata: mediaMetadata(context))
+        let audio = inputs.optionalObject("audio", as: AudioClip.self)
+        if let source = video.sourceURL, audio == nil {
+            // An unchanged download (a remote node's result): keep its encoding, add the graph.
+            try await MediaIO.remuxVideo(source, to: url, metadata: mediaMetadata(context))
+        } else {
+            try await MediaIO.writeVideo(video, audio: audio, to: url,
+                                         codec: MediaIO.VideoCodec(rawValue: try inputs.string("codec")) ?? .h264,
+                                         quality: try inputs.float("quality"), metadata: mediaMetadata(context))
+        }
         return ["video_url": .object(url), "video": .object(video)]
     }
 }

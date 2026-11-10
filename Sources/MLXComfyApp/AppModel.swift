@@ -4,6 +4,7 @@ import GraphRuntime
 import ImageIO
 import MLXDiffusionCore
 import MLXComfyLibrary
+import NodesRemote
 import NodesStandard
 import Observation
 
@@ -29,6 +30,8 @@ struct QueueItem: Identifiable, Equatable {
     let title: String
     let seed: Int?
     var status: Status = .pending
+    /// What the running node says it is doing ("Starting GPU 0:41").
+    var statusText: String? = nil
     /// Set for the cells of an XY plot: which plot, and the cell index (row-major).
     var groupID: UUID? = nil
     var cell: Int? = nil
@@ -177,7 +180,7 @@ final class AppModel {
     @ObservationIgnored var promptCache: [URL: String] = [:]
 
     @ObservationIgnored let engine = Engine()
-    @ObservationIgnored let registry = StandardNodes.makeRegistry()
+    @ObservationIgnored let registry = RemoteNodes.makeRegistry()
     @ObservationIgnored lazy var localBackend = LocalBackend(engine: engine)
     /// One running job per backend (a local and a remote run can overlap).
     @ObservationIgnored private var runTasks: [String: Task<Void, Never>] = [:]
@@ -192,6 +195,8 @@ final class AppModel {
     @ObservationIgnored var lastManifest: SessionManifest?
     /// The model downloads/installs, for resolving presets' model folders (set by the window).
     @ObservationIgnored weak var store: ModelStore?
+    /// The Add from Link / Add File sheet, opened from a LoRA node's menu.
+    var libraryRequest: LibraryAddRequest?
 
     // MARK: library
 
@@ -241,7 +246,7 @@ final class AppModel {
         self.persistSettings = persistSettings
         self.autoloadModel = autoloadModel
         connections = ConnectionStore(fileURL: persistSettings && !Self.isAutomatedRun ? ConnectionStore.defaultFileURL : nil,
-                                      registry: StandardNodes.makeRegistry())
+                                      registry: RemoteNodes.makeRegistry())
         let defaults = UserDefaults.standard
         let path = defaults.string(forKey: "modelPath") ?? AppModel.guessModelPath()
         let out = defaults.string(forKey: "outputDirectory")
@@ -415,7 +420,10 @@ final class AppModel {
     func enqueue(undoManager: UndoManager?) {
         if let err = validationError { lastError = err; NSSound.beep(); return }
         lastError = nil
-        let samplers = graph.nodes.filter { ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic", "TextToSpeech"].contains($0.type) }.map(\.id)
+        let samplers = graph.nodes.filter {
+            ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic", "TextToSpeech"].contains($0.type)
+                || RemoteNodes.types.contains($0.type)  // the Cloud GPU nodes all take a seed
+        }.map(\.id)
         for i in 0..<max(1, batchCount) {
             var g = graph
             var seed: Int?
@@ -444,16 +452,14 @@ final class AppModel {
         processQueue()
     }
 
+    /// What titles a queue row: the prompt-like text of the first generating node, speech text included.
+    static let titleFields = promptFields.merging(["TextToSpeech": "text", "RemoteTextToSpeech": "text"]) { a, _ in a }
+
     func title(for g: Graph) -> String {
-        if let p = g.nodes.first(where: { $0.type == "TextEncode" || $0.type == "TextToAudio" }),
-           case .value(.string(let s))? = p.inputs["prompt"],
-           !s.isEmpty { return s }
-        if let p = g.nodes.first(where: { $0.type == "TextToMusic" }),
-           case .value(.string(let s))? = p.inputs["tags"],
-           !s.isEmpty { return s }
-        if let p = g.nodes.first(where: { $0.type == "TextToSpeech" }),
-           case .value(.string(let s))? = p.inputs["text"],
-           !s.isEmpty { return s }
+        // In the order of the graph, like the history's titles.
+        for n in g.nodes {
+            if let field = Self.titleFields[n.type], case .value(.string(let s))? = n.inputs[field], !s.isEmpty { return s }
+        }
         return "Untitled graph"
     }
 
@@ -493,6 +499,7 @@ final class AppModel {
         let doc = document(for: item)
         runningDocID = doc.id
         doc.nodeStates = Dictionary(uniqueKeysWithValues: item.graph.nodes.map { ($0.id, NodeRunState.pending) })
+        doc.nodeStatus = [:]
         doc.previewImage = nil
         doc.previewNode = nil
         let backend = backend(item.backendID)
@@ -525,8 +532,15 @@ final class AppModel {
             setState(.running(step: step, total: total), n, in: doc)
             if let preview { doc.previewImage = preview; doc.previewNode = n; previewCount += 1 }
             if let i = queue.firstIndex(where: { $0.id == item }) { queue[i].status = .running(step: step, total: total) }
-        case .nodeFinished(let n, let s, let peak): setState(.done(seconds: s, peakMemory: peak), n, in: doc)
-        case .nodeFailed(let n, let msg): setState(.failed(msg), n, in: doc)
+        case .status(let n, let text):
+            doc.nodeStatus[n] = text?.isEmpty == false ? text : nil
+            if let i = queue.firstIndex(where: { $0.id == item }) { queue[i].statusText = doc.nodeStatus[n] }
+        case .nodeFinished(let n, let s, let peak):
+            // A node's last status stays until the next run (a remote node's "GPU 48 s · ≈ $0.05").
+            setState(.done(seconds: s, peakMemory: peak), n, in: doc)
+        case .nodeFailed(let n, let msg):
+            setState(.failed(msg), n, in: doc)
+            doc.nodeStatus[n] = nil
         case .finished, .cancelled: break
         }
     }

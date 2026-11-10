@@ -115,14 +115,22 @@ public final class WanDiT {
     /// Adds `adapters` (keyed by official names) to the base weights, replacing any previous ones.
     /// Returns how many layers matched.
     @discardableResult
-    public func setAdapters(_ adapters: [String: LoRAAdapter]) -> Int {
+    public func setAdapters(_ adapters: [String: LoRAAdapter]) -> Int { setAdapters([adapters]) }
+
+    /// Several LoRAs at once (Lightning plus your own), each added to the layers it has.
+    @discardableResult
+    public func setAdapters(_ sets: [[String: LoRAAdapter]]) -> Int {
         var matched = 0
         blocks = baseBlocks.map { b in
             var b = b
             b.mapLinears { l in
-                guard let a = adapters[l.name] else { return l }
-                matched += 1
-                return l.adding(a)
+                var l = l
+                for adapters in sets {
+                    guard let a = adapters[l.name] else { continue }
+                    matched += 1
+                    l = l.adding(a)
+                }
+                return l
             }
             return b
         }

@@ -1,0 +1,45 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "prompt" : "A lighthouse on a rocky coast at dusk, warm light in the windows"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteFlux"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-flux",
+  "modelName" : "FLUX.1 dev on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "FLUX.1 dev · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 150,
+  "summary" : "FLUX.1 [dev] pictures on an NVIDIA GPU, billed per second on Modal.",
+  "symbol" : "cloud"
+}

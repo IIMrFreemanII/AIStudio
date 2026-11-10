@@ -16,6 +16,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { MGTextMenu.install() }
         // Preview files only live for one session.
         try? FileManager.default.removeItem(at: previewDirectory)
+        // LoRA links: the keys from the Keychain (Models window), read only when a site asks for one.
+        LoRASources.tokenProvider = { host in
+            let env = ProcessInfo.processInfo.environment
+            switch host {
+            case .civitai: return KeychainToken.civitai.read() ?? env["CIVITAI_TOKEN"]
+            case .huggingface: return KeychainToken.huggingFace.read() ?? env["HF_TOKEN"]
+            case .direct: return nil
+            }
+        }
+        if let url = SmokeTest.argument("--smoke-gpu") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runGPU(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-remote") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -55,6 +71,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
                 let ok = await SmokeTest.runWan(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let link = SmokeTest.argument("--smoke-wan-lora") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runWanLoRA(AppDelegate.model!, link: link)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let link = SmokeTest.argument("--smoke-library-model") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runLibraryModel(AppDelegate.model!, link: link)
                 exit(ok ? 0 : 1)
             }
         }
@@ -125,7 +155,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let dir = SmokeTest.argument("--export-presets") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
-                let ok = PresetExport.run(AppDelegate.model!, to: URL(fileURLWithPath: dir))
+                let only = SmokeTest.argument("--only").map { Set($0.split(separator: ",").map(String.init)) }
+                let ok = PresetExport.run(AppDelegate.model!, to: URL(fileURLWithPath: dir), only: only)
                 exit(ok ? 0 : 1)
             }
         }

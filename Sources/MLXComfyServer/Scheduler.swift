@@ -387,6 +387,8 @@ final class RunTracker: @unchecked Sendable {
             publish(WireEvent(kind: .progress, node: node, run: run, step: UInt16(clamping: step),
                               total: UInt16(clamping: total)))
             if let preview { renderPreview(preview, node: node, step: step, total: total) }
+        case .nodeStatus(let n, let text):
+            publish(WireEvent(kind: .nodeStatus, node: index(n), run: run, payload: Data((text ?? "").utf8)))
         case .nodeFinished(let n, let s, let peak):
             lock.withLock { if let peak { _peak = max(_peak ?? 0, peak) } }
             publish(WireEvent(kind: .nodeFinished, node: index(n), run: run,

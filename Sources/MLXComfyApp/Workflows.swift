@@ -139,7 +139,7 @@ extension AppModel {
         guard var meta = g.metadata else { return g }
         for (key, raw) in meta where key.hasPrefix("prompt_template.") {
             let node = String(key.dropFirst("prompt_template.".count))
-            let field = g[node]?.type == "TextToMusic" ? "tags" : "prompt"
+            let field = g[node].flatMap { promptFields[$0.type] } ?? "prompt"
             try? g.setValue(.string(raw), node: node, input: field)
             meta[key] = nil
         }
@@ -238,6 +238,19 @@ extension AppModel {
         // The Qwen folder set in Settings counts even when it isn't the catalog download.
         if FileManager.default.fileExists(atPath: modelPath + "/model_index.json") { ids.insert("qwen-image-2.1-turbo") }
         return ids
+    }
+
+    /// Whether a preset can run: its models are on this Mac, and the server it needs (a GPU server) is set up.
+    func presetAvailable(_ p: Preset, installed: Set<String>) -> Bool {
+        p.isAvailable(installed: installed) && (p.needsServer != "gpu" || !connections.gpuServers.isEmpty)
+    }
+
+    /// What a preset that can't run yet is missing, for its button.
+    func presetMissing(_ p: Preset) -> (label: String, action: () -> Void) {
+        if p.needsServer == "gpu", connections.gpuServers.isEmpty {
+            return ("Add GPU Server…", { [weak self] in self?.showServersPanel = true })
+        }
+        return ("Get Model…", {})
     }
 
     /// A model folder name in a preset → the installed folder on this Mac (nil: leave the value).

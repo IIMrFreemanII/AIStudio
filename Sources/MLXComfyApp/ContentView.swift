@@ -88,6 +88,9 @@ struct ContentView: View {
         .mgSheet("plot", isPresented: $showPlot) { PlotSheet() }
         .mgSheet("preset-gallery", isPresented: $model.showPresetGallery) { PresetGallery() }
         .mgSheet("mask-editor", item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }
+        .mgSheet("library-add", item: $model.libraryRequest) { r in
+            if let lib = model.store?.library { LibraryAddSheet(request: r, library: lib) }
+        }
         .mgSheet("save-preset", isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
         .mgPresentationHost(model.presenter)
     }

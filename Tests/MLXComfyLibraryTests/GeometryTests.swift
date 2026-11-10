@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import GraphRuntime
+import NodesRemote
 import NodesStandard
 import Testing
 @testable import MLXComfyLibrary
@@ -131,7 +132,7 @@ import Testing
     }
 
     @Test func everyBuiltInPresetArrangesWithoutOverlaps() {
-        let registry = StandardNodes.makeRegistry()
+        let registry = RemoteNodes.makeRegistry()
         for p in PresetCatalog.builtIn() {
             var sz: [String: CGSize] = [:]
             var es: [GraphArranger.Edge] = []

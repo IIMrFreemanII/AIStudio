@@ -1,16 +1,15 @@
-# ComfyUI on an NVIDIA GPU, behind Caddy's bearer-token gate. Started by scripts/bootstrap-gpu-server.sh.
+# MLXComfyUI's own GPU server (Wan 2.2, FLUX.1 dev; server/gpu) behind Caddy's bearer-token gate.
+# Started by scripts/bootstrap-gpu-server.sh mlxcomfy-gpu.
 services:
   app:
     build:
-      context: ./comfyui
-      args:
-        COMFYUI_REF: ${COMFYUI_REF:-v0.44.1}
+      context: ../../server/gpu
     restart: unless-stopped
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
-      - ${DATA_DIR}/comfyui/models:/opt/ComfyUI/models
-      - ${DATA_DIR}/comfyui/custom_nodes:/opt/ComfyUI/custom_nodes
-      - ${DATA_DIR}/comfyui/input:/opt/ComfyUI/input
-      - ${DATA_DIR}/comfyui/output:/opt/ComfyUI/output
+      - ${DATA_DIR}/models:/models
+      - ${DATA_DIR}/data:/data
     deploy:
       resources:
         reservations:
@@ -22,7 +21,7 @@ services:
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS}
       API_TOKEN: ${API_TOKEN}
-      UPSTREAM: app:8188
+      UPSTREAM: app:8189
     ports:
       - ${PUBLISH}
     volumes:

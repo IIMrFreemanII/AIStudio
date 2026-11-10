@@ -17,6 +17,7 @@ export const Kind = {
   outputReady: 9,
   preview: 10,
   runFailed: 11,
+  nodeStatus: 12,
   metrics: 20,
   metricsHistory: 21,
 } as const;

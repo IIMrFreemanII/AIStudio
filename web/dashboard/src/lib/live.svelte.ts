@@ -13,6 +13,8 @@ export class RunLive {
   readonly total: Uint16Array;
   readonly seconds: Float32Array;
   readonly errors = new Map<number, string>();
+  /** What a node says it is doing ("Starting GPU 0:41"). */
+  readonly status = new Map<number, string>();
   current = NO_NODE;
   finished = false;
 
@@ -157,7 +159,12 @@ export class Live {
             case Kind.progress:
               if (valid) { r.state[n] = NodeState.running; r.step[n] = e.step; r.total[n] = e.total; r.current = n; }
               break;
-            case Kind.nodeFinished: if (valid) { r.state[n] = NodeState.done; r.seconds[n] = payloadSeconds(e.payload); } break;
+            case Kind.nodeStatus:
+              if (valid) { const t = payloadText(e.payload); if (t) r.status.set(n, t); else r.status.delete(n); }
+              break;
+            case Kind.nodeFinished:
+              if (valid) { r.state[n] = NodeState.done; r.seconds[n] = payloadSeconds(e.payload); r.status.delete(n); }
+              break;
             case Kind.nodeFailed: if (valid) { r.state[n] = NodeState.failed; r.errors.set(n, payloadText(e.payload)); } break;
             case Kind.finished: case Kind.cancelled: case Kind.runFailed: r.finished = true; r.current = NO_NODE; break;
           }

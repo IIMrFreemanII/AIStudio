@@ -310,7 +310,7 @@ struct GraphEditorView: View {
                 .scaleEffect(zoom, anchor: .topLeading)
         } else if let schema = model.schema(for: node) {
             let flat = model.nodeStatePrefix + node.id
-            NodeView(node: node, schema: schema, state: doc.nodeStates[flat],
+            NodeView(node: node, schema: schema, state: doc.nodeStates[flat], statusText: doc.nodeStatus[flat],
                      selected: selected,
                      bindings: LiteralBindings(model: model, undoManager: undoManager, editor: true),
                      actions: actions(for: node),

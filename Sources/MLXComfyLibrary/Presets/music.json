@@ -63,7 +63,7 @@
     "ace-step-1.5"
   ],
   "name" : "Song",
-  "order" : 140,
+  "order" : 170,
   "summary" : "Music from style tags and lyrics, planned by the model.",
   "symbol" : "music.note"
 }
