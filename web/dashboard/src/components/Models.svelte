@@ -63,7 +63,7 @@
       </table>
     </div>
   {:else}
-    <p class="empty">No models in {data.settings.modelsDirectory}. Add them with <code class="mono">mlxcomfy-cli download</code>.</p>
+    <p class="empty">No models in {data.settings.modelsDirectory}. Add them with <code class="mono">aistudio-cli download</code>.</p>
   {/if}
 </div>
 

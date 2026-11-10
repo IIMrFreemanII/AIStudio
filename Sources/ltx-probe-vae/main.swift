@@ -14,7 +14,7 @@ guard args.count >= 2 else {
 let work = URL(fileURLWithPath: args[1])
 let what = Set(args.dropFirst(2).isEmpty ? ["dec", "tiled", "up", "enc", "auto"] : Array(args.dropFirst(2)))
 let models = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("Library/Application Support/MLXComfyUI/models/ltx-2.3-mlx-q4")
+    .appendingPathComponent("Library/Application Support/AIStudio/models/ltx-2.3-mlx-q4")
 
 func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
     guard a.shape == b.shape else {
@@ -155,7 +155,7 @@ if what.contains("enc") {
     print("== encoder")
     let r = try load("enc.safetensors")
     let enc = try LTXVideoEncoder(url: models.appendingPathComponent("vae_encoder.safetensors"))
-    let img = URL(fileURLWithPath: "/Users/ndiahovets/ai/MLXComfyUI/outputs/fox.png")
+    let img = URL(fileURLWithPath: "outputs/fox.png")
     let rgb = try LTXImagePreprocess.loadRGB(img)
     report("raw rgb", rgb, r["raw"]!.asType(.float32))
     let px = LTXImagePreprocess.conditioningPixels(rgb: r["raw"]!.asType(.float32), height: 256, width: 384)

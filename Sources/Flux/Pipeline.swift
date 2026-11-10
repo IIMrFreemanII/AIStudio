@@ -12,7 +12,7 @@ import Tokenizers
 /// sampling loop.
 ///
 /// Loads the official diffusers folder. The bf16 transformer is quantized to 8-bit once and cached in
-/// `.mlxcomfy-cache/`; a transformer stored already quantized (imported fine-tunes, see `ModelImport`) is used as
+/// `.aistudio-cache/`; a transformer stored already quantized (imported fine-tunes, see `ModelImport`) is used as
 /// is. The T5-XXL encoder (9.5 GB) is loaded only while a prompt is encoded.
 public final class FluxPipeline: DiffusionModel {
     /// What ``encodePrompt(_:images:)`` returns inside its ``Conditioning``.
@@ -48,7 +48,7 @@ public final class FluxPipeline: DiffusionModel {
 
     /// The quantized transformer cache inside a model folder.
     public static func transformerCacheURL(_ directory: URL, bits: Int = 8) -> URL {
-        directory.appendingPathComponent(".mlxcomfy-cache/transformer-q\(bits).safetensors")
+        directory.appendingPathComponent(".aistudio-cache/transformer-q\(bits).safetensors")
     }
 
     /// The transformer weights of a model folder: a pre-quantized `transformer/` as stored, otherwise the dense one

@@ -26,7 +26,7 @@ struct LTXPromptEmbeds {
 /// (8 steps at half resolution, 2× latent upscale, 3 refinement steps), as `ltx_pipelines_mlx.distilled`.
 ///
 /// Folder layout (the catalog download): the `dgrauet/ltx-2.3-mlx-q4` files, the Gemma 3 12B text encoder in
-/// `text_encoder/` (or a folder named by `text_encoder` in `mlxcomfy.json`), and `mlxcomfy.json` with
+/// `text_encoder/` (or a folder named by `text_encoder` in `aistudio.json`), and `aistudio.json` with
 /// `"class": "LTX2Pipeline"`.
 public final class LTX2Pipeline: VideoDiffusionModel, @unchecked Sendable {
     public static let className = "LTX2Pipeline"
@@ -77,7 +77,7 @@ public final class LTX2Pipeline: VideoDiffusionModel, @unchecked Sendable {
     static func textEncoderDirectory(in dir: URL) -> URL {
         let sub = dir.appendingPathComponent("text_encoder")
         if FileManager.default.fileExists(atPath: sub.appendingPathComponent("config.json").path) { return sub }
-        if let data = try? Data(contentsOf: dir.appendingPathComponent("mlxcomfy.json")),
+        if let data = try? Data(contentsOf: dir.appendingPathComponent("aistudio.json")),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let rel = obj["text_encoder"] as? String {
             return URL(fileURLWithPath: rel, relativeTo: dir).standardizedFileURL

@@ -8,7 +8,7 @@ import Tokenizers
 /// DiT sampled with ping-pong steps on a linear schedule, and the Oobleck VAE decoder.
 ///
 /// Folder layout (the catalog download): `model.safetensors`, `model_config.json`, the t5-base encoder in `t5/`, and
-/// `mlxcomfy.json` with `"class": "StableAudioPipeline"`.
+/// `aistudio.json` with `"class": "StableAudioPipeline"`.
 public final class StableAudioPipeline: AudioModel, @unchecked Sendable {
     public static let className = "StableAudioPipeline"
 

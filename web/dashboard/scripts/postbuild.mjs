@@ -6,7 +6,7 @@ import { join, relative } from 'node:path';
 import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { sourceHash } from './source-hash.mjs';
 
-const out = new URL('../../../Sources/MLXComfyServer/Resources/dashboard/', import.meta.url).pathname;
+const out = new URL('../../../Sources/AIStudioServer/Resources/dashboard/', import.meta.url).pathname;
 
 function walk(dir) {
   return readdirSync(dir).flatMap((n) => {

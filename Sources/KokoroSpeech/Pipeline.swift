@@ -10,7 +10,7 @@ import MLXDiffusionCore
 /// chunk with the voice row picked by its phoneme count, and concatenate. Mono 24 kHz.
 ///
 /// Folder layout (the catalog download of `hexgrad/Kokoro-82M`): `config.json`, `kokoro-v1_0.pth`, `voices/*.pt`,
-/// and `mlxcomfy.json` with `"class": "KokoroPipeline"`.
+/// and `aistudio.json` with `"class": "KokoroPipeline"`.
 public final class KokoroPipeline: AudioModel, @unchecked Sendable {
     public static let className = "KokoroPipeline"
 

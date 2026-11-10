@@ -1,7 +1,7 @@
 {
   "version": 1,
   "nodes" : [
-    { "id" : "model", "type" : "LoadModel", "inputs" : { "path" : "~/Library/Application Support/MLXComfyUI/models/ltx-2.3" }, "position" : { "x" : 40, "y" : 140 } },
+    { "id" : "model", "type" : "LoadModel", "inputs" : { "path" : "~/Library/Application Support/AIStudio/models/ltx-2.3" }, "position" : { "x" : 40, "y" : 140 } },
     { "id" : "prompt", "type" : "TextEncode", "inputs" : { "model" : { "node": "model", "output": "model" }, "prompt" : "A red fox trotting through fresh snow at sunrise, its breath steaming, birds calling in the distance" }, "position" : { "x" : 340, "y" : 40 } },
     { "id" : "latent", "type" : "EmptyVideoLatent", "inputs" : { "width" : 768, "height" : 512, "seconds" : 5, "fps" : 24 }, "position" : { "x" : 340, "y" : 300 } },
     { "id" : "sampler", "type" : "VideoSampler", "inputs" : { "model" : { "node": "model", "output": "model" }, "conditioning" : { "node": "prompt", "output": "conditioning" }, "latent" : { "node": "latent", "output": "latent" }, "seed" : 1, "steps" : 0 }, "position" : { "x" : 640, "y" : 120 } },

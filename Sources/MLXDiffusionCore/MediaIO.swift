@@ -27,7 +27,7 @@ public enum MediaIO {
         }
     }
 
-    static let commentPrefix = "mlxcomfy:"
+    static let commentPrefix = "aistudio:"
     public static let videoExtensions: Set<String> = ["mp4", "mov", "m4v"]
     public static let audioExtensions: Set<String> = ["wav", "m4a", "aac", "mp3", "aif", "aiff", "caf"]
 
@@ -172,7 +172,7 @@ public enum MediaIO {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             var index = 0
             var done = false
-            input.requestMediaDataWhenReady(on: DispatchQueue(label: "mlxcomfy.write.\(queue)")) {
+            input.requestMediaDataWhenReady(on: DispatchQueue(label: "aistudio.write.\(queue)")) {
                 guard !done else { return }
                 do {
                     while input.isReadyForMoreMediaData {
@@ -344,7 +344,7 @@ public enum MediaIO {
     /// AVAssetReader's sample loop blocks its thread. Run on Swift's shared async pool, a history full of audio
     /// thumbnails can tie up every pool thread and stall all other async work, so the loops run here instead
     /// (at most four at a time).
-    static let readQueue = DispatchQueue(label: "mlxcomfy.media-read", qos: .userInitiated, attributes: .concurrent)
+    static let readQueue = DispatchQueue(label: "aistudio.media-read", qos: .userInitiated, attributes: .concurrent)
     static let readSlots = DispatchSemaphore(value: 4)
 
     static func blockingRead<T>(_ work: @escaping () throws -> T) async throws -> T {

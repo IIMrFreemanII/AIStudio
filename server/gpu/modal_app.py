@@ -1,4 +1,4 @@
-"""MLXComfyUI's GPU server on Modal: pay only while a GPU works.
+"""AIStudio's GPU server on Modal: pay only while a GPU works.
 
     pip install modal && modal setup                       # once, signs in
     modal secret create huggingface HF_TOKEN=hf_…          # for FLUX.1 dev (gated); skip for Wan only
@@ -12,16 +12,16 @@ Layout:
 - ``api``: the front desk (FastAPI on 0.25 CPU core, proxy-auth protected). Checking it, uploading, and the CPU test
   tasks never start a GPU. It scales to zero 5 min after the last request.
 - ``WanT2V`` / ``WanI2V`` and ``QwenImage`` (H100), ``Flux`` (L40S): GPU workers, one per model family, each with
-  the models loaded once per container. They scale to zero ``MLXCOMFY_IDLE`` seconds (default 120) after their last job.
+  the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
 - ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
-- Volume ``mlxcomfy-gpu-models``: the weights, written once by ``modal_download.py``.
-- Volume ``mlxcomfy-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
-  up to ``MLXCOMFY_UPLOADS_GB`` (default 20; least recently used go first). Workers copy inputs straight from it.
+- Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
+- Volume ``aistudio-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
+  up to ``AISTUDIO_UPLOADS_GB`` (default 20; least recently used go first). Workers copy inputs straight from it.
 
-Environment variables at deploy time: ``MLXCOMFY_IDLE``, ``MLXCOMFY_GPU_WAN`` (default H100),
-``MLXCOMFY_GPU_FLUX`` (default L40S), ``MLXCOMFY_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
-fp8), ``MLXCOMFY_GPU_AUDIO`` (default L40S), ``MLXCOMFY_UPLOADS_GB`` (default 20).
+Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
+``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
+fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20).
 """
 
 from __future__ import annotations
@@ -31,14 +31,16 @@ from pathlib import Path
 
 import modal
 
-IDLE = int(os.environ.get("MLXCOMFY_IDLE", "120"))
-GPU_WAN = os.environ.get("MLXCOMFY_GPU_WAN", "H100")
-GPU_FLUX = os.environ.get("MLXCOMFY_GPU_FLUX", "L40S")
-GPU_AUDIO = os.environ.get("MLXCOMFY_GPU_AUDIO", "L40S")
-GPU_QWEN = os.environ.get("MLXCOMFY_GPU_QWEN", "H100")
+import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
+
+IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
+GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
+GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
+GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
+GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
-UPLOADS_GB = float(os.environ.get("MLXCOMFY_UPLOADS_GB", "20"))
+UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
 
 
 def _secret_if_exists(name: str) -> str:
@@ -54,30 +56,30 @@ def _secret_if_exists(name: str) -> str:
 
 
 # Logins for LoRA links the front desk downloads: HF_TOKEN (gated repos), CIVITAI_TOKEN (most Civitai files).
-HF_SECRET = _secret_if_exists(os.environ.get("MLXCOMFY_HF_SECRET", "huggingface"))
-CIVITAI_SECRET = _secret_if_exists(os.environ.get("MLXCOMFY_CIVITAI_SECRET", "civitai"))
+HF_SECRET = _secret_if_exists(os.environ.get("AISTUDIO_HF_SECRET", "huggingface"))
+CIVITAI_SECRET = _secret_if_exists(os.environ.get("AISTUDIO_CIVITAI_SECRET", "civitai"))
 
-app = modal.App("mlxcomfy-gpu")
-volume = modal.Volume.from_name("mlxcomfy-gpu-models", create_if_missing=True)
-uploads = modal.Volume.from_name("mlxcomfy-gpu-uploads", create_if_missing=True)
-events = modal.Queue.from_name("mlxcomfy-gpu-events", create_if_missing=True)
-cancels = modal.Dict.from_name("mlxcomfy-gpu-cancels", create_if_missing=True)
+app = modal.App("aistudio-gpu")
+volume = modal.Volume.from_name("aistudio-gpu-models", create_if_missing=True)
+uploads = modal.Volume.from_name("aistudio-gpu-uploads", create_if_missing=True)
+events = modal.Queue.from_name("aistudio-gpu-events", create_if_missing=True)
+cancels = modal.Dict.from_name("aistudio-gpu-cancels", create_if_missing=True)
 # Fine-tune imports in progress ("family/id" → state), written by `import_model`, read by the front desk.
-imports = modal.Dict.from_name("mlxcomfy-gpu-imports", create_if_missing=True)
+imports = modal.Dict.from_name("aistudio-gpu-imports", create_if_missing=True)
 
 SERVER_DEPS = ["fastapi==0.162.2", "httpx==0.28.1", "numpy==2.5.4", "pillow", "imageio-ffmpeg"]
 TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "accelerate==1.15.0", "peft==0.21.2",
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
-env = {"MLXCOMFY_GPU_WAN": GPU_WAN, "MLXCOMFY_GPU_FLUX": GPU_FLUX, "MLXCOMFY_GPU_AUDIO": GPU_AUDIO,
-       "MLXCOMFY_GPU_QWEN": GPU_QWEN,
-       "MLXCOMFY_IDLE": str(IDLE), "MLXCOMFY_UPLOADS_GB": str(UPLOADS_GB), "MLXCOMFY_HF_SECRET": HF_SECRET,
-       "MLXCOMFY_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1"}
+env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN,
+       "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
+       "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1"}
 
 front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS).env(env)
-               .add_local_python_source("mlxcomfy_gpu"))
+               .add_local_python_source("aistudio_gpu"))
 gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS).env(env)
-             .add_local_python_source("mlxcomfy_gpu"))
+             .add_local_python_source("aistudio_gpu"))
 
 # ACE-Step 1.5's own code at a pinned commit, with the versions its uv.lock pins (torch 2.10 + CUDA 12.8, transformers
 # 4.57) and its bundled nano-vllm for the planner; flash-attn from the prebuilt wheel its lock file names (py3.11).
@@ -100,7 +102,7 @@ music_image = (
                     "fastapi==0.162.2", "pillow", "imageio-ffmpeg")
     .run_commands("uv pip install --system --no-deps /opt/acestep/acestep/third_parts/nano-vllm")
     .env({**env, "PYTHONPATH": "/opt/acestep", "ACESTEP_CHECKPOINTS_DIR": f"{MODELS}/ace-step-xl/checkpoints"})
-    .add_local_python_source("mlxcomfy_gpu"))
+    .add_local_python_source("aistudio_gpu"))
 
 # Qwen3-TTS: its package pins transformers 4.57.3; installed without its demo UI (gradio).
 speech_image = (
@@ -111,7 +113,7 @@ speech_image = (
                     "fastapi==0.162.2", "numpy", "pillow", "imageio-ffmpeg")
     .uv_pip_install("qwen-tts==0.1.1", extra_options="--no-deps")
     .env(env)
-    .add_local_python_source("mlxcomfy_gpu"))
+    .add_local_python_source("aistudio_gpu"))
 
 
 def _imports():
@@ -119,21 +121,21 @@ def _imports():
     import diffusers  # noqa: F401
     import torch  # noqa: F401
 
-    import mlxcomfy_gpu.modal_runner  # noqa: F401
+    import aistudio_gpu.modal_runner  # noqa: F401
 
 
 def _music_imports():
     import torch  # noqa: F401
     from acestep import handler, inference, llm_inference  # noqa: F401
 
-    import mlxcomfy_gpu.modal_runner  # noqa: F401
+    import aistudio_gpu.modal_runner  # noqa: F401
 
 
 def _speech_imports():
     import qwen_tts  # noqa: F401
     import torch  # noqa: F401
 
-    import mlxcomfy_gpu.modal_runner  # noqa: F401
+    import aistudio_gpu.modal_runner  # noqa: F401
 
 
 def _gpu_class(image=gpu_image, **kwargs):
@@ -149,13 +151,13 @@ class WanT2V:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-t2v", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -169,13 +171,13 @@ class WanI2V:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-i2v", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -189,13 +191,13 @@ class Flux:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("flux1-dev", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -209,13 +211,13 @@ class QwenImage:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("qwen-image", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -229,13 +231,13 @@ class Music:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("music", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -249,13 +251,13 @@ class Sound:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("sound", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -269,13 +271,13 @@ class Speech:
 
     @modal.enter(snap=False)
     def load(self):
-        from mlxcomfy_gpu.modal_runner import WorkerState
+        from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("speech", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from mlxcomfy_gpu.modal_runner import run_job
+        from aistudio_gpu.modal_runner import run_job
 
         return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
                        models=(volume, MODELS))
@@ -287,7 +289,7 @@ def import_model(family: str, vid: str, name: str, files: list | None, repo: str
     """Installs a fine-tune from a link onto the models Volume (variants.py), on CPUs: download, convert, commit."""
     import time
 
-    from mlxcomfy_gpu.variants import import_variant
+    from aistudio_gpu.variants import import_variant
 
     key = f"{family}/{vid}"
     last = {"t": 0.0, "cancel": False}
@@ -315,7 +317,7 @@ class ModalVariants:
         self._reloaded = 0.0
 
     def start(self, family: str, vid: str, name: str, files, repo) -> dict:
-        from mlxcomfy_gpu.variants import variant_dir
+        from aistudio_gpu.variants import variant_dir
 
         variant_dir(MODELS, family, vid)  # validates
         key = f"{family}/{vid}"
@@ -329,7 +331,7 @@ class ModalVariants:
     def listing(self) -> dict:
         import time
 
-        from mlxcomfy_gpu.variants import list_variants
+        from aistudio_gpu.variants import list_variants
 
         if time.monotonic() - self._reloaded > 5:
             self._reloaded = time.monotonic()
@@ -344,7 +346,7 @@ class ModalVariants:
         return {"families": list_variants(MODELS), "imports": running}
 
     def remove(self, family: str, vid: str) -> bool:
-        from mlxcomfy_gpu.variants import remove
+        from aistudio_gpu.variants import remove
 
         key = f"{family}/{vid}"
         imports[key + ":cancel"] = True
@@ -365,12 +367,12 @@ class ModalVariants:
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app(requires_proxy_auth=True)
 def api():
-    from mlxcomfy_gpu.api import create_app
-    from mlxcomfy_gpu.files import FileStore
-    from mlxcomfy_gpu.jobs import JobManager
-    from mlxcomfy_gpu.modal_runner import ModalRunner
+    from aistudio_gpu.api import create_app
+    from aistudio_gpu.files import FileStore
+    from aistudio_gpu.jobs import JobManager
+    from aistudio_gpu.modal_runner import ModalRunner
 
-    data = Path("/tmp/mlxcomfy-gpu")
+    data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "music": Music,
                           "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads)

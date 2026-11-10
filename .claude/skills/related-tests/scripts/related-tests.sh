@@ -94,7 +94,7 @@ if ((${#tests[@]} == 0)); then
 fi
 echo "Related test targets: ${tests[*]}"
 
-cmd=(xcodebuild test -scheme MLXComfyUI-Package -destination 'platform=macOS'
+cmd=(xcodebuild test -scheme AIStudio-Package -destination 'platform=macOS'
      -derivedDataPath .build/xcode -skipPackagePluginValidation -skipMacroValidation)
 for t in "${tests[@]}"; do cmd+=("-only-testing:$t"); done
 printf 'Command:\n  %s\n' "${cmd[*]}"

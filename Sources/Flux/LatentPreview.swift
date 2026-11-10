@@ -1,7 +1,7 @@
 import MLX
 
 /// Linear packed-latent → RGB projection for live step previews (one pixel per packed token, 1/16 scale), fitted
-/// with `mlxcomfy-cli fit-preview --model flux-1-dev` on VAE-encoded images (mean abs error ≈ 5.5/255 at latent
+/// with `aistudio-cli fit-preview --model flux-1-dev` on VAE-encoded images (mean abs error ≈ 5.5/255 at latent
 /// resolution).
 enum FluxLatentPreview {
     static let previewWeights: [Float] = [  // 64 rows × RGB, then bias

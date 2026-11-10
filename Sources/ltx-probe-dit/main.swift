@@ -8,7 +8,7 @@ let args = CommandLine.arguments
 let mode = args.count > 1 ? args[1] : "cmp"
 let work = URL(fileURLWithPath: args.count > 2 ? args[2] : FileManager.default.currentDirectoryPath)
 let modelDir = URL(fileURLWithPath: args.count > 3 ? args[3]
-    : NSHomeDirectory() + "/Library/Application Support/MLXComfyUI/models/ltx-2.3-mlx-q4")
+    : NSHomeDirectory() + "/Library/Application Support/AIStudio/models/ltx-2.3-mlx-q4")
 
 func report(_ name: String, _ a: MLXArray, _ b: MLXArray) {
     let x = a.asType(.float32), y = b.asType(.float32)

@@ -41,7 +41,7 @@
 {:else if live}
   <header>
     <div class="title">
-      <h1>MLXComfy Server</h1>
+      <h1>AIStudio Server</h1>
       {#if s}<span class="secondary">{s.info.hostName} · {s.info.chip} · {Math.round(s.info.memory.total / 2 ** 30)} GB · v{s.info.serverVersion}</span>{/if}
     </div>
     <div class="right">

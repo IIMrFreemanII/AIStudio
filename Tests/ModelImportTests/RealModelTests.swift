@@ -6,9 +6,9 @@ import MLXDiffusionCore
 import Testing
 
 /// Opt-in checks on the installed models (never modified: imports go to a temporary folder). Run with
-/// `TEST_RUNNER_MLXCOMFY_REAL_MODELS=1 xcodebuild test … -only-testing:ModelImportTests/RealModelTests`;
-/// `TEST_RUNNER_MLXCOMFY_REAL_OUT=<dir>` keeps the generated images.
-@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["MLXCOMFY_REAL_MODELS"] != nil))
+/// `TEST_RUNNER_AISTUDIO_REAL_MODELS=1 xcodebuild test … -only-testing:ModelImportTests/RealModelTests`;
+/// `TEST_RUNNER_AISTUDIO_REAL_OUT=<dir>` keeps the generated images.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["AISTUDIO_REAL_MODELS"] != nil))
 struct RealModelTests {
     var models: URL { ModelPaths.defaultDirectory }
 
@@ -53,9 +53,9 @@ struct RealModelTests {
         let a = try await image(dest)
         Memory.clearCache()
         let b = try await image(base)
-        #expect(!FileManager.default.fileExists(atPath: dest.appendingPathComponent(".mlxcomfy-cache").path))
+        #expect(!FileManager.default.fileExists(atPath: dest.appendingPathComponent(".aistudio-cache").path))
         #expect(maxDiff(a, b) == 0)
-        if let out = ProcessInfo.processInfo.environment["MLXCOMFY_REAL_OUT"] {
+        if let out = ProcessInfo.processInfo.environment["AISTUDIO_REAL_OUT"] {
             try ImageArray.savePNG(a, to: URL(fileURLWithPath: out).appendingPathComponent("flux-reimport.png"))
         }
     }

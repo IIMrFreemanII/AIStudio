@@ -317,7 +317,7 @@ public protocol AudioModel: GenerativeModel {
 }
 
 /// Maps a model folder to a loader, by the `_class_name` in a diffusers `model_index.json` or the `class` in an
-/// `mlxcomfy.json` manifest (for repos without one).
+/// `aistudio.json` manifest (for repos without one).
 public final class ModelRegistry {
     public typealias Loader = (URL) async throws -> GenerativeModel
 
@@ -333,7 +333,8 @@ public final class ModelRegistry {
     }
 
     public static func className(at url: URL) -> String? {
-        for (file, key) in [("model_index.json", "_class_name"), ("mlxcomfy.json", "class")] {
+        LegacyNames.upgradeModelFolder(url)
+        for (file, key) in [("model_index.json", "_class_name"), ("aistudio.json", "class")] {
             guard let data = try? Data(contentsOf: url.appendingPathComponent(file)),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let name = obj[key] as? String else { continue }
@@ -345,8 +346,8 @@ public final class ModelRegistry {
     /// Size of the weight files in a model folder (recursively): the estimate used for the memory budget.
     public static func weightBytes(at url: URL) -> Int {
         guard let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
-        // A quantized cache `.mlxcomfy-cache/<folder>-q<bits>.safetensors` is loaded instead of `<folder>/`.
-        let cacheDir = url.appendingPathComponent(".mlxcomfy-cache")
+        // A quantized cache `.aistudio-cache/<folder>-q<bits>.safetensors` is loaded instead of `<folder>/`.
+        let cacheDir = url.appendingPathComponent(".aistudio-cache")
         let replaced = Set(((try? FileManager.default.contentsOfDirectory(atPath: cacheDir.path)) ?? [])
             .filter { $0.hasSuffix(".safetensors") && !$0.hasSuffix(".partial.safetensors") }
             .compactMap { name in name.range(of: "-q", options: .backwards).map { String(name[..<$0.lowerBound]) } })

@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import GraphRuntime
 import MLX
-import MLXComfyProtocol
+import AIStudioProtocol
 import MLXDiffusionCore
 @testable import NodesRemote
 import NodesStandard
@@ -10,9 +10,9 @@ import Testing
 
 /// The real GPU server (server/gpu) in fake-models mode: every GPU task runs a CPU stand-in with the task's own
 /// parameters, so the nodes and the client run end to end without models. Needs a Python with the server's
-/// dependencies in `MLXCOMFY_GPU_PYTHON` (with xcodebuild: `TEST_RUNNER_MLXCOMFY_GPU_PYTHON=…`); skipped otherwise.
+/// dependencies in `AISTUDIO_GPU_PYTHON` (with xcodebuild: `TEST_RUNNER_AISTUDIO_GPU_PYTHON=…`); skipped otherwise.
 final class GPUServerFixture: @unchecked Sendable {
-    static let python = ProcessInfo.processInfo.environment["MLXCOMFY_GPU_PYTHON"]
+    static let python = ProcessInfo.processInfo.environment["AISTUDIO_GPU_PYTHON"]
     static let shared: GPUServerFixture? = python.flatMap { try? GPUServerFixture(python: $0) }
 
     let process = Process()
@@ -35,12 +35,12 @@ final class GPUServerFixture: @unchecked Sendable {
         let tokenFile = folder.appendingPathComponent("token")
         try token.write(to: tokenFile, atomically: true, encoding: .utf8)
         process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = ["-m", "mlxcomfy_gpu", "serve", "--port", String(port), "--data", folder.path + "/data",
+        process.arguments = ["-m", "aistudio_gpu", "serve", "--port", String(port), "--data", folder.path + "/data",
                              "--models", folder.path + "/models", "--token-file", tokenFile.path]
         process.currentDirectoryURL = serverDir
         var env = ProcessInfo.processInfo.environment
-        env["MLXCOMFY_FAKE_MODELS"] = "1"
-        env["MLXCOMFY_FETCH_HOSTS"] = "127.0.0.1"
+        env["AISTUDIO_FAKE_MODELS"] = "1"
+        env["AISTUDIO_FETCH_HOSTS"] = "127.0.0.1"
         env["PYTHONPATH"] = serverDir.path
         process.environment = env
         process.standardOutput = FileHandle.nullDevice
@@ -144,7 +144,7 @@ struct RemoteNodesTests {
         }())
         let clip = try await MediaIO.readVideo(saved)
         #expect(clip.frameCount == 9 && clip.width == 320 && clip.height == 256)
-        #expect(await MediaIO.readMetadata(saved)["mlxcomfy.graph"]?.contains("RemoteWanTextToVideo") == true)
+        #expect(await MediaIO.readMetadata(saved)["aistudio.graph"]?.contains("RemoteWanTextToVideo") == true)
         // The saved file holds the server's samples unchanged (a re-encode would decode differently).
         if case .object(let o)? = result.outputs["save"]?["video"], let v = o as? VideoClip, let src = v.sourceURL {
             let original = try await MediaIO.readVideo(src)

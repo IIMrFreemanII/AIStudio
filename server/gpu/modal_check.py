@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import modal  # noqa: E402
 
-from mlxcomfy_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
+from aistudio_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
 
 CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "flux1-dev": "Flux", "qwen-image": "QwenImage",
            "ace-step-xl": "Music",
@@ -78,7 +78,7 @@ def main() -> int:
     if a.via_volume and inputs:
         import hashlib
 
-        volume = modal.Volume.from_name("mlxcomfy-gpu-uploads", create_if_missing=True)
+        volume = modal.Volume.from_name("aistudio-gpu-uploads", create_if_missing=True)
         with volume.batch_upload(force=True) as batch:
             for k, (fname, data) in list(inputs.items()):
                 ext = Path(fname).suffix.lower()
@@ -86,8 +86,8 @@ def main() -> int:
                 batch.put_file(io.BytesIO(data), f"/{name}")
                 inputs[k] = (name, None)
 
-    events = modal.Queue.from_name("mlxcomfy-gpu-events", create_if_missing=True)
-    worker = modal.Cls.from_name("mlxcomfy-gpu", CLASSES[a.task])()
+    events = modal.Queue.from_name("aistudio-gpu-events", create_if_missing=True)
+    worker = modal.Cls.from_name("aistudio-gpu", CLASSES[a.task])()
     job = uuid.uuid4().hex
     start = time.monotonic()
 

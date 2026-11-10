@@ -3,7 +3,7 @@ import Foundation
 import GraphRuntime
 import ImageIO
 import MLX
-import MLXComfyProtocol
+import AIStudioProtocol
 import MLXDiffusionCore
 import NodesStandard
 

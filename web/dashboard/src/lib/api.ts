@@ -14,7 +14,7 @@ export class HttpError extends Error {
 export async function api<T = unknown>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const method = init.method ?? 'GET';
   const headers: Record<string, string> = {};
-  if (method !== 'GET' && method !== 'HEAD') headers['X-MLXComfy-CSRF'] = csrf();
+  if (method !== 'GET' && method !== 'HEAD') headers['X-AIStudio-CSRF'] = csrf();
   if (init.body !== undefined) headers['Content-Type'] = 'application/json';
   const r = await fetch(path, {
     method,

@@ -14,7 +14,7 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("diffusers")
 
-from mlxcomfy_gpu.tasks import TASKS, JobCancelled, make_worker  # noqa: E402
+from aistudio_gpu.tasks import TASKS, JobCancelled, make_worker  # noqa: E402
 
 TINY_T5 = "hf-internal-testing/tiny-random-t5"
 
@@ -220,8 +220,8 @@ def test_wan_cancel(models, tmp_path):
 
 def test_wan_fp8_storage_with_loras(models, tmp_path, monkeypatch):
     """fp8 weights + bf16 LoRAs (the CUDA path), forced onto the CPU."""
-    monkeypatch.setenv("MLXCOMFY_DEVICE", "cpu")
-    monkeypatch.setenv("MLXCOMFY_FP8", "force")
+    monkeypatch.setenv("AISTUDIO_DEVICE", "cpu")
+    monkeypatch.setenv("AISTUDIO_FP8", "force")
     worker, sink, out = run(models, "wan22-t2v", {"width": 64, "height": 48, "length": 5}, tmp=tmp_path)
     blocks = worker.pipe.transformer.blocks[0]
     assert blocks.attn1.to_q.base_layer.weight.dtype == torch.float8_e4m3fn
@@ -234,7 +234,7 @@ def test_nag_is_wan_attention_without_a_different_negative():
     itself (nothing to steer away from), and changes the output when the negative differs."""
     from diffusers import WanTransformer3DModel
 
-    from mlxcomfy_gpu.tasks import nag
+    from aistudio_gpu.tasks import nag
 
     torch.manual_seed(0)
     t = WanTransformer3DModel(patch_size=(1, 2, 2), num_attention_heads=2, attention_head_dim=12, in_channels=16,
@@ -255,7 +255,7 @@ def test_nag_is_wan_attention_without_a_different_negative():
 
 
 def test_nag_guide_clips_the_norm():
-    from mlxcomfy_gpu.tasks.nag import guide
+    from aistudio_gpu.tasks.nag import guide
 
     pos, neg = torch.ones(1, 1, 4), -torch.ones(1, 1, 4)  # extrapolated 21× away: clipped to 2.5× the norm
     out = guide(pos, neg, scale=11, tau=2.5, alpha=1.0)
@@ -268,7 +268,7 @@ def test_nag_guide_clips_the_norm():
 def test_wan_negative_prompt(models, tmp_path, monkeypatch, fast, negative, how):
     """Fast mode (no guidance) applies a negative prompt through NAG; the full model through classifier-free
     guidance."""
-    from mlxcomfy_gpu.tasks import nag
+    from aistudio_gpu.tasks import nag
 
     calls = []
     real = nag.guide
@@ -309,7 +309,7 @@ def test_flux_loras(models, tmp_path, monkeypatch):
     job, old ones are dropped past KEEP_LOADED, and a file that isn't a FLUX LoRA fails with a clear message."""
     from PIL import Image
 
-    from mlxcomfy_gpu.tasks import adapters
+    from aistudio_gpu.tasks import adapters
 
     spec = TASKS["flux1-dev"]
     worker = make_worker(spec.family)
@@ -362,7 +362,7 @@ def test_flux_fine_tune_from_a_single_file_and_swapping_back(models, tmp_path):
     from PIL import Image
     from safetensors.torch import save_file
 
-    from mlxcomfy_gpu import variants
+    from aistudio_gpu import variants
 
     spec = TASKS["flux1-dev"]
     worker = make_worker(spec.family)
@@ -466,8 +466,8 @@ def test_wan_loras_and_fine_tunes_on_fp8_storage(models, tmp_path, monkeypatch):
     there too (forced on the CPU here)."""
     from safetensors.torch import save_file
 
-    monkeypatch.setenv("MLXCOMFY_FP8", "force")
-    monkeypatch.setenv("MLXCOMFY_DEVICE", "cpu")
+    monkeypatch.setenv("AISTUDIO_FP8", "force")
+    monkeypatch.setenv("AISTUDIO_DEVICE", "cpu")
     worker = make_worker("wan22-t2v")
     worker.load(models, lambda s: None)
     assert worker.pipe.transformer.blocks[0].attn1.to_q.base_layer.weight.dtype == torch.float8_e4m3fn
@@ -506,7 +506,7 @@ def test_wan_fine_tune_of_one_expert_from_an_official_fp8_file(models, tmp_path)
     from diffusers import WanTransformer3DModel
     from safetensors.torch import save_file
 
-    from mlxcomfy_gpu import variants
+    from aistudio_gpu import variants
 
     base_low = WanTransformer3DModel.from_pretrained(models / "wan22-t2v" / "transformer_2")
     torch.manual_seed(9)
@@ -583,7 +583,7 @@ def test_qwen_image_loras_and_a_comfyui_fp8_fine_tune(models, tmp_path):
     from safetensors import safe_open
     from safetensors.torch import save_file
 
-    from mlxcomfy_gpu import variants
+    from aistudio_gpu import variants
 
     spec = TASKS["qwen-image"]
     worker = make_worker(spec.family)
@@ -640,8 +640,8 @@ def test_qwen_image_loras_and_a_comfyui_fp8_fine_tune(models, tmp_path):
 
 def test_qwen_image_fp8_storage(models, tmp_path, monkeypatch):
     """On a card under 70 GB the transformer's weights are stored in fp8 (here: forced on the CPU)."""
-    monkeypatch.setenv("MLXCOMFY_FP8", "force")
-    monkeypatch.setenv("MLXCOMFY_DEVICE", "cpu")
+    monkeypatch.setenv("AISTUDIO_FP8", "force")
+    monkeypatch.setenv("AISTUDIO_DEVICE", "cpu")
     worker = make_worker("qwen-image")
     worker.load(models, lambda s: None)
     assert worker.fp8
@@ -662,7 +662,7 @@ def test_download_takes_bf16_transformers_from_the_mirror_and_converts_the_rest(
     from safetensors import safe_open
     from transformers import T5EncoderModel
 
-    from mlxcomfy_gpu import download as dl
+    from aistudio_gpu import download as dl
 
     repo, mirror = tmp_path / "repo", tmp_path / "mirror"
     shutil.copytree(models / "wan22-t2v", repo)

@@ -109,7 +109,7 @@ enum TinyFlux {
         try writeSafetensors(weights, to: t.appendingPathComponent("diffusion_pytorch_model.safetensors"))
         try writeJSON(config, t.appendingPathComponent("config.json"))
         try writeJSON(["_class_name": "FluxPipeline"], dir.appendingPathComponent("model_index.json"))
-        for c in ["text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2", "vae", "scheduler", ".mlxcomfy-cache"] {
+        for c in ["text_encoder", "text_encoder_2", "tokenizer", "tokenizer_2", "vae", "scheduler", ".aistudio-cache"] {
             try placeholder(dir.appendingPathComponent(c))
         }
         try Data("readme".utf8).write(to: dir.appendingPathComponent("README.md"))
@@ -152,7 +152,7 @@ enum TinyFlux {
         let fm = FileManager.default
         // Own 8-bit transformer, used as is (no quantized cache is built for it).
         let t = try TinyFlux.load(dest)
-        #expect(!fm.fileExists(atPath: dest.appendingPathComponent(".mlxcomfy-cache").path))
+        #expect(!fm.fileExists(atPath: dest.appendingPathComponent(".aistudio-cache").path))
         let header = try SafetensorsHeader(url: dest.appendingPathComponent("transformer/diffusion_pytorch_model.safetensors"))
         #expect(header.metadata["quantization_level"] == "8")
         #expect(header.tensors["transformer_blocks.0.attn.to_q.scales"] != nil)

@@ -1,19 +1,19 @@
 #!/bin/bash
-# Sets up `mlxcomfy-cli serve` on an Apple Silicon Mac (a cloud Mac, or your own) as a login service.
+# Sets up `aistudio-cli serve` on an Apple Silicon Mac (a cloud Mac, or your own) as a login service.
 # Safe to re-run: it updates the checkout, rebuilds, and restarts the service.
 #
 #   scripts/bootstrap-mac-server.sh [options]
 #
 #   --source DIR      build from this checkout instead of cloning (default: clone into --dir)
-#   --dir DIR         where to clone (default ~/MLXComfyUI)
-#   --repo URL        git repository (default the public MLXComfyUI repo)
+#   --dir DIR         where to clone (default ~/AIStudio)
+#   --repo URL        git repository (default the public AIStudio repo)
 #   --branch NAME     branch or tag to build (default main)
 #   --port N          port (default 8188)
 #   --tailscale       publish it on your tailnet over https with `tailscale serve` (https://<mac>.<tailnet>.ts.net);
 #                     the server itself stays on 127.0.0.1. The app needs https for tailnet addresses (macOS's App
 #                     Transport Security blocks plain http to 100.x and *.ts.net).
 #   --host ADDR       listen on ADDR (127.0.0.1, a LAN IP, or 0.0.0.0)
-#   --models DIR      models folder (default the app's: ~/Library/Application Support/MLXComfyUI/models)
+#   --models DIR      models folder (default the app's: ~/Library/Application Support/AIStudio/models)
 #   --no-power        don't offer the no-sleep power settings
 #   --yes             don't ask before each step
 #   --dry-run         print what would happen, change nothing
@@ -22,7 +22,7 @@ set -euo pipefail
 
 REPO="https://github.com/IIMrFreemanII/MLXComfyUI.git"
 BRANCH="main"
-DIR="$HOME/MLXComfyUI"
+DIR="$HOME/AIStudio"
 SOURCE=""
 PORT=8188
 PUBLIC_URL=""
@@ -33,7 +33,7 @@ POWER=1
 YES=0
 DRY=0
 TEST=0
-LABEL="com.mlxcomfy.server"
+LABEL="com.aistudio.server"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -55,17 +55,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ $TEST -eq 1 ]]; then
-  LABEL="com.mlxcomfy.server.test"
+  LABEL="com.aistudio.server.test"
   [[ "$PORT" == 8188 ]] && PORT=18288
 fi
 
-SUPPORT="$HOME/Library/Application Support/MLXComfyUI/server"
+SUPPORT="$HOME/Library/Application Support/AIStudio/server"
 [[ $TEST -eq 1 ]] && SUPPORT="$(mktemp -d)/server"
 BIN_DIR="$SUPPORT/bin"
-TOKEN_FILE="$HOME/.config/mlxcomfy/token"
+TOKEN_FILE="$HOME/.config/aistudio/token"
 [[ $TEST -eq 1 ]] && TOKEN_FILE="$SUPPORT/token"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG="$HOME/Library/Logs/mlxcomfy-server.log"
+LOG="$HOME/Library/Logs/aistudio-server.log"
 [[ $TEST -eq 1 ]] && LOG="$SUPPORT/server.log"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
@@ -80,6 +80,43 @@ confirm() {
   [[ -z "$a" || "$a" =~ ^[Yy] ]]
 }
 die() { printf '\n\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# 0. A server set up before the project was renamed (MLXComfyUI → AIStudio): stop its service and move its folders,
+#    token and checkout to the new names. The old folders are left as links, so old absolute paths still work.
+migrate_legacy() {
+  local old_plist="$HOME/Library/LaunchAgents/com.mlxcomfy.server.plist"
+  local found=0
+  if [[ -f "$old_plist" ]]; then
+    found=1
+    say "Stopping the service from before the rename (com.mlxcomfy.server)"
+    run launchctl bootout "gui/$(id -u)/com.mlxcomfy.server" 2>/dev/null || true
+    run rm -f "$old_plist"
+  fi
+  local base
+  for base in "$HOME/Library/Application Support" "$HOME/Documents" "$HOME/Pictures"; do
+    if [[ -d "$base/MLXComfyUI" && ! -L "$base/MLXComfyUI" && ! -e "$base/AIStudio" ]]; then
+      found=1
+      say "Moving $base/MLXComfyUI to $base/AIStudio"
+      run mv "$base/MLXComfyUI" "$base/AIStudio"
+      run ln -s "$base/AIStudio" "$base/MLXComfyUI"
+    fi
+  done
+  if [[ -f "$HOME/.config/mlxcomfy/token" && ! -e "$HOME/.config/aistudio/token" ]]; then
+    found=1
+    say "Moving the token to ~/.config/aistudio/token"
+    run mkdir -p "$HOME/.config/aistudio"
+    run chmod 700 "$HOME/.config/aistudio"
+    run mv "$HOME/.config/mlxcomfy/token" "$HOME/.config/aistudio/token"
+  fi
+  if [[ -z "$SOURCE" && "$DIR" == "$HOME/AIStudio" && -d "$HOME/MLXComfyUI/.git" && ! -e "$DIR" ]]; then
+    found=1
+    say "Moving the checkout ~/MLXComfyUI to ~/AIStudio"
+    run mv "$HOME/MLXComfyUI" "$DIR"
+  fi
+  [[ $found -eq 1 ]] && note "(the old log ~/Library/Logs/mlxcomfy-server.log is no longer written; delete it when you like)"
+  return 0
+}
+[[ $TEST -eq 1 ]] || migrate_legacy
 
 # 1. The machine.
 say "Checking this Mac"
@@ -128,13 +165,13 @@ else
 fi
 
 # 3. Build (Release is fine for running; only the tests must use Debug).
-say "Building mlxcomfy-cli (Release; the first build takes several minutes)"
+say "Building aistudio-cli (Release; the first build takes several minutes)"
 DERIVED="$SRC/.build/xcode"
 if [[ $DRY -eq 0 ]]; then
-  (cd "$SRC" && xcodebuild build -scheme mlxcomfy-cli -destination 'platform=macOS' -derivedDataPath "$DERIVED" \
+  (cd "$SRC" && xcodebuild build -scheme aistudio-cli -destination 'platform=macOS' -derivedDataPath "$DERIVED" \
      -configuration Release -skipPackagePluginValidation -skipMacroValidation -quiet)
 else
-  printf '    $ (cd %s && xcodebuild build -scheme mlxcomfy-cli -configuration Release …)\n' "$SRC"
+  printf '    $ (cd %s && xcodebuild build -scheme aistudio-cli -configuration Release …)\n' "$SRC"
 fi
 PRODUCTS="$DERIVED/Build/Products/Release"
 
@@ -143,11 +180,11 @@ run mkdir -p "$BIN_DIR"
 if [[ $DRY -eq 0 ]]; then
   # The binary finds its resources (MLX's Metal library, tokenizer data, the dashboard) in bundles next to it.
   rm -rf "$BIN_DIR"/*.bundle
-  cp "$PRODUCTS/mlxcomfy-cli" "$BIN_DIR/"
+  cp "$PRODUCTS/aistudio-cli" "$BIN_DIR/"
   for b in "$PRODUCTS"/*.bundle; do cp -R "$b" "$BIN_DIR/"; done
-  codesign --force --sign - "$BIN_DIR/mlxcomfy-cli" >/dev/null 2>&1 || true
+  codesign --force --sign - "$BIN_DIR/aistudio-cli" >/dev/null 2>&1 || true
 fi
-CLI="$BIN_DIR/mlxcomfy-cli"
+CLI="$BIN_DIR/aistudio-cli"
 
 # 4. Token.
 say "Token"
@@ -199,12 +236,12 @@ if [[ $DRY -eq 0 ]]; then
   TOKEN="$(head -n1 "$TOKEN_FILE")"
   ok=0
   for _ in $(seq 1 60); do
-    if curl -fsS -H "Authorization: Bearer $TOKEN" "http://$HOST:$PORT/v1/info" -o /tmp/mlxcomfy-info.$$ 2>/dev/null; then ok=1; break; fi
+    if curl -fsS -H "Authorization: Bearer $TOKEN" "http://$HOST:$PORT/v1/info" -o /tmp/aistudio-info.$$ 2>/dev/null; then ok=1; break; fi
     sleep 1
   done
   if [[ $ok -eq 1 ]]; then
-    note "OK: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["hostName"], "·", d["chip"], "·", len(d["models"]), "models, server", d["serverVersion"])' /tmp/mlxcomfy-info.$$ 2>/dev/null || echo answered)"
-    rm -f /tmp/mlxcomfy-info.$$
+    note "OK: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["hostName"], "·", d["chip"], "·", len(d["models"]), "models, server", d["serverVersion"])' /tmp/aistudio-info.$$ 2>/dev/null || echo answered)"
+    rm -f /tmp/aistudio-info.$$
   else
     tail -20 "$LOG" 2>/dev/null || true
     [[ $TEST -eq 1 ]] && launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null && rm -f "$PLIST"
@@ -255,9 +292,9 @@ if [[ $POWER -eq 1 ]]; then
 fi
 
 say "Done"
-note "Token:       $CLI serve --show-token        (paste it into MLXComfyUI › Servers)"
+note "Token:       $CLI serve --show-token        (paste it into AIStudio › Servers)"
 if [[ -n "$PUBLIC_URL" ]]; then
-  note "Server URL:  $PUBLIC_URL               (add it in MLXComfyUI › Servers; the dashboard is at / )"
+  note "Server URL:  $PUBLIC_URL               (add it in AIStudio › Servers; the dashboard is at / )"
   note "Unpublish:   $TS serve --https=443 off"
 else
   note "Dashboard:   http://$HOST:$PORT/              (through your tunnel if this is 127.0.0.1)"

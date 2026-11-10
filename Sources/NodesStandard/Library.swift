@@ -48,7 +48,7 @@ public struct LibraryEntry: Codable, Identifiable, Sendable, Equatable {
 }
 
 public enum Library {
-    public static let changed = Notification.Name("MLXComfyLibraryChanged")
+    public static let changed = Notification.Name("AIStudioLibraryChanged")
     private static let lock = NSLock()
 
     public static func file(models: URL = ModelPaths.directory) -> URL { models.appendingPathComponent("library.json") }

@@ -45,7 +45,12 @@ public enum StandardNodes {
         peakMemory: { Memory.peakMemory })
 
     /// Graph key under which saved PNGs carry their workflow.
-    public static let graphMetadataKey = "mlxcomfy.graph"
+    public static let graphMetadataKey = "aistudio.graph"
+
+    /// The graph embedded in a file's metadata: under `graphMetadataKey`, or the key used before the rename.
+    public static func embeddedGraph(_ metadata: [String: String]) -> String? {
+        metadata[graphMetadataKey] ?? metadata[LegacyNames.graphMetadataKey]
+    }
 }
 
 /// Sampler progress preview: the current clean-latent estimate plus what's needed to decode it.
@@ -216,7 +221,7 @@ public struct SaveImageNode: NodeImplementation {
         type: "SaveImage", displayName: "Save Image", category: "image",
         inputs: [
             InputSpec("image", .image),
-            InputSpec("filename_prefix", .string, default: .string("mlxcomfy")),
+            InputSpec("filename_prefix", .string, default: .string("aistudio")),
             InputSpec("directory", .string, default: .string("outputs"), widget: .filePath),
         ],
         outputs: [], isOutput: true, alwaysExecute: true)
@@ -230,7 +235,7 @@ public struct SaveImageNode: NodeImplementation {
         let url = nextFilename(in: dir, prefix: prefix)
         try ImageArray.savePNG(image, to: url, text: [
             StandardNodes.graphMetadataKey: context.graph.jsonString(),
-            "mlxcomfy.node": context.nodeID,
+            "aistudio.node": context.nodeID,
         ])
         return ["images": .object([url]), "image": .object(image)]
     }
@@ -455,7 +460,7 @@ extension StandardNodes {
 
 // MARK: - server sandbox
 
-/// File access rules for graphs run by `mlxcomfy-cli serve`: a graph from the network may only read uploaded
+/// File access rules for graphs run by `aistudio-cli serve`: a graph from the network may only read uploaded
 /// inputs and installed models, and only write into its own run folder. Off (nil roots) in the app and CLI.
 public enum PathSandbox {
     public struct Roots: Sendable {

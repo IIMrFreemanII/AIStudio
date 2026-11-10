@@ -13,7 +13,7 @@ let residualDType: DType = (args.count > 3 && args[3] == "bf16r") ? .bfloat16 : 
 // f32 = float32 compute on float32-converted weights; f32w16 = float32 compute on the checkpoint's bf16 weights
 let weightDType: DType? = (args.count > 3 && args[3] == "f32") ? .float32 : nil
 let modelDir = URL(fileURLWithPath: args.count > 4 ? args[4]
-    : NSHomeDirectory() + "/Library/Application Support/MLXComfyUI/models/ace-step-1.5/acestep-v15-turbo")
+    : NSHomeDirectory() + "/Library/Application Support/AIStudio/models/ace-step-1.5/acestep-v15-turbo")
 
 @discardableResult
 func report(_ name: String, _ a: MLXArray, _ b: MLXArray) -> Float {

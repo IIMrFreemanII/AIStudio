@@ -1,4 +1,4 @@
-// The server's binary records (see Sources/MLXComfyProtocol/WireEvent.swift): a fixed 20-byte little-endian header
+// The server's binary records (see Sources/AIStudioProtocol/WireEvent.swift): a fixed 20-byte little-endian header
 //   kind u8 | flags u8 | node u16 | run u32 | seq u32 | step u16 | total u16 | payloadLen u32
 // followed by the payload. Several records share one WebSocket frame. Payloads are views into the frame (no copy).
 
@@ -83,7 +83,7 @@ export function payloadText(p: Uint8Array): string {
 
 // MARK: metrics
 
-/** Column order of the metrics payloads (Sources/MLXComfyProtocol/Metrics.swift `MetricID`). */
+/** Column order of the metrics payloads (Sources/AIStudioProtocol/Metrics.swift `MetricID`). */
 export const Metric = {
   memoryActive: 0,
   memoryCache: 1,
@@ -184,7 +184,7 @@ export class SeriesRing {
   }
 }
 
-// MARK: JSON messages (Sources/MLXComfyProtocol/Messages.swift)
+// MARK: JSON messages (Sources/AIStudioProtocol/Messages.swift)
 
 export type RunStatus = 'waiting' | 'running' | 'done' | 'failed' | 'cancelled';
 

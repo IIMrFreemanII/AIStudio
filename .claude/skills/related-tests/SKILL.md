@@ -24,7 +24,7 @@ Examples:
 2. **If the result says "none"**, stop and say so.
    - When it lists "changed targets with no unit tests", suggest the matching smoke test from the table below. Don't run it unasked: smoke tests load real models and take minutes.
 3. **Run the selection:** add `--run`, with `dangerouslyDisableSandbox: true`, because xcodebuild needs it. Use `run_in_background` when more than one or two targets are selected.
-   - It runs `xcodebuild test -scheme MLXComfyUI-Package … -only-testing:<Target>` in **Debug**. Never pass `-configuration Release`: the tests fail in Release.
+   - It runs `xcodebuild test -scheme AIStudio-Package … -only-testing:<Target>` in **Debug**. Never pass `-configuration Release`: the tests fail in Release.
    - It prints the Swift Testing summary lines and `** TEST SUCCEEDED/FAILED **`, and exits with xcodebuild's status.
    - The full log goes to `$TMPDIR/related-tests.log`. Under an unsandboxed run, `$TMPDIR` is a different folder from the sandbox's, so the script prints the path.
 4. **Report** the selected targets, the pass/fail counts and any failing test names.
@@ -40,7 +40,7 @@ Examples:
 
 ## Smoke tests for code without unit tests
 
-These are suggestions only. Build the app with `scripts/build-app.sh` and run `build/MLXComfyUI.app/Contents/MacOS/MLXComfyUI <flag>`.
+These are suggestions only. Build the app with `scripts/build-app.sh` and run `build/AIStudio.app/Contents/MacOS/AIStudio <flag>`.
 
 | Changed area | Smoke flag |
 |---|---|
@@ -52,4 +52,4 @@ These are suggestions only. Build the app with `scripts/build-app.sh` and run `b
 | Video panel (LTX) / Wan | `--smoke-video` / `--smoke-wan` |
 | Sound / music / speech panels | `--smoke-sound` / `--smoke-music` / `--smoke-speech` |
 | Video/audio I/O, model eviction (no model needed) | `--smoke-media` |
-| `mlxcomfy-cli`, `*-probe` tools | run the changed command by hand |
+| `aistudio-cli`, `*-probe` tools | run the changed command by hand |

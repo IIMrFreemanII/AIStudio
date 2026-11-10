@@ -28,7 +28,7 @@ public struct CatalogEntry: Codable, Hashable, Identifiable, Sendable {
     public var className: String?
     /// More repos fetched into subfolders of the same folder (e.g. a text encoder), each under its own license.
     public var extraParts: [CatalogPart]
-    /// Written as `mlxcomfy.json` after the download, for repos that don't declare a loader themselves.
+    /// Written as `aistudio.json` after the download, for repos that don't declare a loader themselves.
     public var manifest: [String: String]?
 
     public init(id: String, name: String, kind: Kind, repo: String, revision: String = "main", include: [String] = [],

@@ -8,7 +8,7 @@ let args = CommandLine.arguments
 let work = URL(fileURLWithPath: args.count > 1 ? args[1] : FileManager.default.currentDirectoryPath)
 let modelDir = args.count > 2 ? URL(fileURLWithPath: args[2]) :
     FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/MLXComfyUI/models/ltx-2.3-mlx-q4")
+        .appendingPathComponent("Library/Application Support/AIStudio/models/ltx-2.3-mlx-q4")
 
 func report(_ name: String, _ ours: MLXArray, _ ref: MLXArray?) {
     guard let ref else { print("  \(name): no reference"); return }

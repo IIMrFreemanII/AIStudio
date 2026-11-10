@@ -56,9 +56,9 @@ public struct ImportResult: Sendable {
 /// - Qwen-Image 2.1: `transformer/{model.safetensors, config.json}` quantized like the base's, `model_index.json`,
 ///   linked `text_encoder`, `processor`, `vae`, `scheduler`;
 /// - Wan 2.2: `config.json` (the base's, so the same quantization bits), `high_noise_model.safetensors` and
-///   `low_noise_model.safetensors` (an expert not imported links to the base's), `mlxcomfy.json`, linked `common`,
+///   `low_noise_model.safetensors` (an expert not imported links to the base's), `aistudio.json`, linked `common`,
 ///   `lora` and the base's other weight files.
-/// plus `mlxcomfy-link.json` recording the base, the source and the conversion. A linked folder is a real folder
+/// plus `aistudio-link.json` recording the base, the source and the conversion. A linked folder is a real folder
 /// mirroring the base's, with a symbolic link per file: `FileManager.contentsOfDirectory` (which the loaders list
 /// folders with) does not follow a link to a directory. Links are relative when the base sits in the same folder, so
 /// the models folder can be moved.
@@ -68,7 +68,7 @@ public struct ImportResult: Sendable {
 /// renamed at the end, so a failed or cancelled import (`Task` cancellation is checked between tensors) leaves
 /// nothing behind.
 public enum ModelImporter {
-    public static let linkManifestName = "mlxcomfy-link.json"
+    public static let linkManifestName = "aistudio-link.json"
 
     // MARK: inspect
 
@@ -100,7 +100,7 @@ public enum ModelImporter {
     ///   - family: `flux.1`, `qwen-image-2.1`, `wan-2.2` (or the pipeline class name); `nil` takes the base's.
     ///   - base: the installed base model folder (e.g. `<models>/flux-1-dev`).
     ///   - destination: the new model folder `<models>/<id>`; must not exist.
-    ///   - sourceInfo: free-form strings stored in `mlxcomfy-link.json` under `"source"` (page URL, version id…).
+    ///   - sourceInfo: free-form strings stored in `aistudio-link.json` under `"source"` (page URL, version id…).
     @discardableResult
     public static func importTransformer(from source: URL, family: String? = nil, base: URL, into destination: URL,
                                          wanExpert: WanExpert? = nil, sourceInfo: [String: String] = [:],
@@ -169,7 +169,7 @@ public enum ModelImporter {
             progress(ImportProgress(stage: .linking, fraction: 0.99, message: "linking the base model's parts"))
             for entry in try entries(of: base) {
                 if entry.name == "transformer" || entry.name == linkManifestName { continue }
-                if entry.name == "model_index.json" || entry.name == "mlxcomfy.json" {
+                if entry.name == "model_index.json" || entry.name == "aistudio.json" {
                     try fm.copyItem(at: entry.url, to: tmp.appendingPathComponent(entry.name))
                 } else if entry.isDirectory {
                     try mirror(entry.url, at: tmp.appendingPathComponent(entry.name),
@@ -240,7 +240,7 @@ public enum ModelImporter {
                     continue
                 }
                 if entry.url.standardizedFileURL == modelDir.standardizedFileURL { continue }  // q4/ etc.
-                if n == "mlxcomfy.json" {
+                if n == "aistudio.json" {
                     try fm.copyItem(at: entry.url, to: tmp.appendingPathComponent(n))
                 } else if entry.isDirectory {
                     try mirror(entry.url, at: tmp.appendingPathComponent(n), final: destination.appendingPathComponent(n))
@@ -248,8 +248,8 @@ public enum ModelImporter {
                     try link(tmp.appendingPathComponent(n), to: entry.url, finalDir: destination)
                 }
             }
-            if !fm.fileExists(atPath: tmp.appendingPathComponent("mlxcomfy.json").path) {
-                try writeJSON(["class": "WanPipeline"], to: tmp.appendingPathComponent("mlxcomfy.json"))
+            if !fm.fileExists(atPath: tmp.appendingPathComponent("aistudio.json").path) {
+                try writeJSON(["class": "WanPipeline"], to: tmp.appendingPathComponent("aistudio.json"))
             }
             let result = ImportResult(destination: destination, family: family, schema: summary.schema,
                                       sourceDtype: summary.dtype, bits: summary.bits, bytesWritten: total,

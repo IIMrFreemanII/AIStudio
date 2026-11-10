@@ -4,7 +4,7 @@ import { NO_NODE,
   decodeAll, decodeHistory, decodeSample, Kind, METRIC_COUNT, payloadPeak, payloadSeconds, SeriesRing, WireError,
 } from './protocol';
 
-// Same bytes as Tests/MLXComfyProtocolTests/WireEventTests.swift `golden`: a nodeFinished record (node 3, run 7,
+// Same bytes as Tests/AIStudioProtocolTests/WireEventTests.swift `golden`: a nodeFinished record (node 3, run 7,
 // seq 42, step 5/8, 1.5 s, peak 1024 B) followed by a preview record (node 1, run 7, step 2/8, payload ff d8).
 const GOLDEN =
   '0500030007000000' + '2a00000005000800' + '10000000' + '000000000000f83f' + '0004000000000000' +
