@@ -3,6 +3,7 @@ import Foundation
 import GraphRuntime
 import MLX
 import MLXDiffusionCore
+import NodesRemote
 import NodesStandard
 
 /// Events forwarded to the UI, with MLX payloads already converted to images.
@@ -11,6 +12,8 @@ enum EngineEvent {
     case nodeStarted(String)
     case nodeCached(String)
     case progress(node: String, step: Int, total: Int, preview: CGImage?)
+    /// What a node is doing besides stepping ("Starting GPU 0:41"); nil clears it.
+    case status(node: String, text: String?)
     case nodeFinished(node: String, seconds: Double, peakMemory: Int?)
     case nodeFailed(node: String, message: String)
     case finished(seconds: Double)
@@ -45,7 +48,7 @@ actor Engine {
     nonisolated(unsafe) private let cache: ResourceCache
 
     init(budgetFraction: Double = 0.8) {
-        let ex = GraphExecutor(registry: StandardNodes.makeRegistry(), hooks: StandardNodes.mlxHooks)
+        let ex = GraphExecutor(registry: RemoteNodes.makeRegistry(), hooks: StandardNodes.mlxHooks)
         executor = ex
         cache = ex.resources
         ex.resources.budgetBytes = Self.budget(fraction: budgetFraction)
@@ -93,8 +96,11 @@ actor Engine {
                     image = try? ImageArray.cgImage(from: rgb)
                 } else if let rgb = preview as? MLXArray {
                     image = try? ImageArray.cgImage(from: rgb)
+                } else if let p = preview, CFGetTypeID(p as CFTypeRef) == CGImage.typeID {
+                    image = (p as! CGImage)  // a remote node's decoded JPEG preview
                 }
                 onEvent(.progress(node: n, step: step, total: total, preview: image))
+            case .nodeStatus(let n, let text): onEvent(.status(node: n, text: text))
             case .nodeFinished(let n, let s, let peak): onEvent(.nodeFinished(node: n, seconds: s, peakMemory: peak))
             case .nodeFailed(let n, let e): onEvent(.nodeFailed(node: n, message: String(describing: e)))
             case .finished(let s): onEvent(.finished(seconds: s))

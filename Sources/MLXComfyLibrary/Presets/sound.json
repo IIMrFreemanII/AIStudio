@@ -57,7 +57,7 @@
     "stable-audio-open-small"
   ],
   "name" : "Sound Effect",
-  "order" : 130,
+  "order" : 160,
   "summary" : "Up to 11 s of sound from a description.",
   "symbol" : "speaker.wave.2"
 }

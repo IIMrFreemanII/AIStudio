@@ -10,6 +10,7 @@ import Flux
 import FluxVAE
 import MLX
 import MLXDiffusionCore
+import NodesRemote
 import NodesStandard
 import QwenImage21
 import Tokenizers
@@ -74,7 +75,7 @@ struct Run: AsyncParsableCommand {
         }
         try applyOverrides(overrides, to: &g)
 
-        let executor = GraphExecutor(registry: StandardNodes.makeRegistry(), hooks: StandardNodes.mlxHooks)
+        let executor = GraphExecutor(registry: RemoteNodes.makeRegistry(), hooks: StandardNodes.mlxHooks)
         try await runOnce(executor, g, label: "run 1")
         if !secondOverrides.isEmpty {
             try applyOverrides(secondOverrides, to: &g)
@@ -90,6 +91,7 @@ struct Run: AsyncParsableCommand {
             case .nodeStarted(let n): log("▶︎ \(n)")
             case .nodeCached(let n): log("✓ \(n) (cached)")
             case .nodeProgress(let n, let s, let t, _): log("  \(n) \(s)/\(t)")
+            case .nodeStatus(let n, let text): if let text { log("  \(n): \(text)") }
             case .nodeFinished(let n, let secs, let peak):
                 log(String(format: "✓ %@ %.2fs%@", n, secs, peak.map { String(format: ", peak %.1f GB", Double($0) / 1e9) } ?? ""))
             case .nodeFailed(let n, let e): log("✗ \(n): \(e)")
@@ -111,7 +113,7 @@ struct Nodes: AsyncParsableCommand {
     static let configuration = CommandConfiguration(abstract: "List available node types.")
 
     func run() async throws {
-        for s in StandardNodes.makeRegistry().schemas {
+        for s in RemoteNodes.makeRegistry().schemas {
             let ins = s.inputs.map { i in
                 "\(i.name): \(i.type)" + (i.defaultValue.map { " = \($0)" } ?? "")
             }.joined(separator: ", ")

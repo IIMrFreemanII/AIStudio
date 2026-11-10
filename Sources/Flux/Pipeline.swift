@@ -12,7 +12,8 @@ import Tokenizers
 /// sampling loop.
 ///
 /// Loads the official diffusers folder. The bf16 transformer is quantized to 8-bit once and cached in
-/// `.mlxcomfy-cache/`; the T5-XXL encoder (9.5 GB) is loaded only while a prompt is encoded.
+/// `.mlxcomfy-cache/`; a transformer stored already quantized (imported fine-tunes, see `ModelImport`) is used as
+/// is. The T5-XXL encoder (9.5 GB) is loaded only while a prompt is encoded.
 public final class FluxPipeline: DiffusionModel {
     /// What ``encodePrompt(_:images:)`` returns inside its ``Conditioning``.
     public struct PromptPayload {
@@ -50,6 +51,16 @@ public final class FluxPipeline: DiffusionModel {
         directory.appendingPathComponent(".mlxcomfy-cache/transformer-q\(bits).safetensors")
     }
 
+    /// The transformer weights of a model folder: a pre-quantized `transformer/` as stored, otherwise the dense one
+    /// quantized to `quantizeBits` through the cache (or as stored when `quantizeBits` is `nil`).
+    public static func transformerStore(directory: URL, quantizeBits: Int? = 8,
+                                        log: (String) -> Void = { _ in }) throws -> WeightStore {
+        let tDir = directory.appendingPathComponent("transformer")
+        guard let bits = quantizeBits else { return try WeightStore(directory: tDir) }
+        return try WeightStore.quantizedCache(source: tDir, cacheURL: transformerCacheURL(directory, bits: bits),
+                                              bits: bits, log: log)
+    }
+
     /// - Parameter quantizeBits: 8 (default, cached) or `nil` to run the bf16 weights as stored (about 24 GB).
     public init(directory: URL, quantizeBits: Int? = 8, log: (String) -> Void = { _ in }) async throws {
         self.directory = directory
@@ -63,13 +74,7 @@ public final class FluxPipeline: DiffusionModel {
 
         t = Date()
         let tDir = directory.appendingPathComponent("transformer")
-        let store: WeightStore
-        if let bits = quantizeBits {
-            store = try WeightStore.quantizedCache(source: tDir, cacheURL: Self.transformerCacheURL(directory, bits: bits),
-                                                   bits: bits, log: log)
-        } else {
-            store = try WeightStore(directory: tDir)
-        }
+        let store = try Self.transformerStore(directory: directory, quantizeBits: quantizeBits, log: log)
         transformer = try FluxTransformer(store: store,
                                           config: FluxTransformer.Config(url: tDir.appendingPathComponent("config.json")))
         log(String(format: "transformer %.1fs", Date().timeIntervalSince(t)))

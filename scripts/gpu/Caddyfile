@@ -1,4 +1,4 @@
-# Bearer-token gate in front of a server that has no auth of its own (ComfyUI, Ollama, vLLM without --api-key).
+# Bearer-token gate in front of a server that checks no token itself (the GPU server, Ollama, vLLM without --api-key).
 # SITE_ADDRESS is ":8188" (plain HTTP, for use over Tailscale or an SSH tunnel) or a domain name (automatic HTTPS).
 {$SITE_ADDRESS} {
 	@authorized header Authorization "Bearer {$API_TOKEN}"

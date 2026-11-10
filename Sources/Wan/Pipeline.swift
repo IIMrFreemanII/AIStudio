@@ -28,7 +28,7 @@ public enum WanError: Error, CustomStringConvertible {
 /// Folder layouts: the PocketAiHub T2V (`q4/{config.json, high_noise_model, low_noise_model}` + `common/{t5_encoder,
 /// tokenizer.json, vae}`) or the flat mlx-video layout (all in one folder), plus `lora/**/{high,low}_noise_model
 /// .safetensors` and `mlxcomfy.json` with `"class": "WanPipeline"`.
-public final class WanPipeline: VideoDiffusionModel, @unchecked Sendable {
+public final class WanPipeline: LoRAVideoModel, @unchecked Sendable {
     public static let className = "WanPipeline"
 
     public static func register(in registry: ModelRegistry = .shared) {
@@ -54,8 +54,11 @@ public final class WanPipeline: VideoDiffusionModel, @unchecked Sendable {
     let vae: WanVAE
     let text: WanTextEncoder
     let lightning: (high: [String: LoRAAdapter], low: [String: LoRAAdapter])?
+    /// Your LoRAs (LoRA nodes), per expert, on top of the shared weights.
+    let userLoRAs: (high: [[String: LoRAAdapter]], low: [[String: LoRAAdapter]])
     var negativeContext: MLXArray?
-    let lock = NSLock()
+    /// Shared by every LoRA view of the same weights: the experts' adapters are set per generation.
+    let lock: NSLock
 
     public var isI2V: Bool { config.inDim > 16 }
     public var hasLightning: Bool { lightning != nil }
@@ -64,6 +67,8 @@ public final class WanPipeline: VideoDiffusionModel, @unchecked Sendable {
 
     public init(directory: URL) async throws {
         self.directory = directory
+        lock = NSLock()
+        userLoRAs = ([], [])
         let fm = FileManager.default
         func find(_ name: String) throws -> URL {
             for sub in ["", "common", "q4", "q8", "bf16"] {
@@ -116,6 +121,67 @@ public final class WanPipeline: VideoDiffusionModel, @unchecked Sendable {
         }
     }
 
+    private init(copying o: WanPipeline, userLoRAs: (high: [[String: LoRAAdapter]], low: [[String: LoRAAdapter]])) {
+        directory = o.directory; config = o.config; settings = o.settings; high = o.high; low = o.low; vae = o.vae
+        text = o.text; lightning = o.lightning; lock = o.lock; negativeContext = o.negativeContext
+        self.userLoRAs = userLoRAs
+    }
+
+    // MARK: LoRA
+
+    /// A view of this model with a LoRA on top: `lora` for both experts (`expert` nil), or for one; `companion` is the
+    /// low-noise expert's file of a pair (then `lora` is the high-noise one's). The weights are shared.
+    public func applyingLoRA(_ lora: URL, companion: URL?, expert: String?, strength: Float) throws
+        -> (model: GenerativeModel, report: LoRAReport) {
+        let names = high.linearNames
+        let first = try Self.loraFile(lora, names: names)
+        var (h, l) = userLoRAs
+        var matched = 0, unmatched = first.unmatchedKeys.count
+        let a = first.adapters(strength: strength)
+        if let companion {
+            let second = try Self.loraFile(companion, names: names)
+            h.append(a)
+            l.append(second.adapters(strength: strength))
+            matched = first.pairs.count + second.pairs.count
+            unmatched += second.unmatchedKeys.count
+        } else {
+            if expert != "low" { h.append(a); matched += first.pairs.count }
+            if expert != "high" { l.append(a); matched += first.pairs.count }
+        }
+        let name = companion.map { "\(lora.lastPathComponent) + \($0.lastPathComponent)" } ?? lora.lastPathComponent
+        let report = LoRAReport(file: name, matchedLayers: matched, unmatchedKeys: unmatched)
+        return (WanPipeline(copying: self, userLoRAs: (h, l)), report)
+    }
+
+    /// A Wan LoRA file: the official names (kohya / ComfyUI / musubi: `blocks.N.self_attn.q`) or diffusers'
+    /// (`blocks.N.attn1.to_q`), mapped onto the transformer's layers.
+    static func loraFile(_ url: URL, names: Set<String>) throws -> LoRAFile {
+        let (arrays, _) = try loadArraysAndMetadata(url: url)
+        let (groups, other) = LoRAFile.groups(arrays)
+        let underscored = Dictionary(names.map { ($0.replacingOccurrences(of: ".", with: "_"), $0) },
+                                     uniquingKeysWith: { a, _ in a })
+        var pairs: [String: LoRAFile.Pair] = [:]
+        var unmatched = other
+        for (name, pair) in groups {
+            let official = officialName(name)
+            guard let target = names.contains(official) ? official : underscored[name] else {
+                unmatched += pair.keys; continue
+            }
+            pairs[target] = pair
+        }
+        return try LoRAFile(url: url, pairs: pairs, unmatchedKeys: unmatched, sample: Array(arrays.keys.sorted().prefix(3)))
+    }
+
+    /// diffusers' Wan layer names → the official ones (unchanged when already official).
+    static func officialName(_ name: String) -> String {
+        var n = name
+        for (a, b) in [(".attn1.", ".self_attn."), (".attn2.", ".cross_attn."), (".to_out.0", ".o"), (".to_q", ".q"),
+                       (".to_k", ".k"), (".to_v", ".v"), (".ffn.net.0.proj", ".ffn.0"), (".ffn.net.2", ".ffn.2")] {
+            n = n.replacingOccurrences(of: a, with: b)
+        }
+        return n
+    }
+
     // MARK: VideoDiffusionModel
 
     public func encodeVideoPrompt(_ prompt: String) throws -> Conditioning {
@@ -148,13 +214,11 @@ public final class WanPipeline: VideoDiffusionModel, @unchecked Sendable {
 
         let schedule = fast ? WanSchedule.lightning(steps: max(1, min(8, steps ?? 4)))
             : WanSchedule.official(steps: max(2, min(100, steps ?? settings.steps)), shift: settings.shift)
-        if fast, let lightning {
-            high.setAdapters(lightning.high)
-            low.setAdapters(lightning.low)
-        } else {
-            high.clearAdapters()
-            low.clearAdapters()
-        }
+        // Lightning (fast) and your LoRAs, per expert.
+        let highSets = (fast ? lightning.map { [$0.high] } ?? [] : []) + userLoRAs.high
+        let lowSets = (fast ? lightning.map { [$0.low] } ?? [] : []) + userLoRAs.low
+        if highSets.isEmpty { high.clearAdapters() } else { high.setAdapters(highSets) }
+        if lowSets.isEmpty { low.clearAdapters() } else { low.setAdapters(lowSets) }
         let (gLow, gHigh) = fast ? (1.0, 1.0) : (settings.guidanceLow, settings.guidanceHigh)
         var negative: MLXArray?
         if gLow != 1 || gHigh != 1 {

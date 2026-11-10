@@ -1,0 +1,60 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "first_frame",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "image" : {
+            "node" : "first_frame",
+            "output" : "image"
+          },
+          "prompt" : "The camera slowly pushes in as the scene comes alive"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteWanImageToVideo"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "video",
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "SaveVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-wan-i2v",
+  "modelName" : "Wan 2.2 A14B on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Wan 2.2 Image to Video · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 140,
+  "summary" : "Animate a picture on an NVIDIA GPU: it becomes the first frame.",
+  "symbol" : "cloud"
+}

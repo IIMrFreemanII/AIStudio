@@ -71,6 +71,14 @@ extension AppModel {
     /// Save nodes in the default output folder write into `<output>/<workflow>` instead.
     static let saveNodeTypes: Set<String> = ["SaveImage", "SaveVideo", "SaveAudio"]
 
+    /// The prompt-like text input of each generating node (local or Cloud GPU): where wildcards are expanded and
+    /// what titles a queue row. Speech text is never expanded (it's read aloud as written).
+    static let promptFields: [String: String] = [
+        "TextEncode": "prompt", "TextToAudio": "prompt", "TextToMusic": "tags",
+        "RemoteWanTextToVideo": "prompt", "RemoteWanImageToVideo": "prompt", "RemoteFlux": "prompt", "RemoteQwenImage": "prompt",
+        "RemoteTextToSound": "prompt", "RemoteTextToMusic": "tags",
+    ]
+
     /// The graph as it will run: each Text Encode's style applied, then choices and wildcards expanded in every
     /// literal prompt (seeded by the job's seed), and outputs sent to the workflow's folder. The templates and the
     /// workflow name are kept in `metadata` so the saved file records how it was made.
@@ -78,8 +86,8 @@ extension AppModel {
         var g = graph
         let wildcards = PromptTemplate.wildcardFiles(in: Self.wildcardDirectory)
         var meta = g.metadata ?? [:]
-        for n in g.nodes where ["TextEncode", "TextToAudio", "TextToMusic"].contains(n.type) {
-            let field = n.type == "TextToMusic" ? "tags" : "prompt"
+        for n in g.nodes {
+            guard let field = Self.promptFields[n.type] else { continue }
             guard case .value(.string(let raw))? = n.inputs[field] else { continue }
             var text = raw
             let style = n.type == "TextEncode" ? self.style(of: n.id, in: graph) : nil
@@ -224,8 +232,8 @@ extension AppModel {
                     } else if let json = await MediaIO.readMetadata(url)[StandardNodes.graphMetadataKey] {
                         g = try? JSONDecoder().decode(Graph.self, from: Data(json.utf8))
                     }
-                    if let n = g?.nodes.first(where: { ["TextEncode", "TextToAudio", "TextToMusic", "TextToSpeech"].contains($0.type) }),
-                       case .value(.string(let s))? = n.inputs[["TextToMusic": "tags", "TextToSpeech": "text"][n.type] ?? "prompt"] {
+                    if let n = g?.nodes.first(where: { AppModel.titleFields[$0.type] != nil }),
+                       case .value(.string(let s))? = n.inputs[AppModel.titleFields[n.type]!] {
                         out[url] = s
                     } else {
                         out[url] = ""

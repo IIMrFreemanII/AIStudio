@@ -35,6 +35,8 @@ public enum Widget: Hashable, Sendable {
     case toggle
     case seed
     case filePath
+    /// A pick from the app's library (`"lora"`): the value is the item's id; the app draws a menu of what's installed.
+    case library(String)
 }
 
 public struct InputSpec: Hashable, Sendable {
@@ -177,6 +179,11 @@ public final class ExecutionContext {
     /// Reports progress (e.g. sampler steps). `preview` is model/UI-specific (latents, an image…).
     public func progress(step: Int, total: Int, preview: Any? = nil) {
         emit(.nodeProgress(node: nodeID, step: step, total: total, preview: preview))
+    }
+
+    /// Shows what the node is doing when that isn't a step count (waiting for a server, downloading); nil clears it.
+    public func status(_ text: String?) {
+        emit(.nodeStatus(node: nodeID, text: text))
     }
 
     /// Throws `CancellationError` when the run has been cancelled.

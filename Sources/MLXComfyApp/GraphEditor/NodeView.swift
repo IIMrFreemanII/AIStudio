@@ -1,6 +1,7 @@
 import AppKit
 import GraphRuntime
 import MLXComfyLibrary
+import NodesRemote
 import SwiftUI
 
 /// Callbacks a node card raises; locations are in the editor's "canvas" (view) coordinate space.
@@ -44,6 +45,8 @@ struct NodeView: View {
     let node: GraphNode
     let schema: NodeSchema
     let state: NodeRunState?
+    /// What the node says it is doing while it runs ("Starting GPU 0:41").
+    var statusText: String? = nil
     let selected: Bool
     let bindings: LiteralBindings
     let actions: NodeActions
@@ -235,10 +238,19 @@ struct NodeView: View {
         case .running(let step, let total)?:
             HStack(spacing: 4) {
                 MGSpinner().controlSize(.mini)
-                if total > 0 { Text("\(step)/\(total)").font(.mg(size: 10).monospacedDigit()) }
+                if total > 0 {
+                    Text("\(step)/\(total)").font(.mg(size: 10).monospacedDigit())
+                } else if let statusText {
+                    Text(statusText).font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
+                        .lineLimit(1).frame(maxWidth: 170, alignment: .leading)
+                }
             }
+            .mgHelp(statusText ?? "")
         case .done(let s, _)?:
-            Text(String(format: "%.1fs", s)).font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
+            Text(String(format: "%.1fs", s) + (statusText.map { " · \($0)" } ?? ""))
+                .font(.mg(size: 10).monospacedDigit()).foregroundStyle(MG.secondaryLabel)
+                .lineLimit(1).frame(maxWidth: 240, alignment: .trailing)
+                .mgHelp(statusText ?? "")
         case .cached?:
             Label("cached", systemImage: "checkmark").font(.mg(size: 10)).foregroundStyle(MG.secondaryLabel)
                 .labelStyle(.titleAndIcon)
@@ -305,6 +317,29 @@ struct NodeView: View {
     @ViewBuilder
     func widget(_ spec: InputSpec) -> some View {
         let font = Font.mg(size: 11)
+        if spec.name == "server", RemoteNodes.types.contains(node.type) {
+            // The GPU server by name (the inspector picks it).
+            let id = bindings.string(node.id, "server").wrappedValue
+            HStack(spacing: 6) {
+                Image(systemName: "cpu").foregroundStyle(MG.secondaryLabel)
+                Text(RemoteEndpoints.resolve(id)?.name ?? (id.isEmpty ? "No GPU server" : "Removed server"))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(font)
+        } else if case .library? = spec.widget {
+            HStack(spacing: 6) {
+                Text(spec.name).font(font).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                Spacer(minLength: 4)
+                LibraryPicker(node: node, input: spec.name, compact: true)
+            }
+        } else {
+            plainWidget(spec, font: font)
+        }
+    }
+
+    @ViewBuilder
+    func plainWidget(_ spec: InputSpec, font: Font) -> some View {
         switch (spec.type, spec.widget) {
         case (.string, .text(multiline: true)?):
             Text(bindings.string(node.id, spec.name).wrappedValue.isEmpty

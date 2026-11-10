@@ -50,16 +50,18 @@ public struct Preset: Codable, Identifiable, Equatable, Sendable {
     public var graph: Graph
     /// File name of a thumbnail next to a user preset's JSON.
     public var thumbnail: String?
+    /// The kind of server the preset needs ("gpu": a GPU server for its Cloud GPU nodes); nil runs on this Mac.
+    public var needsServer: String?
     /// Set when loaded, not stored.
     public var isBuiltIn: Bool = false
     public var fileURL: URL? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, name, category, models, modelName, summary, symbol, order, graph, thumbnail
+        case id, name, category, models, modelName, summary, symbol, order, graph, thumbnail, needsServer
     }
 
     public init(id: String, name: String, category: Category, models: [String], modelName: String, summary: String,
-                symbol: String, order: Int = 1000, graph: Graph, thumbnail: String? = nil) {
+                symbol: String, order: Int = 1000, graph: Graph, thumbnail: String? = nil, needsServer: String? = nil) {
         self.id = id
         self.name = name
         self.category = category
@@ -70,6 +72,7 @@ public struct Preset: Codable, Identifiable, Equatable, Sendable {
         self.order = order
         self.graph = graph
         self.thumbnail = thumbnail
+        self.needsServer = needsServer
     }
 
     /// The preset's graph for this Mac: model folder names resolved to paths (`resolveModel` returns nil to keep the

@@ -40,6 +40,8 @@ final class WorkflowDocument: Identifiable {
     // MARK: run results
 
     var nodeStates: [String: NodeRunState] = [:]
+    /// Status lines of nodes in the run in progress ("Starting GPU 0:41").
+    var nodeStatus: [String: String] = [:]
     /// The live step preview of the run in progress, and the node sending it.
     var previewImage: CGImage?
     var previewNode: String?

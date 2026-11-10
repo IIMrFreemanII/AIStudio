@@ -1,15 +1,18 @@
 import Foundation
 import GraphRuntime
 import MLXComfyProtocol
+import NodesRemote
 import Observation
 import Security
 
 /// A server the app can send work to. The token lives in the Keychain, not in this record.
 struct ServerConnection: Codable, Identifiable, Hashable {
     enum Kind: String, Codable, CaseIterable {
-        /// `mlxcomfy-cli serve` on another Mac: runs whole graphs.
+        /// `mlxcomfy-cli serve` on another Mac: runs whole graphs (a tab's run target).
         case mlxcomfy
-        var label: String { "MLXComfy server" }
+        /// The GPU server (server/gpu, on Modal or a GPU box): runs jobs for the Cloud GPU nodes.
+        case gpu
+        var label: String { self == .mlxcomfy ? "Mac server" : "GPU server" }
     }
 
     var id: String = UUID().uuidString
@@ -90,11 +93,14 @@ final class ConnectionStore {
         case unknown
         case checking
         case online(ServerInfo)
+        case gpuOnline(GPUServerInfo)
         case offline(String)
     }
 
     private(set) var connections: [ServerConnection] = []
     var status: [String: Status] = [:]
+    /// Whether the Servers panel checks every server when it appears (off for snapshots, which set statuses).
+    @ObservationIgnored var checksOnAppear = true
     @ObservationIgnored private var backends: [String: RemoteMLXBackend] = [:]
     @ObservationIgnored let fileURL: URL?
     @ObservationIgnored let registry: NodeRegistry
@@ -110,6 +116,7 @@ final class ConnectionStore {
            let list = try? JSONDecoder().decode([ServerConnection].self, from: data) {
             connections = list
         }
+        publishEndpoints()
     }
 
     static var defaultFileURL: URL {
@@ -119,12 +126,28 @@ final class ConnectionStore {
 
     func connection(_ id: String) -> ServerConnection? { connections.first { $0.id == id } }
 
+    /// Mac servers: run targets for whole tabs.
+    var macServers: [ServerConnection] { connections.filter { $0.kind == .mlxcomfy } }
+    /// GPU servers: where the Cloud GPU nodes send their jobs.
+    var gpuServers: [ServerConnection] { connections.filter { $0.kind == .gpu } }
+
+    /// Tells the remote nodes which GPU servers exist (tokens are read from the Keychain when a node runs).
+    private func publishEndpoints() {
+        let servers = gpuServers.compactMap { c in c.url.map { (c.id, c.name, $0) } }
+        RemoteEndpoints.install { id in
+            guard let s = id.isEmpty ? servers.first : servers.first(where: { $0.0 == id }),
+                  let token = ConnectionToken.read(s.0) else { return nil }
+            return RemoteEndpoints.Endpoint(id: s.0, name: s.1, baseURL: s.2, token: token)
+        }
+    }
+
     func save(_ c: ServerConnection, token: String?) {
         if let i = connections.firstIndex(where: { $0.id == c.id }) { connections[i] = c } else { connections.append(c) }
         if let token { ConnectionToken.save(token, for: c.id, keychain: fileURL != nil) }
         backends.removeValue(forKey: c.id)?.client.close()
         status[c.id] = .unknown
         persist()
+        publishEndpoints()
     }
 
     func remove(_ id: String) {
@@ -133,6 +156,7 @@ final class ConnectionStore {
         backends.removeValue(forKey: id)?.client.close()
         status.removeValue(forKey: id)
         persist()
+        publishEndpoints()
     }
 
     private func persist() {
@@ -144,7 +168,9 @@ final class ConnectionStore {
     /// The backend for a connection (made on first use; one per connection for the app's lifetime).
     func backend(_ id: String) -> RemoteMLXBackend? {
         if let b = backends[id] { return b }
-        guard let c = connection(id), let url = c.url, let token = ConnectionToken.read(id) else { return nil }
+        guard let c = connection(id), c.kind == .mlxcomfy, let url = c.url, let token = ConnectionToken.read(id) else {
+            return nil
+        }
         let b = RemoteMLXBackend(id: id, name: c.name, endpoint: .init(baseURL: url, token: token), registry: registry,
                                  hasher: hasher)
         backends[id] = b
@@ -162,12 +188,22 @@ final class ConnectionStore {
             return
         }
         status[id] = .checking
-        let client = RemoteClient(endpoint: .init(baseURL: url, token: token), hello: ClientHello(role: .app, name: "test"))
-        defer { client.close() }
         do {
-            status[id] = .online(try await client.info())
+            status[id] = try await Self.check(kind: c.kind, url: url, token: token)
         } catch {
             status[id] = .offline(Self.describe(error))
+        }
+    }
+
+    /// Asks a server for `/v1/info` (a GPU server answers from its front desk: no GPU starts).
+    static func check(kind: ServerConnection.Kind, url: URL, token: String) async throws -> Status {
+        switch kind {
+        case .mlxcomfy:
+            let client = RemoteClient(endpoint: .init(baseURL: url, token: token), hello: ClientHello(role: .app, name: "test"))
+            defer { client.close() }
+            return .online(try await client.info())
+        case .gpu:
+            return .gpuOnline(try await GPUJobClient(baseURL: url, token: token).info())
         }
     }
 

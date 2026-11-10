@@ -255,7 +255,7 @@ struct PresetsPanel: View {
                     if !items.isEmpty {
                         MGListHeader(title: cat.title)
                             ForEach(items) { p in
-                                let ok = p.isAvailable(installed: installed)
+                                let ok = model.presetAvailable(p, installed: installed)
                                 HStack(spacing: 8) {
                                     MGKindBadge(color: ok ? cat.hue : MG.hueGray, symbol: p.symbol, size: 20)
                                     VStack(alignment: .leading, spacing: 1) {
@@ -264,8 +264,13 @@ struct PresetsPanel: View {
                                     }
                                     Spacer()
                                     if !ok {
-                                        Button("Get") { openWindow(id: "models") }
-                                            .controlSize(.mini).mgHelp("Get \(p.modelName) in the Models window")
+                                        if p.needsServer == "gpu", model.connections.gpuServers.isEmpty {
+                                            Button("Add") { model.showServersPanel = true }
+                                                .controlSize(.mini).mgHelp("Add a GPU server (Servers panel)")
+                                        } else {
+                                            Button("Get") { openWindow(id: "models") }
+                                                .controlSize(.mini).mgHelp("Get \(p.modelName) in the Models window")
+                                        }
                                     }
                                 }
                                 .mgRow(height: 38)

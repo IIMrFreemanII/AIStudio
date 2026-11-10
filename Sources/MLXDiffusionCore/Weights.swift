@@ -105,12 +105,21 @@ public final class WeightStore {
     /// which weights to quantize (by default every `*.weight` matrix whose input width divides into groups); all other
     /// tensors are copied unchanged. Building it reads the source one tensor at a time, so it peaks at about the size
     /// of the result.
+    ///
+    /// A source that is already MLX-quantized (its linear layers carry `.scales`, as imported fine-tunes are stored)
+    /// is returned as is, without a cache; its bits come from its `quantization_level` metadata.
     public static func quantizedCache(source: URL, cacheURL: URL, bits: Int = 8, groupSize: Int = 64,
                                       quantize: ((String, MLXArray) -> Bool)? = nil,
                                       log: (String) -> Void = { _ in }) throws -> WeightStore {
         let files = try FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: [.fileSizeKey])
             .filter { $0.pathExtension == "safetensors" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        // Loading is lazy (headers only), so this check costs nothing on the usual dense source.
+        let stored = try WeightStore(directory: source)
+        if stored.keys.contains(where: { $0.hasSuffix(".scales") }) {
+            log("transformer is pre-quantized (\(stored.quantizationBits)-bit), using it as is")
+            return stored
+        }
         let fingerprint = try files.map { f in
             "\(f.lastPathComponent):\(try f.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)"
         }.joined(separator: ",") + "|q\(bits)g\(groupSize)"

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FrameBatcher } from './frame';
-import {
+import { NO_NODE,
   decodeAll, decodeHistory, decodeSample, Kind, METRIC_COUNT, payloadPeak, payloadSeconds, SeriesRing, WireError,
 } from './protocol';
 
@@ -17,6 +17,13 @@ function hex(s: string): ArrayBuffer {
 }
 
 describe('wire records', () => {
+  it('decodes a status record like the Swift and Python encoders write it', () => {
+    // Same bytes as WireEventTests.goldenStatus and server/gpu/tests/test_wire.py.
+    const [e] = decodeAll(hex('0c00ffff090000000100000000000000110000005374617274696e672047505520303a3132'));
+    expect(e).toMatchObject({ kind: Kind.nodeStatus, node: NO_NODE, run: 9, seq: 1 });
+    expect(new TextDecoder().decode(e.payload)).toBe('Starting GPU 0:12');
+  });
+
   it('decodes the golden frame', () => {
     const [a, b] = decodeAll(hex(GOLDEN));
     expect(a).toMatchObject({ kind: Kind.nodeFinished, flags: 0, node: 3, run: 7, seq: 42, step: 5, total: 8 });

@@ -1,0 +1,49 @@
+{
+  "category" : "music",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "lyrics" : "[Verse]\nMorning light on the window pane\nCoffee steam and the sound of rain\nEvery street is a song I know\nHumming softly, I let it go\n\n[Chorus]\nOh, we're running with the open sky\nPaper planes on a summer high\nEvery heartbeat a little louder\nWe're alive, we're alive\n\n[Outro]\nWe're alive, we're alive",
+          "seconds" : 60,
+          "seed" : 1,
+          "tags" : "uplifting indie pop, female vocals, acoustic guitar, warm piano, hand claps"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteTextToMusic"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "audio" : {
+            "node" : "cloud",
+            "output" : "audio"
+          },
+          "directory" : "{output}",
+          "filename_prefix" : "music",
+          "format" : "wav"
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveAudio"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-music",
+  "modelName" : "ACE-Step 1.5 XL on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Song · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 190,
+  "summary" : "Songs up to 10 minutes from style tags and lyrics, planned by a 4B model, on an NVIDIA GPU.",
+  "symbol" : "cloud"
+}

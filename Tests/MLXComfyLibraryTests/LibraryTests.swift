@@ -1,5 +1,6 @@
 import Foundation
 import GraphRuntime
+import NodesRemote
 import NodesStandard
 import Testing
 @testable import MLXComfyLibrary
@@ -136,10 +137,14 @@ private let sample = Graph(nodes: [GraphNode(id: "n", type: "Note", inputs: ["te
         let presets = PresetCatalog.builtIn()
         #expect(presets.count >= 15)
         #expect(Set(presets.map(\.id)).count == presets.count)
-        let executor = GraphExecutor(registry: StandardNodes.makeRegistry())
+        let executor = GraphExecutor(registry: RemoteNodes.makeRegistry())
         for p in presets {
             #expect(p.isBuiltIn)
-            #expect(!p.models.isEmpty, "\(p.id) names no model")
+            // A preset names the models it needs, or the server that has them.
+            #expect(!p.models.isEmpty || p.needsServer == "gpu", "\(p.id) names no model")
+            if p.needsServer == "gpu" {
+                #expect(p.graph.nodes.contains { RemoteNodes.types.contains($0.type) }, "\(p.id) has no Cloud GPU node")
+            }
             do { _ = try executor.validate(p.graph) } catch { Issue.record("\(p.id): \(error)") }
             // Portable: no absolute model paths or output folders baked in.
             for n in p.graph.nodes {

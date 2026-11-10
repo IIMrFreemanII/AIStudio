@@ -4,6 +4,7 @@ import GraphRuntime
 import ImageIO
 import MLXDiffusionCore
 import MLXComfyLibrary
+import NodesRemote
 import NodesStandard
 import SwiftUI
 
@@ -126,8 +127,10 @@ struct WorkflowInspector: View {
                         Spacer()
                         if model.isActive(a) {
                             Image(systemName: "checkmark").foregroundStyle(MG.success)
-                            if a == .inpaint || a == .reference || a == .lora || a == .firstFrame {
+                            if a == .inpaint || a == .reference || a == .firstFrame {
                                 Button("Change") { model.add(a) }.controlSize(.small)
+                            } else if a == .lora {
+                                Button("Add Another") { model.add(a) }.controlSize(.small)
                             }
                             Button("Remove") { model.remove(a) }.controlSize(.small)
                         } else {
@@ -214,7 +217,9 @@ struct NodeInspector: View {
             NodeExtras(node: node)
             if let schema {
                 MGSection("Inputs") {
-                    ForEach(schema.inputs, id: \.name) { spec in
+                    ForEach(schema.inputs.filter { !(RemoteNodes.types.contains(node.type) && $0.name == "server")
+                                                       && !hidesPath(node, $0) },
+                            id: \.name) { spec in
                         if case .link(let src, let out)? = node.inputs[spec.name] {
                             LabeledContent(spec.name, value: "← \(src).\(out)")
                         } else if let port = bound[spec.name] {
@@ -256,6 +261,8 @@ struct NodeInspector: View {
                     if panel.runModal() == .OK, let url = panel.url { b.string(node.id, spec.name).wrappedValue = url.path }
                 }
             }
+        case (.string, .library?):
+            MGFormRow(spec.name) { LibraryPicker(node: node, input: spec.name) }
         case (.string, .choice(let options)?):
             MGFormRow(spec.name) {
                 MGPicker(selection: b.string(node.id, spec.name), options: options.map { ($0, $0) })
@@ -285,6 +292,14 @@ struct NodeInspector: View {
         default:
             LabeledContent(spec.name, value: spec.type.rawValue)
         }
+    }
+
+    /// A LoRA node's file path is only for graphs saved before the library: hidden once a library LoRA is picked.
+    func hidesPath(_ node: GraphNode, _ spec: InputSpec) -> Bool {
+        guard spec.name == "path", node.type == "LoRA" || node.type == "RemoteLoRA" else { return false }
+        if case .value(.string(let id))? = node.inputs["lora"], !id.isEmpty { return true }
+        if case .value(.string(let p))? = node.inputs["path"], !p.isEmpty { return false }
+        return true  // neither: the menu is the way in
     }
 
     func describe(_ s: NodeRunState) -> String {

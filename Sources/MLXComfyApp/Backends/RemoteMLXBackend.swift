@@ -4,6 +4,7 @@ import GraphRuntime
 import ImageIO
 import MLXComfyProtocol
 import MLXDiffusionCore
+import NodesRemote
 import NodesStandard
 
 /// A Mac running `mlxcomfy-cli serve`: the whole graph runs there; inputs are uploaded once (by content hash) and
@@ -36,6 +37,12 @@ final class RemoteMLXBackend: ExecutionBackend, @unchecked Sendable {
         -> [EngineOutput]
     {
         let start = Date()
+        // Cloud GPU nodes call GPU servers with tokens kept on this Mac; a Mac server can't run them.
+        let remote = Set(graph.nodes.map(\.type)).intersection(RemoteNodes.types)
+        guard remote.isEmpty else {
+            throw RemoteError(description: "This graph has Cloud GPU nodes, which run from this Mac: set the tab's "
+                              + "target to This Mac (they still compute on the GPU server)")
+        }
         let prepared = try GraphTransport.prepare(graph, schema: registry.schema,
                                                   resolveInput: StandardNodes.resolveInputPath,
                                                   hash: hasher.sha256(of:))
@@ -129,6 +136,8 @@ final class RemoteMLXBackend: ExecutionBackend, @unchecked Sendable {
                 onEvent(.nodeFinished(node: node(e.node), seconds: e.seconds ?? 0, peakMemory: e.peakMemory))
             case .nodeFailed:
                 onEvent(.nodeFailed(node: node(e.node), message: e.message))
+            case .nodeStatus:
+                onEvent(.status(node: node(e.node), text: e.payload.isEmpty ? nil : e.message))
             case .outputReady:
                 guard let d = try? JSONDecoder().decode(OutputDescriptor.self, from: e.payload) else { return }
                 startDownload(d)

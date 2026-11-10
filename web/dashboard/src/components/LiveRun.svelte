@@ -13,7 +13,7 @@
     const r = live.runs.get(run.run);
     return run.nodes.map((id, i) => ({
       id, type: run.nodeTypes[i], state: r?.state[i] ?? 0, step: r?.step[i] ?? 0, total: r?.total[i] ?? 0,
-      seconds: r?.seconds[i] ?? 0, error: r?.errors.get(i),
+      seconds: r?.seconds[i] ?? 0, error: r?.errors.get(i), status: r?.status.get(i),
     }));
   });
   const current = $derived(rows.find((r) => r.state === NodeState.running));
@@ -46,7 +46,7 @@
         <p><strong>{run.workflow || 'Untitled'}</strong> <span class="muted">from {run.client}</span></p>
         <p class="secondary">
           {#if current}
-            {current.id} ({current.type}){current.total ? ` · step ${current.step} of ${current.total}` : '…'}
+            {current.id} ({current.type}){current.total ? ` · step ${current.step} of ${current.total}` : ''}{current.status ? ` · ${current.status}` : (current.total ? '' : '…')}
           {:else}
             Starting…
           {/if}

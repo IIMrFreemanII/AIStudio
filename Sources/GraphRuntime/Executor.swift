@@ -36,6 +36,8 @@ public enum ExecutionEvent {
     case nodeStarted(node: String)
     case nodeCached(node: String)
     case nodeProgress(node: String, step: Int, total: Int, preview: Any?)
+    /// A line about what a node is doing besides stepping ("Starting GPU 0:41", "Downloading result"); nil clears it.
+    case nodeStatus(node: String, text: String?)
     case nodeFinished(node: String, seconds: Double, peakMemory: Int?)
     case nodeFailed(node: String, error: Error)
     /// The values of an output node (files it wrote, images it shows), right after it finished or was cached —

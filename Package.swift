@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "GraphRuntime", targets: ["GraphRuntime"]),
         .library(name: "NodesStandard", targets: ["NodesStandard"]),
         .library(name: "MLXComfyProtocol", targets: ["MLXComfyProtocol"]),
+        .library(name: "NodesRemote", targets: ["NodesRemote"]),
         .library(name: "MLXComfyServer", targets: ["MLXComfyServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
@@ -288,6 +289,14 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
+        // Nodes that run models on a GPU server (server/gpu, on Modal or a GPU box) and return local values.
+        .target(
+            name: "NodesRemote",
+            dependencies: [
+                "GraphRuntime", "MLXDiffusionCore", "NodesStandard", "MLXComfyProtocol",
+                .product(name: "MLX", package: "mlx-swift"),
+            ]
+        ),
         // Wire format shared by the remote server, the app and the tests (no MLX, no networking stack).
         .target(
             name: "MLXComfyProtocol",
@@ -324,6 +333,7 @@ let package = Package(
                 "QwenImage21",
                 "GraphRuntime",
                 "NodesStandard",
+                "NodesRemote",
                 "MLXComfyProtocol",
                 "MLXComfyServer",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -336,8 +346,10 @@ let package = Package(
                 "MLXDiffusionCore",
                 "GraphRuntime",
                 "NodesStandard",
+                "NodesRemote",
                 "MLXComfyLibrary",
                 "MLXComfyProtocol",
+                "ModelImport",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             // JetBrains Mono (OFL), the design system's typeface.
@@ -383,6 +395,11 @@ let package = Package(
             dependencies: ["GraphRuntime"]
         ),
         .testTarget(
+            name: "NodesRemoteTests",
+            dependencies: ["NodesRemote", "NodesStandard", "GraphRuntime", "MLXDiffusionCore", "MLXComfyProtocol",
+                           .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
             name: "MLXComfyProtocolTests",
             dependencies: ["MLXComfyProtocol", "GraphRuntime", "NodesStandard"]
         ),
@@ -398,7 +415,17 @@ let package = Package(
         ),
         .testTarget(
             name: "MLXComfyLibraryTests",
-            dependencies: ["MLXComfyLibrary", "GraphRuntime", "NodesStandard"]
+            dependencies: ["MLXComfyLibrary", "GraphRuntime", "NodesStandard", "NodesRemote"]
+        ),
+        // Converts fine-tuned transformers (Civitai single files, diffusers folders) into the local model layouts.
+        .target(
+            name: "ModelImport",
+            dependencies: ["MLXDiffusionCore", "FluxTransformer", .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "ModelImportTests",
+            dependencies: ["ModelImport", "Flux", "FluxTransformer", "QwenImage21", "WanTransformer", "MLXDiffusionCore",
+                           .product(name: "MLX", package: "mlx-swift")]
         ),
     ],
     swiftLanguageModes: [.v5]

@@ -39,11 +39,17 @@ struct PresetGallery: View {
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190, maximum: 230), spacing: 12)],
                                           alignment: .leading, spacing: 12) {
                                     ForEach(items) { p in
-                                        PresetCard(preset: p, available: p.isAvailable(installed: installed)) {
+                                        PresetCard(preset: p, available: model.presetAvailable(p, installed: installed),
+                                                   missingLabel: model.presetMissing(p).label) {
                                             model.openPreset(p)
                                             dismiss()
                                         } getModel: {
-                                            openWindow(id: "models")
+                                            if p.needsServer == "gpu", model.connections.gpuServers.isEmpty {
+                                                dismiss()
+                                                model.showServersPanel = true
+                                            } else {
+                                                openWindow(id: "models")
+                                            }
                                         }
                                     }
                                 }
@@ -77,6 +83,7 @@ struct PresetGallery: View {
 struct PresetCard: View {
     let preset: Preset
     let available: Bool
+    var missingLabel = "Get Model…"
     let open: () -> Void
     let getModel: () -> Void
     @State private var hovering = false
@@ -104,7 +111,7 @@ struct PresetCard: View {
                     .frame(height: 28, alignment: .top)
             }
             if !available {
-                Button("Get Model…", action: getModel).controlSize(.small)
+                Button(missingLabel, action: getModel).controlSize(.small)
             }
         }
         .padding(10)
@@ -169,10 +176,12 @@ struct SavePresetSheet: View {
     }
 
     static func category(of g: Graph) -> Preset.Category {
-        if g.nodes.contains(where: { $0.type == "VideoSampler" }) { return .video }
-        if g.nodes.contains(where: { $0.type == "TextToAudio" }) { return .sound }
-        if g.nodes.contains(where: { $0.type == "TextToMusic" }) { return .music }
-        if g.nodes.contains(where: { $0.type == "TextToSpeech" }) { return .speech }
+        let types = Set(g.nodes.map(\.type))
+        func has(_ t: String...) -> Bool { !types.isDisjoint(with: t) }
+        if has("VideoSampler", "RemoteWanTextToVideo", "RemoteWanImageToVideo") { return .video }
+        if has("TextToAudio", "RemoteTextToSound") { return .sound }
+        if has("TextToMusic", "RemoteTextToMusic") { return .music }
+        if has("TextToSpeech", "RemoteTextToSpeech") { return .speech }
         return .image
     }
 }

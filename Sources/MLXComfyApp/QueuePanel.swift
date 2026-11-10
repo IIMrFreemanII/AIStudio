@@ -228,12 +228,14 @@ struct QueueRow: View {
                 case .running(let step, let total) where total > 0:
                     MGProgress(value: Double(step), total: Double(total))
                         .frame(maxWidth: .infinity)
-                    Text("Step \(step) of \(total)").font(.mgFootnote).foregroundStyle(.secondary)
+                    Text(["Step \(step) of \(total)", item.statusText].compactMap { $0 }.joined(separator: " · "))
+                        .font(.mgFootnote).foregroundStyle(.secondary).lineLimit(1)
                 case .running:
-                    Text("Running…").font(.mgFootnote).foregroundStyle(.secondary)
+                    Text(item.statusText ?? "Running…").font(.mgFootnote).foregroundStyle(.secondary).lineLimit(1)
                 case .done(let s):
-                    Text(String(format: "%.1fs", s) + (item.seed.map { " · seed \($0)" } ?? ""))
-                        .font(.mgFootnote).foregroundStyle(.secondary)
+                    Text(String(format: "%.1fs", s) + (item.seed.map { " · seed \($0)" } ?? "")
+                         + (item.statusText.map { " · \($0)" } ?? ""))
+                        .font(.mgFootnote).foregroundStyle(.secondary).lineLimit(2)
                 case .failed(let msg):
                     Text(msg).font(.mgFootnote).foregroundStyle(MG.destructive).lineLimit(2)
                 case .cancelled:

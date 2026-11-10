@@ -16,7 +16,7 @@ enum AddOn: String, CaseIterable {
         case .inpaint: return "Inpaint Mask…"
         case .outpaint: return "Outpaint (Extend Canvas)"
         case .hires: return "Hi-res Fix"
-        case .lora: return "LoRA…"
+        case .lora: return "LoRA"
         case .firstFrame: return "First Frame…"
         }
     }
@@ -46,6 +46,13 @@ extension AppModel {
 
     var hasImageSampler: Bool { firstNode(ofType: "Sampler") != nil }
     var hasVideoSampler: Bool { firstNode(ofType: "VideoSampler") != nil }
+    /// A local Wan 2.2 video graph (its LoRAs go on the Video Sampler's model; LTX doesn't take LoRAs here).
+    var isWanGraph: Bool {
+        guard let m = firstNode(ofType: "LoadModel"), case .value(.string(let p))? = m.inputs["path"] else { return false }
+        return VideoFamily.of(path: p) == .wan
+    }
+    /// A Cloud GPU image node (FLUX.1 dev, Qwen-Image) and no local sampler: LoRAs go to the cloud node.
+    var usesCloudLoRAs: Bool { !hasImageSampler && !hasVideoSampler && cloudImageNode != nil }
 
     func canAdd(_ a: AddOn) -> Bool {
         switch a {
@@ -53,7 +60,7 @@ extension AppModel {
         case .inpaint: return referenceImageNode != nil && hasImageSampler
         case .outpaint: return referenceImageNode != nil && hasImageSampler && !isOutpainting
         case .hires: return hasImageSampler && firstNode(ofType: "SaveImage") != nil
-        case .lora: return hasImageSampler || hasVideoSampler
+        case .lora: return hasImageSampler || (hasVideoSampler && isWanGraph) || usesCloudLoRAs
         case .firstFrame: return hasVideoSampler
         }
     }
@@ -64,7 +71,7 @@ extension AppModel {
         case .inpaint: return maskPath != nil
         case .outpaint: return isOutpainting
         case .hires: return isHiResEnabled
-        case .lora: return !simpleLoRAs.isEmpty
+        case .lora: return !simpleLoRAs.isEmpty || !cloudLoRAs.isEmpty
         case .firstFrame: return firstFrameNode != nil
         }
     }
@@ -94,10 +101,10 @@ extension AppModel {
             setHiRes(!isHiResEnabled, undoManager: undo)
             if isHiResEnabled { groupAddedChain(.hires) }
         case .lora:
-            if let url = Self.chooseFile([UTType(filenameExtension: "safetensors") ?? .data],
-                                         message: "Choose a LoRA (.safetensors) made for this workflow's model.") {
-                addLoRA(url, undoManager: undo)
-            }
+            // A LoRA node, selected: its menu (inspector, node) picks from the library or adds from a link or a file.
+            let before = Set(graph.nodes.map(\.id))
+            if usesCloudLoRAs { addCloudLoRA(nil, undoManager: undo) } else { addLoRA(nil, undoManager: undo) }
+            if let id = graph.nodes.map(\.id).first(where: { !before.contains($0) }) { selection = [id] }
         case .firstFrame:
             chooseAsset([.image], title: "First Frame", message: "Choose the image the clip starts from.") { copy in
                 self.setFirstFrame(copy, undoManager: undo)
@@ -115,7 +122,9 @@ extension AppModel {
         case .inpaint: clearMask(undoManager: undo)
         case .outpaint: clearOutpaint(undoManager: undo)
         case .hires: setHiRes(false, undoManager: undo)
-        case .lora: for l in simpleLoRAs { removeLoRA(l.id, undoManager: undo) }
+        case .lora:
+            for l in simpleLoRAs { removeLoRA(l.id, undoManager: undo) }
+            for l in cloudLoRAs { removeCloudLoRA(l.id, undoManager: undo) }
         case .firstFrame: clearFirstFrame(undoManager: undo)
         }
         tidyChainGroups()

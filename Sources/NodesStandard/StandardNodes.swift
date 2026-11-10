@@ -395,11 +395,15 @@ public struct ImageCompositeMaskedNode: NodeImplementation {
 
 /// Applies a LoRA on top of a model. The result shares the base weights; chain several to stack LoRAs.
 /// Connect it to both TextEncode and Sampler: the prompt's transformer prefix is computed by the LoRA'd model too.
+/// `lora` picks a LoRA from the library (Models window: added from a Civitai / Hugging Face link or a file); a LoRA
+/// that isn't on this Mac yet is downloaded into `<models>/loras` first. `path` (a file) is for graphs saved before
+/// the library and for the CLI.
 public struct LoRANode: NodeImplementation {
     public static let schema = NodeSchema(
         type: "LoRA", displayName: "LoRA", category: "loaders",
         inputs: [
             InputSpec("model", .model),
+            InputSpec("lora", .string, default: .string(""), widget: .library("lora")),
             InputSpec("path", .string, default: .string(""), widget: .filePath),
             InputSpec("strength", .float, default: .double(1), widget: .number(min: -2, max: 2, step: 0.05)),
         ],
@@ -407,12 +411,45 @@ public struct LoRANode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let model: DiffusionModel = try inputs.object("model")
+        let model: GenerativeModel = try inputs.object("model")
+        guard model is DiffusionModel || model is LoRAVideoModel else { throw LoRAError.unsupported(model.displayName) }
         let strength = Float(try inputs.float("strength"))
         if strength == 0 { return ["model": .object(model)] }
-        let (out, report) = try model.applyingLoRA(try StandardNodes.loraFile(try inputs.string("path")), strength: strength)
+        let id = (try? inputs.string("lora")) ?? ""
+        let file: URL
+        var item: LibraryEntry?
+        let models = PathSandbox.roots?.models ?? ModelPaths.directory
+        if id.isEmpty {
+            let path = try inputs.string("path")
+            guard !path.isEmpty else { throw LibraryError.noneChosen }
+            file = try StandardNodes.loraFile(path)
+        } else {
+            guard let found = Library.item(id, models: models) else { throw LibraryError.missing(id) }
+            if let fits = LoRASources.civitaiBaseModels(for: model.family), let base = found.baseModel, !fits(base) {
+                throw LoRASourceError.wrongBaseModel(base, expected: model.displayName)
+            }
+            item = found
+            file = try await Library.installLocally(id, models: models) { context.status($0) }
+        }
+        let out: GenerativeModel, report: LoRAReport
+        if let video = model as? LoRAVideoModel {
+            // Wan 2.2: a pair's low-noise file sits next to the first; a single file goes where its name says.
+            let companion = item.flatMap { Library.companionURL($0, models: models) }
+            let expert = companion == nil ? (item?.source?.expert ?? LoRASources.expert(of: file.lastPathComponent)) : nil
+            (out, report) = try video.applyingLoRA(file, companion: companion, expert: expert, strength: strength)
+        } else {
+            (out, report) = try (model as! DiffusionModel).applyingLoRA(file, strength: strength)
+        }
         context.progress(step: 1, total: 1, preview: report.description)
+        context.status(item.map(StandardNodes.loraSummary))
         return ["model": .object(out)]
+    }
+}
+
+extension StandardNodes {
+    /// What a LoRA node shows when it's done: the trigger words when the site lists them, else the LoRA's name.
+    public static func loraSummary(_ item: LibraryEntry) -> String {
+        item.triggerWords.isEmpty ? item.title : "Trigger words: " + item.triggerWords.prefix(6).joined(separator: ", ")
     }
 }
 

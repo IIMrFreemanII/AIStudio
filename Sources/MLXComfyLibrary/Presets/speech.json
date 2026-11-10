@@ -57,7 +57,7 @@
     "kokoro-82m"
   ],
   "name" : "Text to Speech",
-  "order" : 150,
+  "order" : 180,
   "summary" : "Read text aloud in one of 28 English voices.",
   "symbol" : "waveform"
 }

@@ -29,7 +29,8 @@ public final class RemoteClient: @unchecked Sendable {
 
     public let endpoint: Endpoint
     public let hello: ClientHello
-    let session: URLSession
+    let http: HTTPService
+    var session: URLSession { http.session }
     private let lock = NSLock()
     private var socket: URLSessionWebSocketTask?
     private var connecting: Task<Void, Error>?
@@ -49,13 +50,7 @@ public final class RemoteClient: @unchecked Sendable {
     public init(endpoint: Endpoint, hello: ClientHello) {
         self.endpoint = endpoint
         self.hello = hello
-        let cfg = URLSessionConfiguration.default
-        cfg.httpMaximumConnectionsPerHost = 6
-        cfg.timeoutIntervalForRequest = 60
-        cfg.timeoutIntervalForResource = 24 * 3600
-        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
-        cfg.urlCache = nil
-        session = URLSession(configuration: cfg)
+        http = HTTPService(baseURL: endpoint.baseURL, token: endpoint.token)
     }
 
     deinit { close() }
@@ -72,19 +67,9 @@ public final class RemoteClient: @unchecked Sendable {
 
     // MARK: REST
 
-    func request(_ path: String, method: String = "GET") -> URLRequest {
-        var r = URLRequest(url: endpoint.baseURL.appendingPathComponent(path))
-        r.httpMethod = method
-        r.setValue("Bearer \(endpoint.token)", forHTTPHeaderField: "Authorization")
-        return r
-    }
+    func request(_ path: String, method: String = "GET") -> URLRequest { http.request(path, method: method) }
 
-    func check(_ response: URLResponse, _ data: Data?) throws {
-        guard let http = response as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            throw ClientError.http(http.statusCode, String(decoding: (data ?? Data()).prefix(500), as: UTF8.self))
-        }
-    }
+    func check(_ response: URLResponse, _ data: Data?) throws { try http.check(response, data) }
 
     public func info() async throws -> ServerInfo {
         let (data, response) = try await session.data(for: request("v1/info"))
@@ -103,61 +88,13 @@ public final class RemoteClient: @unchecked Sendable {
     /// Uploads an input file unless the server has it. Streams from disk (constant memory) and resumes a partial
     /// upload from where the server says it stopped.
     public func upload(_ upload: GraphTransport.Upload, progress: @escaping (Int) -> Void = { _ in }) async throws {
-        var attempt = 0
-        while true {
-            let (_, head) = try await session.data(for: request("v1/files/\(upload.name)", method: "HEAD"))
-            let status = (head as? HTTPURLResponse)?.statusCode ?? 0
-            if status == 200 { progress(upload.bytes); return }
-            if status == 401 { throw ClientError.http(401, "") }
-            let offset = ((head as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Upload-Offset")).flatMap(Int.init) ?? 0
-            var r = request("v1/files/\(upload.name)", method: "PUT")
-            r.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            r.setValue(String(upload.bytes - offset), forHTTPHeaderField: "Content-Length")
-            if offset > 0 {
-                r.setValue("bytes \(offset)-\(upload.bytes - 1)/\(upload.bytes)", forHTTPHeaderField: "Content-Range")
-            }
-            guard let stream = InputStream(url: upload.url) else { throw CocoaError(.fileReadNoSuchFile) }
-            if offset > 0 { stream.setProperty(NSNumber(value: offset), forKey: .fileCurrentOffsetKey) }
-            r.httpBodyStream = stream
-            do {
-                let (data, response) = try await session.data(for: r)
-                try check(response, data)
-                progress(upload.bytes)
-                return
-            } catch let e as ClientError {
-                throw e
-            } catch {
-                // A dropped connection: ask the server how far it got and continue from there.
-                attempt += 1
-                if attempt >= 4 { throw error }
-                try await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
-            }
-        }
+        try await http.upload(name: upload.name, file: upload.url, bytes: upload.bytes)
+        progress(upload.bytes)
     }
 
     /// Downloads a run output to `destination`, resuming after a dropped connection.
     public func download(run: UInt32, name: String, to destination: URL) async throws {
-        let req = request("v1/runs/\(run)/outputs/\(name)")
-        var resumeData: Data?
-        for attempt in 0..<4 {
-            do {
-                let (temp, response): (URL, URLResponse)
-                if let resumeData { (temp, response) = try await session.download(resumeFrom: resumeData) }
-                else { (temp, response) = try await session.download(for: req) }
-                try check(response, nil)
-                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(),
-                                                        withIntermediateDirectories: true)
-                try? FileManager.default.removeItem(at: destination)
-                try FileManager.default.moveItem(at: temp, to: destination)
-                return
-            } catch let e as ClientError {
-                throw e
-            } catch {
-                resumeData = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data
-                if attempt == 3 { throw error }
-                try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 500_000_000)
-            }
-        }
+        try await http.download("v1/runs/\(run)/outputs/\(name)", to: destination)
     }
 
     // MARK: WebSocket

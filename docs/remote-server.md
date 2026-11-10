@@ -7,15 +7,16 @@ very different amounts:
 |---|---|---|---|
 | **Another Mac you own** (studio Mac at home or in the office) | this app's own engine (`mlxcomfy-cli serve`): every model and node, same results as local | nothing extra | ready |
 | **A rented cloud Mac** (AWS EC2 Mac, Scaleway, MacStadium) | the same server | by the hour, **minimum 24 hours per lease** (Apple's macOS license) | ready |
-| **Serverless NVIDIA GPU** (Modal, RunPod Serverless, Replicate) | ComfyUI / vLLM containers, called through remote nodes | **per second of GPU time actually used**; idle costs nothing | M22 (Modal first) |
-| **An always-on GPU box** (RunPod/Vast/Lambda pod, your own Linux PC) | ComfyUI / vLLM / Ollama behind a token gate (`scripts/bootstrap-gpu-server.sh`) | by the hour while it's on | server side ready; app nodes in M22 |
+| **Serverless NVIDIA GPU on Modal** | the app's GPU server (`server/gpu`: Wan 2.2, FLUX.1 dev on diffusers), called by the *Cloud GPU* nodes | **per second of GPU time actually used**; idle costs nothing | ready (section 7) |
+| **An always-on GPU box** (RunPod/Vast/Lambda pod, your own Linux PC) | the same GPU server behind a token gate (`scripts/bootstrap-gpu-server.sh mlxcomfy-gpu`) | by the hour while it's on | ready (section 7) |
 
-MLX only runs on Apple Silicon, so a Mac server runs *this app's* models (Qwen-Image, FLUX, LTX, Wan, ACE-Step…).
-NVIDIA servers run their own model implementations (ComfyUI's FLUX, Wan…) and are reached through the API-agnostic
-remote nodes coming in M22.
+MLX only runs on Apple Silicon, so a Mac server runs *this app's* models (Qwen-Image, FLUX, LTX, Wan, ACE-Step…) and
+a whole tab's graph goes there. On NVIDIA, the app's own Python GPU server runs Wan 2.2 and FLUX.1 dev with Hugging
+Face diffusers, and single **Cloud GPU nodes** in your graph send it jobs; their results come back as ordinary images
+and videos for the local nodes after them.
 
-The rest of this guide sets up a **Mac server**: build it, keep it running, reach it safely, connect the app, and watch
-it from the web dashboard.
+Sections 1–6 set up a **Mac server**: build it, keep it running, reach it safely, connect the app, and watch it from
+the web dashboard. Section 7 sets up the **GPU server**.
 
 ---
 
@@ -178,36 +179,264 @@ The dashboard can't run graphs or change the token: those need the token itself 
 
 ## 7. Serverless GPUs: pay only while generating
 
-If you want to pay **only for the seconds the GPU works**, use a serverless GPU provider rather than a rented
-machine: the containers scale to zero when idle and you're billed per second while they run.
+For big models your Mac is slow at or can't fit (Wan 2.2 A14B video above all, and the larger music, sound and speech
+models), rent NVIDIA GPUs **by the second** on
+[Modal](https://modal.com): containers start when a job arrives and stop shortly after, so you pay for the seconds a GPU
+works, plus its start-up, and nothing while you're idle. New Modal accounts get $30 of free compute a month.
 
-- **Modal** (supported first, in M22): a ComfyUI web endpoint deployed from `scripts/serverless/modal_comfy.py`
-  with a volume for models and LoRAs.
-- **RunPod Serverless** and **Replicate / Cog** follow.
+How it fits together (all of it is `server/gpu/modal_app.py`):
 
-Two things to know:
-- **Cold starts.** The first request after idle starts a container and loads the model: from about 10 seconds to a
-  few minutes for large models. Keeping one worker warm removes the wait but brings back idle cost.
-- **Cloud Macs can't be serverless.** Apple's license forces 24-hour minimum leases, so a rented Mac is billed for
-  whole days whether it works or not. For pay-per-use, use your own Mac (free) for MLX models and serverless NVIDIA
-  GPUs for the rest.
+- A **front desk** (FastAPI on a quarter of a CPU core, fractions of a cent per hour) that the app talks to. Checking
+  the server, uploading images and the CPU test tasks **never start a GPU**. Modal's proxy auth rejects requests
+  without your token before they reach it.
+- **GPU workers**, one per model, each starting on its own GPU type when a job needs it and stopping
+  `MLXCOMFY_IDLE` seconds (default 120) after its last job:
+
+  | Task | GPU (default) | Weights read per cold start |
+  |---|---|---|
+  | Wan 2.2 Text to Video (A14B) | H100 80 GB, $3.95/h | ≈ 63 GB (bf16, kept as fp8 on the GPU) |
+  | Wan 2.2 Image to Video (A14B) | H100 80 GB, $3.95/h | ≈ 63 GB |
+  | FLUX.1 dev | L40S 48 GB, $1.95/h | ≈ 34 GB |
+  | Qwen-Image (20B) | H100 80 GB, $3.95/h | ≈ 58 GB (bf16; fp8 on a 48 GB card) |
+  | ACE-Step 1.5 XL music (4B planner + 4B DiT) | L40S 48 GB, $1.95/h | ≈ 38 GB |
+  | Stable Audio 3 medium sound | L40S 48 GB, $1.95/h | ≈ 10 GB |
+  | Qwen3-TTS speech (three 1.7B checkpoints) | L40S 48 GB, $1.95/h | ≈ 14 GB |
+
+- A **Volume** (`mlxcomfy-gpu-models`) with the weights, written once by the download step.
+
+### Set it up (once)
+
+On this Mac, in the repository:
+
+```bash
+pip install modal                      # or: uv tool install modal
+modal setup                            # opens the browser to sign in
+modal secret create huggingface HF_TOKEN=hf_...   # for FLUX.1 dev and Stable Audio 3 (gated: accept their licences on Hugging Face first)
+modal run server/gpu/modal_download.py --models wan22,flux,qwen,audio   # into the Volume, on Modal CPUs; ~20–25 min
+modal deploy server/gpu/modal_app.py   # prints the front desk's URL: https://<you>--mlxcomfy-gpu-api.<region>.modal.run
+```
+
+- `--models` takes `wan22` (both Wan tasks and the Lightning LoRAs, ≈ 140 GB), `flux` (≈ 34 GB), `qwen` (Qwen-Image
+  and its Lightning LoRA, ≈ 58 GB, not gated), `audio` (music, sound and speech, ≈ 62 GB), `music`, `sound`, `speech`,
+  or single ones (`wan22-t2v`, `wan22-i2v`, `wan22-lightning`, `flux1-dev`, `qwen-image`, `qwen-image-lightning`,
+  `ace-step-xl`, `stable-audio-3`, `qwen3-tts`). Finished models are skipped, so it is safe to re-run.
+  Without the Hugging Face secret, use `MLXCOMFY_HF_SECRET= modal run … --models wan22,music,speech`.
+- Gated models: [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) and
+  [Stable Audio 3 medium](https://huggingface.co/stabilityai/stable-audio-3-medium). Accept each licence with the
+  Hugging Face account whose token is in the secret. Stable Audio 3 is converted to the diffusers layout during the
+  download, by diffusers' own script (fetched at the pinned release, checked by its hash).
+- The Wan transformers come from bf16 copies of the official weights (`ai-toolkit/…`, `cbensimon/…`: safetensors,
+  configs identical to Wan-AI's, pinned to a commit); everything else from `Wan-AI/…`. That halves the download.
+- GPUs need a **payment method** on the Modal account (Settings › Usage & Billing), even while the free credit lasts.
+  Usage is billed after the fact (the monthly credit first, then the card). Set a **spend limit** there too: past it,
+  Modal stops work that would cost more.
+- Then create a **proxy token**: Modal dashboard › Settings › Proxy Auth Tokens › New. It has an id (`wk-…`) and a
+  secret (`ws-…`).
+
+### Connect the app
+
+Servers panel › **+** › kind **GPU server**, the URL from `modal deploy`, and the token as `wk-….ws-…` (id, a dot,
+secret). **Test** lists the tasks, their GPUs and prices, and which models are installed — without starting a GPU.
+
+Then open a Cloud GPU preset (Presets panel or gallery, marked with a cloud): *Wan 2.2 Text to Video · Cloud GPU*,
+*Wan 2.2 Image to Video · Cloud GPU*, *FLUX.1 dev · Cloud GPU*, *Qwen-Image · Cloud GPU*, *Song · Cloud GPU*, *Sound Effect · Cloud GPU*,
+*Voice Clone & TTS · Cloud GPU*. Or add the nodes yourself (Node Library › remote) and wire them to any local node: a
+cloud Wan clip into Save Video, a cloud FLUX image into a local inpaint, a cloud song into Mix Audio. A node's server
+input picks the GPU server (empty: the first one).
+
+**LoRAs on cloud FLUX and Qwen-Image:** LoRAs live in the app's library: **Models window › LoRAs › Add from Link…** (or **Add
+File…**), where you choose where each one is installed: this Mac, each GPU server, or both, with a status chip per
+place. Open *FLUX.1 dev + LoRA · Cloud GPU* (or **Add to Workflow › LoRA** on any graph with the cloud FLUX or
+Qwen-Image node) and pick the LoRA in the node's menu, which lists the LoRAs made for that model; the menu can also add
+one from a link or a file. Each LoRA (Cloud GPU) node adds one LoRA with a strength; chain up to four. Files in the
+kohya/ComfyUI, diffusers/PEFT, ai-toolkit and XLabs formats all work. A LoRA Civitai lists for another model is refused
+before anything is sent (*This LoRA is for Flux.1 D, not Qwen-Image*); one that the server can't apply fails with
+*LoRA 1 doesn't fit FLUX.1 dev*.
+
+- **Links:** a Civitai model page (`civitai.com/models/…`, optionally with `?modelVersionId=`) or a Hugging Face
+  file or repo link. The server downloads the file itself at datacenter speed (22 MB from Hugging Face took 2.5 s),
+  so nothing goes through your upload; the node shows *Server downloading 230 / 612 MB · … left*. A Civitai page
+  with versions for several models takes the newest one for a model the app runs, and a LoRA for another model
+  (SDXL, Pony…) is refused before anything downloads. The node shows Civitai's trigger words when it's done; put them in the prompt.
+  The Add sheet previews the link (image, title, base model, size, trigger words) and says whether this Mac and
+  each GPU server can download it, checked without downloading. The picked LoRA's card in the inspector has the
+  trigger words (Copy, Add to Prompt) and where it's installed. A LoRA removed from a server in the Models window is
+  deleted there (`DELETE /v1/files/<sha256>.lora`).
+  - **Civitai needs an API key for most files.** Create one on civitai.com (Account settings › API Keys), then
+    `modal secret create civitai CIVITAI_TOKEN=…` and `modal deploy server/gpu/modal_app.py` again. The deploy picks
+    the secret up when it exists (and the `huggingface` one, for gated Hugging Face repos); without it, Civitai links
+    fail with that hint. A GPU box reads `CIVITAI_TOKEN` and `HF_TOKEN` from its environment.
+  - The server only downloads from civitai.com, huggingface.co and hf.co, at most 4 GB, and only safetensors files
+    that match the site's published SHA-256.
+- **Upload:** a file from your Mac uploads at your connection's speed (45 MB took about a minute on ours, 612 MB
+  about 4½); the node counts it up: *Uploading 230 / 612 MB · 1.9 MB/s · 3 min left*. A broken upload resumes where
+  it stopped. Files are named by their SHA-256 and kept on the
+  `mlxcomfy-gpu-uploads` Volume in your Modal account, so later runs, in this session or another, send nothing.
+  Start images and reference clips are kept the same way. The Volume holds up to 20 GB (`MLXCOMFY_UPLOADS_GB=50
+  modal deploy …` to change it); past that, the least recently used files are deleted. Delete them all with
+  `modal volume rm -r mlxcomfy-gpu-uploads /`. A GPU box keeps uploads in its `data/uploads` folder, with the same
+  limit.
+- **GPU:** loading a LoRA adds well under a second. A warm container keeps the last 8 loaded, so a re-run only
+  switches them on. A 1024×1024, 28-step image took 16 s on the L40S with or without LoRAs (≈ $0.009).
+
+**Fine-tunes from links (FLUX.1 dev, Qwen-Image, Wan 2.2):** **Models window › Models from Links › Add from Link…**
+takes a Civitai checkpoint page or a Hugging Face link (a single `.safetensors`, or a diffusers repo with a
+`transformer/` folder). Tick your GPU server and **Add**; the cloud node's **model** menu then lists it next to *FLUX.1
+dev (base)*, *Qwen-Image (base)* or *Wan 2.2 T2V / I2V (base)*. (Qwen-Image 2.1 fine-tunes install on this Mac only;
+the server runs the original Qwen-Image.)
+
+- **What the server does:** a CPU function (`import_model`, no GPU) downloads the file onto the models Volume and
+  converts it to a diffusers transformer next to FLUX.1 dev, whose text encoders and VAE it reuses
+  (`variants/flux.1/<id>/transformer`, about 24 GB in bf16). It takes BFL / ComfyUI names and fp8, bf16 or fp16
+  checkpoints; Civitai's file is picked in that order (bf16/fp16 first), and GGUF and NF4 files are refused.
+  A Qwen-Image fine-tune goes to `variants/qwen-image/<id>/transformer` (about 41 GB in bf16): ComfyUI and diffusers
+  files share Qwen-Image's names, so it's copied tensor by tensor (prefix stripped, a full checkpoint's VAE and text
+  encoder left out, ComfyUI's scaled fp8 multiplied out); a file that lacks some of the transformer's weights (a
+  LoRA, say) is refused with that hint.
+  A Wan 2.2 fine-tune has a file per expert (high noise → `transformer`, low noise → `transformer_2`, about 28 GB each
+  in bf16). Civitai publishes them as one version with two files or as two versions ("… HIGH" / "… LOW"); the app
+  pairs them either way, and a fine-tune of one expert alone leaves the other the base model's. Official / ComfyUI
+  names (Kijai's scaled fp8 included) are converted by diffusers' own converter; a file whose name doesn't say which
+  expert it is is refused. Kijai's fp8 low-noise expert from Civitai (15 GB) imported in about 17 minutes (15 of them
+  downloading) to 28.6 GB; its first clip spent about 40 s more reading it, and switching back to the base about 20 s.
+  The Models window's chip follows it (*Server downloading … GB · … left*, *Converting*).
+- **Using it:** a job with another model swaps only the transformer's weights in the warm GPU container (read from the
+  Volume); the same model again costs nothing extra, and LoRAs still work on top. **Remove from <server>** deletes it
+  from the Volume (`DELETE /v1/models/flux.1/<id>`).
+- **API:** `POST /v1/models/import`, `GET /v1/models`, `DELETE /v1/models/{family}/{id}`; `/v1/info` lists them as
+  `variants`, and the `flux1-dev`, `qwen-image` and Wan tasks take `model` (an id, or `base`). A Wan import's files
+  each carry a `role` (`high` / `low`).
+
+**LoRAs on cloud Wan 2.2:** the Wan nodes take *LoRA (Cloud GPU)* nodes too (**Add to Workflow › LoRA**), up to
+four. Wan 2.2 A14B LoRAs mostly come as a pair, one file per expert: a pair from Civitai (one version with both files,
+or "High" / "Low" versions of the same model) or from a Hugging Face repo with the two files is one library entry,
+and each file goes to its own expert (`loraN` and `loraN_low`). A single file goes to both experts, or to the one its
+name says (`…high_noise…`, `…LOW…`; `loraN_expert`). They work with the Lightning LoRAs (fast) and without. A
+FishEye pair (2 × 153 MB) loaded in about 2 s on the H100; the clip took the same 10 s as without it. Some heavy style
+LoRAs don't mix well with the 4-step Lightning mode at full strength (Technically Color gave streaky, blurred frames
+there, on the GPU server and on the Mac alike): lower the strength, or turn **fast** off.
+- The same entry can also be installed on this Mac (see the README: converted to 8-bit, about 12 GB).
+
+**Qwen-Image (Cloud GPU):** the original 20B Qwen-Image (Apache 2.0), strong at text inside pictures and long
+prompts. Its training sizes are 1328×1328 (the default), 1664×928, 1472×1140 and 1584×1056, and their portrait
+versions.
+
+- **fast** (on by default): the Lightning 8-step LoRA (lightx2v, V2.0), no guidance.
+- **fast** off: the model card's 50 steps with true classifier-free guidance at 4 (`cfg`).
+- The **negative** prompt needs guidance: it's used whenever `cfg` is above 1 (the full model's default), and
+  ignored in fast mode unless you raise `cfg`, which doubles the time per step. (Wan's NAG trick needs a separate
+  cross-attention; Qwen-Image's attention is joint.)
+- On an H100 everything stays bf16; `MLXCOMFY_GPU_QWEN=L40S` stores the transformer's weights in fp8 instead (48 GB).
+- LoRAs and fine-tunes from the library work as for FLUX.
+
+The Wan nodes' **negative** prompt ("blurry, static, distorted hands") works in both modes:
+
+- **fast** on (no guidance): it's applied inside the model's cross-attention with Normalized Attention Guidance
+  (NAG; Chen et al. 2025). The Lightning LoRAs are distilled without guidance, so classifier-free guidance wouldn't
+  apply a negative prompt here. NAG costs a few percent per step.
+- **fast** off, or `guidance` above 1: classifier-free guidance, as in Wan's own sampler. Each step runs the model
+  twice.
+
+### Music, sound and speech
+
+| Node | Model | Licence | What it makes |
+|---|---|---|---|
+| ACE-Step 1.5 XL Music | ACE-Step 1.5 XL turbo DiT (4B) with its 4B planner | MIT | Songs with vocals from style tags and lyrics, or instrumentals; 48 kHz stereo, 10 s – 10 min. Same inputs as the local Text to Music node; `planner` off skips the language model. |
+| Stable Audio 3 Sound | Stable Audio 3 medium (2B, distilled, 8 steps) | Stability AI Community: free for personal use and for organisations under $1M a year | Sound effects, ambience and instrumental beds; 44.1 kHz stereo, up to about six minutes. |
+| Qwen3-TTS Speech | Qwen3-TTS 12Hz 1.7B Base, CustomVoice and VoiceDesign | Apache-2.0 | Speech in 10 languages, 24 kHz mono. |
+
+The speech node picks its model from what you give it:
+
+1. A clip connected to `reference` (Load Audio, or any audio node): **clones** that voice. A few seconds of clean
+   speech is enough; the app sends up to 30 s, as mono. Typing what the clip says into `reference_text` makes the
+   clone closer.
+2. Otherwise, `voice` **designed**: a new voice made from the `description` ("a calm older man with a British
+   accent").
+3. Otherwise, one of nine **built-in voices**; the `description`, if any, sets the delivery ("excited, whispering").
+
+Only clone voices you have the right to use.
+
+While a job runs, the node shows what it's doing: *Starting GPU 0:41* (a cold container booting and loading weights),
+*Sampling* with steps and live previews, *Downloading result*. When it finishes it shows the GPU time and an estimate of
+the cost, e.g. *GPU 48.2 s + 95 s loading · ≈ $0.16* (loading appears only on a cold start). Cancel stops the GPU work
+at the next step; the warm container stays for your next job until the idle window ends.
+
+### What it costs
+
+You pay Modal's per-second price while a GPU container is up: start-up and model loading on a cold start, the job
+itself, then the idle window (default 2 min) in case another job follows. The node's estimate covers the first two.
+
+- Wan with **fast** on (the default: Lightning LoRAs, 4 steps, no guidance) needs about a tenth of the GPU time of the
+  full 40 steps; turn it off for the most detail.
+- Back-to-back jobs reuse the warm container: no loading, no start-up.
+- To trade money for latency, raise the idle window (`MLXCOMFY_IDLE=600 modal deploy …`); to switch GPUs,
+  `MLXCOMFY_GPU_WAN=A100-80GB`, `MLXCOMFY_GPU_FLUX=L4` (24 GB is too small for FLUX in bf16) or
+  `MLXCOMFY_GPU_AUDIO=A10` (24 GB: enough for speech or sound, tight for music).
+Measured on Modal's H100 (2026-11-10), 832×480, 81 frames (5 s at 16 fps), fast on:
+
+| | Wan 2.2 Text to Video | Wan 2.2 Image to Video |
+|---|---|---|
+| Job on a warm GPU (4 steps + VAE decode + encode) | 19 s ≈ **$0.021** | 24 s ≈ **$0.026** |
+| Extra on a cold start (container + loading 63 GB + LoRAs) | ≈ 90–105 s ≈ $0.10–0.12 | ≈ 90 s ≈ $0.10 |
+| Idle window afterwards (default 120 s) | ≈ $0.13 per session | |
+
+FLUX.1 dev on Modal's L40S, 1024×1024, 28 steps: **15.8 s ≈ $0.009** per image on a warm GPU; a cold start adds about
+30 s (21.5 s of it loading 34 GB) ≈ $0.016; the idle window afterwards ≈ $0.065.
+
+Qwen-Image on Modal's H100 (bf16), 1328×1328: **6.2 s ≈ $0.007** per image in fast mode (Lightning, 8 steps) and
+**38 s ≈ $0.042** with the full 50 steps and true CFG, on a warm GPU. A cold start adds about 60 s (51 s of it
+loading 58 GB) ≈ $0.065; the idle window afterwards ≈ $0.13. A LoRA adds about 1 s the first time it's loaded. The
+one-time download took about 3½ minutes. A Qwen-Image fine-tune from Civitai (Jib Mix Qwen v6, the 20 GB fp8 file)
+imported in about 20 minutes, nearly all of it Civitai's download at ≈ 17 MB/s; it's stored as 41 GB in bf16. The
+first job with it in a container spends about 100 s reading those weights from the Volume; after that, switching
+between it and the base model takes about 10 s.
+
+So a session that makes ten clips costs about 0.12 + 10 × 0.02 + 0.13 ≈ **$0.45**, and twenty FLUX images about
+0.02 + 20 × 0.009 + 0.07 ≈ **$0.27**. A single clip after a break costs about $0.27, mostly start-up and idle. The
+one-time downloads took 9 minutes for Wan (≈ 140 GB) and 3 minutes for FLUX (34 GB) on Modal CPUs.
+`server/gpu/modal_check.py` runs a job straight on the workers and prints these numbers for your own settings.
+
+Music, sound and speech on Modal's L40S (2026-11-10). The idle window afterwards costs about $0.065 for each model
+family you used:
+
+| | Job on a warm GPU | Extra on a cold start |
+|---|---|---|
+| Stable Audio 3, 20 s of sound (8 steps) | 2.0 s ≈ **$0.001** (8 s: 0.7 s) | ≈ 48 s (27 s loading 10 GB) ≈ $0.026 |
+| ACE-Step 1.5 XL, 1-minute song with lyrics, planner on | 30 s ≈ **$0.017** | ≈ 84 s (69 s loading 38 GB) ≈ $0.045 |
+| ACE-Step 1.5 XL, 2-minute instrumental, planner on | 46 s ≈ $0.025 (most of it the planner) | |
+| ACE-Step 1.5 XL, 30 s, planner off | 2.2 s ≈ $0.0012 | |
+| Qwen3-TTS, one or two sentences (5–6 s of speech) | 9–12 s ≈ **$0.005–0.006** | ≈ 29 s (14 s loading 14 GB) ≈ $0.016 |
+
+Speech currently takes longer than the audio it makes (plain PyTorch attention, one sentence at a time). The one-time
+downloads took about 3 minutes for music and speech together and 2 minutes for Stable Audio 3, including its
+conversion.
+
+### Check a deployment without spending GPU time
+
+The front desk also runs three CPU test tasks (`test-video`, `test-image`, `test-audio`): a moving pattern or a tone,
+with progress and a result. `mlxcomfy-cli`'s GPU checks and the app's smoke test use them.
+
+### Remove everything
+
+```bash
+modal app stop mlxcomfy-gpu
+modal volume delete mlxcomfy-gpu-models   # the downloaded weights
+```
 
 ### Always-on GPU box (hourly)
 
-For a GPU machine you rent by the hour or own, `scripts/bootstrap-gpu-server.sh` (Ubuntu, Docker, NVIDIA container
-toolkit) starts one of:
+The same GPU server runs on any Linux NVIDIA machine you rent by the hour or own (Ubuntu, Docker, NVIDIA container
+toolkit), behind a small Caddy gate that requires `Authorization: Bearer <token>`:
 
 ```bash
-scripts/bootstrap-gpu-server.sh comfyui                       # ComfyUI from its official repo, on PyTorch's CUDA image
-scripts/bootstrap-gpu-server.sh vllm --model Qwen/Qwen2.5-VL-7B-Instruct
-scripts/bootstrap-gpu-server.sh ollama
+scripts/bootstrap-gpu-server.sh mlxcomfy-gpu --download wan22,flux   # FLUX needs HF_TOKEN in the environment
 ```
 
-Each runs behind a small Caddy gate that requires `Authorization: Bearer <token>` (ComfyUI and Ollama have no auth
-of their own), listens on 127.0.0.1 by default (`--public` to publish it, `--domain your.domain` for HTTPS), and
-prints the URL and token for the app's remote nodes (M22). Image versions are pinned at the top of the compose files
-(`COMFYUI_REF`, `VLLM_TAG`, `OLLAMA_TAG`); they were chosen from the projects' release tags but not checked against the
-container registries from here, so if a pull fails, set a current tag. Stop a profile with `--down`.
+The box serves Wan and FLUX; the music and speech models pin older library versions and run on Modal, where each
+has its own image. It listens on 127.0.0.1 by default (`--public` to publish it, `--domain your.domain` for HTTPS; over Tailscale use
+`tailscale serve` as in section 2) and prints the URL and token for a **GPU server** connection. Here you pay while the
+machine is on, busy or not. The `vllm` and `ollama` profiles start OpenAI-compatible servers for the chat nodes that
+come in M23. Stop a profile with `--down`.
 
 ## 8. Operating it
 

@@ -1,0 +1,62 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "lora1",
+        "inputs" : {
+          "lora" : "",
+          "path" : "",
+          "strength" : 1
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteLoRA"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "loras" : {
+            "node" : "lora1",
+            "output" : "loras"
+          },
+          "prompt" : "A portrait of a woman in a sunlit garden, in the style of your LoRA (add its trigger word)"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteFlux"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-flux-lora",
+  "modelName" : "FLUX.1 dev on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "FLUX.1 dev + LoRA · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 220,
+  "summary" : "FLUX.1 [dev] with your own LoRA: pick it in the LoRA node's menu, or add one there from a Civitai \/ Hugging Face link or a file (up to four with Add to Workflow).",
+  "symbol" : "cloud"
+}

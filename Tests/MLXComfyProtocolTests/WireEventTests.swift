@@ -38,6 +38,25 @@ struct WireEventTests {
         #expect(events[1].kind == .preview && events[1].payload == Data([0xff, 0xd8]))
     }
 
+    /// A status record, as the GPU server (server/gpu/tests/test_wire.py) and the dashboard test encode it.
+    static let goldenStatus = "0c00ffff09000000" + "0100000000000000" + "11000000"
+        + "5374617274696e672047505520303a3132"
+
+    @Test func statusRecordsMatchTheOtherEncoders() throws {
+        let e = WireEvent(kind: .nodeStatus, run: 9, seq: 1, payload: Data("Starting GPU 0:12".utf8))
+        #expect(hexString(e.encoded()) == Self.goldenStatus)
+        let decoded = try WireEvent.decodeAll(hexData(Self.goldenStatus))
+        #expect(decoded.count == 1 && decoded[0].kind == .nodeStatus && decoded[0].message == "Starting GPU 0:12")
+    }
+
+    @Test func unknownKindsAreSkipped() throws {
+        // A record of a kind this build doesn't know (99) between two it does.
+        var frame = WireEvent(kind: .started, run: 1).encoded()
+        frame.append(hexData("6300ffff01000000" + "0000000000000000" + "02000000" + "abcd"))
+        frame.append(WireEvent(kind: .finished, run: 1, payload: WireEvent.float64(2)).encoded())
+        #expect(try WireEvent.decodeAll(frame).map(\.kind) == [.started, .finished])
+    }
+
     @Test func headerIsTwentyBytes() {
         #expect(WireEvent(kind: .started, run: 1).encoded().count == WireEvent.headerSize)
         #expect(WireEvent.headerSize == 20)

@@ -10,15 +10,18 @@ import MLXDiffusionCore
 ///   input) are one fused projection: its up matrix is split by rows onto the separate layers, all sharing the down
 ///   matrix, which gives exactly the fused update.
 /// Text-encoder keys (`lora_te…`) don't apply to the transformer and are reported as ignored.
+/// The same BFL → diffusers table converts full BFL checkpoints (`ModelImport`).
 extension FluxTransformer {
-    /// A diffusers target of a BFL-named module: the layer names and their row counts (in order), and whether the
-    /// two halves are swapped (BFL's final modulation is `(shift, scale)`, diffusers' `(scale, shift)`).
-    struct BFLTarget {
-        var names: [String]
-        var swapHalves = false
+    /// A diffusers target of a BFL-named module: the layer names (in row order of a fused projection), and whether
+    /// the two halves are swapped (BFL's final modulation is `(shift, scale)`, diffusers' `(scale, shift)`).
+    /// The QK norms (`…norm.query_norm`, whose parameter BFL calls `scale`) map to the `norm_q`/`norm_k` modules.
+    public struct BFLTarget: Sendable {
+        public var names: [String]
+        public var swapHalves = false
     }
 
-    func bflTarget(_ name: String) -> BFLTarget? {
+    /// The diffusers module(s) of a BFL module name (dots or underscores), or `nil` for names outside the table.
+    public static func bflTarget(_ name: String) -> BFLTarget? {
         let n = name.replacingOccurrences(of: ".", with: "_")
         let parts = n.split(separator: "_").map(String.init)
         func rest(_ k: Int) -> String { parts.dropFirst(k).joined(separator: "_") }
@@ -33,6 +36,8 @@ extension FluxTransformer {
             case "mlp_0": return BFLTarget(names: [p + (img ? "ff.net.0.proj" : "ff_context.net.0.proj")])
             case "mlp_2": return BFLTarget(names: [p + (img ? "ff.net.2" : "ff_context.net.2")])
             case "mod_lin": return BFLTarget(names: [p + (img ? "norm1.linear" : "norm1_context.linear")])
+            case "attn_norm_query_norm": return BFLTarget(names: [p + (img ? "attn.norm_q" : "attn.norm_added_q")])
+            case "attn_norm_key_norm": return BFLTarget(names: [p + (img ? "attn.norm_k" : "attn.norm_added_k")])
             default: return nil
             }
         }
@@ -42,6 +47,8 @@ extension FluxTransformer {
             case "linear1": return BFLTarget(names: ["attn.to_q", "attn.to_k", "attn.to_v", "proj_mlp"].map { p + $0 })
             case "linear2": return BFLTarget(names: [p + "proj_out"])
             case "modulation_lin": return BFLTarget(names: [p + "norm.linear"])
+            case "norm_query_norm": return BFLTarget(names: [p + "attn.norm_q"])
+            case "norm_key_norm": return BFLTarget(names: [p + "attn.norm_k"])
             default: return nil
             }
         }
@@ -75,7 +82,7 @@ extension FluxTransformer {
                 pairs[direct] = pair
                 continue
             }
-            guard let target = bflTarget(name), let up = pair.up,
+            guard let target = Self.bflTarget(name), let up = pair.up,
                   target.names.allSatisfy({ widths[$0] != nil }) else {
                 unmatched += pair.keys; continue
             }
