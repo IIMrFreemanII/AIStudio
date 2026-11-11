@@ -357,3 +357,87 @@ def test_fake_graph_helper_script(client):
     text = "".join(json.loads(d)["choices"][0]["delta"].get("content") or "" for n, d in events
                    if n is None and d != "[DONE]" and json.loads(d)["choices"])
     assert text == "Done: line 1"
+
+
+# MARK: cold starts (M28)
+
+def test_cold_start_clock_splits_phases():
+    from aistudio_gpu.llm.coldstart import ColdStartClock, remember, summary
+
+    t = [100.0]
+    clock = ColdStartClock(requested=90.0, now=lambda: t[0])
+    for name, at in [("Starting engine", 101), ("Loading weights", 105), ("Loading weights", 140), ("Compiling", 150),
+                     ("Loading weights", 160), ("Ready", 170)]:
+        t[0] = at
+        clock.phase(name)
+    t[0] = 171
+    r = clock.finish(gpu="H200", count=2)
+    assert r["seconds"] == 81 and r["waitSeconds"] == 10 and r["how"] == "cold" and r["gpu"] == "H200"
+    assert r["phases"] == [{"name": "Waiting for a GPU", "seconds": 10.0}, {"name": "Starting container", "seconds": 1.0},
+                           {"name": "Starting engine", "seconds": 4.0}, {"name": "Loading weights", "seconds": 56.0},
+                           {"name": "Compiling", "seconds": 10.0}]
+    # A container that started before the recorded request (a stale one) has no GPU wait.
+    assert ColdStartClock(requested=200.0, started=100.0).finish()["waitSeconds"] == 0.0
+    # Restored from a snapshot: the wait includes the restore, and there's no container start-up phase.
+    snap = ColdStartClock(requested=90.0, started=100.0, how="snapshot", now=lambda: 100.0)
+    assert [p["name"] for p in snap.finish()["phases"]] == ["Getting a GPU and restoring the snapshot"]
+
+    history = []
+    for i, secs in enumerate([300, 200, 100, 120, 110, 90]):
+        history = remember(history, {"seconds": secs, "updated": 1.0 if i < 2 else 2.0})
+    s = summary(history, updated=2.0)
+    assert s["last"]["seconds"] == 90 and s["typicalSeconds"] == 105 and s["count"] == 6
+    assert summary([], None) is None
+    assert len(remember([{"seconds": 1}] * 10, {"seconds": 2})) == 10
+
+
+def test_load_format_and_snapshot_settings(tmp_path):
+    from aistudio_gpu.llm import store
+
+    m = {"id": "x", "engine": "vllm", "count": 1, "context": 8192, "engineArgs": []}
+    assert store.patch(m, {"loadFormat": "runai", "snapshot": True})["snapshot"] is True
+    for bad in [{"loadFormat": "turbo"}, {"snapshot": "yes"}]:
+        with pytest.raises(ValueError):
+            store.patch(m, bad)
+    with pytest.raises(ValueError, match="one GPU"):
+        store.patch({**m, "count": 2}, {"snapshot": True})
+    with pytest.raises(ValueError, match="vLLM"):
+        store.patch({**m, "engine": "llamacpp"}, {"loadFormat": "runai"})
+
+    cmd = vllm_command({**m, "loadFormat": "runai", "snapshot": True}, tmp_path, 8000)
+    i = cmd.index("--load-format")
+    assert cmd[i + 1] == "runai_streamer" and json.loads(cmd[i + 3]) == {"concurrency": 16}
+    assert "--enable-sleep-mode" in cmd
+    plain = vllm_command(m, tmp_path, 8000)
+    assert "--load-format" not in plain and "--enable-sleep-mode" not in plain
+
+
+def test_status_reports_the_last_and_typical_cold_start(client):
+    mid = install(client)
+    status = client.get(f"/v1/llm/models/{mid}/status", headers=AUTH).json()
+    assert status["coldStart"] is None and status["bootSeconds"] is None
+    client.post(f"/v1/llm/models/{mid}/warm", headers=AUTH)
+    seen_boot = None
+    for _ in range(100):
+        status = client.get(f"/v1/llm/models/{mid}/status", headers=AUTH).json()
+        if status["state"] in ("starting", "loading") and status["bootSeconds"] is not None:
+            seen_boot = status["bootSeconds"]
+        if status["state"] == "ready" and status["coldStart"]:
+            break
+        time.sleep(0.05)
+    assert seen_boot is not None and seen_boot >= 0
+    last = status["coldStart"]["last"]
+    assert status["coldStart"]["count"] == 1 and last["how"] == "cold" and last["loadFormat"] == "auto"
+    assert [p["name"] for p in last["phases"]][:2] == ["Starting engine", "Loading weights"]
+    assert 0.3 <= last["seconds"] < 5 and status["coldStart"]["typicalSeconds"] == last["seconds"]
+
+
+def test_fake_engine_sleeps_and_wakes():
+    seen = []
+    e = FakeEngine({"id": "m"}, Path("."), lambda p, x: seen.append(p), boot_seconds=0)
+    e.start()
+    e.wait_ready()
+    e.warmup()
+    e.sleep()
+    e.wake_up()
+    assert seen[-3:] == ["Asleep", "Waking up", "Ready"]

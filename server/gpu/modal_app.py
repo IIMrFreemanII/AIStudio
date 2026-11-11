@@ -16,7 +16,7 @@ Layout:
 - ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
 - Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
-- ``LLM`` / ``LLMLlamaCpp``: one container per installed language model (vLLM's OpenAI server, or llama.cpp's for
+- ``LLM`` / ``LLMSnap`` / ``LLMLlamaCpp``: one container per installed language model (vLLM's OpenAI server, or llama.cpp's for
   GGUF, on the GPUs its manifest names: ``LLM.with_options(gpu="H200:2")(model=id)``). The app keeps it warm with keepalives while a chat is open;
   it scales to zero ``AISTUDIO_LLM_IDLE`` seconds (default 180) after the last chat or keepalive.
 - Volume ``aistudio-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
@@ -100,12 +100,17 @@ llama_image = (modal.Image.from_registry(LLAMA_IMAGE, add_python="3.12").entrypo
                .uv_pip_install("httpx").env({**env, "PATH": "/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                                              "LD_LIBRARY_PATH": "/app"})
                .add_local_python_source("aistudio_gpu"))
-# vLLM's OpenAI server; its compile and CUDA-graph caches live on the models volume, so restarts reuse them.
+# vLLM's OpenAI server (with Run:ai's streamer, the optional fast loader); its compile, Triton and CUDA-graph caches
+# live on the models volume, so restarts reuse them.
 vllm_image = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint([])
-              .uv_pip_install(f"vllm=={VLLM_VERSION}", "httpx")
+              .uv_pip_install(f"vllm[runai]=={VLLM_VERSION}", "httpx")
               .env({**env, "VLLM_CACHE_ROOT": f"{MODELS}/llm/.cache/vllm",
-                    "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor"})
+                    "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor",
+                    "TRITON_CACHE_DIR": f"{MODELS}/llm/.cache/triton"})
               .add_local_python_source("aistudio_gpu"))
+# The same, for GPU memory snapshots: sleep/wake endpoints on, and inductor compiling in one thread (Modal's advice
+# for snapshots that include torch.compile).
+vllm_snap_image = vllm_image.env({"VLLM_SERVER_DEV_MODE": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1"})
 gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS).env(env)
              .add_local_python_source("aistudio_gpu"))
 
@@ -391,61 +396,134 @@ class ModalVariants:
 
 # MARK: LLMs
 
-def _llm_boot(self):
+def _llm_boot(self, snapshot: bool = False):
     """Starts the model's engine from its manifest. Its state goes to the ``llm_state`` Dict (phases while starting,
-    a heartbeat every 15 s while up) for the front desk."""
-    import threading
-    import time
-
+    a heartbeat every 15 s while up) for the front desk, and the boot's timing to ``<id>:coldstarts``. With
+    ``snapshot`` (``LLMSnap``'s snapshot phase) the engine is warmed up and put to sleep instead, and there's no
+    heartbeat yet: ``_llm_wake`` does the rest after the restore."""
     from aistudio_gpu.llm import store
+    from aistudio_gpu.llm.coldstart import ColdStartClock
     from aistudio_gpu.llm.engine import EngineProcess
 
     self.error = None
     self.alive = True
     self.proc = None
     m = store.read(MODELS, self.model) or {}
-    base = {"started": time.time(), "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
+    self.manifest = m
+    _llm_clock(self, ColdStartClock)
+    base = {"started": self.clock.started, "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
             "container": os.environ.get("MODAL_TASK_ID")}
     self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
 
-    def publish(**kw):
-        self.current = {**self.current, **kw, "beat": time.time()}
-        try:
-            llm_state[self.model] = self.current
-        except Exception:  # noqa: BLE001
-            pass
-
     def on_status(phase, progress):
-        publish(state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress)
+        _llm_publish(self, state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress)
+        self.clock.phase(phase)
 
-    def heartbeat():
-        while self.alive:
-            time.sleep(15)
-            if self.alive:
-                publish()
-
-    publish()
-    threading.Thread(target=heartbeat, daemon=True).start()
+    _llm_publish(self)
+    if not snapshot:
+        _llm_heartbeat(self)
     if not m or not store.installed(MODELS, self.model):
         self.error = f"{self.model} isn't installed on the server"
-        publish(state="failed", error=self.error)
+        _llm_publish(self, state="failed", error=self.error)
         return
     self.proc = EngineProcess(m, MODELS, on_status)
     try:
         self.proc.start()
         self.proc.wait_ready()
+        if snapshot:
+            on_status("Warming up", None)
+            self.proc.warmup()
+            self.proc.sleep()
+            on_status("Saving a snapshot", None)
     except Exception as e:  # noqa: BLE001
         self.error = str(e)[:4000]
-        publish(state="failed", error=self.error)
+        _llm_publish(self, state="failed", error=self.error)
         self.proc.stop()
-        modal.experimental.stop_fetching_inputs()
+        if not snapshot:
+            modal.experimental.stop_fetching_inputs()
         return
     try:
         volume.commit()  # the compile caches, for the next cold start
     except Exception:  # noqa: BLE001
         pass
+    if snapshot:
+        return
+    _llm_record(self, "cold")
     if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
         modal.experimental.stop_fetching_inputs()
+
+
+def _llm_wake(self):
+    """After an ``LLMSnap`` restore (or right after its snapshot was taken): wake the engine, time the start."""
+    from aistudio_gpu.llm.coldstart import ColdStartClock
+
+    if self.error or self.proc is None:
+        _llm_heartbeat(self)
+        return
+    _llm_clock(self, ColdStartClock, how="snapshot")
+    self.current = {**self.current, "started": self.clock.started, "container": os.environ.get("MODAL_TASK_ID"),
+                    "state": "loading", "phase": "Waking up", "progress": None}
+    self.proc.on_status = lambda phase, progress: (
+        _llm_publish(self, state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress),
+        self.clock.phase(phase))
+    _llm_publish(self)
+    _llm_heartbeat(self)
+    try:
+        self.proc.wake_up()
+    except Exception as e:  # noqa: BLE001
+        self.error = f"waking the engine after the snapshot failed: {str(e)[:3000]}. Turn GPU snapshots off for it."
+        _llm_publish(self, state="failed", error=self.error)
+        self.proc.stop()
+        modal.experimental.stop_fetching_inputs()
+        return
+    _llm_record(self, "snapshot")
+
+
+def _llm_clock(self, clock_cls, how: str = "cold"):
+    """A new boot clock; the GPU wait counts from when the front desk asked for this container."""
+    try:
+        prev = llm_state.get(self.model) or {}
+    except Exception:  # noqa: BLE001
+        prev = {}
+    self.clock = clock_cls(requested=prev.get("requested") if prev.get("state") == "starting" else None, how=how)
+
+
+def _llm_publish(self, **kw):
+    import time
+
+    self.current = {**self.current, **kw, "beat": time.time()}
+    try:
+        llm_state[self.model] = self.current
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _llm_heartbeat(self):
+    import threading
+    import time
+
+    def beat():
+        while self.alive:
+            time.sleep(15)
+            if self.alive:
+                _llm_publish(self)
+
+    threading.Thread(target=beat, daemon=True).start()
+
+
+def _llm_record(self, how: str):
+    from aistudio_gpu.llm.coldstart import remember
+
+    m = self.manifest or {}
+    record = self.clock.finish(gpu=m.get("gpu"), count=m.get("count"), updated=m.get("updated"),
+                               loadFormat=m.get("loadFormat") or "auto", snapshot=bool(m.get("snapshot")))
+    key = self.model + ":coldstarts"
+    try:
+        llm_state[key] = remember(llm_state.get(key), record)
+    except Exception:  # noqa: BLE001
+        pass
+    print(f"[aistudio] {self.model} ready in {record['seconds']} s ({how}): "
+          + ", ".join(f"{p['name']} {p['seconds']} s" for p in record["phases"]), flush=True)
 
 
 async def _llm_chat(self, body: dict):
@@ -485,6 +563,43 @@ class LLM:
     @modal.enter()
     def boot(self):
         _llm_boot(self)
+
+    @modal.method()
+    async def chat(self, body: dict):
+        async for chunk in _llm_chat(self, body):
+            yield chunk
+
+    @modal.method()
+    def ping(self) -> dict:
+        return self.current
+
+    @modal.method()
+    def stop(self) -> None:
+        modal.experimental.stop_fetching_inputs()
+
+    @modal.exit()
+    def shutdown(self):
+        _llm_shutdown(self)
+
+
+@app.cls(image=vllm_snap_image, gpu="H100", enable_memory_snapshot=True,
+         experimental_options={"enable_gpu_snapshot": True}, **LLM_CLS)
+@modal.concurrent(max_inputs=64)
+class LLMSnap:
+    """A vLLM model on one GPU with a GPU memory snapshot (experimental, opt in per model): the first start loads,
+    warms up and puts the engine to sleep, then Modal snapshots the container; later starts restore it and wake the
+    engine. ``rev`` is the manifest's ``updated`` stamp, so changed settings get a new snapshot."""
+
+    model: str = modal.parameter()
+    rev: str = modal.parameter(default="")
+
+    @modal.enter(snap=True)
+    def boot(self):
+        _llm_boot(self, snapshot=True)
+
+    @modal.enter(snap=False)
+    def wake(self):
+        _llm_wake(self)
 
     @modal.method()
     async def chat(self, body: dict):
@@ -584,8 +699,17 @@ def _llm_service():
         def _obj(self, m: dict):
             n = int(m.get("count") or 1)
             gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
-            cls = LLMLlamaCpp if m.get("engine") == "llamacpp" else LLM
-            return cls.with_options(gpu=gpu)(model=m["id"])
+            if m.get("engine") == "llamacpp":
+                return LLMLlamaCpp.with_options(gpu=gpu)(model=m["id"])
+            if m.get("snapshot") and n == 1:
+                return LLMSnap.with_options(gpu=gpu)(model=m["id"], rev=str(m.get("updated") or ""))
+            return LLM.with_options(gpu=gpu)(model=m["id"])
+
+        async def _coldstarts(self, mid):
+            try:
+                return await llm_state.get.aio(mid + ":coldstarts") or []
+            except Exception:  # noqa: BLE001
+                return []
 
         async def _reload(self):
             if time.monotonic() - self._reloaded > 5:

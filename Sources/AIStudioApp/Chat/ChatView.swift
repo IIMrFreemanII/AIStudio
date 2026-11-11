@@ -120,8 +120,11 @@ struct ChatHeader: View {
         let key = doc.modelKey
         let m = key.flatMap { llm.model($0) }
             if let key {
-                EngineChip(status: doc.engine.map { LLMStatus(state: $0.state, phase: $0.phase, progress: $0.progress) }
-                           ?? llm.status(key), model: m, streaming: doc.isStreaming)
+                EngineChip(status: doc.engine.map { e in
+                               var st = LLMStatus(state: e.state, phase: e.phase, progress: e.progress)
+                               st.coldStart = llm.status(key)?.coldStart  // the stream's status lines don't carry it
+                               return st
+                           } ?? llm.status(key), model: m, streaming: doc.isStreaming)
                 let st = llm.status(key)
                 if st?.isActive == true {
                     Button { Task { await llm.stop(key) } } label: { Image(systemName: "power") }
@@ -191,10 +194,10 @@ struct EngineChip: View {
     func label(_ s: String) -> String {
         let gpu = status?.count.map { c in c > 1 ? "\(c)× \(status?.gpu ?? "")" : status?.gpu ?? "" } ?? model?.gpuLabel ?? ""
         switch s {
-        case "starting": return status?.phase ?? "Waiting for a GPU"
+        case "starting": return (status?.phase ?? "Waiting for a GPU") + usually
         case "loading":
-            if let p = status?.progress, p < 1 { return "\(status?.phase ?? "Loading") \(Int(p * 100))%" }
-            return status?.phase ?? "Loading"
+            if let p = status?.progress, p < 1 { return "\(status?.phase ?? "Loading") \(Int(p * 100))%" + usually }
+            return (status?.phase ?? "Loading") + usually
         case "ready":
             var parts = [streaming ? "Generating" : "Ready", gpu]
             if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f", c)) }
@@ -204,15 +207,33 @@ struct EngineChip: View {
         }
     }
 
+    /// " · usually ~3 min" while starting, once the model has started before.
+    var usually: String {
+        guard let t = status?.coldStart?.typicalSeconds else { return "" }
+        return " · usually ~" + ColdStartRecord.duration(t >= 60 ? (t / 60).rounded() * 60 : t)
+    }
+
+    /// "Last start: 3 min 12 s (Waiting for a GPU 20 s · Loading weights 2 min …)".
+    var lastStart: String? {
+        guard let last = status?.coldStart?.last else { return nil }
+        let how = last.how == "snapshot" ? ", from a snapshot" : ""
+        return "Last start: \(ColdStartRecord.duration(last.seconds))\(how) (\(last.breakdown))."
+    }
+
     func help(_ s: String) -> String {
         switch s {
         case "failed": return status?.error ?? "The model didn't start"
         case "ready":
             let rate = (status?.usdPerSecond ?? 0) * 3600
-            return rate > 0 ? String(format: "Running: $%.2f an hour while warm. It shuts down a few minutes after the last message.", rate)
-                : "Running"
-        case "cold": return "No GPU running: the first message starts one (big models take a few minutes)."
-        default: return "Starting the model"
+            let run = rate > 0 ? String(format: "Running: $%.2f an hour while warm. It shuts down a few minutes after the last message.", rate)
+                : "Running."
+            return [run, lastStart].compactMap { $0 }.joined(separator: "\n")
+        case "cold":
+            return ["No GPU running: the first message starts one (big models take a few minutes).", lastStart]
+                .compactMap { $0 }.joined(separator: "\n")
+        default:
+            return ["Starting the model" + (status?.bootSeconds.map { " (\(ColdStartRecord.duration($0)) so far)" } ?? "") + ".",
+                    lastStart].compactMap { $0 }.joined(separator: "\n")
         }
     }
 }

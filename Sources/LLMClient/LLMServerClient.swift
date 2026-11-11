@@ -22,6 +22,10 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var engine: String?
     /// "huggingface" or "civitai".
     public var source: String?
+    /// How vLLM reads the weights: "auto" (its loader) or "runai" (Run:ai's streamer, faster from network volumes).
+    public var loadFormat: String?
+    /// Starts from a GPU memory snapshot (experimental; vLLM on one GPU).
+    public var snapshot: Bool?
 
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
 }
@@ -43,6 +47,10 @@ public struct LLMStatus: Codable, Equatable, Sendable {
     public var leaseSeconds: Double?
     /// Set on a keepalive the server ignored (past the lease: no chat for a long time).
     public var ignored: Bool?
+    /// Seconds since the start was asked for, while starting or loading.
+    public var bootSeconds: Double?
+    /// The model's last cold start and how long one usually takes.
+    public var coldStart: ColdStartSummary?
 
     public init(state: String, phase: String? = nil, progress: Double? = nil) {
         self.state = state
@@ -51,6 +59,57 @@ public struct LLMStatus: Codable, Equatable, Sendable {
     }
 
     public var isActive: Bool { ["starting", "loading", "ready"].contains(state) }
+}
+
+/// How long a model takes to start: the last start (split into phases) and the typical one.
+public struct ColdStartSummary: Codable, Equatable, Sendable {
+    public var last: ColdStartRecord
+    public var typicalSeconds: Double
+    public var count: Int
+
+    public init(last: ColdStartRecord, typicalSeconds: Double, count: Int) {
+        self.last = last
+        self.typicalSeconds = typicalSeconds
+        self.count = count
+    }
+}
+
+/// One start: when it was asked for, how long it took, the GPU wait, and each phase.
+public struct ColdStartRecord: Codable, Equatable, Sendable {
+    public struct Phase: Codable, Equatable, Sendable {
+        public var name: String
+        public var seconds: Double
+        public init(name: String, seconds: Double) { self.name = name; self.seconds = seconds }
+    }
+
+    public var at: Double?
+    public var seconds: Double
+    public var waitSeconds: Double?
+    /// "cold", or "snapshot" (restored from a GPU memory snapshot).
+    public var how: String?
+    public var phases: [Phase]
+    public var gpu: String?
+    public var count: Int?
+    public var loadFormat: String?
+    public var snapshot: Bool?
+
+    public init(seconds: Double, phases: [Phase], how: String? = "cold") {
+        self.seconds = seconds
+        self.phases = phases
+        self.how = how
+    }
+
+    /// "3 min 12 s", "48 s".
+    public static func duration(_ s: Double) -> String {
+        let t = Int(s.rounded())
+        if t < 60 { return "\(t) s" }
+        return t % 60 == 0 ? "\(t / 60) min" : "\(t / 60) min \(t % 60) s"
+    }
+
+    /// "Waiting for a GPU 20 s · Loading weights 2 min 10 s · …"
+    public var breakdown: String {
+        phases.filter { $0.seconds >= 0.5 }.map { "\($0.name) \(Self.duration($0.seconds))" }.joined(separator: " · ")
+    }
 }
 
 /// An install in progress.

@@ -89,6 +89,30 @@ extension SmokeTest {
         say("engine: \(llm.status(key)?.state ?? "?") \(llm.status(key)?.gpu ?? "") uptime "
             + "\(Int(llm.status(key)?.uptime ?? 0)) s, \(String(format: "$%.3f", llm.status(key)?.costUSD ?? 0))")
         if llm.status(key)?.state != "ready" { say("engine not ready after the replies"); ok = false }
+        // M28: the start was timed, phase by phase.
+        if let cs = llm.status(key)?.coldStart {
+            say("cold start: \(ColdStartRecord.duration(cs.last.seconds)), typical \(ColdStartRecord.duration(cs.typicalSeconds)): \(cs.last.breakdown)")
+            if cs.last.phases.isEmpty || cs.last.seconds <= 0 { say("the cold start has no phases"); ok = false }
+        } else {
+            say("no cold start recorded"); ok = false
+        }
+        // The start-up settings round-trip (fast loading; a snapshot only on one GPU).
+        if fake, let c = llm.client(key.serverID), let m = llm.model(key) {
+            do {
+                let one = m.count == 1
+                let updated = try await c.update(key.modelID, ["loadFormat": .string("runai"), "snapshot": .bool(one)])
+                if updated.loadFormat != "runai" || updated.snapshot != one { say("start-up settings not saved"); ok = false }
+                _ = try await c.update(key.modelID, ["loadFormat": .string("auto"), "snapshot": .bool(false)])
+                if !one {
+                    do {
+                        _ = try await c.update(key.modelID, ["snapshot": .bool(true)])
+                        say("a snapshot on \(m.count) GPUs was accepted"); ok = false
+                    } catch {}
+                }
+            } catch {
+                say("start-up settings: \(error.localizedDescription)"); ok = false
+            }
+        }
 
         // Branches: another first reply, then back; an edited first question; attachments.
         func waitReply() async -> ChatTurn? {

@@ -434,7 +434,7 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
 - **Install:** `import_llm` (4 CPUs) downloads the files straight to the models volume: about 3–5 minutes per 100 GB.
 - **GPUs:** L40S (1–2), A100 80 GB, H100, H200 or B200, on 1, 2, 4 or 8 of them. The pick is the cheapest that holds
   the weights plus the KV cache for the context you chose (vLLM gets 90% of the memory). Mixture-of-experts models
-  split across GPUs with expert parallelism. Change it later in Servers › the model › **GPUs and Context…** (it
+  split across GPUs with expert parallelism. Change it later in Servers › the model's settings (it
   takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
 - **Warm while you chat:** the first message starts the container (the chat shows *Waiting for a GPU*, then *Loading
   weights 41%*). While a chat with that model is in front, the app is active and you used it in the last 10 minutes,
@@ -445,6 +445,23 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   in dollars and the engine's running total; for example Qwen3.8-Flash-Next FP8 (180 GB) on 2× H200 is about
   $9.08 an hour while warm, so an hour of chatting plus the 3-minute idle tail costs about $9.50. Cold starts load the
   weights from the volume (a few minutes for 100+ GB) and are billed too.
+- **Cold starts, timed:** each start is recorded phase by phase (waiting for a GPU, starting the container and the
+  engine, loading weights, compiling, capturing CUDA graphs), ten per model, in the `<id>:coldstarts` entry of the
+  `aistudio-gpu-llm` Dict. `GET /v1/llm/models/<id>/status` returns the last one and the typical one (`coldStart`),
+  and `bootSeconds` while starting. The chat's engine chip says *Loading weights 41% · usually ~2 min*, its tooltip
+  and the model's settings show the last start's breakdown, and the container log prints it.
+- **Faster starts** (the model's settings, or `PATCH` with these fields):
+  - `loadFormat: "runai"` (**Fast weight loading**): vLLM reads the weights with Run:ai's streamer, many reads at
+    once (`AISTUDIO_RUNAI_CONCURRENCY`, default 16), instead of one shard at a time; usually much faster from the
+    network volume. vLLM models only.
+  - `snapshot: true` (**GPU snapshot**, experimental): the model runs in the `LLMSnap` class. Its first start loads
+    the weights, warms the engine up, puts it to sleep (`--enable-sleep-mode`: weights to CPU memory) and Modal
+    saves a GPU memory snapshot; later starts restore it and wake the engine instead of loading and compiling. Only
+    for vLLM models on one GPU (Modal's GPU snapshots are alpha and don't handle several GPUs), only on a deployed
+    app, and it can take two or three starts before the snapshot is used. Each settings change makes a new
+    snapshot. If a model fails to start with it, turn it off.
+  - vLLM's compile, inductor and Triton caches live on the models volume (`llm/.cache/`), so only the first start
+    of a model on a GPU kind compiles from scratch.
 - Deploy settings: `AISTUDIO_LLM_IDLE`, `AISTUDIO_VLLM` (the vLLM version, default 0.33.0), `AISTUDIO_CUDA_IMAGE`,
   `AISTUDIO_LLAMA_IMAGE` (llama.cpp's server image, default `ghcr.io/ggml-org/llama.cpp:server-cuda`),
   `AISTUDIO_LLM_MAX_GPUS` (default 8).

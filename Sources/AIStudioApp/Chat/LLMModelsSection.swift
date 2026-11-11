@@ -11,6 +11,8 @@ struct LLMAddRequest: Identifiable {
 struct LLMSettingsRequest: Identifiable {
     let id = UUID()
     var key: LLMKey
+    /// Snapshots: the plan to show instead of asking the server.
+    var preview: LLMPlan? = nil
 }
 
 /// The user's logins for model links, read from the Keychain only when they're saved.
@@ -302,17 +304,27 @@ struct LLMSettingsSheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.mgDismiss) private var dismiss
     let request: LLMSettingsRequest
+    var preview: LLMPlan? { request.preview }
     @State private var plan: LLMPlan?
     @State private var option: GPUOption?
     @State private var context = 0
+    @State private var fastLoad = false
+    @State private var snapshot = false
     @State private var error: String?
     @State private var busy = false
 
+    /// Snapshots need vLLM on one GPU (Modal's GPU snapshots don't handle several).
+    var snapshotAllowed: Bool {
+        model.llm.model(request.key)?.engine != "llamacpp" && (option?.count ?? 1) == 1
+    }
+
     var body: some View {
         let m = model.llm.model(request.key)
-        let running = model.llm.status(request.key)?.isActive == true
+        let st = model.llm.status(request.key)
+        let running = st?.isActive == true
+        let gguf = m?.engine == "llamacpp"
         VStack(alignment: .leading, spacing: 14) {
-            Text("\(m?.name ?? request.key.modelID): GPUs and Context").font(.mgHeadline)
+            Text("\(m?.name ?? request.key.modelID): GPUs, Context and Start-up").font(.mgHeadline)
             if let plan {
                 MGSection {
                     MGFormRow("GPUs") {
@@ -324,6 +336,30 @@ struct LLMSettingsSheet: View {
                     MGFormRow("Context") {
                         MGPicker(selection: $context, options: choices.map { ($0, "\($0 / 1024)k tokens") })
                     }
+                }
+                MGSection("Start-up") {
+                    MGFormRow("Fast weight loading") {
+                        Toggle("", isOn: $fastLoad).labelsHidden().disabled(gguf)
+                    }
+                    .mgHelp(gguf ? "GGUF files are read by llama.cpp." :
+                            "Reads the weights with Run:ai's streamer (many reads at once), usually much faster from the server's network volume.")
+                    MGFormRow("GPU snapshot (experimental)") {
+                        Toggle("", isOn: Binding(get: { snapshot && snapshotAllowed }, set: { snapshot = $0 }))
+                            .labelsHidden().disabled(!snapshotAllowed)
+                    }
+                    .mgHelp(snapshotAllowed
+                            ? "The first start saves the warmed-up engine as a GPU memory snapshot; later starts restore it instead of loading and compiling. Experimental: turn it off if the model fails to start."
+                            : "Only for vLLM models on one GPU: GPU snapshots don't work across several GPUs.")
+                }
+                if let cs = st?.coldStart {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Starts take about \(ColdStartRecord.duration(cs.typicalSeconds))"
+                             + (cs.count > 1 ? " (typical of the last \(min(cs.count, 5)))" : "") + ".")
+                        Text("Last start: \(ColdStartRecord.duration(cs.last.seconds))\(cs.last.how == "snapshot" ? " from a snapshot" : ""). \(cs.last.breakdown)")
+                            .foregroundStyle(MG.secondaryLabel)
+                    }
+                    .font(.mgSubheadline)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 if running {
                     Text("The model is running: the change applies after it restarts.")
@@ -364,12 +400,16 @@ struct LLMSettingsSheet: View {
     }
 
     func load() async {
-        guard let client = model.llm.client(request.key.serverID) else { return }
+        let client = model.llm.client(request.key.serverID)
+        guard client != nil || preview != nil else { return }
         do {
-            let p = try await client.plan(request.key.modelID)
+            let p: LLMPlan
+            if let preview { p = preview } else { p = try await client!.plan(request.key.modelID) }
             plan = p
             option = p.options.first { $0.gpu == p.current.gpu && $0.count == p.current.count && $0.fits } ?? p.recommended
             context = p.current.context
+            fastLoad = model.llm.model(request.key)?.loadFormat == "runai"
+            snapshot = model.llm.model(request.key)?.snapshot == true
             if !choices.contains(context) { context = choices.last { $0 <= context } ?? choices.first ?? context }
         } catch {
             self.error = error.localizedDescription
@@ -381,8 +421,10 @@ struct LLMSettingsSheet: View {
         busy = true
         defer { busy = false }
         do {
-            _ = try await client.update(request.key.modelID, ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
-                                                              "context": .number(Double(context))])
+            var changes: [String: JSONValue] = ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
+                                                 "context": .number(Double(context)), "snapshot": .bool(snapshot && snapshotAllowed)]
+            if model.llm.model(request.key)?.engine != "llamacpp" { changes["loadFormat"] = .string(fastLoad ? "runai" : "auto") }
+            _ = try await client.update(request.key.modelID, changes)
             if restart { await model.llm.stop(request.key) }
             await model.llm.refresh(request.key.serverID)
             dismiss()
