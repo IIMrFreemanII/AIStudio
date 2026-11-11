@@ -315,3 +315,23 @@ def test_warm_keepalive_lease_and_idle_stop(client, llm):
         time.sleep(0.05)
     assert client.get(f"/v1/llm/models/{mid}/status", headers=AUTH).json()["state"] == "cold"
     assert client.post(f"/v1/llm/models/{mid}/stop", headers=AUTH).json()["state"] == "cold"
+
+
+def test_fake_agent_script(client):
+    mid = install(client)
+    tools = [{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object"}}}]
+    msgs = [{"role": "user", "content": "create hello.txt and show it"}]
+    names = []
+    for step in range(2):
+        events = chat(client, mid, "", messages=msgs, tools=tools)
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                    if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+        names.append(call["function"]["name"])
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
+                 {"role": "tool", "tool_call_id": call["id"], "content": f"result {step}"}]
+    assert names == ["write_file", "run_command"]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    text = "".join(json.loads(d)["choices"][0]["delta"].get("content") or "" for n, d in events
+                   if n is None and d != "[DONE]" and json.loads(d)["choices"])
+    assert text == "Done: result 1"

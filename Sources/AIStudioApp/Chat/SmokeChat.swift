@@ -1,3 +1,4 @@
+import Agent
 import AppKit
 import Foundation
 import LLMClient
@@ -146,6 +147,91 @@ extension SmokeTest {
         } else {
             say("left \(mid) running: it stops by itself after the idle time (or Shut Down GPU in Servers)")
         }
+        say(ok ? "OK" : "FAILED")
+        return ok
+    }
+}
+
+extension SmokeTest {
+    /// `--smoke-agent <url>` (a server with `AISTUDIO_FAKE_LLM=1`): a coding chat in a fresh git repository. The fake
+    /// model writes hello.txt, then runs `cat hello.txt`: the write is allowed once, the command "always"; the file and
+    /// the reply are checked. Then plan mode: the same request is refused without asking, and nothing is written.
+    static func runAgent(_ model: AppModel, url: String) async -> Bool {
+        func say(_ s: String) { print("[smoke-agent] \(s)"); fflush(stdout) }
+        let conn = ServerConnection(name: "Smoke GPU", kind: .gpu, baseURL: url)
+        model.connections.save(conn, token: "smoke")
+        let llm = model.llm
+        guard let client = llm.client(conn.id) else { say("no client"); return false }
+        await llm.refresh(conn.id)
+        var mid = llm.listings[conn.id]?.models.first { $0.repo == "fake/agent" }?.id
+        if mid == nil {
+            do { mid = try await client.install(LLMInstallRequest(url: "fake/agent")).id } catch {
+                say("install failed: \(error.localizedDescription)"); return false
+            }
+            for _ in 0..<100 {
+                await llm.refresh(conn.id)
+                if llm.listings[conn.id]?.models.contains(where: { $0.id == mid && $0.installed == true }) == true { break }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        guard let mid else { say("no model"); return false }
+        let key = LLMKey(serverID: conn.id, modelID: mid)
+
+        let repo = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-agent-\(UUID().uuidString.prefix(8))")
+        try? FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        _ = await ShellRunner().run("git init -q && echo '# Smoke' > README.md", cwd: repo)
+        let doc = model.newCodingChat(project: repo, model: key)
+        var ok = true
+        var asked: [String] = []
+
+        // Answers questions as they come: allow the write, always allow the command.
+        let answerer = Task { @MainActor in
+            while !Task.isCancelled {
+                if let r = doc.permission {
+                    asked.append(r.call.name)
+                    doc.answer(r.call.name == "write_file" ? .allow : .allowAlways)
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+        func send(_ text: String) async -> ChatTurn? {
+            doc.draft = text
+            model.send(doc)
+            let start = Date()
+            while doc.isStreaming, Date().timeIntervalSince(start) < 60 { try? await Task.sleep(nanoseconds: 100_000_000) }
+            return doc.transcript.turns.last
+        }
+
+        let reply = await send("create hello.txt and show it")
+        let written = try? String(contentsOf: repo.appendingPathComponent("hello.txt"), encoding: .utf8)
+        say("reply: \(reply?.text ?? reply?.error ?? "none")")
+        if written != "hi from the agent\n" { say("hello.txt is \(written.map { "\"\($0)\"" } ?? "missing")"); ok = false }
+        if asked != ["write_file", "run_command"] { say("asked for \(asked)"); ok = false }
+        if reply?.text.contains("hi from the agent") != true { say("the command's output didn't come back"); ok = false }
+        let tools = doc.transcript.turns.filter { $0.role == .tool }
+        if tools.map(\.toolStatus) != ["done", "done"] { say("tool turns: \(tools.map { "\($0.toolTitle ?? "?"): \($0.toolStatus ?? "?")" })"); ok = false }
+        if tools.first?.toolDetail?.contains("+hi from the agent") != true { say("no diff on the write card"); ok = false }
+        if doc.transcript.allowCommands != ["cat"] { say("always-allow not kept: \(doc.transcript.allowCommands ?? [])"); ok = false }
+
+        // Plan mode: refused without a question; the file stays as it is.
+        try? FileManager.default.removeItem(at: repo.appendingPathComponent("hello.txt"))
+        asked = []
+        doc.mode = .plan
+        let planned = await send("create hello.txt and show it")
+        let planTools = doc.transcript.turns.filter { $0.role == .tool }.suffix(2)
+        if !asked.isEmpty { say("plan mode asked: \(asked)"); ok = false }
+        if FileManager.default.fileExists(atPath: repo.appendingPathComponent("hello.txt").path) { say("plan mode wrote"); ok = false }
+        if planTools.map(\.toolStatus) != ["denied", "denied"] { say("plan tools: \(planTools.map(\.toolStatus))"); ok = false }
+        say("plan mode reply: \(planned?.text.prefix(80) ?? "none")")
+        answerer.cancel()
+
+        // Saved with its folder, mode and answers.
+        if let saved = model.chatStore.load(doc.id) {
+            if saved.projectPath != repo.standardizedFileURL.path || saved.permissionMode != "plan" { say("not saved as a coding chat"); ok = false }
+        } else { say("not saved"); ok = false }
+        model.closeChat(doc.id)
+        model.deleteChat(doc.id)
+        try? FileManager.default.removeItem(at: repo)
         say(ok ? "OK" : "FAILED")
         return ok
     }

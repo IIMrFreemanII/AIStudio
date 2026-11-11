@@ -18,6 +18,7 @@ let package = Package(
         .library(name: "AIStudioProtocol", targets: ["AIStudioProtocol"]),
         .library(name: "NodesRemote", targets: ["NodesRemote"]),
         .library(name: "LLMClient", targets: ["LLMClient"]),
+        .library(name: "Agent", targets: ["Agent"]),
         .library(name: "AIStudioServer", targets: ["AIStudioServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
@@ -308,6 +309,12 @@ let package = Package(
             name: "LLMClient",
             dependencies: ["AIStudioProtocol"]
         ),
+        // The coding agent: tools that read, search, edit and run things in a project on this Mac, permission modes,
+        // and the loop that drives a model's tool calls.
+        .target(
+            name: "Agent",
+            dependencies: ["LLMClient"]
+        ),
         // `aistudio-cli serve`: runs graphs for remote clients, plus the web dashboard.
         .target(
             name: "AIStudioServer",
@@ -357,6 +364,7 @@ let package = Package(
                 "AIStudioProtocol",
                 "ModelImport",
                 "LLMClient",
+                "Agent",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             // JetBrains Mono (OFL), the design system's typeface.
@@ -405,6 +413,10 @@ let package = Package(
             name: "NodesRemoteTests",
             dependencies: ["NodesRemote", "NodesStandard", "GraphRuntime", "MLXDiffusionCore", "AIStudioProtocol",
                            .product(name: "MLX", package: "mlx-swift")]
+        ),
+        .testTarget(
+            name: "AgentTests",
+            dependencies: ["Agent", "LLMClient"]
         ),
         .testTarget(
             name: "LLMClientTests",

@@ -167,7 +167,10 @@ def _error_text(status: int, detail: str) -> str:
 
 class FakeEngine:
     """Answers like vLLM with a scripted reply: thinking, then text that repeats the last user message; a tool call
-    (split over two chunks) when that message says "use a tool"; an error partway when it says "fail"."""
+    (split over two chunks) when that message says "use a tool"; an error partway when it says "fail".
+
+    With tools in the request and "create hello.txt" in the message, it acts as a coding agent: write_file, then
+    run_command `cat hello.txt`, then "Done: " and the last tool result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -191,7 +194,11 @@ class FakeEngine:
     async def chat(self, body: dict) -> AsyncIterator[bytes]:
         mid = self.manifest["id"]
         last = ""
-        for m in reversed(body.get("messages") or []):
+        messages = body.get("messages") or []
+        tool_results = []
+        for m in reversed(messages):
+            if m.get("role") == "tool":
+                tool_results.insert(0, str(m.get("content") or ""))
             if m.get("role") == "user":
                 c = m.get("content")
                 last = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or []
@@ -218,7 +225,22 @@ class FakeEngine:
         if "fail" in last.lower():
             yield chunk({"content": "Partly"})
             raise EngineError("the fake engine failed on purpose")
-        words = f"You said: {last}".split(" ")
+        script = [("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
+                  ("run_command", {"command": "cat hello.txt"})]
+        if body.get("tools") and "create hello.txt" in last.lower():
+            step = len(tool_results)
+            if step < len(script):
+                name, args = script[step]
+                yield chunk({"content": "Working on it."})
+                yield chunk({"tool_calls": [{"index": 0, "id": f"call_{step}", "type": "function",
+                                             "function": {"name": name, "arguments": json.dumps(args)}}]})
+                yield chunk({}, "tool_calls")
+                yield b"data: [DONE]\n\n"
+                return
+            last_result = tool_results[-1].strip().replace("\n", " ")
+            words = f"Done: {last_result}".split(" ")
+        else:
+            words = f"You said: {last}".split(" ")
         for i, w in enumerate(words):
             await asyncio.sleep(0.005)
             yield chunk({"content": w if i == 0 else " " + w})

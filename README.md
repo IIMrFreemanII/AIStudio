@@ -255,7 +255,17 @@ server reads the model's config, picks the cheapest GPUs it fits on (up to 8× H
 volume and serves it with vLLM (llama.cpp for GGUF). Chats open as tabs next to the workflows, stream the reply with
 the model's thinking in a collapsible block, render Markdown and code, and show tokens per second and what each reply
 cost. Attach images (vision models) and text files, edit a message or ask for another reply (each keeps the old
-version: ‹ 2 / 3 ›). The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
+version: ‹ 2 / 3 ›).
+
+**Coding chats** (Chats › ‹/›, or ⇧⌥⌘N) put an agent to work in a project folder on this Mac, like Claude Code: the
+model runs on the GPU server, its tools run here — `read_file`, `list_files`, `search` (ripgrep), `edit_file` (exact
+replacements, only after a fresh read), `write_file`, `run_command` (zsh in the project, its own process group, a
+timeout) and `todo_write`. Each call shows as a card: edits with their diff, commands with their output streaming in.
+The chat's permission mode decides what asks first: **Ask** (reads are free; edits and commands ask, with Allow /
+Always allow / Deny), **Auto-accept Edits**, **Plan** (read only) and **Bypass Permissions**. Reads and edits outside
+the project folder always ask, except in Bypass. "Always allow" remembers all edits, or a command prefix
+(`swift build`, `git status`), for that chat. The agent gets the project's `AGENTS.md` or `CLAUDE.md`. Models need
+tool calling (most recent ones; the server picks the parser). The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
 docs/remote-server.md › Language models.
 
 [docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that
@@ -336,6 +346,7 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `GraphEditor/`: the node editor; `TabStrip`, `SidebarRail` (Workflows, Presets, Assets, Queue, Node Library), `QueuePanel` (with the Output list), `Assets.swift` (imports and drops), `ResultsPane` (with the viewer), `PresetGallery`, the inspector (`InspectorView`, `NodeExtras`) and `AddToWorkflow` (the chains in `SimpleChains.swift`).
 - `Sources/AIStudioProtocol`: the remote protocol shared by the server, the app and the tests: 20-byte binary event records (`WireEvent`), JSON control messages, metrics ring buffers, `GraphTransport` (rewrites a graph's files for a server, content-addressed uploads) and `RemoteClient` (URLSession and WebSocket client with resumable transfers and reconnect).
 - `Sources/AIStudioServer`: `aistudio-cli serve` on Hummingbird: the run queue (`Scheduler`), event fan-out with per-client coalescing and latest-wins previews (`Hub`), uploads (`FileStore`), auth and the path sandbox, and the web dashboard (built from `web/dashboard`, Svelte 5 + uPlot, by `scripts/build-dashboard.sh`).
+- `Sources/Agent`: the coding agent: its tools, `ShellRunner` (posix_spawn in a process group), permission modes and "always allow" rules, the diff for edit cards, and the loop that runs a model's tool calls.
 - `Sources/LLMClient`: chats with LLMs on a GPU server: OpenAI-compatible streaming (SSE, `<think>` splitting, tool-call assembly), the server's `/v1/llm` routes, saved transcripts. The chat UI is `Sources/AIStudioApp/Chat`.
 - `Sources/NodesRemote`: the Cloud GPU nodes and their client of the GPU server's job API (uploads, a WebSocket of the same binary event records as the Mac server, cancel, result download).
 - `server/gpu`: the GPU server (Python): a FastAPI front desk and workers for Wan 2.2, FLUX.1 dev and Qwen-Image (diffusers), ACE-Step 1.5 XL, Stable Audio 3 and Qwen3-TTS, and language models from links (`aistudio_gpu/llm`: sizing, installs, vLLM, an SSE proxy); `modal_app.py` deploys it to Modal, `Dockerfile` to a GPU box; tests with `pytest` (CPU test tasks and tiny random-weight models).

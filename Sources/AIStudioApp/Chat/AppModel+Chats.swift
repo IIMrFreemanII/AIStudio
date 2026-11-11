@@ -1,3 +1,5 @@
+import Agent
+import AppKit
 import Foundation
 import ImageIO
 import LLMClient
@@ -17,6 +19,26 @@ extension AppModel {
         chats.append(doc)
         activeChatID = doc.id
         return doc
+    }
+
+    /// A coding chat in a project folder: the agent's tools work there, with the permission mode chosen in the chat.
+    @discardableResult
+    func newCodingChat(project: URL, model key: LLMKey? = nil) -> ChatDocument {
+        let doc = newChat(model: key)
+        doc.transcript.projectPath = project.standardizedFileURL.path
+        doc.transcript.title = project.lastPathComponent
+        doc.mode = .ask
+        return doc
+    }
+
+    /// Asks for a project folder, then opens a coding chat in it.
+    func chooseProjectAndChat() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Open in Chat"
+        panel.message = "The coding agent reads, edits and runs commands in this folder (asking first, by default)."
+        if panel.runModal() == .OK, let url = panel.url { newCodingChat(project: url) }
     }
 
     /// Opens a saved chat (or brings its tab to the front).
@@ -122,6 +144,10 @@ extension AppModel {
             return
         }
         lastChatModel = key
+        if let root = doc.projectURL {
+            runAgent(doc, key: key, client: client, root: root, add: add)
+            return
+        }
         let vision = llm.model(key)?.vision == true
         let folder = chatStore.filesFolder(doc.id)
         var request = ChatRequest(model: key.modelID, messages: doc.transcript.messages { name in
@@ -228,6 +254,123 @@ extension AppModel {
 
     func stopReply(_ doc: ChatDocument) {
         doc.task?.cancel()
+        if doc.permission != nil { doc.answer(.deny) }
+    }
+
+    // MARK: the coding agent
+
+    /// Runs the agent for a coding chat: each model message becomes an assistant turn, each tool call a tool turn
+    /// (its card), questions go to the chat's permission card.
+    func runAgent(_ doc: ChatDocument, key: LLMKey, client: LLMServerClient, root: URL, add: @escaping (ChatTurn) -> Void) {
+        let vision = llm.model(key)?.vision == true
+        let folder = chatStore.filesFolder(doc.id)
+        let history = doc.transcript.messages { name in vision ? Self.imageDataURL(folder.appendingPathComponent(name)) : nil }
+        var config = AgentConfig(model: key.modelID, mode: doc.mode, rules: doc.rules)
+        config.reasoningEffort = doc.transcript.reasoningEffort
+        config.inlineThinking = llm.model(key)?.reasoningParser == nil
+        let ctx = ToolContext(root: root)
+        ctx.onOutput = { [weak doc] id, chunk in
+            Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
+        }
+        doc.requestStarted = Date()
+        doc.engine = nil
+        llm.lastActivity = Date()
+        // The first assistant message takes the reply's place (a retry's sibling); the rest follow it.
+        let start = ChatTurn(role: .assistant, text: "", model: key.modelID)
+        add(start)
+        doc.liveTurnID = start.id
+        let st = AgentRunState(turn: start.id, inline: config.inlineThinking)
+        doc.task = Task { @MainActor [weak self, weak doc] in
+            guard let doc else { return }
+            @MainActor func publish() { st.publish(into: doc) }
+            let system = await ProjectContext.systemPrompt(root: root, mode: config.mode)
+            do {
+                let outcome = try await AgentLoop.run(
+                    client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
+                    ask: { [weak doc] request in
+                        await withCheckedContinuation { cont in
+                            Task { @MainActor in
+                                guard let doc else { cont.resume(returning: .deny); return }
+                                doc.permissionAnswer = cont
+                                doc.permission = request
+                            }
+                        }
+                    },
+                    rulesChanged: { [weak doc] rules in
+                        await MainActor.run {
+                            doc?.transcript.allowEdits = rules.edits
+                            doc?.transcript.allowCommands = rules.commandPrefixes
+                        }
+                    },
+                    events: { event in
+                        await MainActor.run {
+                            switch event {
+                            case .assistantStarted:
+                                if !st.first {
+                                    let t = ChatTurn(role: .assistant, text: "", model: key.modelID)
+                                    doc.transcript.append(t)
+                                    st.turn = t.id
+                                    doc.liveTurnID = t.id
+                                }
+                                st.first = false
+                                st.reset()
+                            case .delta(let e):
+                                st.acc.add(e)
+                                switch e {
+                                case .status(let s): doc.engine = s
+                                case .reasoning: if st.thinkStart == nil { st.thinkStart = Date() }; doc.engine = nil
+                                case .content, .toolCall:
+                                    if st.thinkStart != nil, st.thinkEnd == nil { st.thinkEnd = Date() }
+                                    doc.engine = nil
+                                default: break
+                                }
+                                if Date().timeIntervalSince(st.lastPublish) > 0.05 {
+                                    st.lastPublish = Date()
+                                    publish()
+                                }
+                            case .assistantFinished:
+                                st.acc.finish()
+                                publish()
+                            case .toolStarted(let call, let preview):
+                                var t = ChatTurn(role: .tool, text: "", toolCallID: call.id)
+                                t.toolTitle = preview.title
+                                t.toolDetail = preview.detail
+                                t.toolStatus = "running"
+                                doc.transcript.append(t)
+                            case .toolOutput:
+                                break  // ctx.onOutput streams it
+                            case .toolFinished(let id, let output, let status):
+                                if let t = doc.transcript.turns.last(where: { $0.toolCallID == id }) {
+                                    doc.transcript.update(t.id) {
+                                        $0.text = output.text
+                                        $0.toolStatus = status.rawValue
+                                    }
+                                }
+                                doc.todos = ctx.todos
+                            }
+                        }
+                    })
+                if outcome == .stepLimit {
+                    doc.transcript.update(st.turn) { $0.error = "Stopped after \(config.maxSteps) steps: say how to continue." }
+                }
+            } catch {
+                st.acc.finish()
+                publish()
+                let message = (error is CancellationError || Task.isCancelled) ? "Stopped" : error.localizedDescription
+                doc.transcript.update(st.turn) { $0.error = message }
+                // Tool cards still running: stopped.
+                for t in doc.transcript.turns where t.role == .tool && t.toolStatus == "running" {
+                    doc.transcript.update(t.id) { $0.toolStatus = "failed"; $0.text = "Stopped." }
+                }
+            }
+            if doc.permission != nil { doc.answer(.deny) }
+            doc.liveTurnID = nil
+            doc.engine = nil
+            doc.task = nil
+            doc.transcript.updated = Date()
+            self?.saveChat(doc)
+            await self?.llm.refreshStatus(key)
+        }
     }
 
     // MARK: session
@@ -249,6 +392,41 @@ extension AppModel {
         if let s = UserDefaults.standard.string(forKey: "activeChat"), let id = UUID(uuidString: s),
            chats.contains(where: { $0.id == id }) {
             activeChatID = id
+        }
+    }
+}
+
+/// The agent run's bookkeeping, shared by its event handler (a reference, so concurrent closures can update it; they
+/// all run on the main actor).
+final class AgentRunState: @unchecked Sendable {
+    var turn: UUID
+    var first = true
+    var acc: ReplyAccumulator
+    var thinkStart: Date?
+    var thinkEnd: Date?
+    var lastPublish = Date.distantPast
+    let inline: Bool
+
+    init(turn: UUID, inline: Bool) {
+        self.turn = turn
+        self.inline = inline
+        acc = ReplyAccumulator(inlineThinking: inline)
+    }
+
+    func reset() {
+        acc = ReplyAccumulator(inlineThinking: inline)
+        thinkStart = nil
+        thinkEnd = nil
+    }
+
+    @MainActor func publish(into doc: ChatDocument) {
+        let acc = acc, start = thinkStart, end = thinkEnd
+        doc.transcript.update(turn) { t in
+            t.text = acc.content
+            t.reasoning = acc.reasoning.isEmpty ? nil : acc.reasoning
+            t.toolCalls = acc.tools.calls
+            t.stats = acc.stats
+            if let start { t.thinkingSeconds = (end ?? Date()).timeIntervalSince(start) }
         }
     }
 }
