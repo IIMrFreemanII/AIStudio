@@ -170,7 +170,9 @@ class FakeEngine:
     (split over two chunks) when that message says "use a tool"; an error partway when it says "fail".
 
     With tools in the request and "create hello.txt" in the message, it acts as a coding agent: write_file, then
-    run_command `cat hello.txt`, then "Done: " and the last tool result."""
+    run_command `cat hello.txt`, then "Done: " and the last tool result. With "add an upscale" it acts as the graph
+    helper: get_graph, then edit_graph putting an ImageScale between `decode` and `save` (the text-to-image
+    template's ids), then "Done: " and the first line of the result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -225,9 +227,17 @@ class FakeEngine:
         if "fail" in last.lower():
             yield chunk({"content": "Partly"})
             raise EngineError("the fake engine failed on purpose")
-        script = [("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
-                  ("run_command", {"command": "cat hello.txt"})]
-        if body.get("tools") and "create hello.txt" in last.lower():
+        script = []
+        if "create hello.txt" in last.lower():
+            script = [("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
+                      ("run_command", {"command": "cat hello.txt"})]
+        elif "add an upscale" in last.lower():
+            script = [("get_graph", {}),
+                      ("edit_graph", {"operations": [
+                          {"op": "add", "id": "upscale", "type": "ImageScale",
+                           "inputs": {"image": {"node": "decode", "output": "image"}, "factor": 2}},
+                          {"op": "connect", "from": "upscale", "output": "image", "to": "save", "input": "image"}]})]
+        if body.get("tools") and script:
             step = len(tool_results)
             if step < len(script):
                 name, args = script[step]
@@ -237,7 +247,8 @@ class FakeEngine:
                 yield chunk({}, "tool_calls")
                 yield b"data: [DONE]\n\n"
                 return
-            last_result = tool_results[-1].strip().replace("\n", " ")
+            last_result = (tool_results[-1].strip().splitlines() or [""])[0] if "upscale" in last.lower() \
+                else tool_results[-1].strip().replace("\n", " ")
             words = f"Done: {last_result}".split(" ")
         else:
             words = f"You said: {last}".split(" ")

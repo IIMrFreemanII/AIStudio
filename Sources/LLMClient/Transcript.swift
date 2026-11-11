@@ -87,6 +87,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var permissionMode: String?
     public var allowEdits: Bool?
     public var allowCommands: [String]?
+    /// A graph helper chat: its tools edit and run a workflow tab (the one it's docked on, saved by that tab).
+    public var graphHelper: Bool?
+    /// "Always allow" for a graph helper's workflow runs.
+    public var allowRuns: Bool?
     /// Every turn, in the order they were made.
     public private(set) var nodes: [ChatTurn]
     public var activeLeaf: UUID?
@@ -231,7 +235,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
-        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands
+        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns
     }
 
     public init(from decoder: Decoder) throws {
@@ -248,6 +252,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
         allowEdits = try c.decodeIfPresent(Bool.self, forKey: .allowEdits)
         allowCommands = try c.decodeIfPresent([String].self, forKey: .allowCommands)
+        graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
+        allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
             self.nodes = nodes
             activeLeaf = try c.decodeIfPresent(UUID.self, forKey: .activeLeaf)
@@ -273,6 +279,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(permissionMode, forKey: .permissionMode)
         try c.encodeIfPresent(allowEdits, forKey: .allowEdits)
         try c.encodeIfPresent(allowCommands, forKey: .allowCommands)
+        try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
+        try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
         try c.encode(nodes, forKey: .nodes)
         try c.encodeIfPresent(activeLeaf, forKey: .activeLeaf)
         try c.encode(choices, forKey: .choices)

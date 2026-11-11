@@ -2,6 +2,7 @@ import AIStudioProtocol
 import Agent
 import AppKit
 import Foundation
+import GraphRuntime
 import LLMClient
 import Observation
 
@@ -34,13 +35,22 @@ final class ChatDocument: Identifiable {
     var todos: [ToolContext.Todo] = []
 
     var isCoding: Bool { transcript.projectPath != nil }
+    /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).
+    var isGraphHelper: Bool { transcript.graphHelper == true }
+    /// Uses tools (and so permission modes).
+    var isAgent: Bool { isCoding || isGraphHelper }
+    /// The workflow tab a docked helper belongs to.
+    var workflowID: UUID?
+    /// The graph before and after the helper's last reply that changed it (for its Undo button).
+    var lastHelperEdit: (before: Graph, after: Graph, changes: [String])?
     var projectURL: URL? { transcript.projectPath.map { URL(fileURLWithPath: $0) } }
     var mode: PermissionMode {
         get { transcript.permissionMode.flatMap(PermissionMode.init(rawValue:)) ?? .ask }
         set { transcript.permissionMode = newValue.rawValue }
     }
     var rules: AllowRules {
-        AllowRules(edits: transcript.allowEdits ?? false, commandPrefixes: transcript.allowCommands ?? [])
+        AllowRules(edits: transcript.allowEdits ?? false, commandPrefixes: transcript.allowCommands ?? [],
+                   runs: transcript.allowRuns ?? false)
     }
 
     /// Answers the pending permission question.
@@ -84,6 +94,7 @@ struct ChatSummary: Identifiable, Hashable {
     var updated: Date
     var modelID: String?
     var coding = false
+    var helper = false
 }
 
 /// Saved chats in the library's `chats/` folder: `<id>.json` (the transcript) and `<id>/` (attachments).
@@ -121,7 +132,8 @@ struct ChatStore {
         return files.filter { $0.pathExtension == "json" }.compactMap { u -> ChatSummary? in
             guard let data = try? Data(contentsOf: u), let t = try? Self.decoder.decode(ChatTranscript.self, from: data)
             else { return nil }
-            return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil)
+            return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil,
+                               helper: t.graphHelper == true)
         }.sorted { $0.updated > $1.updated }
     }
 

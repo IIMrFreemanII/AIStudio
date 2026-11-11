@@ -268,6 +268,14 @@ the project folder always ask, except in Bypass. "Always allow" remembers all ed
 tool calling (most recent ones; the server picks the parser). The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
 docs/remote-server.md › Language models.
 
+The **Graph Helper** (the wand in the toolbar, or ⇧⌘H) is a chat docked next to the graph that works on that tab's
+workflow: it reads the graph, looks up node types, edits it (`edit_graph`: add, connect, disconnect, set, remove,
+rename, checked against the node schemas and applied all or nothing; `set_prompt`), runs it (`queue_run`, waiting for
+the result), looks at the outputs (images go to vision models) and reads errors. Edits apply live and each reply's
+edits are one undo step (the Undo bar under the header, or Edit › Undo Graph Helper); new nodes are placed in line with
+what they connect to. In Ask mode edits don't ask but each run does ("Allow Runs in This Chat" stops asking); Plan
+mode only looks and explains. Each tab keeps its helper conversation across launches; the pencil starts a new one.
+
 [docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that
 bill only for GPU seconds), networking with Tailscale or an SSH tunnel, the bootstrap scripts, getting models onto the
 server, the dashboard, Modal setup and costs, and troubleshooting.
@@ -346,6 +354,8 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `GraphEditor/`: the node editor; `TabStrip`, `SidebarRail` (Workflows, Presets, Assets, Queue, Node Library), `QueuePanel` (with the Output list), `Assets.swift` (imports and drops), `ResultsPane` (with the viewer), `PresetGallery`, the inspector (`InspectorView`, `NodeExtras`) and `AddToWorkflow` (the chains in `SimpleChains.swift`).
 - `Sources/AIStudioProtocol`: the remote protocol shared by the server, the app and the tests: 20-byte binary event records (`WireEvent`), JSON control messages, metrics ring buffers, `GraphTransport` (rewrites a graph's files for a server, content-addressed uploads) and `RemoteClient` (URLSession and WebSocket client with resumable transfers and reconnect).
 - `Sources/AIStudioServer`: `aistudio-cli serve` on Hummingbird: the run queue (`Scheduler`), event fan-out with per-client coalescing and latest-wins previews (`Hub`), uploads (`FileStore`), auth and the path sandbox, and the web dashboard (built from `web/dashboard`, Svelte 5 + uPlot, by `scripts/build-dashboard.sh`).
+- `Sources/AIStudioLibrary/GraphOps.swift`: the graph helper's edits (schema-checked operations, cycle check,
+  placement) and the compact graph and node-type descriptions it reads.
 - `Sources/Agent`: the coding agent: its tools, `ShellRunner` (posix_spawn in a process group), permission modes and "always allow" rules, the diff for edit cards, and the loop that runs a model's tool calls.
 - `Sources/LLMClient`: chats with LLMs on a GPU server: OpenAI-compatible streaming (SSE, `<think>` splitting, tool-call assembly), the server's `/v1/llm` routes, saved transcripts. The chat UI is `Sources/AIStudioApp/Chat`.
 - `Sources/NodesRemote`: the Cloud GPU nodes and their client of the GPU server's job API (uploads, a WebSocket of the same binary event records as the Mac server, cancel, result download).

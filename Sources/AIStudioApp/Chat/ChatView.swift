@@ -7,19 +7,23 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
+    /// Docked next to the graph (the graph helper): a narrower, two-row header.
+    var compact = false
 
     var body: some View {
         VStack(spacing: 0) {
-            ChatHeader(doc: doc)
+            ChatHeader(doc: doc, compact: compact)
             MGDivider()
-            if doc.isCoding && doc.mode == .bypass {
-                Label("Bypass Permissions: the agent edits files and runs commands in \(doc.projectURL?.lastPathComponent ?? "the project") without asking.",
+            if doc.isAgent && doc.mode == .bypass {
+                Label(doc.isGraphHelper ? "Bypass Permissions: the helper edits and runs the workflow without asking."
+                      : "Bypass Permissions: the agent edits files and runs commands in \(doc.projectURL?.lastPathComponent ?? "the project") without asking.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.mgFootnote).foregroundStyle(MG.warning)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(MG.warning.opacity(0.12))
             }
+            if doc.isGraphHelper { HelperUndoBar(doc: doc) }
             if doc.transcript.turns.isEmpty {
                 ChatEmptyState(doc: doc)
             } else {
@@ -46,12 +50,43 @@ struct ChatView: View {
 struct ChatHeader: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
+    var compact = false
 
     var body: some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    modelMenu
+                    Spacer(minLength: 4)
+                    effortMenu
+                }
+                HStack(spacing: 8) {
+                    engineItems
+                    CodingHeaderItems(doc: doc)
+                    Spacer(minLength: 4)
+                    cost
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        } else {
+            HStack(spacing: 10) {
+                modelMenu
+                engineItems
+                CodingHeaderItems(doc: doc)
+                Spacer(minLength: 8)
+                effortMenu
+                cost
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+        }
+    }
+
+    @ViewBuilder var modelMenu: some View {
         let llm = model.llm
         let key = doc.modelKey
         let m = key.flatMap { llm.model($0) }
-        HStack(spacing: 10) {
             MGMenuButton(kind: .bordered) {
                 if llm.models.isEmpty {
                     MGMenuItem.header("No models yet")
@@ -78,6 +113,12 @@ struct ChatHeader: View {
                 }
             }
             .mgHelp("The model this chat talks to")
+    }
+
+    @ViewBuilder var engineItems: some View {
+        let llm = model.llm
+        let key = doc.modelKey
+        let m = key.flatMap { llm.model($0) }
             if let key {
                 EngineChip(status: doc.engine.map { LLMStatus(state: $0.state, phase: $0.phase, progress: $0.progress) }
                            ?? llm.status(key), model: m, streaming: doc.isStreaming)
@@ -92,8 +133,9 @@ struct ChatHeader: View {
                         .mgHelp("Start the model now, so the first message doesn't wait for it")
                 }
             }
-            CodingHeaderItems(doc: doc)
-            Spacer(minLength: 8)
+    }
+
+    @ViewBuilder var effortMenu: some View {
             MGMenuButton(kind: .icon) {
                 MGMenuItem.header("Thinking effort")
                 for (value, title) in [(nil, "Model's default"), ("low", "Low"), ("medium", "Medium"), ("high", "High")] as [(String?, String)] {
@@ -105,14 +147,14 @@ struct ChatHeader: View {
                 Image(systemName: "brain")
             }
             .mgHelp("How hard thinking models think before answering")
+    }
+
+    @ViewBuilder var cost: some View {
             if doc.transcript.costUSD > 0 {
                 Text(String(format: "$%.3f", doc.transcript.costUSD))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                     .mgHelp("GPU time this chat's replies used")
             }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 44)
     }
 }
 
@@ -279,7 +321,7 @@ struct ChatTurnView: View {
                     WaitingLine(doc: doc)
                 }
                 ForEach(turn.toolCalls, id: \.id) { call in
-                    if doc.isCoding {
+                    if doc.isAgent {
                         ToolCard(doc: doc, call: call, result: doc.transcript.turns.last { $0.toolCallID == call.id })
                     } else {
                         Label("\(call.name)(\(call.arguments))", systemImage: "wrench.and.screwdriver")
@@ -476,6 +518,15 @@ struct ChatEmptyState: View {
                 MGEmptyState(symbol: "link", title: "No models yet",
                              message: "Add any model from Hugging Face by its link: it's downloaded to your GPU server, which picks the GPUs it needs.")
                 Button("Add a Model from a Link…") { model.llmAddRequest = LLMAddRequest() }.buttonStyle(.mg(.prominent))
+            } else if doc.isGraphHelper {
+                MGEmptyState(symbol: "wand.and.sparkles", title: "Graph Helper",
+                             message: "It reads this workflow, changes it (one undo step per reply), runs it and looks at the results.")
+                VStack(spacing: 6) {
+                    ForEach(["Explain what this workflow does", "Why doesn't it run?", "Add an upscale before Save",
+                             "Write a better prompt, run it and check the result"], id: \.self) { s in
+                        Button(s) { doc.draft = s }.buttonStyle(.mg(.bordered))
+                    }
+                }
             } else {
                 MGEmptyState(symbol: "bubble.left.and.text.bubble.right", title: doc.transcript.modelID ?? "New Chat",
                              message: "Ask anything. The GPU starts with your first message and stops a few minutes after the last one.")
@@ -527,7 +578,8 @@ struct ChatComposer: View {
                             return .handled
                         }
                     if doc.draft.isEmpty {
-                        Text(doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (⇧↩ for a new line)"
+                        Text(doc.isGraphHelper ? "Ask the helper to build, change or fix this workflow…"
+                             : doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (⇧↩ for a new line)"
                              : "Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
                             .font(.mgBody).foregroundStyle(MG.placeholder)
                             .padding(.leading, 5).padding(.top, 1)

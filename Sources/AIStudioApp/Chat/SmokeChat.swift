@@ -236,3 +236,83 @@ extension SmokeTest {
         return ok
     }
 }
+
+extension SmokeTest {
+    /// `--smoke-graph-helper <url>` (a server with `AISTUDIO_FAKE_LLM=1`): the active tab's graph helper is asked to
+    /// "add an upscale after Save". The fake model reads the graph, then puts an ImageScale between VAE Decode and
+    /// Save Image: the edit is checked, then one undo must bring the original graph back. Then plan mode: the edit is
+    /// refused and the graph doesn't change.
+    static func runGraphHelper(_ model: AppModel, url: String) async -> Bool {
+        func say(_ s: String) { print("[smoke-graph-helper] \(s)"); fflush(stdout) }
+        let conn = ServerConnection(name: "Smoke GPU", kind: .gpu, baseURL: url)
+        model.connections.save(conn, token: "smoke")
+        let llm = model.llm
+        guard let client = llm.client(conn.id) else { say("no client"); return false }
+        await llm.refresh(conn.id)
+        var mid = llm.listings[conn.id]?.models.first { $0.repo == "fake/helper" }?.id
+        if mid == nil {
+            do { mid = try await client.install(LLMInstallRequest(url: "fake/helper")).id } catch {
+                say("install failed: \(error.localizedDescription)"); return false
+            }
+            for _ in 0..<100 {
+                await llm.refresh(conn.id)
+                if llm.listings[conn.id]?.models.contains(where: { $0.id == mid && $0.installed == true }) == true { break }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+        guard let mid else { say("no model"); return false }
+
+        let wf = model.active
+        let original = wf.graph
+        guard original["decode"]?.type == "VAEDecode", original["save"]?.type == "SaveImage" else {
+            say("the first tab isn't the text-to-image template: \(original.nodes.map(\.id))"); return false
+        }
+        model.showHelper = true
+        let chat = model.ensureHelper(wf)
+        model.setModel(LLMKey(serverID: conn.id, modelID: mid), for: chat)
+        var ok = true
+        func send(_ text: String) async -> ChatTurn? {
+            chat.draft = text
+            model.send(chat)
+            let start = Date()
+            while chat.isStreaming, Date().timeIntervalSince(start) < 60 { try? await Task.sleep(nanoseconds: 100_000_000) }
+            return chat.transcript.turns.last
+        }
+
+        let reply = await send("Add an upscale after Save")
+        say("reply: \(reply?.text ?? reply?.error ?? "none")")
+        let g = wf.graph
+        let up = g["upscale"]
+        if up?.type != "ImageScale" { say("no ImageScale node: \(g.nodes.map(\.id))"); ok = false }
+        if up?.inputs["image"] != .link(node: "decode", output: "image") { say("upscale.image isn't decode.image"); ok = false }
+        if up?.inputs["factor"] != .value(.double(2)) { say("factor: \(String(describing: up?.inputs["factor"]))"); ok = false }
+        if g["save"]?.inputs["image"] != .link(node: "upscale", output: "image") { say("save.image isn't upscale.image"); ok = false }
+        if up?.position == nil { say("the new node wasn't placed"); ok = false }
+        if model.validationError(of: g) != nil { say("not valid: \(model.validationError(of: g)!)"); ok = false }
+        let tools = chat.transcript.turns.filter { $0.role == .tool }
+        if tools.map(\.toolStatus) != ["done", "done"] { say("tool turns: \(tools.map { "\($0.toolTitle ?? "?"): \($0.toolStatus ?? "?")" })"); ok = false }
+        if reply?.text.hasPrefix("Done: added upscale (ImageScale)") != true { say("the edit's result didn't come back"); ok = false }
+        if wf.undoManager.undoActionName != GraphHelper.undoName { say("undo step: \(wf.undoManager.undoActionName)"); ok = false }
+        if chat.lastHelperEdit?.changes.count != 2 { say("changes: \(chat.lastHelperEdit?.changes ?? [])"); ok = false }
+
+        // One undo step brings it all back.
+        model.undoHelperEdit(chat)
+        if wf.graph != original { say("undo didn't restore the graph: \(wf.graph.nodes.map(\.id))"); ok = false }
+        if !wf.undoManager.canRedo { say("nothing to redo"); ok = false }
+
+        // Plan mode: it reads the graph, the edit is refused, nothing changes.
+        chat.mode = .plan
+        _ = await send("Add an upscale after Save")
+        let planTools = chat.transcript.turns.filter { $0.role == .tool }.suffix(2)
+        if planTools.map(\.toolStatus) != ["done", "denied"] { say("plan tools: \(planTools.map(\.toolStatus))"); ok = false }
+        if wf.graph != original { say("plan mode changed the graph"); ok = false }
+
+        // Saved as this tab's helper, with the session.
+        if model.chatStore.load(chat.id)?.graphHelper != true { say("not saved as a graph helper"); ok = false }
+        if model.sessionManifest().tabs.first(where: { $0.id == wf.id })?.helperChat != chat.id { say("the tab doesn't keep its helper"); ok = false }
+        model.closeHelper(of: wf)
+        model.deleteChat(chat.id)
+        say(ok ? "OK" : "FAILED")
+        return ok
+    }
+}

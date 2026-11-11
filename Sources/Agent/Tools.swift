@@ -34,7 +34,7 @@ public struct ToolError: LocalizedError, Equatable {
 
 /// What a call will do, shown on its card and in a permission request.
 public struct ToolPreview: Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case read, diff, command, todo }
+    public enum Kind: String, Codable, Sendable { case read, diff, command, todo, graph, run }
     public var kind: Kind
     /// "Read Sources/App.swift", "Edit README.md", "Run swift build".
     public var title: String
@@ -55,13 +55,16 @@ public struct ToolPreview: Equatable, Sendable {
     }
 }
 
-/// A tool's result: the text the model gets, and whether it failed.
+/// A tool's result: the text the model gets, whether it failed, and images for it to look at.
 public struct ToolOutput: Equatable, Sendable {
     public var text: String
     public var isError: Bool
-    public init(_ text: String, isError: Bool = false) {
+    /// `data:` URLs (JPEG), sent to a vision model after the tool results.
+    public var images: [String]
+    public init(_ text: String, isError: Bool = false, images: [String] = []) {
         self.text = text
         self.isError = isError
+        self.images = images
     }
 }
 

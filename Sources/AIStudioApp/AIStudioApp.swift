@@ -32,6 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-graph-helper") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runGraphHelper(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-agent") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -369,6 +376,8 @@ struct AppCommands: Commands {
         CommandGroup(after: .toolbar) {
             Button(model.showResultsPane ? "Hide Results Pane" : "Show Results Pane") { model.showResultsPane.toggle() }
                 .keyboardShortcut("r", modifiers: [.command, .option])
+            Button(model.showHelper ? "Hide Graph Helper" : "Show Graph Helper") { model.showHelper.toggle() }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
             Button("Open Result in Viewer") { model.openViewer() }
                 .keyboardShortcut("y")
                 .disabled(model.displayedResult == nil)

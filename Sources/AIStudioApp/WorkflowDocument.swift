@@ -34,6 +34,8 @@ final class WorkflowDocument: Identifiable {
     var editingPath: [String] = []
     /// The group selected in the editor, if any (at the current editing level).
     var selectedGroup: String?
+    /// Its graph helper chat (docked next to the graph), once it has one.
+    var helperChatID: UUID?
     /// Each tab has its own undo history.
     @ObservationIgnored let undoManager = UndoManager()
 

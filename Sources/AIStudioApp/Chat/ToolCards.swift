@@ -17,9 +17,12 @@ struct ToolCard: View {
     var asking: Bool { doc.permission?.call.id == call.id }
     var isCommand: Bool { call.name == "run_command" }
     var isDiff: Bool { call.name == "edit_file" || call.name == "write_file" }
+    /// A graph helper change: its list of changes is shown.
+    var isGraphEdit: Bool { call.name == "edit_graph" || call.name == "set_prompt" }
 
     var body: some View {
-        let expanded = open ?? (asking || (isCommand && status == "running") || (isDiff && status != "denied"))
+        let expanded = open ?? (asking || (isCommand && status == "running") || (isDiff && status != "denied")
+                                || (isGraphEdit && status == "done"))
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { open = !expanded }
@@ -87,6 +90,16 @@ struct ToolCard: View {
                     .mgScrollIndicators()
                 }
             }
+        } else if isGraphEdit, status == "done", let t = result?.text {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(t.split(separator: "\n").enumerated()), id: \.offset) { _, line in
+                    let l = String(line)
+                    let note = l.hasPrefix("Not runnable") || l.hasPrefix("The workflow is valid") || l.hasPrefix("ids:")
+                    Label(l, systemImage: note ? (l.hasPrefix("Not") ? "exclamationmark.triangle" : "checkmark") : "circle.fill")
+                        .labelStyle(GraphChangeLabelStyle(note: note, warn: l.hasPrefix("Not")))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if call.name == "todo_write", let d = result?.toolDetail {
             Text(d).font(.mgFootnote).textSelection(.enabled)
         } else {
@@ -168,6 +181,8 @@ struct PermissionCard: View {
         case .read: return "Allow reading outside the project?"
         case .edit: return "Allow this change to \(request.preview.paths.first.map(\.lastPathComponent) ?? "the file")?"
         case .execute: return "Run this command?"
+        case .graphEdit: return "Change the workflow?"
+        case .run: return "Run the workflow?"
         }
     }
 
@@ -178,6 +193,7 @@ struct PermissionCard: View {
             guard let cmd = request.preview.command else { return nil }
             let p = AllowRules.prefix(of: cmd)
             return p.isEmpty ? nil : "Always Allow “\(p)”"
+        case .run: return "Allow Runs in This Chat"
         default: return nil
         }
     }
@@ -211,7 +227,8 @@ struct CodingHeaderItems: View {
     let doc: ChatDocument
 
     var allowed: String {
-        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" }).joined(separator: ", ")
+        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []))
+            .joined(separator: ", ")
     }
 
     var body: some View {
@@ -221,16 +238,19 @@ struct CodingHeaderItems: View {
             }
             .buttonStyle(.mg(.bordered))
             .mgHelp(url.path + " — the agent works in this folder (click to show it in Finder)")
+        }
+        if doc.isAgent {
             MGMenuButton(kind: .bordered) {
                 for m in PermissionMode.allCases {
                     MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
                 }
-                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty {
+                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs {
                     MGMenuItem.divider
                     MGMenuItem.header("Always allowed: " + allowed)
                     MGMenuItem.button("Forget Always-Allow Answers") {
                         doc.transcript.allowEdits = nil
                         doc.transcript.allowCommands = nil
+                        doc.transcript.allowRuns = nil
                     }
                 }
             } label: {
@@ -241,7 +261,59 @@ struct CodingHeaderItems: View {
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
                 }
             }
-            .mgHelp(doc.mode.detail)
+            .mgHelp(doc.isGraphHelper ? helperDetail : doc.mode.detail)
+        }
+    }
+
+    var helperDetail: String {
+        switch doc.mode {
+        case .ask, .acceptEdits: return "Changes the workflow without asking (one undo step per reply); asks before each run."
+        case .plan: return "Only looks at the workflow and explains; edits and runs are refused."
+        case .bypass: return "Changes and runs the workflow without asking."
+        }
+    }
+}
+
+/// A line of a graph edit's result: a change (dot) or a note (valid / not runnable).
+struct GraphChangeLabelStyle: LabelStyle {
+    var note: Bool
+    var warn: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            configuration.icon
+                .font(.system(size: note ? 10 : 5))
+                .foregroundStyle(warn ? MG.warning : note ? MG.success : MG.accent)
+                .frame(width: 12)
+            configuration.title
+                .font(.mgFootnote)
+                .foregroundStyle(note ? MG.secondaryLabel : MG.label)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// After a helper reply that changed the workflow: what changed, and Undo (the reply's one undo step).
+struct HelperUndoBar: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    var body: some View {
+        if !doc.isStreaming, let edit = doc.lastHelperEdit, let wf = model.helperWorkflow(doc), wf.graph == edit.after {
+            HStack(spacing: 8) {
+                Image(systemName: "wand.and.sparkles").foregroundStyle(MG.accent)
+                Text(edit.changes.count == 1 ? "1 change to \(wf.name)" : "\(edit.changes.count) changes to \(wf.name)")
+                    .font(.mgFootnote).lineLimit(1)
+                    .mgHelp(edit.changes.joined(separator: "\n"))
+                Spacer(minLength: 4)
+                Button("Undo") { model.undoHelperEdit(doc) }
+                    .buttonStyle(.mg(.bordered))
+                    .controlSize(.small)
+                    .mgHelp("Put the workflow back as it was before this reply (also Edit › Undo Graph Helper)")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(MG.accent.opacity(0.08))
         }
     }
 }
