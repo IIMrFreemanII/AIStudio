@@ -52,6 +52,18 @@ GRAPH_SIZES = [int(s) for s in os.environ.get("AISTUDIO_VLLM_GRAPH_SIZES", "1,2,
 # (… GiB) to fit into requested memory". Passing it on later starts skips the measuring.
 KV_ADVICE = re.compile(r"--kv-cache-memory=(\d+)`? \([\d.]+ GiB\) to fit into requested memory")
 REMEMBER_KV = os.environ.get("AISTUDIO_VLLM_REMEMBER_KV", "1") != "0"
+# Multi-token prediction: models that ship MTP layers (Qwen3-Next and later, DeepSeek V3, GLM-4.5…) draft this many
+# tokens per step with them, which the model then checks in one pass (same output, fewer steps). Qwen3.8-Flash-Next on
+# a B200: replies 1.56× faster (191 → 298 tokens/s), starts ~40 s slower (more kernel warm-up). 0 turns it off.
+MTP_TOKENS = int(os.environ.get("AISTUDIO_VLLM_MTP_TOKENS", "2"))
+
+
+def mtp_on(manifest: dict) -> bool:
+    """Whether a start drafts with the model's MTP layers: it has them, the model's "mtp" setting isn't off, and its
+    engine arguments don't set their own speculative decoding."""
+    extra = list(manifest.get("engineArgs") or [])
+    return bool(MTP_TOKENS and manifest.get("mtpLayers") and manifest.get("mtp", True) is not False
+                and manifest.get("engine") != "llamacpp" and not _has(extra, "--speculative-config", "-sc"))
 
 
 def _has(extra: list[str], *flags: str) -> bool:
@@ -62,7 +74,7 @@ def _has(extra: list[str], *flags: str) -> bool:
 
 def kv_setup(manifest: dict) -> str:
     """The key the measured KV cache size is remembered under (store.kv_setup, plus this server's defaults)."""
-    return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES)
+    return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES, MTP_TOKENS if mtp_on(manifest) else 0)
 
 
 def phase_of(line: str) -> tuple[str, float | None] | None:
@@ -109,6 +121,10 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
         cmd += ["--max-num-seqs", str(MAX_SEQS)]
     if GRAPH_SIZES and not _has(extra, "--compilation-config", "-cc", "-O", "--enforce-eager"):
         cmd += ["--compilation-config", json.dumps({"cudagraph_capture_sizes": GRAPH_SIZES})]
+    if "mtpLayers" not in manifest:
+        manifest = {**manifest, "mtpLayers": store.mtp_layers(weights)}
+    if mtp_on(manifest):
+        cmd += ["--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": MTP_TOKENS})]
     if kv_bytes and not _has(extra, "--kv-cache-memory", "--gpu-memory-utilization"):
         cmd += ["--kv-cache-memory", str(int(kv_bytes))]
     return cmd + extra
@@ -147,6 +163,8 @@ class EngineProcess:
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, port: int = 8000,
                  env: dict | None = None):
+        if manifest.get("engine") != "llamacpp" and "mtpLayers" not in manifest:  # installed before the field
+            manifest = {**manifest, "mtpLayers": store.mtp_layers(store.weights_dir(models_root, manifest["id"]))}
         self.manifest, self.models_root, self.on_status, self.port = manifest, models_root, on_status, port
         self.env = {**os.environ, **(env or {})}
         self.proc: subprocess.Popen | None = None

@@ -446,7 +446,16 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   measures on a model's first start is kept in `llm/<id>/kv-cache-memory.json`, one entry per GPU kind, count,
   context and engine arguments. Later starts pass it as `--kv-cache-memory` and skip measuring free memory. A start
   that fails with it forgets it, and `AISTUDIO_VLLM_REMEMBER_KV=0` turns this off. On a B200 with Qwen, both together
-  cut vLLM's memory and graph setup from 26–42 s to 24.5 s. Change it later in Servers › the model's settings (it
+  cut vLLM's memory and graph setup from 26–42 s to 24.5 s.
+  **Faster replies (MTP)** is on by itself for models that ship multi-token-prediction layers: the config declares
+  them (`mtp_num_hidden_layers`, `num_nextn_predict_layers`) and the checkpoint has their tensors. Quantized
+  re-uploads often drop those tensors, and then MTP stays off. vLLM drafts 2 tokens per step with the layer
+  (`AISTUDIO_VLLM_MTP_TOKENS`, 0 turns it off for every model), and the model checks them in one step: the same
+  replies, in fewer steps. Qwen3.8-Flash-Next on a B200 went from 191 to 298 tokens/s (code 1.4×, prose 1.5×,
+  maths 1.8×). The costs: about 40 s more per start (kernel warm-up), a quarter less KV cache, and 3 GB more GPU
+  memory. With fast start, the draft layer gets its own saved copy (`processed/<gpu>/draft-<arch>`). Turn it off per
+  model with the settings switch (`"mtp": false`). A model's own `--speculative-config` wins. Change it later in
+  Servers › the model's settings (it
   takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
 - **Images and videos** (models with vision): attach them to a message (paperclip, or drop them on the chat).
   Images are resized to at most 1536 px and sent with each message. Videos (`.mp4`, `.mov`, `.m4v`) are

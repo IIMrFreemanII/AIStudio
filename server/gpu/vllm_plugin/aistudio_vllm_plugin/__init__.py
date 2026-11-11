@@ -75,14 +75,31 @@ def allow_validation_only_methods(model) -> list[str]:
     return marked
 
 
-def fingerprint(vllm_config) -> dict:
+def draft_of(vllm_config, model_config) -> str | None:
+    """The architecture of a speculative-decoding draft (an MTP head, an EAGLE model) that vLLM loads with the same
+    load format as the target model; None for the target model itself."""
+    def arch(mc):
+        return ((getattr(getattr(mc, "hf_config", None), "architectures", None) or [None])[0]) if mc else None
+
+    a = arch(model_config)
+    return a if model_config is not None and a != arch(vllm_config.model_config) else None
+
+
+def copy_dir(base: str, vllm_config, model_config) -> str:
+    """The target model's copy is in ``base``; a draft's in its own folder inside it."""
+    draft = draft_of(vllm_config, model_config)
+    return os.path.join(base, "draft-" + re.sub(r"[^A-Za-z0-9_.-]", "_", draft)) if draft else base
+
+
+def fingerprint(vllm_config, model_config=None) -> dict:
     """What a saved copy depends on: it's used only when all of this matches."""
     import torch
     import vllm
 
     mc = vllm_config.model_config
     pc = vllm_config.parallel_config
-    return {"vllm": vllm.__version__, "torch": torch.__version__, "model": os.path.basename(os.path.normpath(mc.model)),
+    draft = {"draft": d} if (d := draft_of(vllm_config, model_config)) else {}
+    return {**draft, "vllm": vllm.__version__, "torch": torch.__version__, "model": os.path.basename(os.path.normpath(mc.model)),
             "dtype": str(mc.dtype), "quantization": str(mc.quantization),
             "kv_cache_dtype": str(vllm_config.cache_config.cache_dtype),
             "tp": pc.tensor_parallel_size, "pp": pc.pipeline_parallel_size,
@@ -90,7 +107,7 @@ def fingerprint(vllm_config) -> dict:
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"}
 
 
-def mismatch(path: str, vllm_config) -> str | None:
+def mismatch(path: str, vllm_config, model_config=None) -> str | None:
     """Why the copy in ``path`` can't be used (None: it can)."""
     try:
         with open(os.path.join(path, MANIFEST)) as f:
@@ -99,7 +116,7 @@ def mismatch(path: str, vllm_config) -> str | None:
         return "there is none yet"
     except (OSError, ValueError) as e:
         return f"its manifest is unreadable ({e})"
-    want, have = manifest.get("fingerprint") or {}, fingerprint(vllm_config)
+    want, have = manifest.get("fingerprint") or {}, fingerprint(vllm_config, model_config)
     diff = {k: (want.get(k), have.get(k)) for k in set(want) | set(have) if want.get(k) != have.get(k)}
     if diff:
         return "it was saved for something else: " + ", ".join(f"{k} {a} → {b}" for k, (a, b) in sorted(diff.items()))
@@ -193,30 +210,31 @@ def _loader_class():
             raise NotImplementedError("aistudio_processed loads whole models (load_model)")
 
         def load_model(self, vllm_config, model_config, prefix: str = "") -> nn.Module:
-            why = mismatch(self.dir, vllm_config)
+            path = copy_dir(self.dir, vllm_config, model_config)
+            why = mismatch(path, vllm_config, model_config)
             if why is None:
-                logger.info("Loading processed weights from %s", self.dir)
-                return self._load_processed(vllm_config, model_config, prefix)
-            logger.info("No usable processed weights in %s (%s): loading the checkpoint", self.dir, why)
+                logger.info("Loading processed weights from %s", path)
+                return self._load_processed(path, vllm_config, model_config, prefix)
+            logger.info("No usable processed weights in %s (%s): loading the checkpoint", path, why)
             plain = dataclasses.replace(self.load_config, load_format="auto", model_loader_extra_config={})
             model = DefaultModelLoader(plain).load_model(vllm_config, model_config, prefix)
             if self.save:
-                logger.info("Saving processed weights to %s (later starts load them instead)", self.dir)
+                logger.info("Saving processed weights to %s (later starts load them instead)", path)
                 try:
-                    s = save_model(model, self.dir, fingerprint(vllm_config))
+                    s = save_model(model, path, fingerprint(vllm_config, model_config))
                     logger.info("Saved processed weights: %d tensors, %.1f GB, %d files in %.0f s", s["tensors"],
                                 s["gb"], s["parts"], s["seconds"])
                 except OSError as e:  # a full volume, say: the engine still starts
-                    logger.warning("Couldn't save processed weights to %s: %s", self.dir, e)
-                    shutil.rmtree(self.dir.rstrip("/") + ".tmp", ignore_errors=True)
+                    logger.warning("Couldn't save processed weights to %s: %s", path, e)
+                    shutil.rmtree(path.rstrip("/") + ".tmp", ignore_errors=True)
             return model
 
-        def _load_processed(self, vllm_config, model_config, prefix: str) -> nn.Module:
+        def _load_processed(self, path: str, vllm_config, model_config, prefix: str) -> nn.Module:
             from concurrent.futures import ThreadPoolExecutor
 
             from safetensors import safe_open
 
-            with open(os.path.join(self.dir, MANIFEST)) as f:
+            with open(os.path.join(path, MANIFEST)) as f:
                 manifest = json.load(f)
             device = vllm_config.device_config.device if self.load_config.device is None else self.load_config.device
             target = torch.device(device)
@@ -253,7 +271,7 @@ def _loader_class():
                 # The files are read ahead on several threads (into the page cache: a network volume reads one stream
                 # at a time slowly), while this thread moves each finished file's tensors into the model.
                 def prefetch(i: int) -> None:
-                    with open(os.path.join(self.dir, PART.format(i)), "rb", buffering=0) as fh:
+                    with open(os.path.join(path, PART.format(i)), "rb", buffering=0) as fh:
                         while fh.read(16 << 20):
                             pass
 
@@ -261,7 +279,7 @@ def _loader_class():
                     ahead = [pool.submit(prefetch, i) for i in range(manifest["parts"])]
                     for i in range(manifest["parts"]):
                         ahead[i].result()
-                        with safe_open(os.path.join(self.dir, PART.format(i)), framework="pt", device="cpu") as f:
+                        with safe_open(os.path.join(path, PART.format(i)), framework="pt", device="cpu") as f:
                             for name in f.keys():  # noqa: SIM118
                                 put(name, f.get_tensor(name), entries[name])
                 for name, info in entries.items():

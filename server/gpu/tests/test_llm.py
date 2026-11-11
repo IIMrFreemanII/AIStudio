@@ -750,3 +750,81 @@ def test_upload_urls_keep_the_uploads_path_through_links(llm, tmp_path):
     msgs = llm.resolve_uploads({"id": "m", "vision": True}, video_message(name))
     url = msgs[0]["content"][0]["video_url"]["url"]
     assert url == (link / name).absolute().as_uri() and "volume-mount" not in url
+
+
+def test_plugin_keeps_a_speculative_drafts_copy_apart_from_the_models():
+    import importlib.util
+    import sys
+    from types import SimpleNamespace as NS
+
+    spec = importlib.util.spec_from_file_location(
+        "aistudio_vllm_plugin", Path(__file__).parent.parent / "vllm_plugin" / "aistudio_vllm_plugin" / "__init__.py")
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    sys.modules.pop("aistudio_vllm_plugin", None)
+    target = NS(hf_config=NS(architectures=["Qwen4ExpForConditionalGeneration"]))
+    mtp = NS(hf_config=NS(architectures=["Qwen4ExpMTP"]))
+    vc = NS(model_config=target)
+    assert plugin.copy_dir("/m/processed/B200", vc, target) == "/m/processed/B200"
+    assert plugin.copy_dir("/m/processed/B200", vc, None) == "/m/processed/B200"
+    assert plugin.draft_of(vc, mtp) == "Qwen4ExpMTP"
+    assert plugin.copy_dir("/m/processed/B200", vc, mtp) == "/m/processed/B200/draft-Qwen4ExpMTP"
+
+
+def _checkpoint(d, config, names, index=True):
+    import struct
+
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text(json.dumps(config))
+    if index:
+        (d / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {n: "a.safetensors" for n in names}}))
+    else:
+        head = json.dumps({"__metadata__": {}, **{n: {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]}
+                                                  for n in names}}).encode()
+        (d / "model.safetensors").write_bytes(struct.pack("<Q", len(head)) + head + b"\0\0")
+    return d
+
+
+def test_mtp_layers_need_the_config_and_the_tensors(tmp_path):
+    from aistudio_gpu.llm import store
+
+    qwen = {"text_config": {"mtp_num_hidden_layers": 1, "num_hidden_layers": 48}}
+    assert store.mtp_layers(_checkpoint(tmp_path / "q", qwen, ["model.layers.0.w", "mtp.layers.0.w"])) == 1
+    assert store.mtp_layers(_checkpoint(tmp_path / "s", qwen, ["mtp.fc.weight"], index=False)) == 1
+    # a quantized re-upload that kept the config but dropped the MTP tensors
+    assert store.mtp_layers(_checkpoint(tmp_path / "d", qwen, ["model.layers.0.w"])) == 0
+    deepseek = {"num_nextn_predict_layers": 1, "num_hidden_layers": 61}
+    assert store.mtp_layers(_checkpoint(tmp_path / "ds", deepseek, ["model.layers.61.eh_proj.weight"])) == 1
+    assert store.mtp_layers(_checkpoint(tmp_path / "n", {"num_hidden_layers": 4}, ["mtp.x"])) == 0
+    assert store.mtp_layers(tmp_path / "missing") == 0
+
+
+def test_vllm_drafts_with_mtp_layers_unless_turned_off(tmp_path):
+    from aistudio_gpu.llm import store
+
+    m = {"id": "qwen38", "count": 1, "context": 8192, "engineArgs": [], "mtpLayers": 1}
+    cmd = vllm_command(m, tmp_path, 8000)
+    assert json.loads(cmd[cmd.index("--speculative-config") + 1]) == {"method": "mtp", "num_speculative_tokens": 2}
+    assert "--speculative-config" not in vllm_command({**m, "mtp": False}, tmp_path, 8000)
+    assert "--speculative-config" not in vllm_command({**m, "mtpLayers": 0}, tmp_path, 8000)
+    own = vllm_command({**m, "engineArgs": ["--speculative-config", "{}"]}, tmp_path, 8000)
+    assert own.count("--speculative-config") == 1 and own[-1] == "{}"
+    # models installed before the field: read from the checkpoint
+    weights = _checkpoint(tmp_path / "w", {"mtp_num_hidden_layers": 1}, ["mtp.x"])
+    assert "--speculative-config" in vllm_command({k: v for k, v in m.items() if k != "mtpLayers"}, weights, 8000)
+    assert store.patch(m, {"mtp": False})["mtp"] is False
+    with pytest.raises(ValueError):
+        store.patch(m, {"mtp": "no"})
+
+
+def test_listing_fills_in_mtp_layers_once(client, llm, tmp_path):
+    from aistudio_gpu.llm import store
+
+    mid = install(client)
+    root = tmp_path / "models"
+    m = store.read(root, mid)
+    m.pop("mtpLayers", None)
+    store.write(root, m)
+    _checkpoint(store.weights_dir(root, mid), {"mtp_num_hidden_layers": 1}, ["mtp.x"])
+    listed = {x["id"]: x for x in store.listing(root)}[mid]
+    assert listed["mtpLayers"] == 1 and store.read(root, mid)["mtpLayers"] == 1

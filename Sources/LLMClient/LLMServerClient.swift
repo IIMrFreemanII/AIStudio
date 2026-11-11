@@ -27,7 +27,12 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var loadFormat: String?
     /// Starts from a GPU memory snapshot (experimental; vLLM on one GPU).
     public var snapshot: Bool?
+    /// Multi-token-prediction layers the checkpoint ships (config and tensors); 0 or nil: none.
+    public var mtpLayers: Int?
+    /// Drafts tokens with those layers (speculative decoding; nil means on when the model has them).
+    public var mtp: Bool?
 
+    public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && engine != "llamacpp" }
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
 }
 
