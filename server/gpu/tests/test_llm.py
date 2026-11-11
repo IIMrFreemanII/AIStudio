@@ -202,6 +202,51 @@ def test_vllm_command_has_parsers_and_expert_parallel(tmp_path):
     assert own.count("--max-num-seqs") == 1 and own[own.index("--max-num-seqs") + 1] == "8"
 
 
+def test_vllm_records_few_cuda_graphs_unless_the_model_sets_its_own(tmp_path):
+    m = {"id": "qwen38", "count": 1, "context": 8192, "engineArgs": []}
+    cmd = vllm_command(m, tmp_path, 8000)
+    assert json.loads(cmd[cmd.index("--compilation-config") + 1]) == {"cudagraph_capture_sizes": [1, 2, 4, 8]}
+    for own in (["--compilation-config", "{}"], ["-O3"], ["-cc.mode=0"], ["--enforce-eager"]):
+        assert vllm_command({**m, "engineArgs": own}, tmp_path, 8000).count("--compilation-config") == \
+            own.count("--compilation-config")
+
+
+def test_vllm_reuses_the_measured_kv_cache_size_unless_the_model_sets_memory(tmp_path):
+    m = {"id": "qwen38", "count": 1, "context": 8192, "engineArgs": []}
+    assert "--kv-cache-memory" not in vllm_command(m, tmp_path, 8000)
+    cmd = vllm_command(m, tmp_path, 8000, kv_bytes=34803106714)
+    assert cmd[cmd.index("--kv-cache-memory") + 1] == "34803106714"
+    for own in (["--kv-cache-memory", "1000"], ["--gpu-memory-utilization=0.8"]):
+        assert vllm_command({**m, "engineArgs": own}, tmp_path, 8000, kv_bytes=5).count("--kv-cache-memory") == \
+            own.count("--kv-cache-memory")
+
+
+def test_engine_remembers_vllms_kv_advice_per_setup_and_forgets_it_when_a_start_fails(tmp_path):
+    from aistudio_gpu.llm.engine import EngineError, EngineProcess
+
+    m = {"id": "qwen38", "gpu": "B200", "count": 1, "context": 131072, "engineArgs": ["--kv-cache-dtype", "fp8"]}
+
+    def engine(manifest, lines, exit_code=None):
+        p = EngineProcess(manifest, tmp_path, lambda *a: None)
+        p.kv_bytes = p._remembered_kv()
+        p.proc = type("P", (), {"stdout": iter(lines), "poll": lambda self: exit_code})()
+        return p
+
+    advice = ("INFO [gpu_worker.py:1066] Free memory on device (177.53/178.34 GiB) on startup. Replace "
+              "gpu_memory_utilization config with `--kv-cache-memory=34803106714` (32.41 GiB) to fit into requested "
+              "memory, or `--kv-cache-memory=53084203520` (49.44 GiB) to fully utilize gpu memory.\n")
+    engine(m, [advice])._read()
+    p = engine(m, [])
+    assert p.kv_bytes == 34803106714
+    other = engine({**m, "gpu": "H200"}, [])
+    assert other.kv_bytes is None  # another GPU kind measures its own
+    assert engine({**m, "context": 8192}, []).kv_bytes is None
+    failed = engine(m, [], exit_code=1)
+    with pytest.raises(EngineError):
+        failed.wait_ready(timeout=5)
+    assert engine(m, []).kv_bytes is None  # measured again on the next start
+
+
 def test_vllm_reads_chat_media_from_the_uploads_folder_for_vision_models(tmp_path):
     m = {"id": "qwen38", "count": 1, "context": 8192, "vision": True, "engineArgs": ["--kv-cache-dtype", "fp8"]}
     cmd = vllm_command(m, tmp_path, 8000, media="/uploads")
@@ -514,6 +559,72 @@ def test_load_format_and_snapshot_settings(tmp_path):
     assert "--enable-sleep-mode" in cmd
     plain = vllm_command(m, tmp_path, 8000)
     assert "--load-format" not in plain and "--enable-sleep-mode" not in plain
+
+
+def test_fast_start_loads_the_saved_processed_copy_per_gpu(tmp_path):
+    from aistudio_gpu.llm import store
+
+    m = {"id": "x", "engine": "vllm", "count": 1, "context": 8192, "engineArgs": [], "gpu": "B200"}
+    assert store.patch(m, {"loadFormat": "processed"})["loadFormat"] == "processed"
+    with pytest.raises(ValueError, match="one GPU"):
+        store.patch({**m, "count": 2}, {"loadFormat": "processed"})
+    with pytest.raises(ValueError, match="vLLM"):
+        store.patch({**m, "engine": "llamacpp"}, {"loadFormat": "processed"})
+    weights = tmp_path / "llm" / "x" / "weights"
+    cmd = vllm_command({**m, "loadFormat": "processed"}, weights, 8000)
+    i = cmd.index("--load-format")
+    assert cmd[i + 1] == "aistudio_processed"
+    assert json.loads(cmd[i + 3]) == {"dir": str(tmp_path / "llm" / "x" / "processed" / "B200")}
+    assert store.processed_dir(tmp_path, "x") == tmp_path / "llm" / "x" / "processed"
+
+
+def test_fast_start_phases():
+    assert phase_of("INFO [__init__.py:9] Saving processed weights to /models/llm/x/processed/B200 (later starts")[0] \
+        == "Saving fast-start weights"
+    assert phase_of("INFO Loading processed weights from /models/llm/x/processed/B200")[0] == "Loading weights"
+    assert phase_of("INFO No usable processed weights in /m (there is none yet): loading the checkpoint")[0] \
+        == "Loading weights"
+
+
+def test_turning_fast_start_off_deletes_its_copy(client, llm, tmp_path):
+    from aistudio_gpu.llm import store
+
+    mid = install(client)
+    m = store.read(tmp_path / "models", mid)
+    store.write(tmp_path / "models", {**m, "gpu": "B200", "count": 1})  # fast start is for one GPU
+    r = client.patch(f"/v1/llm/models/{mid}", json={"loadFormat": "processed"}, headers=AUTH)
+    assert r.status_code == 200, r.text
+    copy = store.processed_dir(tmp_path / "models", mid) / "B200"
+    copy.mkdir(parents=True)
+    (copy / "processed-00000.safetensors").write_bytes(b"x")
+    assert client.patch(f"/v1/llm/models/{mid}", json={"name": "renamed"}, headers=AUTH).status_code == 200
+    assert copy.exists()  # other changes keep it
+    assert client.patch(f"/v1/llm/models/{mid}", json={"loadFormat": "auto"}, headers=AUTH).status_code == 200
+    assert not store.processed_dir(tmp_path / "models", mid).exists()
+
+
+def test_plugin_marks_only_validation_only_processing():
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "aistudio_vllm_plugin", Path(__file__).parent.parent / "vllm_plugin" / "aistudio_vllm_plugin" / "__init__.py")
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)  # stdlib only at import: vLLM isn't needed here
+    sys.modules.pop("aistudio_vllm_plugin", None)
+    ple = '''    def process_weights_after_loading(self, layer: nn.Module) -> None:
+        """Reject FP8 PLE checkpoints without a global scale."""
+        sentinel = torch.finfo(torch.float32).min
+        if torch.any(layer.weight_scale == sentinel):
+            raise ValueError("FP8 PLE checkpoint is missing its global scale")
+'''
+    marker = plugin.VALIDATION_ONLY["Qwen4ExpPLEFp8EmbeddingMethod"]
+    assert plugin.validation_only(ple, marker)
+    for write in ["layer.weight_scale = s", "layer.weight.data.mul_(2)", "replace_parameter(layer, 'weight', w)",
+                  "layer.weight.copy_(w)", "layer.w13 += 1", "setattr(layer, 'weight', w)",
+                  "layer.register_buffer('b', t)"]:
+        assert not plugin.validation_only(ple + "        " + write + "\n", marker), write
+    assert not plugin.validation_only(ple.replace("missing its global scale", "other"), marker)
 
 
 def test_status_reports_the_last_and_typical_cold_start(client):

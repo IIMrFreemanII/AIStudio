@@ -22,7 +22,8 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var engine: String?
     /// "huggingface" or "civitai".
     public var source: String?
-    /// How vLLM reads the weights: "auto" (its loader) or "runai" (Run:ai's streamer, faster from network volumes).
+    /// How vLLM reads the weights: "auto" (its loader), "processed" (fast start: a copy saved after vLLM's processing,
+    /// made by the first start) or "runai" (Run:ai's streamer, for object storage).
     public var loadFormat: String?
     /// Starts from a GPU memory snapshot (experimental; vLLM on one GPU).
     public var snapshot: Bool?

@@ -1,0 +1,12 @@
+[project]
+name = "aistudio-vllm-plugin"
+version = "0.1.0"
+description = "AIStudio's vLLM plugin: load a model from weights saved after vLLM's post-processing (fast cold starts)."
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+aistudio = "aistudio_vllm_plugin:register"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

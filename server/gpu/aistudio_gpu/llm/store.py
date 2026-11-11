@@ -13,8 +13,9 @@ from pathlib import Path
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Fields the app may change after installing (PATCH /v1/llm/models/{id}).
 PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot"}
-# How vLLM reads the weights: its default loader, or Run:ai's streamer (many reads at once; faster from network volumes).
-LOAD_FORMATS = ("auto", "runai")
+# How vLLM reads the weights: its loader, Run:ai's streamer, or "processed" (AIStudio's vLLM plugin: a copy saved
+# after vLLM's processing, made by the first start and loaded by the later ones; see vllm_plugin/).
+LOAD_FORMATS = ("auto", "runai", "processed")
 
 
 def root(models_root: Path) -> Path:
@@ -25,6 +26,12 @@ def model_dir(models_root: Path, mid: str) -> Path:
     if not isinstance(mid, str) or not ID.match(mid):
         raise ValueError("a model id is 1–64 lowercase letters, digits, '.', '_' or '-'")
     return root(models_root) / mid
+
+
+def processed_dir(models_root: Path, mid: str) -> Path:
+    """The fast-start copies of a model's weights (``loadFormat: "processed"``), one folder per GPU kind, next to its
+    checkpoint."""
+    return model_dir(models_root, mid) / "processed"
 
 
 def weights_dir(models_root: Path, mid: str) -> Path:
@@ -50,6 +57,44 @@ def write(models_root: Path, manifest: dict) -> None:
     tmp = d / "llm.json.tmp"
     tmp.write_text(json.dumps(manifest, indent=2))
     os.replace(tmp, d / "llm.json")
+
+
+KV_FILE = "kv-cache-memory.json"  # next to llm.json: {setup key: bytes}, see kv_cache_memory
+KV_KEEP = 8  # setups remembered per model
+
+
+def kv_setup(manifest: dict, *extra) -> str:
+    """What the KV cache size vLLM measured depends on: the GPU kind and count, the context, the engine arguments
+    (and ``extra``: the server's own defaults that change memory use)."""
+    return json.dumps([manifest.get("gpu"), int(manifest.get("count") or 1), manifest.get("context"),
+                       list(manifest.get("engineArgs") or []), bool(manifest.get("vision")), *extra])
+
+
+def kv_cache_memory(models_root: Path, mid: str, setup: str) -> int | None:
+    """The KV cache size (bytes) vLLM measured on an earlier start of this setup, or None."""
+    try:
+        v = json.loads((model_dir(models_root, mid) / KV_FILE).read_text()).get(setup)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return v if isinstance(v, int) and v > 0 else None
+
+
+def save_kv_cache_memory(models_root: Path, mid: str, setup: str, nbytes: int | None) -> None:
+    """Remembers (or with None forgets) the measured KV cache size of a setup; keeps the latest ``KV_KEEP``."""
+    d = model_dir(models_root, mid)
+    try:
+        known = json.loads((d / KV_FILE).read_text())
+        known = known if isinstance(known, dict) else {}
+    except (OSError, ValueError):
+        known = {}
+    known.pop(setup, None)
+    if nbytes:
+        known[setup] = int(nbytes)
+    known = dict(list(known.items())[-KV_KEEP:])
+    d.mkdir(parents=True, exist_ok=True)
+    tmp = d / (KV_FILE + ".tmp")
+    tmp.write_text(json.dumps(known, indent=2))
+    os.replace(tmp, d / KV_FILE)
 
 
 def installed(models_root: Path, mid: str) -> bool:
@@ -90,9 +135,11 @@ def patch(manifest: dict, changes: dict) -> dict:
     if not isinstance(out.get("engineArgs"), list) or not all(isinstance(a, str) for a in out["engineArgs"]):
         raise ValueError("engineArgs is a list of strings")
     if out.get("loadFormat", "auto") not in LOAD_FORMATS:
-        raise ValueError("loadFormat is auto or runai")
+        raise ValueError("loadFormat is auto, runai or processed")
     if out.get("loadFormat", "auto") != "auto" and out.get("engine") == "llamacpp":
-        raise ValueError("the fast loader is for vLLM models (GGUF files are read by llama.cpp)")
+        raise ValueError("the fast loaders are for vLLM models (GGUF files are read by llama.cpp)")
+    if out.get("loadFormat") == "processed" and out["count"] != 1:
+        raise ValueError("fast start (saved processed weights) works on one GPU only")
     if not isinstance(out.get("snapshot", False), bool):
         raise ValueError("snapshot is true or false")
     if out.get("snapshot") and (out.get("engine") == "llamacpp" or out["count"] != 1):

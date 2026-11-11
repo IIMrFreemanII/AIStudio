@@ -440,7 +440,13 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   185.5 GB, so FP8 fits one B200 and NVIDIA's NVFP4 build one H200). vLLM runs at most 64 requests at once
   (`AISTUDIO_VLLM_MAX_SEQS`; a model's own `--max-num-seqs` wins): fewer CUDA graphs to capture at each start,
   and linear-attention models need a state slot per request (Qwen FP8 on one B200 has room for 761, not vLLM's
-  default 1024). Change it later in Servers › the model's settings (it
+  default 1024). CUDA graphs are recorded for batches of 1, 2, 4 and 8 requests only (`AISTUDIO_VLLM_GRAPH_SIZES`;
+  a model's own `--compilation-config`, `-O…` or `--enforce-eager` wins): larger batches run without one. vLLM's
+  default is 19 sizes up to 128, recorded twice per start (3 s instead of 10–18 s on a B200). The KV cache size vLLM
+  measures on a model's first start is kept in `llm/<id>/kv-cache-memory.json`, one entry per GPU kind, count,
+  context and engine arguments. Later starts pass it as `--kv-cache-memory` and skip measuring free memory. A start
+  that fails with it forgets it, and `AISTUDIO_VLLM_REMEMBER_KV=0` turns this off. On a B200 with Qwen, both together
+  cut vLLM's memory and graph setup from 26–42 s to 24.5 s. Change it later in Servers › the model's settings (it
   takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
 - **Images and videos** (models with vision): attach them to a message (paperclip, or drop them on the chat).
   Images are resized to at most 1536 px and sent with each message. Videos (`.mp4`, `.mov`, `.m4v`) are
@@ -476,6 +482,18 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   and `bootSeconds` while starting. The chat's engine chip says *Loading weights 41% · usually ~2 min*, its tooltip
   and the model's settings show the last start's breakdown, and the container log prints it.
 - **Faster starts** (the model's settings, or `PATCH` with these fields):
+  - `loadFormat: "processed"` (**Weight loading › Fast start**, one GPU): AIStudio's vLLM plugin
+    (`server/gpu/vllm_plugin`, load format `aistudio_processed`). A normal load runs every checkpoint tensor through
+    vLLM's Python weight loader; Qwen3.8-Flash-Next has 152,089 of them (512 experts × 48 layers), about 0.6 ms each,
+    so it took ~111 s however fast the storage (forcing vLLM's prefetch read all 185 GB in 43 s and changed nothing;
+    its multithreaded loader neither). With fast start the first start loads normally, then saves the model's
+    tensors as they are after vLLM's processing (1,671 tensors, the experts fused per layer) to
+    `llm/<id>/processed/<GPU>/`, about 2 minutes once; later starts read that copy (on 8 threads) and only rebuild
+    the kernels: **111 s → 60 s** of loading, a start ≈2 min 26 s instead of ≈3 min 20 s (without the wait for a
+    GPU), measured 2026-11-11 on a B200. The copy records the vLLM and torch versions, GPU, dtype, KV cache dtype and
+    parallelism; when any changes the next start loads normally and saves a new one. vLLM refuses the fast load for
+    quant methods that don't support pre-processed weights, so an unsupported model fails at start rather than
+    answering wrongly. Switching back to Standard deletes the copy (it's about as big as the model).
   - `loadFormat: "runai"` (**Fast weight loading**): vLLM reads the weights with Run:ai's streamer, many reads at
     once (`AISTUDIO_RUNAI_CONCURRENCY`, default 16), instead of one shard at a time. vLLM models only. It's made
     for object storage and network file systems; on Modal's volume it was *slower*. Measured on 2026-11-11 with
@@ -493,6 +511,9 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
     but none restored (no *Restoring Function from memory snapshot*), so each start was a full boot plus about
     1.5 min of saving. A snapshot that big may be beyond what Modal's alpha handles; check the Function's
     Containers tab in the Modal dashboard before relying on it.
+  - Modal Volumes v2 aren't faster for this: on data not read before, a v2 copy read at 0.2 GB/s with one reader and
+    ~1 GB/s with many, the v1 models volume at 1.1 and ~2.3 GB/s (CPU containers; a B200 host read v1 at 4.3 GB/s).
+    `AISTUDIO_LLM_VOLUME` can still put the language models on a separate Volume (mounted at `/llm-models`).
   - vLLM's compile, inductor and Triton caches, and FlashInfer's kernel builds, live on the models volume
     (`llm/.cache/`), so only the first start of a model on a GPU kind compiles from scratch. The vLLM image also
     has FlashInfer's prebuilt kernels (`flashinfer-cubin`, `flashinfer-jit-cache`, `AISTUDIO_FLASHINFER` /
