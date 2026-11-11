@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import zipfile
@@ -27,6 +28,8 @@ import httpx
 
 from . import gguf
 from .remote import RangeError, RangeFile, auth_headers
+
+log = logging.getLogger(__name__)
 
 HF_HOSTS = ("huggingface.co", "hf.co")
 CIVITAI_API = "https://civitai.com/api/v1"
@@ -91,6 +94,9 @@ class Facts:
     gguf_options: list[dict] = field(default_factory=list)  # [{"quant", "bytes"}] when the repo has several
     # What an install fetches: [{"name", "size", "url"?, "sha256"?, "extract"?}] ("extract": a zip's folder to unpack)
     download: list[dict] = field(default_factory=list)
+    # Weights vLLM keeps in CPU memory instead of on the GPUs: the n-gram ("Engram") embedding tables of models like
+    # Qwen3.8-Flash-Next (51 GB of its 185 GB). Sizing leaves them out of each GPU's share.
+    cpu_bytes: int = 0
 
     def public(self) -> dict:
         d = asdict(self)
@@ -223,7 +229,64 @@ async def _inspect_hf(ref: ModelRef, tokens: dict, client: httpx.AsyncClient, sy
     f = facts_from_config(ref, meta, config, weights, template)
     f.download = [{"name": n, "size": b} for n, b in sorted(names.items())
                   if "/" not in n and (n in weights or any(fnmatch(n, p) for p in SIDE_FILES))]
+    text_config = config.get("text_config") or config
+    if text_config.get("ngram_vocab_size_base") and INDEX in names:
+        index = json.loads(await text(INDEX))
+        f.cpu_bytes = await asyncio.to_thread(
+            ngram_bytes, index, lambda name: f"{base}/{ref.repo}/resolve/{sha}/{name}", tokens, sync_client)
+        if not f.cpu_bytes:  # the headers couldn't be read: the table's size from the config
+            per = 0.5 if f.quant.get("bits") == 4 else 1 if f.quant.get("bits") == 8 else 2
+            f.cpu_bytes = int(text_config["ngram_vocab_size_base"] * int(text_config.get("ple_embed_dim") or
+                                                                         text_config.get("hidden_size") or 0) * per)
+        if f.cpu_bytes:
+            f.notes.append(f"vLLM keeps the n-gram embeddings ({f.cpu_bytes / 1e9:.0f} GB) in CPU memory, so the "
+                           "GPUs hold the rest")
     return f
+
+
+INDEX = "model.safetensors.index.json"
+NGRAM_TENSOR = "ngram_embedding"  # vLLM's name for the tables it offloads (EngramConfig(cpu_offload=True))
+
+
+def ngram_bytes(index: dict, url_of: Callable[[str], str], tokens: dict, sync_client) -> int:
+    """The n-gram embedding tables' size in bytes, from the safetensors headers of the files that hold them (each
+    header is read with Range requests; the tensors' data isn't). 0 when a header can't be read."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    files = sorted({file for name, file in (index.get("weight_map") or {}).items() if NGRAM_TENSOR in name})
+
+    def size_in(file: str) -> int:
+        rf = _range_file(url_of(file), tokens, sync_client)
+        try:
+            head = safetensors_header(rf)
+        finally:
+            rf.close()
+        return sum(int(t["data_offsets"][1]) - int(t["data_offsets"][0]) for name, t in head.items()
+                   if NGRAM_TENSOR in name and isinstance(t, dict) and "data_offsets" in t)
+
+    try:  # 8 at a time: Qwen3.8-Flash-Next spreads its tables over 33 files
+        with ThreadPoolExecutor(8) as pool:
+            return sum(pool.map(size_in, files))
+    except (RangeError, OSError, ValueError, KeyError) as e:
+        log.info("couldn't read the n-gram tables' size: %s", e)
+        return 0
+
+
+def safetensors_header(rf) -> dict:
+    """A safetensors file's JSON header: an 8-byte little-endian length, then that much JSON."""
+    def exactly(n: int) -> bytes:
+        out = b""
+        while len(out) < n:
+            chunk = rf.read(n - len(out))
+            if not chunk:
+                raise ValueError("the safetensors header is cut short")
+            out += chunk
+        return out
+
+    size = int.from_bytes(exactly(8), "little")
+    if size > 100 << 20:
+        raise ValueError("the safetensors header is too big")
+    return json.loads(exactly(size))
 
 
 async def _hf_gguf(ref: ModelRef, meta: dict, sha: str, names: dict, tokens: dict, sync_client, quant) -> Facts:

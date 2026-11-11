@@ -39,6 +39,7 @@ PHASES: list[tuple[re.Pattern, str]] = [
 ]
 PERCENT = re.compile(r"(\d{1,3})%")
 RUNAI_CONCURRENCY = int(os.environ.get("AISTUDIO_RUNAI_CONCURRENCY", "16"))
+MAX_SEQS = int(os.environ.get("AISTUDIO_VLLM_MAX_SEQS", "64"))  # requests at once; 0 keeps vLLM's default
 
 
 def phase_of(line: str) -> tuple[str, float | None] | None:
@@ -65,7 +66,14 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
                 json.dumps({"concurrency": RUNAI_CONCURRENCY})]
     if manifest.get("snapshot"):
         cmd.append("--enable-sleep-mode")  # weights go to CPU memory before the snapshot, back after the restore
-    return cmd + list(manifest.get("engineArgs") or [])
+    extra = list(manifest.get("engineArgs") or [])
+    if MAX_SEQS and "--max-num-seqs" not in extra:
+        # vLLM's default (1024 requests at once) is for shared servers. Here one person chats: a small cap means
+        # fewer CUDA graphs to capture at every start, and models with linear-attention (Mamba / Gated DeltaNet)
+        # layers need one state slot per request, which on one GPU may not fit 1024 (Qwen3.8-Flash-Next on a B200
+        # had room for 761).
+        cmd += ["--max-num-seqs", str(MAX_SEQS)]
+    return cmd + extra
 
 
 def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.1") -> list[str]:

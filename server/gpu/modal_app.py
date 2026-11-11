@@ -410,8 +410,9 @@ class ModalVariants:
 def _llm_boot(self, snapshot: bool = False):
     """Starts the model's engine from its manifest. Its state goes to the ``llm_state`` Dict (phases while starting,
     a heartbeat every 15 s while up) for the front desk, and the boot's timing to ``<id>:coldstarts``. With
-    ``snapshot`` (``LLMSnap``'s snapshot phase) the engine is warmed up and put to sleep instead, and there's no
-    heartbeat yet: ``_llm_wake`` does the rest after the restore."""
+    ``snapshot`` (``LLMSnap``'s snapshot phase) the engine is warmed up and put to sleep instead, the heartbeat
+    stops just before Modal takes the snapshot, and ``_llm_wake`` does the rest. Stop or a failure during a snapshot
+    boot ends the container without a snapshot (``_llm_abandon``)."""
     import time
 
     from aistudio_gpu.llm import store
@@ -434,11 +435,12 @@ def _llm_boot(self, snapshot: bool = False):
         self.clock.phase(phase)
 
     _llm_publish(self)
-    if not snapshot:
-        _llm_heartbeat(self)
+    _llm_heartbeat(self)  # in a snapshot boot too, until just before the snapshot (Stop works, the status stays live)
     if not m or not store.installed(MODELS, self.model):
         self.error = f"{self.model} isn't installed on the server"
         _llm_publish(self, state="failed", error=self.error)
+        if snapshot:
+            _llm_abandon(self, 1)
         return
     self.proc = EngineProcess(m, MODELS, on_status)
     try:
@@ -448,7 +450,6 @@ def _llm_boot(self, snapshot: bool = False):
             on_status("Warming up", None)
             self.proc.warmup()
             self.proc.sleep()
-            on_status("Saving a snapshot", None)
     except Exception as e:  # noqa: BLE001
         if getattr(self, "stopping", False):  # Stop while it was starting (see _llm_heartbeat): not a failure
             self.alive = False
@@ -457,14 +458,24 @@ def _llm_boot(self, snapshot: bool = False):
             self.error = str(e)[:4000]
             _llm_publish(self, state="failed", error=self.error)
         self.proc.stop()
-        if not snapshot:
-            modal.experimental.stop_fetching_inputs()
+        if snapshot:  # no snapshot of a stopped or broken engine
+            _llm_abandon(self, 0 if getattr(self, "stopping", False) else 1)
+        _llm_cancel_call(self)
+        modal.experimental.stop_fetching_inputs()
         return
     try:
         volume.commit()  # the compile caches, for the next cold start
     except Exception:  # noqa: BLE001
         pass
     if snapshot:
+        if getattr(self, "stopping", False) or \
+                (llm_state.get(self.model + ":stop") or 0) > base["started"]:  # Stop pressed during the warmup
+            self.proc.stop()
+            _llm_publish(self, state="cold", phase=None, ended=time.time())
+            _llm_abandon(self)
+        _llm_heartbeat_stop(self)
+        on_status("Saving a snapshot", None)  # the front desk allows this phase a longer silence
+        self.boot_clock = self.clock  # if this same container wakes next, its start is timed from here
         return
     _llm_record(self, "cold")
     if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
@@ -479,8 +490,18 @@ def _llm_wake(self):
         _llm_heartbeat(self)
         return
     _llm_clock(self, ColdStartClock, how="snapshot")
-    self.current = {**self.current, "started": self.clock.started, "container": os.environ.get("MODAL_TASK_ID"),
-                    "state": "loading", "phase": "Waking up", "progress": None}
+    # A restore comes after the front desk asked again ("requested", from the Dict, is newer than the snapshot's
+    # boot). Otherwise this is the container that just took the snapshot: its start (and its cost) began at its
+    # boot, so the boot's clock and start time carry on.
+    boot = getattr(self, "boot_clock", None)
+    restored = boot is None or (self.clock.requested is not None and self.clock.requested > boot.started) \
+        or self.clock.started - boot.started > LLM_BOOT_TIMEOUT + 15 * 60  # far longer than a snapshot takes
+    if not restored:
+        self.clock = boot
+    self.current = {**self.current, "started": self.clock.started, "requested": self.clock.requested,
+                    "container": os.environ.get("MODAL_TASK_ID"), "state": "loading", "phase": "Waking up",
+                    "progress": None}
+    self.clock.phase("Waking up")
     self.proc.on_status = lambda phase, progress: (
         _llm_publish(self, state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress),
         self.clock.phase(phase))
@@ -494,7 +515,7 @@ def _llm_wake(self):
         self.proc.stop()
         modal.experimental.stop_fetching_inputs()
         return
-    _llm_record(self, "snapshot")
+    _llm_record(self, "snapshot" if restored else "cold")
 
 
 def _llm_clock(self, clock_cls, how: str = "cold"):
@@ -517,12 +538,14 @@ def _llm_publish(self, **kw):
 
 
 def _llm_heartbeat(self):
+    """Publishes the state every 15 s until ``_llm_heartbeat_stop`` (or the container stops), and ends a start
+    that Stop was pressed for."""
     import threading
-    import time
+
+    self.beat_stop = threading.Event()
 
     def beat():
-        while self.alive:
-            time.sleep(15)
+        while self.alive and not self.beat_stop.wait(15):
             if not self.alive:
                 break
             # Stop pressed while the engine is still starting: end the engine now (the boot then returns and the
@@ -538,7 +561,33 @@ def _llm_heartbeat(self):
                     break
             _llm_publish(self)
 
-    threading.Thread(target=beat, daemon=True).start()
+    self.beat_thread = threading.Thread(target=beat, daemon=True)
+    self.beat_thread.start()
+
+
+def _llm_heartbeat_stop(self):
+    """Ends the heartbeat (before a memory snapshot: no thread mid-request in it; the wake starts a new one)."""
+    if getattr(self, "beat_stop", None) is not None:
+        self.beat_stop.set()
+        self.beat_thread.join(timeout=30)
+
+
+def _llm_cancel_call(self):
+    """Cancels the request that started this container (the front desk's ``ping``), so that after a Stop or a failed
+    start Modal doesn't hand it to a new container that boots all over again."""
+    try:
+        call = llm_state.get(self.model + ":call")
+        if call:
+            modal.FunctionCall.from_id(call).cancel()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _llm_abandon(self, code: int = 0):
+    """Ends a snapshot boot without a snapshot (Stop pressed, or the engine failed): Modal would otherwise snapshot a
+    stopped engine and restore it from then on."""
+    _llm_cancel_call(self)
+    os._exit(code)
 
 
 def _llm_record(self, how: str):
@@ -762,8 +811,11 @@ def _llm_service():
         async def _engine_state(self, mid, m):
             s = dict(await llm_state.get.aio(mid) or {"state": "cold"})
             now = time.time()
-            if s.get("state") in ("loading", "ready") and now - (s.get("beat") or 0) > 60:
-                s.update(state="cold", ended=s.get("beat"))  # the container is gone
+            # No heartbeat for a minute: the container is gone. Except while Modal saves a GPU snapshot, when the
+            # container is frozen and can't beat (a large one takes minutes).
+            quiet = 10 * 60 if s.get("phase") == "Saving a snapshot" else 60
+            if s.get("state") in ("loading", "ready") and now - (s.get("beat") or 0) > quiet:
+                s.update(state="cold", ended=s.get("beat"))
             if s.get("state") == "starting" and now - (s.get("requested") or 0) > 20 * 60:
                 s.update(state="cold")
             return s
@@ -774,7 +826,8 @@ def _llm_service():
                 return
             await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU", "requested": time.time(),
                                           "gpu": m.get("gpu"), "count": m.get("count")})
-            await self._obj(m).ping.spawn.aio()
+            call = await self._obj(m).ping.spawn.aio()
+            await llm_state.put.aio(mid + ":call", call.object_id)  # so Stop can cancel the start (see below)
 
         async def _engine_ping(self, mid, m):
             await self._obj(m).ping.spawn.aio()
@@ -784,6 +837,15 @@ def _llm_service():
             await llm_state.put.aio(mid + ":stop", time.time())
             if s.get("state") == "ready":
                 await self._obj(m).stop.spawn.aio()
+            elif s.get("state") == "starting":  # still waiting for a GPU: cancel the request, so none is started
+                try:
+                    call = await llm_state.get.aio(mid + ":call")
+                    if call:
+                        await modal.FunctionCall.from_id(call).cancel.aio()
+                except Exception:  # noqa: BLE001
+                    pass
+                await llm_state.put.aio(mid, {**s, "state": "cold", "phase": None, "ended": time.time()})
+            # While loading, the container's heartbeat sees the stop and ends the engine.
 
         async def _engine_chat(self, mid, m, body):
             s = await self._engine_state(mid, m)

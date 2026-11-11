@@ -97,6 +97,77 @@ def test_qwen38_fp8_picks_two_h200_with_full_context():
     assert ("L40S", 4) not in by  # no NVLink: at most 2
 
 
+def test_ngram_tables_in_cpu_memory_let_qwen_fit_one_b200():
+    # Measured on Modal: vLLM keeps Qwen3.8-Flash-Next's n-gram tables (51.2 GB) in CPU memory, and 124.3 GiB of
+    # weights went on one B200. One H200 is too small for that.
+    f = facts(QWEN38, int(172.78 * GIB), QWEN38_TEMPLATE)
+    f.cpu_bytes = 51_200_000_000
+    by = {(o["gpu"], o["count"]): o for o in sizing.plan(f, kv_dtype_bytes=1)["options"]}
+    assert by[("B200", 1)]["fits"] and not by[("H200", 1)]["fits"]
+    assert 128 < by[("B200", 1)]["weightsPerGPUGB"] < 140  # 124.3 GiB measured
+    assert by[("A100-80GB", 2)]["fits"] and by[("A100-80GB", 2)]["note"]  # cheaper, but FP8 runs slower there
+    rec = sizing.plan(f, kv_dtype_bytes=1)["recommended"]
+    assert (rec["gpu"], rec["count"]) == ("B200", 1)  # $6.25/h against 2× H200's $9.08
+
+
+def safetensors_file(tensors: dict[str, int]) -> bytes:
+    """A safetensors file's header and data: name → byte size, laid out one after another."""
+    header, at = {"__metadata__": {"format": "pt"}}, 0
+    for name, size in tensors.items():
+        header[name] = {"dtype": "F8_E4M3", "shape": [size], "data_offsets": [at, at + size]}
+        at += size
+    raw = json.dumps(header).encode()
+    return len(raw).to_bytes(8, "little") + raw + b"\0" * at
+
+
+def test_ngram_table_sizes_come_from_the_safetensors_headers():
+    from aistudio_gpu.llm.facts import inspect
+    files = {"model-1.safetensors": safetensors_file({"layers.1.ple.ple_embedding.ngram_embedding.weight": 3000,
+                                                      "layers.1.ple.key_proj.weight": 100}),
+             "model-2.safetensors": safetensors_file({"layers.2.mlp.weight": 500})}
+    config = {**QWEN38, "text_config": {**QWEN38["text_config"], "ngram_vocab_size_base": 20_000_000,
+                                        "ple_embed_dim": 2560}}
+    index = {"metadata": {"total_size": 3600}, "weight_map": {
+        "layers.1.ple.ple_embedding.ngram_embedding.weight": "model-1.safetensors",
+        "layers.1.ple.key_proj.weight": "model-1.safetensors", "layers.2.mlp.weight": "model-2.safetensors"}}
+
+    def site(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/models/o/ngram/revision/main":
+            return httpx.Response(200, json={"id": "o/ngram", "sha": SHA, "siblings": [
+                {"rfilename": "config.json", "size": 100},
+                {"rfilename": "model.safetensors.index.json", "size": 100},
+                *({"rfilename": n, "size": len(b)} for n, b in files.items())]})
+        if path == f"/o/ngram/resolve/{SHA}/config.json":
+            return httpx.Response(200, json=config)
+        if path == f"/o/ngram/resolve/{SHA}/model.safetensors.index.json":
+            return httpx.Response(200, json=index)
+        name = path.rpartition("/")[2]
+        if name in files:
+            assert name == "model-1.safetensors"  # only the files that hold the tables are read
+            data = files[name]
+            start, _, end = request.headers["range"].removeprefix("bytes=").partition("-")
+            start, end = int(start), min(int(end), len(data) - 1)
+            return httpx.Response(206, content=data[start:end + 1],
+                                  headers={"content-range": f"bytes {start}-{end}/{len(data)}"})
+        return httpx.Response(404)
+
+    import asyncio
+    transport = httpx.MockTransport(site)
+    f = asyncio.run(inspect(parse_link("o/ngram"), {}, httpx.AsyncClient(transport=transport),
+                            lambda: httpx.Client(transport=transport)))
+    assert f.cpu_bytes == 3000
+    assert any("n-gram embeddings" in n for n in f.notes)
+
+    def unreadable(request: httpx.Request) -> httpx.Response:  # no Range support: the size from the config
+        return httpx.Response(200, content=b"x") if request.url.path.endswith(".safetensors") else site(request)
+
+    transport = httpx.MockTransport(unreadable)
+    f = asyncio.run(inspect(parse_link("o/ngram"), {}, httpx.AsyncClient(transport=transport),
+                            lambda: httpx.Client(transport=transport)))
+    assert f.cpu_bytes == 20_000_000 * 2560  # FP8: a byte each
+
+
 def test_dense_8b_fits_one_l40s():
     f = facts(LLAMA8B, 16 * 10**9)
     assert f.head_dim == 128 and f.attention_layers == 32
@@ -125,6 +196,9 @@ def test_vllm_command_has_parsers_and_expert_parallel(tmp_path):
     assert "--tool-call-parser qwen3_coder" in joined and "--reasoning-parser qwen3" in joined
     assert "--enable-expert-parallel" in cmd and cmd[-2:] == ["--kv-cache-dtype", "fp8"]
     assert "--enable-expert-parallel" not in vllm_command({**m, "count": 1}, tmp_path, 8000)
+    assert cmd[cmd.index("--max-num-seqs") + 1] == "64"  # one person's chats, not vLLM's 1024
+    own = vllm_command({**m, "engineArgs": ["--max-num-seqs", "8"]}, tmp_path, 8000)
+    assert own.count("--max-num-seqs") == 1 and own[own.index("--max-num-seqs") + 1] == "8"
 
 
 def test_phases_from_vllm_log():
