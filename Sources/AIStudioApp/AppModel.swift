@@ -216,6 +216,8 @@ final class AppModel {
     var libraryRequest: LibraryAddRequest?
     /// The Add a Model from a Link sheet (language models on a GPU server).
     var llmAddRequest: LLMAddRequest?
+    /// An installed model's GPUs and context sheet.
+    var llmSettingsRequest: LLMSettingsRequest?
 
     // MARK: library
 

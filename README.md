@@ -249,11 +249,13 @@ for tests (`python -m aistudio_gpu serve`; on a Mac it uses Metal).
 
 ### Chats with language models
 
-**Chats** (rail, or ⌥⌘N) talk to language models on the same GPU server: add any Hugging Face model by its link
-(Servers › Language Models › +). The server reads the model's config, picks the cheapest GPUs it fits on (up to 8×
-H100/H200/B200), downloads it to its volume and serves it with vLLM. Chats open as tabs next to the workflows, stream
-the reply with the model's thinking in a collapsible block, render Markdown and code, and show tokens per second and
-what each reply cost. The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
+**Chats** (rail, or ⌥⌘N) talk to language models on the same GPU server: add a model by its link (Servers ›
+Language Models › +): a Hugging Face repo in safetensors (full, FP8, AWQ, GPTQ) or GGUF, or a Civitai model. The
+server reads the model's config, picks the cheapest GPUs it fits on (up to 8× H100/H200/B200), downloads it to its
+volume and serves it with vLLM (llama.cpp for GGUF). Chats open as tabs next to the workflows, stream the reply with
+the model's thinking in a collapsible block, render Markdown and code, and show tokens per second and what each reply
+cost. Attach images (vision models) and text files, edit a message or ask for another reply (each keeps the old
+version: ‹ 2 / 3 ›). The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
 docs/remote-server.md › Language models.
 
 [docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that

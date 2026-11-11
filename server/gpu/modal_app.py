@@ -16,8 +16,8 @@ Layout:
 - ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
 - Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
-- ``LLM``: one container per installed language model (vLLM's OpenAI server inside, on the GPUs its manifest
-  names: ``LLM.with_options(gpu="H200:2")(model=id)``). The app keeps it warm with keepalives while a chat is open;
+- ``LLM`` / ``LLMLlamaCpp``: one container per installed language model (vLLM's OpenAI server, or llama.cpp's for
+  GGUF, on the GPUs its manifest names: ``LLM.with_options(gpu="H200:2")(model=id)``). The app keeps it warm with keepalives while a chat is open;
   it scales to zero ``AISTUDIO_LLM_IDLE`` seconds (default 180) after the last chat or keepalive.
 - Volume ``aistudio-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
   up to ``AISTUDIO_UPLOADS_GB`` (default 20; least recently used go first). Workers copy inputs straight from it.
@@ -25,7 +25,8 @@ Layout:
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
 fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
-``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLM_MAX_GPUS`` (default 8).
+``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
+``AISTUDIO_LLM_MAX_GPUS`` (default 8).
 """
 
 
@@ -47,6 +48,7 @@ UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
 LLM_IDLE = int(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
 VLLM_VERSION = os.environ.get("AISTUDIO_VLLM", "0.33.0")
 CUDA_BASE = os.environ.get("AISTUDIO_CUDA_IMAGE", "nvidia/cuda:12.9.1-devel-ubuntu24.04")
+LLAMA_IMAGE = os.environ.get("AISTUDIO_LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
 
 
 def _secret_if_exists(name: str) -> str:
@@ -93,6 +95,11 @@ front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SE
 # Downloads LLMs onto the volume (no torch needed).
 llm_import_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, "huggingface_hub")
                     .env(env).add_local_python_source("aistudio_gpu"))
+# llama.cpp's server for GGUF models (its CUDA build; the binary lives in /app).
+llama_image = (modal.Image.from_registry(LLAMA_IMAGE, add_python="3.12").entrypoint([])
+               .uv_pip_install("httpx").env({**env, "PATH": "/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                             "LD_LIBRARY_PATH": "/app"})
+               .add_local_python_source("aistudio_gpu"))
 # vLLM's OpenAI server; its compile and CUDA-graph caches live on the models volume, so restarts reuse them.
 vllm_image = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint([])
               .uv_pip_install(f"vllm=={VLLM_VERSION}", "httpx")
@@ -384,76 +391,104 @@ class ModalVariants:
 
 # MARK: LLMs
 
-@app.cls(image=vllm_image, gpu="H100", volumes={MODELS: volume}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60,
-         max_containers=1, memory=(65536, 524288), cpu=8)
+def _llm_boot(self):
+    """Starts the model's engine from its manifest. Its state goes to the ``llm_state`` Dict (phases while starting,
+    a heartbeat every 15 s while up) for the front desk."""
+    import threading
+    import time
+
+    from aistudio_gpu.llm import store
+    from aistudio_gpu.llm.engine import EngineProcess
+
+    self.error = None
+    self.alive = True
+    self.proc = None
+    m = store.read(MODELS, self.model) or {}
+    base = {"started": time.time(), "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
+            "container": os.environ.get("MODAL_TASK_ID")}
+    self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
+
+    def publish(**kw):
+        self.current = {**self.current, **kw, "beat": time.time()}
+        try:
+            llm_state[self.model] = self.current
+        except Exception:  # noqa: BLE001
+            pass
+
+    def on_status(phase, progress):
+        publish(state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress)
+
+    def heartbeat():
+        while self.alive:
+            time.sleep(15)
+            if self.alive:
+                publish()
+
+    publish()
+    threading.Thread(target=heartbeat, daemon=True).start()
+    if not m or not store.installed(MODELS, self.model):
+        self.error = f"{self.model} isn't installed on the server"
+        publish(state="failed", error=self.error)
+        return
+    self.proc = EngineProcess(m, MODELS, on_status)
+    try:
+        self.proc.start()
+        self.proc.wait_ready()
+    except Exception as e:  # noqa: BLE001
+        self.error = str(e)[:4000]
+        publish(state="failed", error=self.error)
+        self.proc.stop()
+        modal.experimental.stop_fetching_inputs()
+        return
+    try:
+        volume.commit()  # the compile caches, for the next cold start
+    except Exception:  # noqa: BLE001
+        pass
+    if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
+        modal.experimental.stop_fetching_inputs()
+
+
+async def _llm_chat(self, body: dict):
+    from aistudio_gpu.llm.engine import EngineError
+
+    if self.error or self.proc is None:
+        raise EngineError(self.error or "the engine isn't running")
+    async for chunk in self.proc.chat(body):
+        yield chunk
+
+
+def _llm_shutdown(self):
+    import time
+
+    self.alive = False
+    if getattr(self, "proc", None) is not None:
+        self.proc.stop()
+    try:
+        llm_state[self.model] = {**self.current, "state": "cold", "phase": None, "ended": time.time(),
+                                 "beat": time.time()}
+    except Exception:  # noqa: BLE001
+        pass
+
+
+LLM_CLS = dict(volumes={MODELS: volume}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
+               memory=(65536, 524288), cpu=8)
+
+
+@app.cls(image=vllm_image, gpu="H100", **LLM_CLS)
 @modal.concurrent(max_inputs=64)
 class LLM:
-    """One language model: vLLM's OpenAI server on localhost, started from the model's manifest. Its state goes to
-    the ``llm_state`` Dict (phases while starting, a heartbeat every 15 s while up) for the front desk."""
+    """One language model in safetensors: vLLM's OpenAI server on localhost (GPUs set per model with
+    ``LLM.with_options(gpu="H200:2")``)."""
 
     model: str = modal.parameter()
 
     @modal.enter()
     def boot(self):
-        import threading
-        import time
-
-        from aistudio_gpu.llm import store
-        from aistudio_gpu.llm.engine import VLLMProcess
-
-        self.error = None
-        self.alive = True
-        m = store.read(MODELS, self.model) or {}
-        base = {"started": time.time(), "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
-                "container": os.environ.get("MODAL_TASK_ID")}
-        self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
-
-        def publish(**kw):
-            self.current = {**self.current, **kw, "beat": time.time()}
-            try:
-                llm_state[self.model] = self.current
-            except Exception:  # noqa: BLE001
-                pass
-
-        def on_status(phase, progress):
-            publish(state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress)
-
-        def heartbeat():
-            while self.alive:
-                time.sleep(15)
-                if self.alive:
-                    publish()
-
-        publish()
-        threading.Thread(target=heartbeat, daemon=True).start()
-        if not m or not store.installed(MODELS, self.model):
-            self.error = f"{self.model} isn't installed on the server"
-            publish(state="failed", error=self.error)
-            return
-        self.proc = VLLMProcess(m, MODELS, on_status)
-        try:
-            self.proc.start()
-            self.proc.wait_ready()
-        except Exception as e:  # noqa: BLE001
-            self.error = str(e)[:4000]
-            publish(state="failed", error=self.error)
-            self.proc.stop()
-            modal.experimental.stop_fetching_inputs()
-            return
-        try:
-            volume.commit()  # the compile caches, for the next cold start
-        except Exception:  # noqa: BLE001
-            pass
-        if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
-            modal.experimental.stop_fetching_inputs()
+        _llm_boot(self)
 
     @modal.method()
     async def chat(self, body: dict):
-        from aistudio_gpu.llm.engine import EngineError
-
-        if self.error:
-            raise EngineError(self.error)
-        async for chunk in self.proc.chat(body):
+        async for chunk in _llm_chat(self, body):
             yield chunk
 
     @modal.method()
@@ -466,22 +501,42 @@ class LLM:
 
     @modal.exit()
     def shutdown(self):
-        import time
+        _llm_shutdown(self)
 
-        self.alive = False
-        if getattr(self, "proc", None) is not None:
-            self.proc.stop()
-        try:
-            llm_state[self.model] = {**self.current, "state": "cold", "phase": None, "ended": time.time(),
-                                     "beat": time.time()}
-        except Exception:  # noqa: BLE001
-            pass
+
+@app.cls(image=llama_image, gpu="L40S", **LLM_CLS)
+@modal.concurrent(max_inputs=16)
+class LLMLlamaCpp:
+    """One GGUF language model: llama.cpp's server on localhost, layers split across the GPUs."""
+
+    model: str = modal.parameter()
+
+    @modal.enter()
+    def boot(self):
+        _llm_boot(self)
+
+    @modal.method()
+    async def chat(self, body: dict):
+        async for chunk in _llm_chat(self, body):
+            yield chunk
+
+    @modal.method()
+    def ping(self) -> dict:
+        return self.current
+
+    @modal.method()
+    def stop(self) -> None:
+        modal.experimental.stop_fetching_inputs()
+
+    @modal.exit()
+    def shutdown(self):
+        _llm_shutdown(self)
 
 
 @app.function(image=llm_import_image, cpu=4, memory=8192, volumes={MODELS: volume}, timeout=8 * 60 * 60,
-              secrets=[modal.Secret.from_name(n) for n in (HF_SECRET,) if n])
-def import_llm(manifest: dict, files: list, token: str | None):
-    """Downloads an LLM from Hugging Face onto the models Volume (llm/install.py), on CPUs, then commits it."""
+              secrets=[modal.Secret.from_name(n) for n in (HF_SECRET, CIVITAI_SECRET) if n])
+def import_llm(manifest: dict, files: list, tokens: dict):
+    """Downloads an LLM (Hugging Face or Civitai) onto the models Volume (llm/install.py), on CPUs, then commits it."""
     import time
 
     from aistudio_gpu.llm.install import install
@@ -499,7 +554,9 @@ def import_llm(manifest: dict, files: list, token: str | None):
         return last["cancel"]
 
     try:
-        install(MODELS, manifest, [tuple(f) for f in files], token or os.environ.get("HF_TOKEN"), progress, cancelled)
+        tokens = {"huggingface": tokens.get("huggingface") or os.environ.get("HF_TOKEN"),
+                  "civitai": tokens.get("civitai") or os.environ.get("CIVITAI_TOKEN")}
+        install(MODELS, manifest, files, tokens, progress, cancelled)
         volume.commit()
     except BaseException as e:  # noqa: BLE001
         progress({"state": "cancelled" if isinstance(e, InterruptedError) else "failed",
@@ -527,7 +584,8 @@ def _llm_service():
         def _obj(self, m: dict):
             n = int(m.get("count") or 1)
             gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
-            return LLM.with_options(gpu=gpu)(model=m["id"])
+            cls = LLMLlamaCpp if m.get("engine") == "llamacpp" else LLM
+            return cls.with_options(gpu=gpu)(model=m["id"])
 
         async def _reload(self):
             if time.monotonic() - self._reloaded > 5:
@@ -591,13 +649,13 @@ def _llm_service():
                 await llm_state.put.aio(mid, {"state": "cold"})
             return await super().warm(mid)
 
-        async def _start_install(self, manifest, files, token):
+        async def _start_install(self, manifest, files, tokens):
             mid = manifest["id"]
             await llm_installs.pop.aio(mid + ":cancel", None)
             state = {"state": "starting", "name": manifest["name"]}
             await llm_installs.put.aio(mid, state)
             self._installs_cache[mid] = state
-            await import_llm.spawn.aio(manifest, [list(f) for f in files], token)
+            await import_llm.spawn.aio(manifest, files, tokens)
             return {"id": mid, **state}
 
         def _installs(self):

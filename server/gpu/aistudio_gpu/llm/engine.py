@@ -1,5 +1,6 @@
-"""The engine process: vLLM's OpenAI-compatible server on localhost, started from an installed model's manifest, with
-its startup log turned into phases ("Loading weights 41%") for the app. The same class runs inside a Modal container
+"""The engine process: vLLM's OpenAI-compatible server (llama.cpp's ``llama-server`` for GGUF models) on localhost,
+started from an installed model's manifest, with its startup log turned into phases ("Loading weights 41%") for the
+app. The same class runs inside a Modal container
 and on a GPU box. ``FakeEngine`` stands in for it in tests and with ``AISTUDIO_FAKE_LLM=1``."""
 
 from __future__ import annotations
@@ -23,7 +24,10 @@ from . import store
 Status = Callable[[str, "float | None"], None]  # (phase, progress 0…1 or None)
 
 PHASES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"Loading (safetensors )?checkpoint shards|Loading weights|load_weights", re.I), "Loading weights"),
+    (re.compile(r"Loading (safetensors )?checkpoint shards|Loading weights|load_weights|load_tensors|"
+                r"llama_model_load", re.I), "Loading weights"),
+    (re.compile(r"server is listening|main: model loaded", re.I), "Starting server"),
+    (re.compile(r"llama_context|llama_kv_cache", re.I), "Allocating KV cache"),
     (re.compile(r"torch\.compile|Compiling a graph|Dynamo bytecode", re.I), "Compiling"),
     (re.compile(r"Capturing CUDA graph|CUDA graphs", re.I), "Capturing CUDA graphs"),
     (re.compile(r"KV cache|Available KV cache memory|GPU blocks", re.I), "Allocating KV cache"),
@@ -55,12 +59,33 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
     return cmd + list(manifest.get("engineArgs") or [])
 
 
+def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.1") -> list[str]:
+    """llama.cpp's server for a GGUF model: every layer on the GPUs (split by layer across several), one slot with
+    the whole context, tool calls through the model's own chat template."""
+    n = int(manifest.get("count") or 1)
+    cmd = ["llama-server", "-m", str(weights / manifest["ggufFile"]), "--alias", manifest["id"], "--host", host,
+           "--port", str(port), "-c", str(int(manifest["context"])), "-np", "1", "-ngl", "999", "--jinja",
+           "--no-webui"]
+    if manifest.get("reasoningParser"):
+        cmd += ["--reasoning-format", "deepseek"]
+    if manifest.get("mmproj"):
+        cmd += ["--mmproj", str(weights / manifest["mmproj"])]
+    if n > 1:
+        cmd += ["--split-mode", "layer"]
+    return cmd + list(manifest.get("engineArgs") or [])
+
+
+def command(manifest: dict, weights: Path, port: int) -> list[str]:
+    return (llama_command if manifest.get("engine") == "llamacpp" else vllm_command)(manifest, weights, port)
+
+
 class EngineError(RuntimeError):
     pass
 
 
-class VLLMProcess:
-    """One running vLLM server. ``start`` returns at once; ``wait_ready`` blocks until it answers /health."""
+class EngineProcess:
+    """One running engine (vLLM or llama.cpp, by the manifest). ``start`` returns at once; ``wait_ready`` blocks until
+    it answers /health."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, port: int = 8000,
                  env: dict | None = None):
@@ -72,7 +97,7 @@ class VLLMProcess:
 
     def start(self) -> None:
         weights = store.weights_dir(self.models_root, self.manifest["id"])
-        cmd = vllm_command(self.manifest, weights, self.port)
+        cmd = command(self.manifest, weights, self.port)
         self.on_status("Starting engine", None)
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      env=self.env, start_new_session=True)
@@ -92,7 +117,8 @@ class VLLMProcess:
         while time.monotonic() < deadline:
             if self.proc is None or self.proc.poll() is not None:
                 tail = "\n".join(list(self.log)[-25:])
-                raise EngineError(f"vLLM exited while starting:\n{tail}" if tail else "vLLM exited while starting")
+                name = "llama.cpp" if self.manifest.get("engine") == "llamacpp" else "vLLM"
+                raise EngineError(f"{name} exited while starting:\n{tail}" if tail else f"{name} exited while starting")
             try:
                 if httpx.get(self.url + "/health", timeout=2).status_code == 200:
                     self.on_status("Ready", 1.0)
@@ -100,7 +126,7 @@ class VLLMProcess:
             except httpx.HTTPError:
                 pass
             time.sleep(1.0)
-        raise EngineError("vLLM didn't start in time")
+        raise EngineError("the engine didn't start in time")
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -125,6 +151,9 @@ class VLLMProcess:
                 os.killpg(self.proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+VLLMProcess = EngineProcess  # the name modal_app.py and older code use
 
 
 def _error_text(status: int, detail: str) -> str:

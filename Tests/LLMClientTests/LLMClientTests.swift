@@ -114,17 +114,60 @@ struct LLMClientTests {
     @Test func transcriptRoundTripsAndSkipsFailedReplies() throws {
         var t = ChatTranscript(serverID: "s", modelID: "m")
         t.systemPrompt = "sys"
-        t.turns = [ChatTurn(role: .user, text: "hi", images: ["a.jpg"]), ChatTurn(role: .assistant, text: "")]
-        t.turns[1].error = "cancelled"
-        t.turns.append(ChatTurn(role: .assistant, text: "hello"))
-        t.turns[2].stats = RequestStats(seconds: 1, costUSD: 0.01)
+        t.append(ChatTurn(role: .user, text: "hi", images: ["a.jpg"], files: [ChatFile(name: "x.py", text: "print(1)")]))
+        var failed = ChatTurn(role: .assistant, text: "")
+        failed.error = "cancelled"
+        t.append(failed)
+        var ok = ChatTurn(role: .assistant, text: "hello")
+        ok.stats = RequestStats(seconds: 1, costUSD: 0.01)
+        t.append(ok)
         let data = try JSONEncoder().encode(t)
         let back = try JSONDecoder().decode(ChatTranscript.self, from: data)
         #expect(back == t && back.costUSD == 0.01)
         let msgs = back.messages { $0 == "a.jpg" ? "data:image/jpeg;base64,AA==" : nil }
         #expect(msgs.map(\.role) == [.system, .user, .assistant])
         #expect(msgs[1].parts.first == .image(url: "data:image/jpeg;base64,AA=="))
+        #expect(msgs[1].text == "hi\n\n`x.py`:\n```py\nprint(1)\n```")
         #expect(ChatTranscript.title(from: "  \nFix the CLI flag parsing\nplease") == "Fix the CLI flag parsing")
+    }
+
+    @Test func editsAndRetriesBranch() {
+        var t = ChatTranscript()
+        let q1 = ChatTurn(role: .user, text: "q1")
+        t.append(q1)
+        let a1 = ChatTurn(role: .assistant, text: "a1")
+        t.append(a1)
+        t.append(ChatTurn(role: .user, text: "q2"))
+        let a2 = ChatTurn(role: .assistant, text: "a2")
+        t.append(a2)
+        // Retry the first answer: a sibling, and the branch after it goes out of view.
+        t.branch(from: a1.id, with: ChatTurn(role: .assistant, text: "a1 again"))
+        #expect(t.turns.map(\.text) == ["q1", "a1 again"])
+        #expect(t.siblings(of: a1.id).map(\.text) == ["a1", "a1 again"])
+        // Back to the first answer: its newest descendants come back.
+        t.select(a1.id)
+        #expect(t.turns.map(\.text) == ["q1", "a1", "q2", "a2"])
+        // Edit the first question.
+        let e = ChatTurn(role: .user, text: "q1 edited")
+        t.branch(from: q1.id, with: e)
+        #expect(t.turns.map(\.text) == ["q1 edited"] && t.siblings(of: q1.id).count == 2)
+        t.append(ChatTurn(role: .assistant, text: "a for edit"))
+        t.select(q1.id)
+        #expect(t.turns.last?.text == "a2")
+        // Removing a turn removes what follows it and falls back to its parent's newest branch.
+        t.remove(a2.id)
+        #expect(t.turns.map(\.text) == ["q1", "a1", "q2"])
+        #expect(t.nodes.count == 6)
+    }
+
+    @Test func versionOneFilesStillOpen() throws {
+        let json = #"""
+        {"version":1,"id":"6E0F6B6E-6D53-4C49-9C3A-3B7E2B1A0A11","title":"Old","created":0,"updated":0,
+         "turns":[{"id":"1E0F6B6E-6D53-4C49-9C3A-3B7E2B1A0A11","role":"user","text":"hi","images":[],"toolCalls":[],"date":0},
+                  {"id":"2E0F6B6E-6D53-4C49-9C3A-3B7E2B1A0A11","role":"assistant","text":"hello","images":[],"toolCalls":[],"date":0}]}
+        """#
+        let t = try JSONDecoder().decode(ChatTranscript.self, from: Data(json.utf8))
+        #expect(t.turns.map(\.text) == ["hi", "hello"] && t.turns[1].parent == t.turns[0].id)
     }
 
     @Test func listingDecodes() throws {

@@ -239,9 +239,11 @@ enum Snapshot {
         let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
         let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
         var t = ChatTranscript(title: "Add a --json flag to the CLI", serverID: key.serverID, modelID: key.modelID)
-        t.turns = [
-            ChatTurn(role: .user, text: "How do I add a --json flag to the CLI's list command?"),
-            ChatTurn(role: .assistant, text: """
+        t.append(ChatTurn(role: .user, text: "How do I add a --json flag to the CLI's list command?",
+                          files: [ChatFile(name: "CLI.swift", text: "struct List: ParsableCommand {}")]))
+        let first = ChatTurn(role: .assistant, text: "Use a flag.", model: key.modelID)
+        t.append(first)
+        var answer = ChatTurn(role: .assistant, text: """
             Add a flag to the command and branch on it when printing:
 
             ```swift
@@ -260,13 +262,13 @@ enum Snapshot {
             | none | table |
             | `--json` | JSON |
             """, reasoning: "The user wants a flag. ArgumentParser's @Flag is the way; keep the table as the default.",
-                     model: key.modelID),
-        ]
-        t.turns[1].thinkingSeconds = 4
-        t.turns[1].stats = RequestStats(seconds: 6.2, ttftMs: 410, tokPerSec: 142, completionTokens: 512, costUSD: 0.0156)
-        t.turns.append(ChatTurn(role: .user, text: "And for the remote command?"))
+                              model: key.modelID)
+        answer.thinkingSeconds = 4
+        answer.stats = RequestStats(seconds: 6.2, ttftMs: 410, tokPerSec: 142, completionTokens: 512, costUSD: 0.0156)
+        t.branch(from: first.id, with: answer)
+        t.append(ChatTurn(role: .user, text: "And for the remote command?"))
         let doc = ChatDocument(transcript: t)
-        doc.transcript.turns.append(ChatTurn(role: .assistant, text: "", reasoning: "Same pattern: the remote command", model: key.modelID))
+        doc.transcript.append(ChatTurn(role: .assistant, text: "", reasoning: "Same pattern: the remote command", model: key.modelID))
         doc.liveTurnID = doc.transcript.turns.last?.id
         m.chats = [doc]
         m.activeChatID = doc.id

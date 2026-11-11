@@ -18,6 +18,10 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var engineArgs: [String]?
     public var installed: Bool?
     public var status: LLMStatus?
+    /// "vllm" or "llamacpp" (GGUF).
+    public var engine: String?
+    /// "huggingface" or "civitai".
+    public var source: String?
 
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
 }
@@ -93,6 +97,16 @@ public struct LLMInspection: Codable, Equatable, Sendable {
         public var params: Int?
         public var gated: Bool?
         public var notes: [String]?
+        public var engine: String?
+        public var source: String?
+        public var mmproj: String?
+        /// A GGUF repo's quantizations (`quant`, `bytes`), smallest-good first.
+        public var ggufOptions: [GGUFOption]?
+    }
+
+    public struct GGUFOption: Codable, Equatable, Hashable, Sendable {
+        public var quant: String
+        public var bytes: Int
     }
 
     public struct Profile: Codable, Equatable, Sendable {
@@ -114,6 +128,20 @@ public struct LLMInspection: Codable, Equatable, Sendable {
     public var name: String
 }
 
+/// An installed model's GPU options (`GET v1/llm/models/{id}/plan`).
+public struct LLMPlan: Codable, Equatable, Sendable {
+    public struct Current: Codable, Equatable, Sendable {
+        public var gpu: String
+        public var count: Int
+        public var context: Int
+    }
+
+    public var context: Int
+    public var recommended: GPUOption?
+    public var options: [GPUOption]
+    public var current: Current
+}
+
 /// `POST v1/llm/install`.
 public struct LLMInstallRequest: Encodable, Sendable {
     public var url: String
@@ -124,11 +152,17 @@ public struct LLMInstallRequest: Encodable, Sendable {
     public var context: Int?
     public var toolParser: String?
     public var reasoningParser: String?
+    /// A GGUF repo's quantization ("Q4_K_M"…).
+    public var quant: String?
     /// The user's Hugging Face token, for gated models (sent over TLS, used once, never stored by the server).
     public var hfToken: String?
+    /// The user's Civitai API key, for Civitai links that need a login.
+    public var civitaiToken: String?
 
     public init(url: String, id: String? = nil, name: String? = nil, gpu: String? = nil, count: Int? = nil,
-                context: Int? = nil, hfToken: String? = nil) {
+                context: Int? = nil, quant: String? = nil, hfToken: String? = nil, civitaiToken: String? = nil) {
+        self.quant = quant
+        self.civitaiToken = civitaiToken
         self.url = url
         self.id = id
         self.name = name
@@ -148,10 +182,13 @@ public struct LLMServerClient: Sendable {
 
     public var chat: OpenAIChatClient { OpenAIChatClient(http: http) }
 
-    public func inspect(url: String, hfToken: String? = nil, context: Int? = nil) async throws -> LLMInspection {
+    public func inspect(url: String, hfToken: String? = nil, civitaiToken: String? = nil, context: Int? = nil,
+                        quant: String? = nil) async throws -> LLMInspection {
         var body: [String: JSONValue] = ["url": .string(url)]
         if let hfToken, !hfToken.isEmpty { body["hfToken"] = .string(hfToken) }
+        if let civitaiToken, !civitaiToken.isEmpty { body["civitaiToken"] = .string(civitaiToken) }
         if let context { body["context"] = .number(Double(context)) }
+        if let quant { body["quant"] = .string(quant) }
         return try await send("v1/llm/inspect", method: "POST", body: body)
     }
 
@@ -164,6 +201,9 @@ public struct LLMServerClient: Sendable {
     public func update(_ id: String, _ changes: [String: JSONValue]) async throws -> LLMModel {
         try await send("v1/llm/models/\(id)", method: "PATCH", body: changes)
     }
+
+    /// An installed model's GPU options again, and its current choice (to change them).
+    public func plan(_ id: String) async throws -> LLMPlan { try await send("v1/llm/models/\(id)/plan", method: "GET", body: nil as String?) }
 
     public func remove(_ id: String) async throws {
         let (data, response) = try await http.session.data(for: http.request("v1/llm/models/\(id)", method: "DELETE"))

@@ -11,6 +11,7 @@ memory; what's left after the weights and overhead is KV cache, which sets the l
 - Options: L40S (at most 2: no NVLink), A100 80 GB, H100, H200 and B200, on 1, 2, 4 or 8 GPUs (the attention heads
   must split evenly). FP8 weights need Ada or newer to run at full speed; FP4 needs Hopper (MXFP4) or Blackwell
   (NVFP4).
+- GGUF on llama.cpp splits the model by layers instead (no head constraint); its KV cache is split the same way.
 - The pick: the cheapest option whose longest context reaches the one asked for; failing that, the longest.
 """
 
@@ -60,6 +61,9 @@ class Option:
 
 def kv_bytes_per_token(f: Facts, count: int, kv_dtype_bytes: int = 2) -> float:
     """KV cache bytes per token on one of ``count`` GPUs."""
+    if f.engine == "llamacpp":  # layers split across GPUs, and their caches with them
+        per_layer = (f.kv_lora_rank + f.rope_head_dim) if f.kv_lora_rank else 2 * f.kv_heads * f.head_dim
+        return f.attention_layers * per_layer * kv_dtype_bytes / count
     if f.kv_lora_rank:
         return f.attention_layers * (f.kv_lora_rank + f.rope_head_dim) * kv_dtype_bytes
     heads_per_gpu = max(1, -(-f.kv_heads // count))  # ceil: copied when count > KV heads
@@ -84,7 +88,7 @@ def options(f: Facts, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> lis
         for n in COUNTS:
             if n > max_gpus() or n > MAX_COUNT.get(gpu, 8):
                 continue
-            if n > 1 and f.attention_heads and f.attention_heads % n:
+            if n > 1 and f.engine != "llamacpp" and f.attention_heads and f.attention_heads % n:
                 continue
             why = unsupported(f, gpu)
             weights = f.weight_bytes / n + replicated_bytes

@@ -98,6 +98,7 @@ struct ContentView: View {
         }
         .mgSheet("save-preset", isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
         .mgSheet("llm-add", item: $model.llmAddRequest) { r in LLMAddSheet(request: r) }
+        .mgSheet("llm-settings", item: $model.llmSettingsRequest) { r in LLMSettingsSheet(request: r) }
         .task { model.llm.start() }
         .mgPresentationHost(model.presenter)
     }

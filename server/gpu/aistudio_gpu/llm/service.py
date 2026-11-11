@@ -23,7 +23,7 @@ from ..tasks import GPU_PRICES
 from . import facts as facts_mod
 from . import install as install_mod
 from . import profiles, proxy, sizing, store
-from .engine import EngineError, FakeEngine, VLLMProcess, fake_enabled
+from .engine import EngineError, EngineProcess, FakeEngine, fake_enabled
 
 IDLE = float(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
 LEASE = float(os.environ.get("AISTUDIO_LLM_LEASE", "1800"))
@@ -34,8 +34,9 @@ class LLMService:
     billed = True  # the Modal prices apply (a GPU box is paid for by the hour, not by these)
 
     def __init__(self, models_root: Path, http: Callable[[], httpx.AsyncClient] | None = None,
-                 idle: float = IDLE, lease: float = LEASE):
+                 idle: float = IDLE, lease: float = LEASE, sync_http: Callable[[], httpx.Client] | None = None):
         self.models_root, self._http, self.idle, self.lease = models_root, http, idle, lease
+        self._sync_http = sync_http
         self.last_chat: dict[str, float] = {}
         self.warmed: dict[str, float] = {}
 
@@ -56,7 +57,7 @@ class LLMService:
     def _engine_chat(self, mid: str, m: dict, body: dict) -> AsyncIterator[bytes]:
         raise NotImplementedError
 
-    async def _start_install(self, manifest: dict, files: list[tuple[str, int]], token: str | None) -> dict:
+    async def _start_install(self, manifest: dict, files: list[dict], tokens: dict) -> dict:
         raise NotImplementedError
 
     def _installs(self) -> dict[str, dict]:
@@ -73,23 +74,25 @@ class LLMService:
 
     # MARK: links
 
-    async def _facts(self, link: str, token: str | None) -> facts_mod.Facts:
+    async def _facts(self, link: str, tokens: dict, quant: str | None = None) -> facts_mod.Facts:
         if fake_enabled() and str(link).startswith("fake/"):
             return fake_facts(str(link))
         ref = facts_mod.parse_link(link)
         client = self._http() if self._http else None
         try:
-            return await facts_mod.inspect(ref, token, client)
+            return await facts_mod.inspect(ref, tokens, client, self._sync_http, quant)
         finally:
             if client is not None:
                 await client.aclose()
 
     @staticmethod
-    def _token(body: dict) -> str | None:
-        return body.get("hfToken") or os.environ.get("HF_TOKEN") or None
+    def _tokens(body: dict) -> dict:
+        """Logins for this request: the app's (used once, never stored), else the server's own."""
+        return {"huggingface": body.get("hfToken") or os.environ.get("HF_TOKEN") or None,
+                "civitai": body.get("civitaiToken") or os.environ.get("CIVITAI_TOKEN") or None}
 
     async def inspect(self, body: dict) -> dict:
-        f = await self._facts(str(body["url"]), self._token(body))
+        f = await self._facts(str(body["url"]), self._tokens(body), body.get("quant"))
         profile = profiles.guess(f)
         plan = sizing.plan(f, body.get("context"), profiles.kv_dtype_bytes(profile["engineArgs"]))
         await self._reload()
@@ -104,8 +107,8 @@ class LLMService:
         return mid
 
     async def install(self, body: dict) -> dict:
-        token = self._token(body)
-        f = await self._facts(str(body["url"]), token)
+        tokens = self._tokens(body)
+        f = await self._facts(str(body["url"]), tokens, body.get("quant"))
         await self._reload()
         mid = str(body.get("id") or self._free_id(f.repo))
         store.model_dir(self.models_root, mid)  # validates
@@ -136,7 +139,7 @@ class LLMService:
                              f"{option['maxContext']})")
         manifest = store.new_manifest(mid, str(body.get("name") or f.repo.split("/")[-1]), str(body["url"]), f,
                                       profile, gpu, count, context)
-        return await self._start_install(manifest, f.download, token)
+        return await self._start_install(manifest, f.download, tokens)
 
     # MARK: models
 
@@ -153,9 +156,28 @@ class LLMService:
             raise LookupError(f"no model {mid}")
         return m
 
+    async def plan(self, mid: str, context: int | None = None) -> dict:
+        """The GPU options for an installed model (from the facts kept at install), and its current choice."""
+        await self._reload()
+        m = self.manifest(mid)
+        if not m.get("facts"):
+            raise ValueError(f"{mid} was installed before GPU plans were kept; remove and add it again to change it")
+        f = facts_mod.Facts(**m["facts"])
+        p = sizing.plan(f, context or m.get("context"), profiles.kv_dtype_bytes(m.get("engineArgs") or []))
+        return {**p, "current": {"gpu": m["gpu"], "count": m["count"], "context": m["context"]}}
+
     async def update(self, mid: str, changes: dict) -> dict:
         await self._reload()
         m = store.patch(self.manifest(mid), changes)
+        if m.get("facts") and {"gpu", "count", "context"} & set(changes):
+            p = sizing.plan(facts_mod.Facts(**m["facts"]), m["context"],
+                            profiles.kv_dtype_bytes(m.get("engineArgs") or []))
+            o = next((o for o in p["options"] if o["gpu"] == m["gpu"] and o["count"] == m["count"]), None)
+            if o is None or not o["fits"]:
+                raise ValueError(f"{mid} doesn't fit on {m['count']}× {m['gpu']}")
+            if m["context"] > o["maxContext"]:
+                raise ValueError(f"{m['context']} tokens of context don't fit on {m['count']}× {m['gpu']} "
+                                 f"(at most {o['maxContext']})")
         store.write(self.models_root, m)
         await self._commit()
         return m
@@ -251,7 +273,7 @@ def fake_facts(link: str) -> facts_mod.Facts:
         weight_bytes=16_000_000_000, files=1, quant={}, dtype="bfloat16", native_context=32768, vision="vl" in name,
         layers=32, attention_layers=32, attention_heads=32, kv_heads=8, head_dim=128, kv_lora_rank=0,
         rope_head_dim=0, sliding_window=0, experts=0, gated=False, chat_template="<think><tool_call>",
-        download=[("config.json", 2), ("model.safetensors", 8)])
+        download=[{"name": "config.json", "size": 2}, {"name": "model.safetensors", "size": 8}])
 
 
 def fake_fetch(repo: str, revision: str, name: str, dest: Path, token: str | None) -> None:
@@ -265,12 +287,13 @@ class LocalLLMService(LLMService):
     billed = False
 
     def __init__(self, models_root: Path, http=None, fetch: install_mod.FetchFile | None = None,
-                 engine_factory=None, idle: float = IDLE, lease: float = LEASE, billed: bool | None = None):
-        super().__init__(models_root, http, idle, lease)
+                 engine_factory=None, idle: float = IDLE, lease: float = LEASE, billed: bool | None = None,
+                 sync_http=None, fetch_url: install_mod.FetchURL | None = None):
+        super().__init__(models_root, http, idle, lease, sync_http)
         if billed is not None:
             self.billed = billed
-        self.fetch = fetch
-        self.engine_factory = engine_factory or (FakeEngine if fake_enabled() else VLLMProcess)
+        self.fetch, self.fetch_url = fetch, fetch_url
+        self.engine_factory = engine_factory or (FakeEngine if fake_enabled() else EngineProcess)
         self.states: dict[str, dict] = {}
         self.engine: tuple[str, object] | None = None
         self.activity: dict[str, float] = {}
@@ -282,7 +305,7 @@ class LocalLLMService(LLMService):
 
     # installs
 
-    async def _start_install(self, manifest, files, token):
+    async def _start_install(self, manifest, files, tokens):
         mid = manifest["id"]
         cancel = threading.Event()
         self.install_cancels[mid] = cancel
@@ -294,7 +317,8 @@ class LocalLLMService(LLMService):
 
         def run():
             try:
-                install_mod.install(self.models_root, manifest, files, token, progress, cancel.is_set, fetch)
+                install_mod.install(self.models_root, manifest, files, tokens, progress, cancel.is_set, fetch,
+                                    self.fetch_url)
             except BaseException as e:  # noqa: BLE001
                 progress({"state": "cancelled" if isinstance(e, InterruptedError) else "failed",
                           "error": f"{type(e).__name__}: {e}"})
