@@ -7,6 +7,9 @@ public enum ToolEffect: String, Codable, Sendable {
     case graphEdit
     /// Queues a workflow run (spends time, maybe GPU money): asks like a command.
     case run
+    /// Reads from the internet (`web_fetch`, `web_search`): asks in Ask mode unless the domain is always-allowed;
+    /// free in the other modes (plan mode included: it only reads).
+    case network
 }
 
 /// How much the agent may do without asking, as in Claude Code.
@@ -45,16 +48,24 @@ public enum PermissionDecision: Equatable, Sendable {
     case deny(String)
 }
 
-/// "Always allow" answers given in a chat: all edits, commands starting with a prefix, workflow runs.
+/// "Always allow" answers given in a chat: all edits, commands starting with a prefix, workflow runs, web domains.
 public struct AllowRules: Codable, Equatable, Sendable {
     public var edits = false
     public var commandPrefixes: [String] = []
     public var runs = false
+    /// Hosts `web_fetch` may read without asking (`example.com` also allows `docs.example.com`).
+    public var domains: [String] = []
 
-    public init(edits: Bool = false, commandPrefixes: [String] = [], runs: Bool = false) {
+    public init(edits: Bool = false, commandPrefixes: [String] = [], runs: Bool = false, domains: [String] = []) {
         self.edits = edits
         self.commandPrefixes = commandPrefixes
         self.runs = runs
+        self.domains = domains
+    }
+
+    func allows(domain: String) -> Bool {
+        let d = domain.lowercased()
+        return domains.contains { d == $0 || d.hasSuffix("." + $0) }
     }
 
     /// The prefix "Always allow" remembers for a command: its first word, or two for tools with subcommands
@@ -84,8 +95,9 @@ public struct AllowRules: Codable, Equatable, Sendable {
 /// Decides whether a tool call may run, must ask, or is refused.
 public enum PermissionEngine {
     /// - `inProject`: every path the call touches is inside the project folder.
-    public static func decide(effect: ToolEffect, inProject: Bool, command: String? = nil, mode: PermissionMode,
-                              rules: AllowRules) -> PermissionDecision {
+    /// - `domain`: the host a `.network` call reads from.
+    public static func decide(effect: ToolEffect, inProject: Bool, command: String? = nil, domain: String? = nil,
+                              mode: PermissionMode, rules: AllowRules) -> PermissionDecision {
         if mode == .bypass { return .allow }
         switch effect {
         case .read:
@@ -104,6 +116,10 @@ public enum PermissionEngine {
         case .run:
             if mode == .plan { return .deny("Plan mode is read only: workflows aren't run.") }
             return rules.runs ? .allow : .ask
+        case .network:
+            if mode != .ask { return .allow }
+            if let domain, rules.allows(domain: domain) { return .allow }
+            return .ask
         }
     }
 }

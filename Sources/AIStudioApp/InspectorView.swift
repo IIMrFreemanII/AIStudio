@@ -398,6 +398,7 @@ struct SettingsView: View {
             } footer: {
                 Text("When a model doesn't fit, the least recently used one is unloaded first. Models used by the running job are never unloaded.")
             }
+            AgentSettingsSection()
             MGSection("Prompt Styles") {
                 StylesEditor()
             }

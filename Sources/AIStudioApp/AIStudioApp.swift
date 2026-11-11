@@ -193,7 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Open tabs and their unsaved changes come back on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
-        MainActor.assumeIsolated { AppDelegate.model?.saveSession() }
+        MainActor.assumeIsolated {
+            AppDelegate.model?.chats.forEach { $0.jobs.stopAll() }
+            AppDelegate.model?.saveSession()
+        }
     }
 }
 

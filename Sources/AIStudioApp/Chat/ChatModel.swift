@@ -47,6 +47,22 @@ final class ChatDocument: Identifiable {
     var toolOutputs: [String: String] = [:]
     /// The agent's to-do list.
     var todos: [ToolContext.Todo] = []
+    /// Background commands (dev servers…) the agent started, and the ids of those still running.
+    @ObservationIgnored lazy var jobs = BackgroundJobs()
+    @ObservationIgnored var jobsObserved = false
+    var runningJobs: [String] = []
+    /// Where the files the agent changed are saved, for "Rewind to Here".
+    @ObservationIgnored var checkpointStore: CheckpointStore?
+    /// The plan `exit_plan` waits for approval of (its card), and the answer channel.
+    var plan: PendingPlan?
+    @ObservationIgnored var planAnswer: CheckedContinuation<PlanAnswer, Never>?
+    /// The conversation is being summarized.
+    var compacting = false
+    /// Tokens of the last request (prompt and reply): how full the context is.
+    var contextUsed: Int?
+    /// The message a rewind goes back to before (its card), and the files that would be restored.
+    var rewindTarget: UUID?
+    var rewindFiles: [URL]?
 
     var isCoding: Bool { transcript.projectPath != nil }
     /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).
@@ -64,7 +80,7 @@ final class ChatDocument: Identifiable {
     }
     var rules: AllowRules {
         AllowRules(edits: transcript.allowEdits ?? false, commandPrefixes: transcript.allowCommands ?? [],
-                   runs: transcript.allowRuns ?? false)
+                   runs: transcript.allowRuns ?? false, domains: transcript.allowDomains ?? [])
     }
 
     /// Answers the pending permission question.
@@ -81,6 +97,14 @@ final class ChatDocument: Identifiable {
         questionAnswer = nil
         question = nil
         c?.resume(returning: answers)
+    }
+
+    /// Answers the pending plan and lets the reply go on.
+    func answerPlan(_ a: PlanAnswer) {
+        let c = planAnswer
+        planAnswer = nil
+        plan = nil
+        c?.resume(returning: a)
     }
 
     init(transcript: ChatTranscript) {
@@ -100,6 +124,12 @@ final class ChatDocument: Identifiable {
 struct PendingQuestion: Equatable {
     var callID: String
     var questions: [UserQuestion]
+}
+
+/// An `exit_plan` plan shown as a card until the user answers.
+struct PendingPlan: Equatable {
+    var callID: String
+    var plan: String
 }
 
 /// An image or video (a file in the chat's folder) or a text file waiting to be sent.

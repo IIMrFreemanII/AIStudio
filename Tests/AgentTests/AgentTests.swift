@@ -40,6 +40,7 @@ final class Recorder: @unchecked Sendable {
         case .toolStarted(let call, _): s = "start \(call.name)"
         case .toolOutput: return
         case .toolFinished(_, _, let status): s = "end \(status.rawValue)"
+        case .compacted: s = "compacted"
         }
         lock.withLock { _events.append(s) }
     }

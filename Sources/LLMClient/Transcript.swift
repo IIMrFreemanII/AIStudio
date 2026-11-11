@@ -65,6 +65,9 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var quote: ChatQuote?
     /// User turns: what the model gets besides the text, not shown (the chat's widgets' state).
     public var context: String?
+    /// A summary of everything before it (the context was filling up, or the user asked to compact). A user turn; the
+    /// model gets only it and what follows. Shown as a divider.
+    public var summary: Bool?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,
@@ -80,6 +83,9 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
         self.model = model
         self.date = date
     }
+
+    /// What a summary turn's text follows, for the model.
+    public static let summaryPrefix = "Summary of the earlier conversation (older messages were compacted to save context):\n\n"
 
     /// Whether an attachment is a video (the app saves them as `<sha256>.mp4`).
     public static func isVideo(_ name: String) -> Bool { name.lowercased().hasSuffix(".mp4") }
@@ -129,6 +135,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var graphHelper: Bool?
     /// "Always allow" for a graph helper's workflow runs.
     public var allowRuns: Bool?
+    /// "Always allow" for web domains (`web_fetch`).
+    public var allowDomains: [String]?
     /// Every turn, in the order they were made.
     public private(set) var nodes: [ChatTurn]
     public var activeLeaf: UUID?
@@ -247,7 +255,14 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         if system, let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             out.append(.system(systemPrompt))
         }
-        for t in turns where t.error == nil || !t.text.isEmpty {
+        // Everything before the latest summary is in it.
+        let shown = turns
+        let from = shown.lastIndex { $0.summary == true } ?? shown.startIndex
+        for t in shown[from...] where t.error == nil || !t.text.isEmpty {
+            if t.summary == true {
+                out.append(ChatMessage(role: .user, parts: [.text(ChatTurn.summaryPrefix + t.text)]))
+                continue
+            }
             switch t.role {
             case .user:
                 var parts: [ContentPart] = t.images.compactMap { name in
@@ -279,7 +294,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
-        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns
+        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
     }
 
     public init(from decoder: Decoder) throws {
@@ -298,6 +313,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         allowCommands = try c.decodeIfPresent([String].self, forKey: .allowCommands)
         graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
         allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
+        allowDomains = try c.decodeIfPresent([String].self, forKey: .allowDomains)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
             self.nodes = nodes
             activeLeaf = try c.decodeIfPresent(UUID.self, forKey: .activeLeaf)
@@ -325,6 +341,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(allowCommands, forKey: .allowCommands)
         try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
         try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
+        try c.encodeIfPresent(allowDomains, forKey: .allowDomains)
         try c.encode(nodes, forKey: .nodes)
         try c.encodeIfPresent(activeLeaf, forKey: .activeLeaf)
         try c.encode(choices, forKey: .choices)

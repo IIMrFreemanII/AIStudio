@@ -361,6 +361,8 @@ struct ChatTurnView: View {
 
     var body: some View {
         switch turn.role {
+        case .user where turn.summary == true:
+            SummaryRow(text: turn.text)
         case .user:
             VStack(alignment: .trailing, spacing: 6) {
                 if !turn.images.isEmpty || !(turn.files ?? []).isEmpty {
@@ -412,6 +414,11 @@ struct ChatTurnView: View {
                         Button { editText = turn.text; doc.editingTurnID = turn.id } label: { Image(systemName: "pencil") }
                             .buttonStyle(.mg(.icon)).controlSize(.small)
                             .mgHelp("Edit and send again (the old version stays as a branch)")
+                        if doc.isCoding {
+                            Button { model.prepareRewind(doc, to: turn.id) } label: { Image(systemName: "clock.arrow.circlepath") }
+                                .buttonStyle(.mg(.icon)).controlSize(.small)
+                                .mgHelp("Rewind files and chat to before this message")
+                        }
                     }
                 }
             }
@@ -420,6 +427,9 @@ struct ChatTurnView: View {
                 MGMenuItem.button("Copy") { copy(turn.text) }
                 MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
                 MGMenuItem.button("Edit…", enabled: !doc.isStreaming) { editText = turn.text; doc.editingTurnID = turn.id }
+                if doc.isCoding {
+                    MGMenuItem.button("Rewind to Here…", enabled: !doc.isStreaming) { model.prepareRewind(doc, to: turn.id) }
+                }
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
@@ -436,6 +446,7 @@ struct ChatTurnView: View {
                     Group {
                         switch call.name {
                         case "ask_user": QuestionCard(doc: doc, call: call, result: result)
+                        case "exit_plan": PlanCard(doc: doc, call: call, result: result)
                         case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
                         default: ToolCard(doc: doc, call: call, result: result)
                         }
@@ -485,6 +496,42 @@ struct ChatTurnView: View {
     func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+/// Where the conversation was summarized: a divider, which opens to the summary.
+struct SummaryRow: View {
+    let text: String
+    @State private var open = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Rectangle().fill(MG.separator).frame(height: 1)
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                            .rotationEffect(.degrees(open ? 90 : 0))
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        Text("Earlier conversation summarized")
+                    }
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                    Rectangle().fill(MG.separator).frame(height: 1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .mgHelp("Older messages were replaced by a summary to save context (click to read it)")
+            if open {
+                MarkdownView(text: text)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -706,9 +753,11 @@ struct ChatComposer: View {
                 : (notice ?? doc.attachNote) {
                 Label(note, systemImage: "exclamationmark.triangle").font(.mgFootnote).foregroundStyle(MG.warning)
             }
+            if doc.rewindTarget != nil { RewindCard(doc: doc) }
             if let q = doc.replyTo {
                 QuoteBlock(quote: q, onTap: { model.showQuoted(doc, q) }, onRemove: { doc.replyTo = nil })
             }
+            if doc.isCoding, doc.draft.hasPrefix("/") { SlashSuggestions(doc: doc) }
             HStack(alignment: .bottom, spacing: 10) {
                 Button { choose() } label: { Image(systemName: "paperclip") }
                     .buttonStyle(.mg(.icon))
@@ -729,7 +778,7 @@ struct ChatComposer: View {
                     if doc.draft.isEmpty {
                         Text(doc.question != nil ? "Answer the question above, or type your own answer…"
                              : doc.isGraphHelper ? "Ask the helper to build, change or fix this workflow…"
-                             : doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (⇧↩ for a new line)"
+                             : doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (/ for skills, ⇧↩ for a new line)"
                              : "Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
                             .font(.mgBody).foregroundStyle(MG.placeholder)
                             .padding(.leading, 5).padding(.top, 1)
@@ -752,6 +801,7 @@ struct ChatComposer: View {
                         .mgHelp("Send (↩)")
                 }
             }
+            ContextMeter(doc: doc)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
@@ -768,6 +818,78 @@ struct ChatComposer: View {
         guard panel.runModal() == .OK else { return }
         doc.attachNote = nil
         notice = model.attach(panel.urls, to: doc)
+    }
+}
+
+/// "/" in a coding chat's field: the skills and /compact that match what's typed.
+struct SlashSuggestions: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    var items: [(name: String, detail: String)] {
+        let typed = doc.draft.dropFirst().prefix { !$0.isWhitespace }.lowercased()
+        // Once a command is complete and followed by text, the list has done its job.
+        guard !doc.draft.contains(where: \.isWhitespace) else { return [] }
+        let skills = model.loadSkills(root: doc.projectURL).filter(\.userInvocable)
+            .map { (name: $0.name, detail: $0.description.replacingOccurrences(of: "\n", with: " ")) }
+        let all = [(name: "compact", detail: "Summarize the conversation to free up context")] + skills
+        return Array(all.filter { typed.isEmpty || $0.name.lowercased().hasPrefix(typed) }.prefix(6))
+    }
+
+    var body: some View {
+        let shown = items
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(shown, id: \.name) { item in
+                    Button { doc.draft = "/\(item.name) " } label: {
+                        HStack(spacing: 8) {
+                            Text("/" + item.name).font(.mgCallout.weight(.medium))
+                            Text(item.detail).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
+            .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous), color: MG.border)
+        }
+    }
+}
+
+/// "Context: 45% of 262K tokens" under the field, and Compact.
+struct ContextMeter: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    var body: some View {
+        if doc.isAgent, let key = doc.modelKey, let limit = model.contextLimit(for: key), let used = doc.contextUsed {
+            let share = Double(used) / Double(limit)
+            HStack(spacing: 8) {
+                Text("Context: \(Int((share * 100).rounded()))% of \(Self.tokens(limit)) tokens")
+                    .font(.mgFootnote).foregroundStyle(share >= 0.75 ? MG.warning : MG.secondaryLabel)
+                    .mgHelp("\(used) tokens used by the last request. Near the limit the agent summarizes older messages by itself.")
+                Button {
+                    model.compact(doc)
+                } label: {
+                    if doc.compacting {
+                        HStack(spacing: 4) { ProgressView().controlSize(.mini); Text("Compacting…") }
+                    } else {
+                        Text("Compact")
+                    }
+                }
+                .buttonStyle(.mg(.bordered)).controlSize(.small)
+                .disabled(doc.isStreaming || doc.compacting)
+                .mgHelp("Replace the conversation so far with a summary, freeing up context")
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    static func tokens(_ n: Int) -> String {
+        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 1_000 ? "\(Int((Double(n) / 1000).rounded()))K" : "\(n)"
     }
 }
 
