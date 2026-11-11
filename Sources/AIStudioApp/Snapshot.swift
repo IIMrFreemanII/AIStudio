@@ -351,7 +351,7 @@ enum Snapshot {
     static func renderLLMSettings(to dir: URL) async {
         let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
         let key = LLMKey(serverID: "snapshot", modelID: "qwen3-30b")
-        let listing = #"{"installs":{},"models":[{"id":"qwen3-30b","name":"Qwen3-30B-A3B","repo":"Qwen/Qwen3-30B-A3B-FP8","gpu":"H100","count":1,"context":65536,"engine":"vllm","loadFormat":"processed","snapshot":false,"installed":true}]}"#
+        let listing = #"{"installs":{},"models":[{"id":"qwen3-30b","name":"Qwen3-30B-A3B","repo":"Qwen/Qwen3-30B-A3B-FP8","gpu":"H100","count":1,"context":65536,"engine":"vllm","loadFormat":"processed","snapshot":false,"mtpLayers":1,"installed":true}]}"#
         let plan = #"{"context":65536,"recommended":{"gpu":"H100","count":1,"fits":true,"usdPerHour":3.95,"maxContext":131072},"options":[{"gpu":"H100","count":1,"fits":true,"usdPerHour":3.95,"maxContext":131072},{"gpu":"H200","count":1,"fits":true,"usdPerHour":4.54,"maxContext":262144},{"gpu":"L40S","count":2,"fits":true,"usdPerHour":3.9,"maxContext":49152}],"current":{"gpu":"H100","count":1,"context":65536}}"#
         let status = #"{"state":"cold","coldStart":{"typicalSeconds":104,"count":4,"last":{"seconds":98.6,"waitSeconds":11,"how":"cold","loadFormat":"processed","phases":[{"name":"Waiting for a GPU","seconds":11},{"name":"Starting container","seconds":6.2},{"name":"Starting engine","seconds":9.8},{"name":"Loading weights","seconds":38.5},{"name":"Compiling","seconds":21.4},{"name":"Capturing CUDA graphs","seconds":11.7}]}}}"#
         guard let l = try? JSONDecoder().decode(LLMListing.self, from: Data(listing.utf8)),

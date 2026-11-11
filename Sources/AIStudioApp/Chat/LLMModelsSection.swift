@@ -311,6 +311,8 @@ struct LLMSettingsSheet: View {
     /// How the engine reads the weights: "auto", "runai" or "processed" (fast start).
     @State private var loadFormat = "auto"
     @State private var snapshot = false
+    /// Faster replies with the model's MTP layers (shown only for models that have them).
+    @State private var mtp = true
     @State private var error: String?
     @State private var busy = false
 
@@ -373,6 +375,16 @@ struct LLMSettingsSheet: View {
                             ? "The first start saves the warmed-up engine as a GPU memory snapshot; later starts restore it instead of loading and compiling. Experimental: turn it off if the model fails to start."
                             : "Only for vLLM models on one GPU: GPU snapshots don't work across several GPUs.")
                 }
+                if m?.hasMTP == true {
+                    MGSection("Replies") {
+                        MGFormRow("Faster replies (MTP)") {
+                            Toggle("", isOn: $mtp).labelsHidden()
+                        }
+                        .mgHelp("The model's own multi-token-prediction layer guesses the next 2 tokens and the model checks "
+                                + "them in one step: the same replies, faster. Qwen3.8-Flash-Next on a B200 went from 191 to "
+                                + "298 tokens/s. Each start takes about 40 s longer, and the KV cache is about a quarter smaller.")
+                    }
+                }
                 if let cs = st?.coldStart {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Starts take about \(ColdStartRecord.duration(cs.typicalSeconds))"
@@ -432,6 +444,7 @@ struct LLMSettingsSheet: View {
             context = p.current.context
             loadFormat = model.llm.model(request.key)?.loadFormat ?? "auto"
             snapshot = model.llm.model(request.key)?.snapshot == true
+            mtp = model.llm.model(request.key)?.mtp != false
             if !choices.contains(context) { context = choices.last { $0 <= context } ?? choices.first ?? context }
         } catch {
             self.error = error.localizedDescription
@@ -446,6 +459,7 @@ struct LLMSettingsSheet: View {
             var changes: [String: JSONValue] = ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
                                                  "context": .number(Double(context)), "snapshot": .bool(snapshot && snapshotAllowed)]
             if model.llm.model(request.key)?.engine != "llamacpp" { changes["loadFormat"] = .string(loadFormatShown) }
+            if model.llm.model(request.key)?.hasMTP == true { changes["mtp"] = .bool(mtp) }
             _ = try await client.update(request.key.modelID, changes)
             if restart { await model.llm.stop(request.key) }
             await model.llm.refresh(request.key.serverID)

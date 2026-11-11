@@ -12,7 +12,8 @@ from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Fields the app may change after installing (PATCH /v1/llm/models/{id}).
-PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot"}
+PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot",
+             "mtp"}
 # How vLLM reads the weights: its loader, Run:ai's streamer, or "processed" (AIStudio's vLLM plugin: a copy saved
 # after vLLM's processing, made by the first start and loaded by the later ones; see vllm_plugin/).
 LOAD_FORMATS = ("auto", "runai", "processed")
@@ -97,6 +98,49 @@ def save_kv_cache_memory(models_root: Path, mid: str, setup: str, nbytes: int | 
     os.replace(tmp, d / KV_FILE)
 
 
+def mtp_layers(weights: Path) -> int:
+    """How many multi-token-prediction (MTP) layers an installed safetensors checkpoint has: its config declares them
+    (``mtp_num_hidden_layers``, ``num_nextn_predict_layers``) and its tensors include them (``mtp.…``, or DeepSeek's
+    extra layer ``model.layers.<num_hidden_layers>.…``). Quantized re-uploads often drop those tensors while keeping
+    the config, and vLLM would then fail to start, so both must agree. 0 when not, or when unreadable."""
+    from .facts import safetensors_header
+
+    try:
+        config = json.loads((weights / "config.json").read_text())
+        text = config.get("text_config") or config.get("llm_config") or config
+        merged = {**config, **text}
+        n = int(merged.get("mtp_num_hidden_layers") or merged.get("num_nextn_predict_layers") or 0)
+        if n <= 0:
+            return 0
+        index = weights / "model.safetensors.index.json"
+        if index.is_file():
+            names = list((json.loads(index.read_text()).get("weight_map") or {}).keys())
+        else:
+            names = []
+            for f in sorted(weights.glob("*.safetensors")):
+                with open(f, "rb") as fh:
+                    names += [k for k in safetensors_header(fh) if k != "__metadata__"]
+    except (OSError, ValueError, TypeError):
+        return 0
+    extra = f"layers.{int(merged.get('num_hidden_layers') or -1)}."
+    return n if any(k.startswith("mtp.") or ".mtp." in k or extra in k for k in names) else 0
+
+
+def with_mtp_layers(models_root: Path, manifest: dict) -> dict:
+    """The manifest with ``mtpLayers`` (worked out once from the checkpoint and saved, for models installed before
+    the field existed); GGUF models have none."""
+    if "mtpLayers" in manifest or manifest.get("engine") == "llamacpp":
+        return manifest
+    if not installed(models_root, manifest["id"]):
+        return manifest
+    out = {**manifest, "mtpLayers": mtp_layers(weights_dir(models_root, manifest["id"]))}
+    try:
+        write(models_root, out)
+    except OSError:
+        pass
+    return out
+
+
 def installed(models_root: Path, mid: str) -> bool:
     return (weights_dir(models_root, mid) / ".complete").exists()
 
@@ -111,7 +155,7 @@ def listing(models_root: Path) -> list[dict]:
             continue
         m = read(models_root, d.name)
         if m is not None:
-            out.append({**m, "installed": installed(models_root, d.name)})
+            out.append({**with_mtp_layers(models_root, m), "installed": installed(models_root, d.name)})
     return out
 
 
@@ -134,6 +178,8 @@ def patch(manifest: dict, changes: dict) -> dict:
         raise ValueError("context is at least 1024 tokens")
     if not isinstance(out.get("engineArgs"), list) or not all(isinstance(a, str) for a in out["engineArgs"]):
         raise ValueError("engineArgs is a list of strings")
+    if not isinstance(out.get("mtp", True), bool):
+        raise ValueError("mtp is true or false")
     if out.get("loadFormat", "auto") not in LOAD_FORMATS:
         raise ValueError("loadFormat is auto, runai or processed")
     if out.get("loadFormat", "auto") != "auto" and out.get("engine") == "llamacpp":
