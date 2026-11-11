@@ -63,6 +63,8 @@ public struct AgentConfig: Sendable {
     public var reasoningEffort: String?
     /// Split `<think>` out of the content (servers without a reasoning parser).
     public var inlineThinking = false
+    /// The model takes images: tools' images are sent to it (else it's told it can't see them).
+    public var vision = false
 
     public init(model: String, tools: [any AgentTool] = CodingTools.all, mode: PermissionMode = .ask,
                 rules: AllowRules = AllowRules()) {
@@ -103,12 +105,22 @@ public enum AgentLoop {
             messages.append(ChatMessage(role: .assistant, parts: [.text(acc.content)], toolCalls: calls))
             if calls.isEmpty { return .finished }
 
+            var images: [String] = []
             for call in calls {
                 try Task.checkCancellation()
-                let (output, status) = await runCall(call, byName: byName, mode: config.mode, rules: &rules, ctx: ctx,
+                var (output, status) = await runCall(call, byName: byName, mode: config.mode, rules: &rules, ctx: ctx,
                                                      ask: ask, rulesChanged: rulesChanged, events: events)
+                if !output.images.isEmpty {
+                    if config.vision { images += output.images }
+                    else { output.text += "\n(\(output.images.count) image(s) left out: this model can't see images.)" }
+                }
                 await events(.toolFinished(callID: call.id, output: output, status: status))
                 messages.append(ChatMessage(role: .tool, parts: [.text(output.text)], toolCallID: call.id))
+            }
+            // Tool messages are text only in the OpenAI API: images follow as a user message.
+            if !images.isEmpty {
+                messages.append(ChatMessage(role: .user, parts: [.text("The images from the tool results above, in order:")]
+                                            + images.map { .image(url: $0) }))
             }
         }
         return .stepLimit
@@ -148,6 +160,7 @@ public enum AgentLoop {
                                    isError: true), .denied)
             case .allowAlways:
                 if tool.effect == .edit, inProject { rules.edits = true }
+                if tool.effect == .run { rules.runs = true }
                 if tool.effect == .execute, let cmd = preview.command {
                     let prefix = AllowRules.prefix(of: cmd)
                     if !prefix.isEmpty, !rules.commandPrefixes.contains(prefix) { rules.commandPrefixes.append(prefix) }

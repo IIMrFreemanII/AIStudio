@@ -3,6 +3,10 @@ import Foundation
 /// What a tool does, for the permission rules.
 public enum ToolEffect: String, Codable, Sendable {
     case read, edit, execute
+    /// Changes the open workflow (live, one undo step per reply): free except in plan mode.
+    case graphEdit
+    /// Queues a workflow run (spends time, maybe GPU money): asks like a command.
+    case run
 }
 
 /// How much the agent may do without asking, as in Claude Code.
@@ -41,14 +45,16 @@ public enum PermissionDecision: Equatable, Sendable {
     case deny(String)
 }
 
-/// "Always allow" answers given in a chat: all edits, or commands starting with a prefix.
+/// "Always allow" answers given in a chat: all edits, commands starting with a prefix, workflow runs.
 public struct AllowRules: Codable, Equatable, Sendable {
     public var edits = false
     public var commandPrefixes: [String] = []
+    public var runs = false
 
-    public init(edits: Bool = false, commandPrefixes: [String] = []) {
+    public init(edits: Bool = false, commandPrefixes: [String] = [], runs: Bool = false) {
         self.edits = edits
         self.commandPrefixes = commandPrefixes
+        self.runs = runs
     }
 
     /// The prefix "Always allow" remembers for a command: its first word, or two for tools with subcommands
@@ -92,6 +98,12 @@ public enum PermissionEngine {
             if mode == .plan { return .deny("Plan mode is read only: commands don't run.") }
             if let command, rules.allows(command: command) { return .allow }
             return .ask
+        case .graphEdit:
+            if mode == .plan { return .deny("Plan mode is read only: describe the change to the workflow instead of making it.") }
+            return .allow
+        case .run:
+            if mode == .plan { return .deny("Plan mode is read only: workflows aren't run.") }
+            return rules.runs ? .allow : .ask
         }
     }
 }

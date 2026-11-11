@@ -335,3 +335,25 @@ def test_fake_agent_script(client):
     text = "".join(json.loads(d)["choices"][0]["delta"].get("content") or "" for n, d in events
                    if n is None and d != "[DONE]" and json.loads(d)["choices"])
     assert text == "Done: result 1"
+
+
+def test_fake_graph_helper_script(client):
+    mid = install(client)
+    tools = [{"type": "function", "function": {"name": "edit_graph", "parameters": {"type": "object"}}}]
+    msgs = [{"role": "user", "content": "Add an upscale after Save"}]
+    calls = []
+    for step in range(2):
+        events = chat(client, mid, "", messages=msgs, tools=tools)
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                    if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+        calls.append(call)
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
+                 {"role": "tool", "tool_call_id": call["id"], "content": f"line {step}\nmore"}]
+    assert [c["function"]["name"] for c in calls] == ["get_graph", "edit_graph"]
+    ops = json.loads(calls[1]["function"]["arguments"])["operations"]
+    assert [o["op"] for o in ops] == ["add", "connect"]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    text = "".join(json.loads(d)["choices"][0]["delta"].get("content") or "" for n, d in events
+                   if n is None and d != "[DONE]" and json.loads(d)["choices"])
+    assert text == "Done: line 1"

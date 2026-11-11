@@ -12,13 +12,17 @@ public struct SessionManifest: Codable, Equatable, Sendable {
         public var presetID: String?
         /// Has changes not written to `fileURL` (untitled tabs: changes since they were created).
         public var isDirty: Bool
+        /// The tab's graph helper chat, if it has one.
+        public var helperChat: UUID?
 
-        public init(id: UUID, name: String, fileURL: URL? = nil, presetID: String? = nil, isDirty: Bool = false) {
+        public init(id: UUID, name: String, fileURL: URL? = nil, presetID: String? = nil, isDirty: Bool = false,
+                    helperChat: UUID? = nil) {
             self.id = id
             self.name = name
             self.fileURL = fileURL
             self.presetID = presetID
             self.isDirty = isDirty
+            self.helperChat = helperChat
         }
     }
 

@@ -71,5 +71,6 @@ Then pass `http://127.0.0.1:8189` as the flag's URL.
 | Video/audio I/O, model eviction (no model needed) | `--smoke-media` |
 | Chats, LLM models, `LLMClient`, `server/gpu/aistudio_gpu/llm` | `--smoke-chat <url>` |
 | Coding chats, `Sources/Agent`, tool cards | `--smoke-agent <url>` (and `--smoke-chat <url>` if chat code changed) |
+| Graph helper, `GraphOps`, `enqueue(doc:)` | `--smoke-graph-helper <url>` |
 | Chat or tool-card UI layout | `--snapshot <dir>`, then check the chat images in light and dark |
 | `aistudio-cli`, `*-probe` tools | run the changed command by hand |

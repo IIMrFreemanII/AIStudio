@@ -233,6 +233,7 @@ enum Snapshot {
 
         await renderChat(to: dir)
         await renderCodingChat(to: dir)
+        await renderGraphHelper(to: dir)
         await renderChrome(m, to: dir)
     }
 
@@ -288,6 +289,60 @@ enum Snapshot {
         m.llm.statuses[key] = ready
         panel(.chats)
         await render(m, to: dir.appendingPathComponent("51-coding-chat.png"))
+    }
+
+    /// 57: the graph helper docked on a workflow tab, after a reply that added an upscale (its cards and Undo bar).
+    static func renderGraphHelper(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        let wf = m.active
+        let before = wf.graph
+        if let r = try? GraphOps.apply([
+            .add(id: "upscale", type: "ImageScale", title: nil, inputs: ["image": .link(node: "decode", output: "image"),
+                                                                         "factor": .value(.double(2))]),
+            .connect(from: "upscale", output: "image", to: "save", input: "image"),
+        ], to: before, schemas: { m.registry.schema($0) }, size: { n in
+            m.registry.schema(n.type).map { NodeLayout.frame(n, $0).size } ?? CGSize(width: 250, height: 160)
+        }) {
+            wf.graph = r.graph
+        }
+        var t = ChatTranscript(title: "Helper: Untitled", serverID: key.serverID, modelID: key.modelID)
+        t.graphHelper = true
+        t.permissionMode = "ask"
+        t.append(ChatTurn(role: .user, text: "Add an upscale before Save, 2×."))
+        let read = ToolCall(id: "g1", name: "get_graph", arguments: "{}")
+        let edit = ToolCall(id: "g2", name: "edit_graph", arguments: "{}")
+        var a1 = ChatTurn(role: .assistant, text: "", model: key.modelID)
+        a1.reasoning = "VAE Decode feeds Save Image directly; put a Scale Image (factor 2) between them."
+        a1.thinkingSeconds = 2
+        a1.toolCalls = [read, edit]
+        t.append(a1)
+        var r1 = ChatTurn(role: .tool, text: "Workflow “Untitled” …", toolCallID: "g1")
+        r1.toolTitle = "Read the workflow"
+        r1.toolStatus = "done"
+        t.append(r1)
+        var r2 = ChatTurn(role: .tool, text: "added upscale (ImageScale)\nconnected upscale.image → save.image\nThe workflow is valid.",
+                          toolCallID: "g2")
+        r2.toolTitle = "Edit the workflow (2 changes)"
+        r2.toolStatus = "done"
+        r2.toolDetail = "add upscale (ImageScale): factor, image\nconnect upscale.image → save.image"
+        t.append(r2)
+        t.append(ChatTurn(role: .assistant, text: "Added **Scale Image** (factor 2) between VAE Decode and Save Image, so saved images are upscaled 2×. Generate to try it.",
+                          model: key.modelID))
+        let chat = ChatDocument(transcript: t)
+        chat.workflowID = wf.id
+        chat.lastHelperEdit = (before, wf.graph, ["added upscale (ImageScale)", "connected upscale.image → save.image"])
+        wf.helperChatID = chat.id
+        wf.selection = ["upscale"]
+        m.helperChats = [chat]
+        m.showHelper = true
+        var ready = LLMStatus(state: "ready", phase: "Ready", progress: 1)
+        ready.gpu = "H200"
+        ready.count = 2
+        m.llm.statuses[key] = ready
+        panel(nil)
+        await render(m, to: dir.appendingPathComponent("57-graph-helper.png"))
+        m.showHelper = false
     }
 
     /// 50: a chat tab mid-conversation (thinking, Markdown, code, stats), the Chats panel open.

@@ -13,8 +13,7 @@ extension AppModel {
     /// A new chat with the given model (else the last one used, else the first installed one), in front.
     @discardableResult
     func newChat(model key: LLMKey? = nil) -> ChatDocument {
-        let k = key ?? lastChatModel.flatMap { llm.model($0) != nil ? $0 : nil }
-            ?? llm.models.first.map { LLMKey(serverID: $0.server.id, modelID: $0.model.id) }
+        let k = key ?? defaultChatModel
         let doc = ChatDocument(transcript: ChatTranscript(serverID: k?.serverID, modelID: k?.modelID))
         chats.append(doc)
         activeChatID = doc.id
@@ -44,6 +43,13 @@ extension AppModel {
     /// Opens a saved chat (or brings its tab to the front).
     func openChat(_ id: UUID) {
         if chats.contains(where: { $0.id == id }) { activeChatID = id; return }
+        // A tab's graph helper opens docked on that tab.
+        if let wf = tabs.first(where: { $0.helperChatID == id }) {
+            activate(wf.id)
+            activeChatID = nil
+            showHelper = true
+            return
+        }
         guard let t = chatStore.load(id) else { reloadChats(); return }
         chats.append(ChatDocument(transcript: t))
         activeChatID = id
@@ -145,7 +151,27 @@ extension AppModel {
         }
         lastChatModel = key
         if let root = doc.projectURL {
-            runAgent(doc, key: key, client: client, root: root, add: add)
+            runAgent(doc, key: key, client: client, setup: AgentSetup(tools: CodingTools.all, root: root) {
+                await ProjectContext.systemPrompt(root: root, mode: doc.mode)
+            }, add: add)
+            return
+        }
+        if doc.isGraphHelper {
+            guard let workflow = document(id: doc.workflowID) ?? (doc.workflowID == nil ? active : nil) else {
+                var t = ChatTurn(role: .assistant, text: "")
+                t.error = "Its workflow tab was closed."
+                add(t)
+                return
+            }
+            let session = GraphHelperSession(app: self, workflow: workflow)
+            let mode = doc.mode
+            var setup = AgentSetup(tools: GraphHelper.tools(session), root: library.root) {
+                GraphHelper.systemPrompt(session, mode: mode)
+            }
+            setup.finished = { [weak doc] in
+                if let edit = session.commit() { doc?.lastHelperEdit = edit }
+            }
+            runAgent(doc, key: key, client: client, setup: setup, add: add)
             return
         }
         let vision = llm.model(key)?.vision == true
@@ -259,16 +285,18 @@ extension AppModel {
 
     // MARK: the coding agent
 
-    /// Runs the agent for a coding chat: each model message becomes an assistant turn, each tool call a tool turn
-    /// (its card), questions go to the chat's permission card.
-    func runAgent(_ doc: ChatDocument, key: LLMKey, client: LLMServerClient, root: URL, add: @escaping (ChatTurn) -> Void) {
+    /// Runs the agent for a coding chat or a graph helper: each model message becomes an assistant turn, each tool call
+    /// a tool turn (its card), questions go to the chat's permission card.
+    func runAgent(_ doc: ChatDocument, key: LLMKey, client: LLMServerClient, setup: AgentSetup,
+                  add: @escaping (ChatTurn) -> Void) {
         let vision = llm.model(key)?.vision == true
         let folder = chatStore.filesFolder(doc.id)
         let history = doc.transcript.messages { name in vision ? Self.imageDataURL(folder.appendingPathComponent(name)) : nil }
-        var config = AgentConfig(model: key.modelID, mode: doc.mode, rules: doc.rules)
+        var config = AgentConfig(model: key.modelID, tools: setup.tools, mode: doc.mode, rules: doc.rules)
         config.reasoningEffort = doc.transcript.reasoningEffort
         config.inlineThinking = llm.model(key)?.reasoningParser == nil
-        let ctx = ToolContext(root: root)
+        config.vision = vision
+        let ctx = ToolContext(root: setup.root)
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
         }
@@ -283,7 +311,7 @@ extension AppModel {
         doc.task = Task { @MainActor [weak self, weak doc] in
             guard let doc else { return }
             @MainActor func publish() { st.publish(into: doc) }
-            let system = await ProjectContext.systemPrompt(root: root, mode: config.mode)
+            let system = await setup.system()
             do {
                 let outcome = try await AgentLoop.run(
                     client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
@@ -300,6 +328,7 @@ extension AppModel {
                         await MainActor.run {
                             doc?.transcript.allowEdits = rules.edits
                             doc?.transcript.allowCommands = rules.commandPrefixes
+                            doc?.transcript.allowRuns = rules.runs ? true : nil
                         }
                     },
                     events: { event in
@@ -364,6 +393,7 @@ extension AppModel {
                 }
             }
             if doc.permission != nil { doc.answer(.deny) }
+            setup.finished()
             doc.liveTurnID = nil
             doc.engine = nil
             doc.task = nil
@@ -393,6 +423,20 @@ extension AppModel {
            chats.contains(where: { $0.id == id }) {
             activeChatID = id
         }
+    }
+}
+
+/// What an agent chat runs with: its tools, the folder they work in, its system prompt, and what to do after a reply.
+struct AgentSetup {
+    var tools: [any AgentTool]
+    var root: URL
+    var system: @MainActor () async -> String
+    var finished: @MainActor () -> Void = {}
+
+    init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
+        self.tools = tools
+        self.root = root
+        self.system = system
     }
 }
 

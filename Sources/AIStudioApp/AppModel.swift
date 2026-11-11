@@ -81,6 +81,12 @@ final class AppModel {
     /// The chat in front of the graph (nil: the active workflow is in front).
     var activeChatID: UUID?
     var activeChat: ChatDocument? { chats.first { $0.id == activeChatID } }
+    /// The graph helpers of workflow tabs, while open (docked, not tabs).
+    var helperChats: [ChatDocument] = []
+    /// The graph helper panel next to the graph.
+    var showHelper = UserDefaults.standard.bool(forKey: "showHelper") {
+        didSet { if persistSettings && !Self.isAutomatedRun { UserDefaults.standard.set(showHelper, forKey: "showHelper") } }
+    }
     /// Saved chats, newest first (Chats panel).
     var chatSummaries: [ChatSummary] = []
     /// The LLMs on the GPU servers, and keeping a chat's model warm.
@@ -266,6 +272,7 @@ final class AppModel {
          restoreSession: Bool? = nil) {
         self.persistSettings = persistSettings
         self.autoloadModel = autoloadModel
+        if !persistSettings || Self.isAutomatedRun { showHelper = false }
         connections = ConnectionStore(fileURL: persistSettings && !Self.isAutomatedRun ? ConnectionStore.defaultFileURL : nil,
                                       registry: RemoteNodes.makeRegistry())
         let defaults = UserDefaults.standard
@@ -424,8 +431,10 @@ final class AppModel {
     }
 
     /// Validation error for the current graph, or nil when it can run.
-    var validationError: String? {
-        do { _ = try GraphExecutor(registry: registry).validate(graph); return nil }
+    var validationError: String? { validationError(of: graph) }
+
+    func validationError(of g: Graph) -> String? {
+        do { _ = try GraphExecutor(registry: registry).validate(g); return nil }
         catch { return String(describing: error) }
     }
 
@@ -438,31 +447,49 @@ final class AppModel {
     var isRunning: Bool { queue.contains { if case .running = $0.status { return true } else { return false } } }
     var pendingCount: Int { queue.filter { $0.status == .pending }.count }
 
-    func enqueue(undoManager: UndoManager?) {
-        if let err = validationError { lastError = err; NSSound.beep(); return }
-        lastError = nil
-        let samplers = graph.nodes.filter {
+    func enqueue(undoManager: UndoManager?) { enqueue(doc: active) }
+
+    /// Queues a tab's workflow `count` times (default: the batch count), with the toolbar's seed rule; the seeds used
+    /// are written back to the tab's samplers. Returns the queued items (none when the graph doesn't validate: then
+    /// `lastError` says why, unless `quiet`).
+    @discardableResult
+    func enqueue(doc: WorkflowDocument, count: Int? = nil, quiet: Bool = false) -> [UUID] {
+        if let err = validationError(of: doc.graph) {
+            if !quiet { lastError = err; NSSound.beep() }
+            return []
+        }
+        if !quiet { lastError = nil }
+        let samplers = doc.graph.nodes.filter {
             ["Sampler", "VideoSampler", "TextToAudio", "TextToMusic", "TextToSpeech"].contains($0.type)
                 || RemoteNodes.types.contains($0.type)  // the Cloud GPU nodes all take a seed
         }.map(\.id)
-        for i in 0..<max(1, batchCount) {
-            var g = graph
+        var ids: [UUID] = []
+        for i in 0..<max(1, count ?? batchCount) {
+            var g = doc.graph
             var seed: Int?
             if let s = samplers.first {
-                let current = { if case .int(let v)? = literal(s, "seed") { return v } else { return 0 } }()
+                let current: Int = {
+                    guard let n = doc.graph[s] else { return 0 }
+                    if case .value(.int(let v))? = n.inputs["seed"] { return v }
+                    if case .int(let v)? = schema(for: n)?.input("seed")?.defaultValue { return v }
+                    return 0
+                }()
                 let newSeed = randomizeSeed ? Int.random(in: 0...Int(Int32.max)) : current + i
                 for id in samplers { try? g.setValue(.int(newSeed), node: id, input: "seed") }
                 seed = newSeed
                 if randomizeSeed || i > 0 {
                     // Reflect the seed actually used so the panel shows what produced the last image.
-                    for id in samplers { try? graph.setValue(.int(newSeed), node: id, input: "seed") }
+                    for id in samplers { try? doc.graph.setValue(.int(newSeed), node: id, input: "seed") }
                 }
             }
-            g = prepared(g, seed: seed ?? i, workflow: active.name)
-            queue.append(QueueItem(graph: g, title: title(for: g), seed: seed, docID: active.id, workflow: active.name,
-                                   backendID: active.backendID))
+            g = prepared(g, seed: seed ?? i, workflow: doc.name)
+            let item = QueueItem(graph: g, title: title(for: g), seed: seed, docID: doc.id, workflow: doc.name,
+                                 backendID: doc.backendID)
+            ids.append(item.id)
+            queue.append(item)
         }
         processQueue()
+        return ids
     }
 
     /// Speaks a short sample in `voice` through the queue; the clip is shown and played, not saved to history.

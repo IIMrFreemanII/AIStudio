@@ -77,6 +77,12 @@ struct PermissionTests {
         #expect(d(.execute, .ask, rules: git, cmd: "git status; rm -rf /") == .ask)
         #expect(d(.execute, .ask, rules: git, cmd: "ls > out.txt") == .ask)
         #expect(d(.execute, .ask, rules: git, cmd: "ls $(rm x)") == .ask)
+        // The graph helper: edits are free (one undo step), runs ask until always-allowed; plan mode refuses both.
+        #expect(d(.graphEdit, .ask) == .allow && d(.graphEdit, .acceptEdits) == .allow)
+        #expect(d(.run, .ask) == .ask && d(.run, .acceptEdits) == .ask && d(.run, .bypass) == .allow)
+        #expect(d(.run, .ask, rules: AllowRules(runs: true)) == .allow)
+        if case .deny = d(.graphEdit, .plan) {} else { Issue.record("plan mode must refuse graph edits") }
+        if case .deny = d(.run, .plan) {} else { Issue.record("plan mode must refuse runs") }
     }
 
     @Test func prefixes() {
@@ -255,5 +261,48 @@ struct LoopTests {
         try "Use tabs.".write(to: root.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
         let p = await ProjectContext.systemPrompt(root: root, mode: .plan)
         #expect(p.contains(root.path) && p.contains("Use tabs.") && p.contains("plan mode"))
+    }
+
+    /// A run-type tool that returns an image, like the graph helper's queue_run / get_last_outputs.
+    struct PictureTool: AgentTool {
+        var name = "picture"
+        var description = "makes a picture"
+        var parameters: JSONValue = .object(["type": .string("object")])
+        var effect = ToolEffect.run
+        func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview { ToolPreview(kind: .run, title: "Picture") }
+        func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
+            ToolOutput("made one", images: ["data:image/jpeg;base64,AAAA"])
+        }
+    }
+
+    @Test func runsAreAskedOnceWithAlwaysAndImagesGoToVisionModels() async throws {
+        let model = ScriptedModel([[call("picture", [:], id: "a")], [call("picture", [:], id: "b")], [.content("nice")]])
+        var config = AgentConfig(model: "m", tools: [PictureTool()])
+        config.vision = true
+        let rec = Recorder()
+        let saved = Recorder()
+        _ = try await AgentLoop.run(client: model, messages: [.user("x")], config: config,
+                                    context: ToolContext(root: try tempProject()), ask: { r in rec.ask(r); return .allowAlways },
+                                    rulesChanged: { rules in if rules.runs { saved.ask(PermissionRequest(
+                                        call: ToolCall(id: "", name: "runs", arguments: ""),
+                                        preview: ToolPreview(kind: .run, title: ""), effect: .run, inProject: true)) } },
+                                    events: { _ in })
+        #expect(rec.asks.count == 1 && rec.asks.first?.effect == .run)
+        #expect(saved.asks.count == 1)
+        // After each tool result: a user message with the image.
+        let second = model.requests[1].messages
+        #expect(second.last?.role == .user)
+        #expect(second.last?.parts.contains(.image(url: "data:image/jpeg;base64,AAAA")) == true)
+        #expect(second[second.count - 2].role == .tool)
+    }
+
+    @Test func imagesAreLeftOutForTextModels() async throws {
+        let model = ScriptedModel([[call("picture", [:])], [.content("ok")]])
+        let config = AgentConfig(model: "m", tools: [PictureTool()], mode: .bypass)
+        _ = try await AgentLoop.run(client: model, messages: [.user("x")], config: config,
+                                    context: ToolContext(root: try tempProject()), ask: { _ in .deny }, events: { _ in })
+        let last = model.requests[1].messages.last
+        #expect(last?.role == .tool)
+        #expect(last?.text.contains("can't see images") == true)
     }
 }

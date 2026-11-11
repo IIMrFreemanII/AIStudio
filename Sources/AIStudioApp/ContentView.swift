@@ -7,6 +7,7 @@ struct ContentView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("showInspector") private var showInspector = true
     @AppStorage("inspectorWidth") private var inspectorWidth = 330.0
+    @AppStorage("helperWidth") private var helperWidth = 380.0
     @State private var dropTargeted = false
     @State private var showPlot = false
     @AppStorage("sidebarPanel") private var panelRaw = SidebarPanel.workflows.rawValue
@@ -56,6 +57,16 @@ struct ContentView: View {
                             .padding(8)
                             .allowsHitTesting(false)
                     }
+                }
+                if model.showHelper && model.activeChat == nil {
+                    MGDivider(vertical: true, gap: true)
+                    HelperPanel(doc: model.active)
+                        .id(model.activeTabID)
+                        .frame(width: helperWidth)
+                        .frame(maxHeight: .infinity)
+                        .overlay(alignment: .leading) {
+                            MGResizeHandle(width: $helperWidth, range: 320...600).offset(x: -3)
+                        }
                 }
                 if showInspector && model.activeChat == nil {
                     MGDivider(vertical: true, gap: true)
@@ -133,6 +144,12 @@ struct ContentView: View {
             .mgHelp("Show or hide the results pane (⌥⌘R)")
             .accessibilityLabel("Results")
             .mgTestAnchor("results-button")
+            Button { withAnimation(.easeOut(duration: 0.18)) { model.showHelper.toggle() } } label: {
+                Image(systemName: "wand.and.sparkles")
+            }
+            .buttonStyle(.mg(.icon))
+            .mgHelp("Graph Helper: a model that builds, changes, runs and fixes this workflow (⇧⌘H)")
+            .accessibilityLabel("Graph Helper")
             Button { withAnimation(.easeOut(duration: 0.18)) { showInspector.toggle() } } label: {
                 Image(systemName: "sidebar.right")
             }

@@ -25,13 +25,15 @@ struct ChatsPanel: View {
                     // Open chats that aren't saved yet (no messages).
                     ForEach(model.chats.filter { c in !model.chatSummaries.contains { $0.id == c.id } }) { c in
                         ChatRow(title: c.title, detail: c.transcript.modelID ?? "", date: nil,
-                                open: true, active: c.id == model.activeChatID, coding: c.isCoding)
+                                open: true, active: c.id == model.activeChatID, coding: c.isCoding,
+                                helper: c.isGraphHelper)
                             .onTapGesture { model.activateChat(c.id) }
                     }
                     ForEach(model.chatSummaries) { s in
                         let open = model.chats.contains { $0.id == s.id }
                         ChatRow(title: model.chats.first { $0.id == s.id }?.title ?? s.title, detail: s.modelID ?? "",
-                                date: s.updated, open: open, active: s.id == model.activeChatID, coding: s.coding)
+                                date: s.updated, open: open, active: s.id == model.activeChatID, coding: s.coding,
+                                helper: s.helper)
                             .onTapGesture { model.openChat(s.id) }
                             .mgContextMenu {
                                 MGMenuItem.button("Open") { model.openChat(s.id) }
@@ -62,10 +64,11 @@ struct ChatRow: View {
     let open: Bool
     let active: Bool
     var coding = false
+    var helper = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left").font(.system(size: 11))
+            Image(systemName: helper ? "wand.and.sparkles" : coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left").font(.system(size: 11))
                 .foregroundStyle(active ? MG.accent : MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.mgCallout).lineLimit(1)

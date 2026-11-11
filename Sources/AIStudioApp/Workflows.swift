@@ -72,6 +72,7 @@ extension AppModel {
     func closeTab(_ id: UUID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let wasActive = id == activeTabID
+        closeHelper(of: tabs[i])
         tabs.remove(at: i)
         if tabs.isEmpty { newTab(); return }
         if wasActive { activeTabID = tabs[min(i, tabs.count - 1)].id }
@@ -327,7 +328,7 @@ extension AppModel {
 
     func sessionManifest() -> SessionManifest {
         SessionManifest(tabs: tabs.map { .init(id: $0.id, name: $0.name, fileURL: $0.fileURL, presetID: $0.presetID,
-                                               isDirty: $0.isDirty) },
+                                               isDirty: $0.isDirty, helperChat: $0.helperChatID) },
                         activeTab: activeTabID)
     }
 
@@ -344,6 +345,7 @@ extension AppModel {
                                        fileURL: fileGraph == nil ? nil : t.fileURL, presetID: t.presetID,
                                        cleanGraph: clean)
             doc.lastDraft = drafts[t.id]
+            doc.helperChatID = t.helperChat
             restored.append(doc)
         }
         guard !restored.isEmpty else { return }
