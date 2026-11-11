@@ -1,5 +1,6 @@
 import AppKit
 import GraphRuntime
+import LLMClient
 import ImageIO
 import MLX
 import AIStudioLibrary
@@ -229,7 +230,54 @@ enum Snapshot {
                         .frame(width: 320, height: LoadedModelsView.height(m))),
                      to: dir.appendingPathComponent("29-loaded-models.png"), size: CGSize(width: 380, height: LoadedModelsView.height(m) + 60))
 
+        await renderChat(to: dir)
         await renderChrome(m, to: dir)
+    }
+
+    /// 50: a chat tab mid-conversation (thinking, Markdown, code, stats), the Chats panel open.
+    static func renderChat(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        var t = ChatTranscript(title: "Add a --json flag to the CLI", serverID: key.serverID, modelID: key.modelID)
+        t.turns = [
+            ChatTurn(role: .user, text: "How do I add a --json flag to the CLI's list command?"),
+            ChatTurn(role: .assistant, text: """
+            Add a flag to the command and branch on it when printing:
+
+            ```swift
+            @Flag(help: "Print JSON instead of a table.")
+            var json = false
+            ```
+
+            Then, in `run()`:
+
+            1. Build the rows as before.
+            2. If `json` is set, encode them with `JSONEncoder` and print the string.
+            3. Otherwise print the **table**.
+
+            | Flag | Output |
+            |---|---|
+            | none | table |
+            | `--json` | JSON |
+            """, reasoning: "The user wants a flag. ArgumentParser's @Flag is the way; keep the table as the default.",
+                     model: key.modelID),
+        ]
+        t.turns[1].thinkingSeconds = 4
+        t.turns[1].stats = RequestStats(seconds: 6.2, ttftMs: 410, tokPerSec: 142, completionTokens: 512, costUSD: 0.0156)
+        t.turns.append(ChatTurn(role: .user, text: "And for the remote command?"))
+        let doc = ChatDocument(transcript: t)
+        doc.transcript.turns.append(ChatTurn(role: .assistant, text: "", reasoning: "Same pattern: the remote command", model: key.modelID))
+        doc.liveTurnID = doc.transcript.turns.last?.id
+        m.chats = [doc]
+        m.activeChatID = doc.id
+        var ready = LLMStatus(state: "ready", phase: "Ready", progress: 1)
+        ready.gpu = "H200"
+        ready.count = 2
+        ready.costUSD = 0.42
+        ready.usdPerSecond = 0.002522
+        m.llm.statuses[key] = ready
+        panel(.chats)
+        await render(m, to: dir.appendingPathComponent("50-chat.png"))
     }
 
     /// 41–49: the design system's own menus, picker, tooltips, alert, prompt, file pickers and controls.

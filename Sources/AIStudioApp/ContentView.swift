@@ -15,10 +15,11 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            MGTitleBar(bar: .unified, title: model.active.name, subtitle: model.active.isDirty ? "Edited" : nil) {
+            MGTitleBar(bar: .unified, title: model.activeChat?.title ?? model.active.name,
+                       subtitle: model.activeChat == nil && model.active.isDirty ? "Edited" : nil) {
                 EmptyView()
             } trailing: {
-                toolbarContent
+                if model.activeChat == nil { toolbarContent }
             }
             HStack(spacing: 0) {
                 SidebarRail(selection: Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows },
@@ -32,6 +33,9 @@ struct ContentView: View {
                 MGDivider(vertical: true, gap: true)
                 VStack(spacing: 0) {
                     TabStrip()
+                    if let chat = model.activeChat {
+                        ChatView(doc: chat).id(chat.id)
+                    } else {
                     VSplitView {
                         GraphEditorView(doc: model.active)
                             .id(model.activeTabID)
@@ -41,6 +45,7 @@ struct ContentView: View {
                             ResultsPane()
                                 .frame(minHeight: 150, idealHeight: 280, maxHeight: .infinity)
                         }
+                    }
                     }
                 }
                 .background(MG.windowBackground)
@@ -52,7 +57,7 @@ struct ContentView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                if showInspector {
+                if showInspector && model.activeChat == nil {
                     MGDivider(vertical: true, gap: true)
                     InspectorView()
                         .frame(width: inspectorWidth)
@@ -92,6 +97,8 @@ struct ContentView: View {
             if let lib = model.store?.library { LibraryAddSheet(request: r, library: lib) }
         }
         .mgSheet("save-preset", isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
+        .mgSheet("llm-add", item: $model.llmAddRequest) { r in LLMAddSheet(request: r) }
+        .task { model.llm.start() }
         .mgPresentationHost(model.presenter)
     }
 

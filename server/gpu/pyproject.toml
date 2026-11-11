@@ -23,7 +23,7 @@ modal = ["modal==1.6.3"]
 dev = ["pytest", "httpx"]
 
 [tool.setuptools]
-packages = ["aistudio_gpu", "aistudio_gpu.tasks"]
+packages = ["aistudio_gpu", "aistudio_gpu.tasks", "aistudio_gpu.llm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

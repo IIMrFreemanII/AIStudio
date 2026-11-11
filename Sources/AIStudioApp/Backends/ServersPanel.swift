@@ -60,6 +60,9 @@ struct ServersPanel: View {
                                 MGMenuItem.button("Remove", destructive: true) { store.remove(c.id) }
                             }
                     }
+                    if !store.gpuServers.isEmpty {
+                        LLMModelsSection().padding(.top, 6)
+                    }
                     if store.gpuServers.isEmpty {
                         Text("Add a GPU server (Modal, or a GPU box) for the Cloud GPU nodes: Wan 2.2 video and FLUX.1 dev on NVIDIA, billed per second on Modal. See docs/remote-server.md.")
                             .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)

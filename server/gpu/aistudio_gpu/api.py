@@ -19,6 +19,8 @@
                                      fine-tune from a link (variants.py) → its import state
     GET  /v1/models                  {"families": {family: [{id, name, bytes}]}, "imports": {"family/id": state}}
     DELETE /v1/models/{family}/{id}  removes a fine-tune → 204 / 404
+    /v1/llm/…                        LLMs from links and OpenAI-compatible chat (llm/routes.py), when the server has
+                                     them (``"llm": true`` in /v1/info)
 
 Auth: on Modal, proxy auth at Modal's edge (requests never reach us without a token). Elsewhere, an optional bearer
 token checked here (constant time), normally behind TLS (Caddy, tailscale serve).
@@ -45,7 +47,7 @@ RANGE = re.compile(r"bytes=(\d*)-(\d*)$")
 
 
 def create_app(manager: JobManager, token: str | None = None, fetcher: Fetcher | None = None,
-               variants=None) -> FastAPI:
+               variants=None, llm=None) -> FastAPI:
     app = FastAPI(title="AIStudio GPU server", docs_url=None, redoc_url=None, openapi_url=None)
     files: FileStore = manager.files
     fetcher = fetcher or Fetcher(files)
@@ -85,7 +87,12 @@ def create_app(manager: JobManager, token: str | None = None, fetcher: Fetcher |
 
     @app.get("/v1/info")
     async def info():
-        return manager.info()
+        return {**manager.info(), "llm": llm is not None}
+
+    if llm is not None:
+        from .llm.routes import llm_router
+
+        app.include_router(llm_router(llm))
 
     @app.head("/v1/files/{name}")
     async def file_head(name: str):
