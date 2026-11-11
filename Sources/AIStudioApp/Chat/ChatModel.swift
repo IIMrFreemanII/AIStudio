@@ -49,8 +49,16 @@ final class ChatDocument: Identifiable {
     @ObservationIgnored var permissionAnswer: CheckedContinuation<PermissionAnswer, Never>?
     /// Live output of running commands, by call id.
     var toolOutputs: [String: String] = [:]
-    /// The agent's to-do list.
-    var todos: [ToolContext.Todo] = []
+    /// The to-do list of the run in progress (nil: the transcript's last `todo_write` is the list).
+    var liveTodos: [ToolContext.Todo]?
+    /// The agent's to-do list: the run's while it works, else derived from the transcript.
+    var todos: [ToolContext.Todo] {
+        get { liveTodos ?? transcript.todoList }
+        set { liveTodos = newValue }
+    }
+    var todosCollapsed = false
+    /// The in-progress step and when it last changed.
+    var todoStepStarted: (content: String, at: Date)?
     /// Background commands (dev servers…) the agent started, and the ids of those still running.
     @ObservationIgnored lazy var jobs = BackgroundJobs()
     @ObservationIgnored var jobsObserved = false
@@ -179,6 +187,8 @@ struct ChatSummary: Identifiable, Hashable {
     var parentID: UUID?
     var branch: String?
     var projectName: String?
+    var todoDone: Int?
+    var todoTotal: Int?
 }
 
 /// Saved chats in the library's `chats/` folder: `<id>.json` (the transcript) and `<id>/` (attachments).
@@ -216,10 +226,12 @@ struct ChatStore {
         return files.filter { $0.pathExtension == "json" }.compactMap { u -> ChatSummary? in
             guard let data = try? Data(contentsOf: u), let t = try? Self.decoder.decode(ChatTranscript.self, from: data)
             else { return nil }
+            let progress = t.todoProgress
             return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil,
                                helper: t.graphHelper == true, status: t.savedStatus, pinned: t.pinned == true,
                                archived: t.archived == true, parentID: t.parentID, branch: t.worktree?.branch,
-                               projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent })
+                               projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
+                               todoDone: progress?.done, todoTotal: progress?.total)
         }.sorted { $0.updated > $1.updated }
     }
 

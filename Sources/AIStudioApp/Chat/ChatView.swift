@@ -452,6 +452,7 @@ struct ChatTurnView: View {
                         case "ask_user": QuestionCard(doc: doc, call: call, result: result)
                         case "exit_plan": PlanCard(doc: doc, call: call, result: result)
                         case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
+                        case "todo_write": TodoUpdateRow(call: call)
                         case "propose_session": SessionProposalCard(doc: doc, call: call, result: result)
                         default: ToolCard(doc: doc, call: call, result: result)
                         }
@@ -740,8 +741,9 @@ struct ChatComposer: View {
         let files = doc.pending.compactMap { if case .file(let f) = $0 { return f.name }; return nil }
         let blind = !images.isEmpty && doc.modelKey.flatMap { model.llm.model($0) }.map { $0.vision != true } == true
         VStack(alignment: .leading, spacing: 6) {
-            if doc.isCoding, !doc.todos.isEmpty, doc.todos.contains(where: { $0.status != "completed" }) || doc.isStreaming {
-                TodoListView(todos: doc.todos)
+            if doc.isAgent, !doc.todos.isEmpty,
+               doc.isStreaming || doc.todos.contains(where: { $0.status != "completed" }) || doc.transcript.todoListIsCurrent {
+                TodoListView(doc: doc)
             }
             if !doc.pending.isEmpty {
                 AttachmentStrip(images: images, files: files, folder: model.chatStore.filesFolder(doc.id)) { name in

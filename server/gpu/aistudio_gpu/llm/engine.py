@@ -307,7 +307,8 @@ class FakeEngine:
     helper: get_graph, then edit_graph putting an ImageScale between `decode` and `save` (the text-to-image
     template's ids), then "Done: " and the first line of the result. With start_session offered and "start a session"
     in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
-    "Done: " and the result."""
+    "Done: " and the result. "create hello.txt with a todo list" calls todo_write (two steps, the first in progress)
+    before the hello.txt script."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -383,6 +384,12 @@ class FakeEngine:
         if "start a session" in last.lower() and "start_session" in tool_names:
             script = [("start_session", {"title": "Hello file", "prompt": "create hello.txt and show it",
                                          "worktree": True})]
+        elif "create hello.txt with a todo list" in last.lower():
+            script = [("todo_write", {"todos": [
+                          {"content": "Write hello.txt", "status": "in_progress", "activeForm": "Writing hello.txt"},
+                          {"content": "Show it", "status": "pending", "activeForm": "Showing it"}]}),
+                      ("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
+                      ("run_command", {"command": "cat hello.txt"})]
         elif "create hello.txt" in last.lower():
             script = [("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
                       ("run_command", {"command": "cat hello.txt"})]

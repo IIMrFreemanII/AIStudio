@@ -207,26 +207,108 @@ struct PermissionCard: View {
     }
 }
 
-/// The agent's to-do list, above the message field while it has one.
-struct TodoListView: View {
-    let todos: [ToolContext.Todo]
+/// One to-do row: a checkbox, the text, and (for the step in progress) a spinner and the elapsed time.
+struct TodoRow: View {
+    let todo: ToolContext.Todo
+    var live = false
+    var started: Date?
 
     var body: some View {
+        HStack(spacing: 6) {
+            switch todo.status {
+            case "completed":
+                Image(systemName: "checkmark.square.fill").foregroundStyle(MG.success)
+            case "in_progress":
+                if live { ProgressView().controlSize(.mini) }
+                else { Image(systemName: "arrow.right.square").foregroundStyle(MG.accent) }
+            default:
+                Image(systemName: "square").foregroundStyle(MG.secondaryLabel)
+            }
+            if todo.status == "in_progress" {
+                Text(todo.activeForm ?? todo.content).font(.mgFootnote.weight(.medium)).foregroundStyle(MG.label)
+                if live, let started {
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text(" · \(max(0, Int(ctx.date.timeIntervalSince(started))))s")
+                            .font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+                    }
+                }
+            } else {
+                Text(todo.content).font(.mgFootnote)
+                    .strikethrough(todo.status == "completed")
+                    .foregroundStyle(todo.status == "completed" ? MG.secondaryLabel : MG.label)
+            }
+        }
+    }
+}
+
+/// The agent's to-do list, above the message field while it has one.
+struct TodoListView: View {
+    @Bindable var doc: ChatDocument
+
+    var body: some View {
+        let todos = doc.todos
+        let done = todos.filter { $0.status == "completed" }.count
+        let allDone = !todos.isEmpty && done == todos.count
+        let current = todos.first { $0.status == "in_progress" }
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(Array(todos.enumerated()), id: \.offset) { _, t in
+            Button { doc.todosCollapsed.toggle() } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: t.status == "completed" ? "checkmark.square.fill"
-                          : t.status == "in_progress" ? "arrow.right.square" : "square")
-                        .foregroundStyle(t.status == "completed" ? MG.success : t.status == "in_progress" ? MG.accent : MG.secondaryLabel)
-                    Text(t.content).font(.mgFootnote)
-                        .strikethrough(t.status == "completed")
-                        .foregroundStyle(t.status == "completed" ? MG.secondaryLabel : MG.label)
+                    Image(systemName: doc.todosCollapsed ? "chevron.right" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                        .frame(width: 10)
+                    if allDone {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success)
+                        Text("All done").font(.mgFootnote.weight(.medium))
+                    } else {
+                        Text("Tasks").font(.mgFootnote.weight(.medium))
+                    }
+                    Text("\(done)/\(todos.count)").font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+                    if doc.todosCollapsed, let current {
+                        Text(current.activeForm ?? current.content).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if !doc.todosCollapsed {
+                ForEach(Array(todos.enumerated()), id: \.offset) { _, t in
+                    TodoRow(todo: t, live: doc.isStreaming, started: doc.todoStepStarted?.content == t.content ? doc.todoStepStarted?.at : nil)
                 }
             }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+    }
+}
+
+/// A `todo_write` call in the transcript: one line, click to see the list it wrote.
+struct TodoUpdateRow: View {
+    let call: ToolCall
+    @State private var open = false
+
+    var body: some View {
+        let todos = TodoWriteTool.list(json: call.arguments)
+        let done = todos.filter { $0.status == "completed" }.count
+        VStack(alignment: .leading, spacing: 3) {
+            Button { open.toggle() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "checklist")
+                    Text("Updated tasks")
+                    if !todos.isEmpty { Text("· \(done)/\(todos.count)").monospacedDigit() }
+                    Spacer(minLength: 0)
+                }
+                .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(Array(todos.enumerated()), id: \.offset) { _, t in TodoRow(todo: t) }
+                }
+                .padding(.leading, 4)
+            }
+        }
     }
 }
 
