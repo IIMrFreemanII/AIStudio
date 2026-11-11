@@ -469,6 +469,8 @@ extension AppModel {
                 }
             }
         }
+        ctx.seedTodos(doc.todos)
+        doc.todoStepStarted = nil
         doc.requestStarted = Date()
         doc.engine = nil
         llm.lastActivity = Date()
@@ -573,7 +575,15 @@ extension AppModel {
                                         if let detail = output.detail { $0.toolDetail = detail }
                                     }
                                 }
-                                doc.todos = ctx.todos
+                                if doc.transcript.turns.contains(where: { $0.toolCalls.contains { $0.id == id && $0.name == "todo_write" } }) {
+                                    let list = ctx.todos
+                                    doc.liveTodos = list
+                                    if let cur = list.first(where: { $0.status == "in_progress" }) {
+                                        if doc.todoStepStarted?.content != cur.content { doc.todoStepStarted = (cur.content, Date()) }
+                                    } else {
+                                        doc.todoStepStarted = nil
+                                    }
+                                }
                             case .compacted(let summary):
                                 // The next assistant message follows the summary.
                                 var t = ChatTurn(role: .user, text: summary)
@@ -600,6 +610,8 @@ extension AppModel {
             if doc.plan != nil { doc.answerPlan(.keepPlanning(nil)) }
             setup.finished()
             doc.liveTurnID = nil
+            doc.liveTodos = nil
+            doc.todoStepStarted = nil
             doc.engine = nil
             doc.task = nil
             doc.transcript.updated = Date()

@@ -314,6 +314,23 @@ extension SmokeTest {
         if let saved = model.chatStore.load(doc.id) {
             if saved.projectPath != repo.standardizedFileURL.path || saved.permissionMode != "plan" { say("not saved as a coding chat"); ok = false }
         } else { say("not saved"); ok = false }
+
+        // A to-do list: shown from the transcript, so it's still there after closing and reopening the chat.
+        doc.mode = .bypass
+        _ = await send("create hello.txt with a todo list")
+        func check(_ d: ChatDocument, _ when: String) {
+            let t = d.todos
+            if t.map(\.content) != ["Write hello.txt", "Show it"] || t.first?.activeForm != "Writing hello.txt" {
+                say("to-do list \(when): \(t.map { "\($0.content) [\($0.status)]" })"); ok = false
+            }
+        }
+        check(doc, "after the reply")
+        model.closeChat(doc.id)
+        model.openChat(doc.id)
+        if let reopened = model.chats.first(where: { $0.id == doc.id }), reopened !== doc {
+            check(reopened, "after reopening")
+        } else { say("the chat didn't reopen as a new document"); ok = false }
+        say("to-do list: \(ok ? "kept" : "lost")")
         model.closeChat(doc.id)
         model.deleteChat(doc.id)
         try? FileManager.default.removeItem(at: repo)

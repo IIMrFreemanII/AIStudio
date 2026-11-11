@@ -512,6 +512,25 @@ def test_fake_session_script(client):
     assert call["function"]["name"] == "write_file"
 
 
+def test_fake_agent_todo_script(client):
+    mid = install(client)
+    tools = [{"type": "function", "function": {"name": "todo_write", "parameters": {"type": "object"}}}]
+    msgs = [{"role": "user", "content": "create hello.txt with a todo list"}]
+    names = []
+    for step in range(3):
+        events = chat(client, mid, "", messages=msgs, tools=tools)
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                    if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+        names.append(call["function"]["name"])
+        if step == 0:
+            todos = json.loads(call["function"]["arguments"])["todos"]
+            assert [t["activeForm"] for t in todos] == ["Writing hello.txt", "Showing it"]
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
+                 {"role": "tool", "tool_call_id": call["id"], "content": f"result {step}"}]
+    assert names == ["todo_write", "write_file", "run_command"]
+
+
 def test_fake_graph_helper_script(client):
     mid = install(client)
     tools = [{"type": "function", "function": {"name": "edit_graph", "parameters": {"type": "object"}}}]

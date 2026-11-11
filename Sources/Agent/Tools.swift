@@ -112,12 +112,18 @@ public final class ToolContext: @unchecked Sendable {
     public struct Todo: Codable, Equatable, Sendable {
         public var content: String
         public var status: String  // pending, in_progress, completed
+        /// What's being done while the step is in progress, e.g. "Running the tests" (nil in old lists).
+        public var activeForm: String?
 
-        public init(content: String, status: String) {
+        public init(content: String, status: String, activeForm: String? = nil) {
             self.content = content
             self.status = status
+            self.activeForm = activeForm
         }
     }
+
+    /// Seeds the list (the one the chat already shows) before a run.
+    public func seedTodos(_ t: [Todo]) { setTodos(t) }
 
     public init(root: URL) { self.root = root.standardizedFileURL.resolvingSymlinksInPath() }
 
@@ -483,13 +489,15 @@ public struct RunCommandTool: AgentTool {
 public struct TodoWriteTool: AgentTool {
     public init() {}
     public let name = "todo_write"
-    public let description = "Keep a to-do list for multi-step work: send the whole list each time, with each item's status (pending, in_progress, completed)."
+    public let description = "Keep a to-do list for multi-step work: send the whole list each time, with each item's status (pending, in_progress, completed). Each item has content (imperative: \"Run the tests\") and activeForm (what's happening while it's in progress: \"Running the tests\"). Keep exactly one item in_progress while working, and mark items completed as soon as they're done."
     public var parameters: JSONValue {
         .object(["type": .string("object"), "required": .array([.string("todos")]), "properties": .object([
             "todos": .object(["type": .string("array"), "items": .object([
                 "type": .string("object"), "required": .array([.string("content"), .string("status")]),
                 "properties": .object([
-                    "content": .object(["type": .string("string")]),
+                    "content": .object(["type": .string("string"), "description": .string("The step, imperative")]),
+                    "activeForm": .object(["type": .string("string"),
+                                           "description": .string("The step while it's in progress, e.g. \"Running the tests\"")]),
                     "status": .object(["type": .string("string"), "enum": .array([.string("pending"), .string("in_progress"), .string("completed")])]),
                 ]),
             ])]),
@@ -501,11 +509,18 @@ public struct TodoWriteTool: AgentTool {
         ToolPreview(kind: .todo, title: "Update the to-do list", detail: Self.list(args).map { "\($0.status == "completed" ? "☑" : $0.status == "in_progress" ? "▶" : "☐") \($0.content)" }.joined(separator: "\n"))
     }
 
-    static func list(_ args: ToolArgs) -> [ToolContext.Todo] {
+    /// The list in a call's arguments.
+    public static func list(_ args: ToolArgs) -> [ToolContext.Todo] {
         (args.raw["todos"] as? [[String: Any]] ?? []).compactMap { d in
             guard let c = d["content"] as? String else { return nil }
-            return ToolContext.Todo(content: c, status: d["status"] as? String ?? "pending")
+            let active = (d["activeForm"] as? String).flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+            return ToolContext.Todo(content: c, status: d["status"] as? String ?? "pending", activeForm: active)
         }
+    }
+
+    /// The list in a `todo_write` call's JSON arguments (empty when they don't parse).
+    public static func list(json: String) -> [ToolContext.Todo] {
+        (try? ToolArgs(json: json)).map(list) ?? []
     }
 
     public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {

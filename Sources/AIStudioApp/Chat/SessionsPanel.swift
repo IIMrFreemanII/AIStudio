@@ -19,6 +19,8 @@ struct SessionItem: Identifiable, Equatable {
     var open: Bool
     var snippet: String?
     var depth = 0
+    var todoDone: Int?
+    var todoTotal: Int?
 }
 
 /// Rail panel: sessions with live status, grouped by project, with pinned and archived sections and transcript search.
@@ -86,7 +88,8 @@ struct SessionsPanel: View {
             }
             return SessionItem(id: s.id, title: s.title, modelID: s.modelID ?? "", date: s.updated, status: s.status,
                                pinned: s.pinned, archived: s.archived, parentID: s.parentID, branch: s.branch,
-                               projectName: s.projectName, coding: s.coding, helper: s.helper, open: false)
+                               projectName: s.projectName, coding: s.coding, helper: s.helper, open: false,
+                               todoDone: s.todoDone, todoTotal: s.todoTotal)
         }
         let saved = Set(model.chatSummaries.map(\.id))
         for d in model.chats where !saved.contains(d.id) { items.append(item(of: d, date: nil)) }
@@ -95,11 +98,14 @@ struct SessionsPanel: View {
 
     private func item(of d: ChatDocument, date: Date?) -> SessionItem {
         let t = d.transcript
+        let progress = d.isStreaming && d.liveTodos != nil
+            ? d.liveTodos.map { l in (l.filter { $0.status == "completed" }.count, l.count) } : t.todoProgress
         return SessionItem(id: d.id, title: d.title, modelID: t.modelID ?? "", date: date, status: model.status(of: d),
                            pinned: t.pinned == true, archived: t.archived == true, parentID: t.parentID,
                            branch: t.worktree?.branch,
                            projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
-                           coding: d.isCoding, helper: d.isGraphHelper, open: d.tabOpen)
+                           coding: d.isCoding, helper: d.isGraphHelper, open: d.tabOpen,
+                           todoDone: progress?.0, todoTotal: progress?.1)
     }
 
     /// The items of a section with each child right under its parent (when the parent is in the same section).
@@ -281,6 +287,13 @@ struct SessionRow: View {
                             Image(systemName: "arrow.triangle.branch")
                             Text(b).font(.system(.caption, design: .monospaced)).lineLimit(1)
                         }
+                    }
+                    if let n = item.todoDone, let total = item.todoTotal {
+                        HStack(spacing: 2) {
+                            Image(systemName: "checklist")
+                            Text("\(n)/\(total)").monospacedDigit()
+                        }
+                        .mgHelp("\(n) of \(total) tasks done")
                     }
                     if let d = item.date { Text(d, format: .relative(presentation: .named)).lineLimit(1) }
                 }

@@ -63,6 +63,10 @@ struct ChatTabButton: View {
             }
             Text(chat.title).font(.mg(size: 12.5, weight: active ? .medium : .regular)).lineLimit(1)
                 .foregroundStyle(active ? MG.label : MG.secondaryLabel)
+            if chat.isAgent, chat.todos.contains(where: { $0.status != "completed" }) {
+                Text("\(chat.todos.filter { $0.status == "completed" }.count)/\(chat.todos.count)")
+                    .font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+            }
             ZStack {
                 if hovering || active {
                     Button { model.closeChat(chat.id) } label: {

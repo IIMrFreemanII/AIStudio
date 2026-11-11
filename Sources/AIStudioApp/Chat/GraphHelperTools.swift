@@ -185,7 +185,7 @@ enum GraphHelper {
 
     @MainActor
     static func tools(_ s: GraphHelperSession) -> [any AgentTool] {
-        [
+        [TodoWriteTool(),
             HelperTool(name: "get_graph", effect: .read,
                        description: "The open workflow: every node with its id, type, literal inputs, links (input ← node.output) and outputs, and whether it can run.",
                        parameters: params([:])) { _ in ToolPreview(kind: .read, title: "Read the workflow") }

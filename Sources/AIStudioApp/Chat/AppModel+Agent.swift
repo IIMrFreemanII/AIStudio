@@ -97,7 +97,7 @@ extension AppModel {
                 doc.draft = target.text
                 doc.transcript.activeLeaf = target.parent
                 doc.contextUsed = nil
-                doc.todos = []
+                doc.liveTodos = nil
                 doc.editingTurnID = nil
             }
             doc.transcript.updated = Date()

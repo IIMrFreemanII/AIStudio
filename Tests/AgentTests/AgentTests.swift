@@ -157,6 +157,16 @@ struct ToolTests {
         #expect(out.text == "To-do list updated: 1 of 2 done." && ctx.todos.count == 2)
     }
 
+    @Test func todoActiveFormAndOldLists() throws {
+        let list = TodoWriteTool.list(json: #"{"todos":[{"content":"Run the tests","status":"in_progress","activeForm":"Running the tests"},{"content":"Ship","status":"pending","activeForm":" "},{"status":"pending"}]}"#)
+        #expect(list == [ToolContext.Todo(content: "Run the tests", status: "in_progress", activeForm: "Running the tests"),
+                         ToolContext.Todo(content: "Ship", status: "pending")])
+        #expect(TodoWriteTool.list(json: "not json").isEmpty)
+        // A list saved before activeForm existed still decodes.
+        let old = try JSONDecoder().decode(ToolContext.Todo.self, from: Data(#"{"content":"a","status":"pending"}"#.utf8))
+        #expect(old.activeForm == nil)
+    }
+
     @Test func diffText() {
         let t = UnifiedDiff.text("a\nb\nc\nd\ne\nf\ng\nh\n", "a\nb\nc\nD\ne\nf\ng\nh\n", context: 1)
         #expect(t == "@@\n c\n-d\n+D\n e")
