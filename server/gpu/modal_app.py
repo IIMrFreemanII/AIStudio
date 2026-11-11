@@ -47,6 +47,9 @@ UPLOADS = Path("/uploads")
 UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
 LLM_IDLE = int(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
 VLLM_VERSION = os.environ.get("AISTUDIO_VLLM", "0.33.0")
+FLASHINFER_VERSION = os.environ.get("AISTUDIO_FLASHINFER", "0.7.2.post1")  # the one vLLM 0.33.0 depends on
+FLASHINFER_CUDA = os.environ.get("AISTUDIO_FLASHINFER_CUDA", "cu129")  # matches the CUDA 12.9 base image
+LLM_BOOT_TIMEOUT = int(os.environ.get("AISTUDIO_LLM_BOOT_TIMEOUT", "1800"))  # a start that takes longer is given up
 CUDA_BASE = os.environ.get("AISTUDIO_CUDA_IMAGE", "nvidia/cuda:12.9.1-devel-ubuntu24.04")
 LLAMA_IMAGE = os.environ.get("AISTUDIO_LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
 
@@ -102,15 +105,23 @@ llama_image = (modal.Image.from_registry(LLAMA_IMAGE, add_python="3.12").entrypo
                .add_local_python_source("aistudio_gpu"))
 # vLLM's OpenAI server (with Run:ai's streamer, the optional fast loader); its compile, Triton and CUDA-graph caches
 # live on the models volume, so restarts reuse them.
-vllm_image = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint([])
-              .uv_pip_install(f"vllm[runai]=={VLLM_VERSION}", "httpx")
-              .env({**env, "VLLM_CACHE_ROOT": f"{MODELS}/llm/.cache/vllm",
-                    "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor",
-                    "TRITON_CACHE_DIR": f"{MODELS}/llm/.cache/triton"})
-              .add_local_python_source("aistudio_gpu"))
+# FlashInfer's prebuilt kernels: without them vLLM builds FlashInfer's MoE and all-reduce kernels on the container's
+# CPUs at every first start (over 25 min for Qwen3.8-Flash-Next on 8 CPUs). The version must match the
+# flashinfer-python that vLLM pulls in, and the CUDA tag the base image.
+vllm_base = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint([])
+             .uv_pip_install(f"vllm[runai]=={VLLM_VERSION}", "httpx")
+             .uv_pip_install(f"flashinfer-cubin=={FLASHINFER_VERSION}", extra_index_url="https://flashinfer.ai/whl")
+             .uv_pip_install(f"flashinfer-jit-cache=={FLASHINFER_VERSION}",
+                             extra_index_url=f"https://flashinfer.ai/whl/{FLASHINFER_CUDA}")
+             .env({**env, "VLLM_CACHE_ROOT": f"{MODELS}/llm/.cache/vllm",
+                   "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor",
+                   "TRITON_CACHE_DIR": f"{MODELS}/llm/.cache/triton",
+                   "FLASHINFER_WORKSPACE_BASE": f"{MODELS}/llm/.cache/flashinfer"}))
+vllm_image = vllm_base.add_local_python_source("aistudio_gpu")
 # The same, for GPU memory snapshots: sleep/wake endpoints on, and inductor compiling in one thread (Modal's advice
-# for snapshots that include torch.compile).
-vllm_snap_image = vllm_image.env({"VLLM_SERVER_DEV_MODE": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1"})
+# for snapshots that include torch.compile). Local code goes last: Modal refuses build steps after it.
+vllm_snap_image = (vllm_base.env({"VLLM_SERVER_DEV_MODE": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1"})
+                   .add_local_python_source("aistudio_gpu"))
 gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS).env(env)
              .add_local_python_source("aistudio_gpu"))
 
@@ -401,6 +412,8 @@ def _llm_boot(self, snapshot: bool = False):
     a heartbeat every 15 s while up) for the front desk, and the boot's timing to ``<id>:coldstarts``. With
     ``snapshot`` (``LLMSnap``'s snapshot phase) the engine is warmed up and put to sleep instead, and there's no
     heartbeat yet: ``_llm_wake`` does the rest after the restore."""
+    import time
+
     from aistudio_gpu.llm import store
     from aistudio_gpu.llm.coldstart import ColdStartClock
     from aistudio_gpu.llm.engine import EngineProcess
@@ -411,8 +424,9 @@ def _llm_boot(self, snapshot: bool = False):
     m = store.read(MODELS, self.model) or {}
     self.manifest = m
     _llm_clock(self, ColdStartClock)
-    base = {"started": self.clock.started, "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
-            "container": os.environ.get("MODAL_TASK_ID")}
+    # "requested" stays, so the app's "starting for N s" still counts the wait for a GPU.
+    base = {"requested": self.clock.requested, "started": self.clock.started, "gpu": m.get("gpu"),
+            "count": m.get("count"), "updated": m.get("updated"), "container": os.environ.get("MODAL_TASK_ID")}
     self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
 
     def on_status(phase, progress):
@@ -429,15 +443,19 @@ def _llm_boot(self, snapshot: bool = False):
     self.proc = EngineProcess(m, MODELS, on_status)
     try:
         self.proc.start()
-        self.proc.wait_ready()
+        self.proc.wait_ready(LLM_BOOT_TIMEOUT)
         if snapshot:
             on_status("Warming up", None)
             self.proc.warmup()
             self.proc.sleep()
             on_status("Saving a snapshot", None)
     except Exception as e:  # noqa: BLE001
-        self.error = str(e)[:4000]
-        _llm_publish(self, state="failed", error=self.error)
+        if getattr(self, "stopping", False):  # Stop while it was starting (see _llm_heartbeat): not a failure
+            self.alive = False
+            _llm_publish(self, state="cold", phase=None, ended=time.time())
+        else:
+            self.error = str(e)[:4000]
+            _llm_publish(self, state="failed", error=self.error)
         self.proc.stop()
         if not snapshot:
             modal.experimental.stop_fetching_inputs()
@@ -505,8 +523,20 @@ def _llm_heartbeat(self):
     def beat():
         while self.alive:
             time.sleep(15)
-            if self.alive:
-                _llm_publish(self)
+            if not self.alive:
+                break
+            # Stop pressed while the engine is still starting: end the engine now (the boot then returns and the
+            # container stops), instead of paying for the rest of the start.
+            if self.current.get("state") == "loading" and getattr(self, "proc", None) is not None:
+                try:
+                    stop = llm_state.get(self.model + ":stop") or 0
+                except Exception:  # noqa: BLE001
+                    stop = 0
+                if stop > (self.current.get("started") or 0):
+                    self.stopping = True
+                    self.proc.stop()
+                    break
+            _llm_publish(self)
 
     threading.Thread(target=beat, daemon=True).start()
 

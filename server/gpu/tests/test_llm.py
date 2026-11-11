@@ -131,6 +131,27 @@ def test_phases_from_vllm_log():
     assert phase_of("Loading safetensors checkpoint shards:  41% Completed | 12/29") == ("Loading weights", 0.41)
     assert phase_of("Capturing CUDA graphs (mixed prefill-decode): 100%|") == ("Capturing CUDA graphs", 1.0)
     assert phase_of("INFO 11-11 hello") is None
+    # From a real Qwen3.8-Flash-Next start on Modal: the config line about the KV cache comes before the weights.
+    assert phase_of("INFO [cache.py:484] Using fp8 data type to store kv cache. It reduces the GPU memory") is None
+    assert phase_of("INFO [utils.py:381] Using BLNHC KV cache layout.") == ("Allocating KV cache", None)
+    assert phase_of("Loading safetensors using Runai Model Streamer:  61% Completed | 93070/152089") == \
+        ("Loading weights", 0.61)
+    assert phase_of("flashinfer.jit: Building JIT module fused_moe_90; this can take several minutes") == \
+        ("Building GPU kernels", None)
+
+
+def test_engine_phases_dont_go_back_to_starting():
+    from aistudio_gpu.llm.engine import EngineProcess
+
+    seen = []
+    p = EngineProcess.__new__(EngineProcess)
+    p.on_status = lambda name, progress: seen.append(name)
+    p.log = []
+    p.proc = type("P", (), {"stdout": iter([
+        "Initializing a V1 LLM engine (v0.33.0)\n", "Loading weights took 128.63 seconds\n",
+        "INFO [base_loader.py:82] Initializing model took 9.6 seconds\n", "Using BLNHC KV cache layout.\n"])})()
+    p._read()
+    assert seen == ["Starting engine", "Loading weights", "Allocating KV cache"]
 
 
 # MARK: the API

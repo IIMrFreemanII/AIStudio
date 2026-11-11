@@ -24,13 +24,16 @@ from . import store
 Status = Callable[[str, "float | None"], None]  # (phase, progress 0…1 or None)
 
 PHASES: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"Loading (safetensors )?checkpoint shards|Loading weights|load_weights|load_tensors|"
-                r"llama_model_load", re.I), "Loading weights"),
+    (re.compile(r"Loading (safetensors )?checkpoint shards|Loading safetensors using|Loading weights|load_weights|"
+                r"load_tensors|llama_model_load", re.I), "Loading weights"),
     (re.compile(r"server is listening|main: model loaded", re.I), "Starting server"),
     (re.compile(r"llama_context|llama_kv_cache", re.I), "Allocating KV cache"),
+    (re.compile(r"flashinfer\.jit: Building|Building JIT module", re.I), "Building GPU kernels"),
     (re.compile(r"torch\.compile|Compiling a graph|Dynamo bytecode", re.I), "Compiling"),
     (re.compile(r"Capturing CUDA graph|CUDA graphs", re.I), "Capturing CUDA graphs"),
-    (re.compile(r"KV cache|Available KV cache memory|GPU blocks", re.I), "Allocating KV cache"),
+    # Not just "KV cache": vLLM's config lines ("Using fp8 data type to store kv cache") come before the weights.
+    (re.compile(r"Available KV cache memory|GPU KV cache size|GPU blocks|KV cache layout", re.I),
+     "Allocating KV cache"),
     (re.compile(r"Starting vLLM API server|Application startup complete|Uvicorn running", re.I), "Starting server"),
     (re.compile(r"Initializing|init engine|Initializing a V\d+ LLM engine|world_size", re.I), "Starting engine"),
 ]
@@ -111,11 +114,15 @@ class EngineProcess:
 
     def _read(self) -> None:
         assert self.proc and self.proc.stdout
+        later = False  # past "Starting engine": its patterns also match lines from later on ("Initializing model")
         for line in self.proc.stdout:
             line = line.rstrip()
             self.log.append(line)
             print(line, flush=True)  # stays in the container's / service's log
             if (p := phase_of(line)) is not None:
+                if p[0] == "Starting engine" and later:
+                    continue
+                later = later or p[0] != "Starting engine"
                 self.on_status(*p)
 
     def wait_ready(self, timeout: float = 3600) -> None:
@@ -132,7 +139,7 @@ class EngineProcess:
             except httpx.HTTPError:
                 pass
             time.sleep(1.0)
-        raise EngineError("the engine didn't start in time")
+        raise EngineError(f"the engine didn't start in {round(timeout / 60)} min:\n" + "\n".join(list(self.log)[-25:]))
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None

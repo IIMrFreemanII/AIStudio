@@ -342,7 +342,7 @@ struct LLMSettingsSheet: View {
                         Toggle("", isOn: $fastLoad).labelsHidden().disabled(gguf)
                     }
                     .mgHelp(gguf ? "GGUF files are read by llama.cpp." :
-                            "Reads the weights with Run:ai's streamer (many reads at once), usually much faster from the server's network volume.")
+                            "Reads the weights with Run:ai's streamer (many reads at once). Made for object storage: on Modal's volume it was slower than the default, so try it only on other servers.")
                     MGFormRow("GPU snapshot (experimental)") {
                         Toggle("", isOn: Binding(get: { snapshot && snapshotAllowed }, set: { snapshot = $0 }))
                             .labelsHidden().disabled(!snapshotAllowed)
