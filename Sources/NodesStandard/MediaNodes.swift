@@ -70,7 +70,7 @@ public struct LoadVideoNode: NodeImplementation {
         inputs: [
             InputSpec("path", .string, default: .string(""), widget: .filePath),
             // 0 = every frame.
-            InputSpec("max_frames", .int, default: .int(0), widget: .number(min: 0, max: 10000, step: 1)),
+            InputSpec("max_frames", .int, default: .int(0), widget: .number(min: 0, max: 10000, step: 1), zeroLabel: "all"),
         ],
         outputs: [OutputSpec("video", .video), OutputSpec("audio", .audio)])
     public init() {}

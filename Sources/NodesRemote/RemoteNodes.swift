@@ -280,9 +280,9 @@ private func wanInputs(image: Bool) -> [InputSpec] {
         // The Lightning 4-step LoRAs: about 10× fewer GPU seconds.
         InputSpec("fast", .bool, default: .bool(true), widget: .toggle),
         // 0 = automatic (4 with fast, else 40).
-        InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 60, step: 1)),
+        InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 60, step: 1), zeroLabel: "auto"),
         // 0 = automatic (none with fast, else Wan's 4 / 3).
-        InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5)),
+        InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5), zeroLabel: "auto"),
         // A Wan 2.2 fine-tune from the library, installed on the server (empty: Wan 2.2 itself).
         InputSpec("model", .string, default: .string(""), widget: .library("model")),
     ]
@@ -482,9 +482,9 @@ public struct RemoteQwenImageNode: NodeImplementation {
             // The Lightning 8-step LoRA: about 6× fewer GPU seconds.
             InputSpec("fast", .bool, default: .bool(true), widget: .toggle),
             // 0 = automatic (8 with fast, else 50).
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
             // True classifier-free guidance; 0 = automatic (1, none, with fast, else 4).
-            InputSpec("cfg", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5)),
+            InputSpec("cfg", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5), zeroLabel: "auto"),
             // A Qwen-Image fine-tune from the library, installed on the server (empty: Qwen-Image itself).
             InputSpec("model", .string, default: .string(""), widget: .library("model")),
         ],
@@ -521,10 +521,10 @@ public struct RemoteTextToMusicNode: NodeImplementation {
             InputSpec("seconds", .float, default: .double(60), widget: .number(min: 10, max: 600, step: 1)),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             // 0 = the turbo model's 8.
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
             InputSpec("planner", .bool, default: .bool(true), widget: .toggle),
             // 0 = auto.
-            InputSpec("bpm", .int, default: .int(0), widget: .number(min: 0, max: 300, step: 1)),
+            InputSpec("bpm", .int, default: .int(0), widget: .number(min: 0, max: 300, step: 1), zeroLabel: "auto"),
             InputSpec("key", .string, default: .string("auto"), widget: .choice(MusicKeys.all)),
             InputSpec("time_signature", .string, default: .string("auto"), widget: .choice(MusicKeys.timeSignatures)),
             InputSpec("language", .string, default: .string("auto"), widget: .choice(MusicKeys.languages)),
@@ -555,7 +555,7 @@ public struct RemoteTextToSoundNode: NodeImplementation {
             InputSpec("seconds", .float, default: .double(10), widget: .number(min: 1, max: 380, step: 0.5)),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             // 0 = the distilled model's 8.
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
         ],
         outputs: [OutputSpec("audio", .audio)])
     public init() {}

@@ -123,15 +123,20 @@ struct GraphEditorView: View {
             }
             .overlay(alignment: .bottomTrailing) { zoomControls.padding(12) }
             .overlay(alignment: .bottomLeading) { minimap.padding(12) }
-            .overlay(alignment: .bottom) { RunStatusPill().padding(.bottom, 16) }
             .overlay(alignment: .topLeading) { topBar.padding(12) }
+            // Top centre, clear of the zoom bar and minimap at the bottom.
+            .overlay(alignment: .top) { RunStatusPill().padding(.top, 12) }
             .onAppear {
                 viewSize = geo.size
                 if let v = doc.viewport {
                     zoom = v.zoom
                     pan = v.pan
                     didInitialFit = true
+                    // The canvas may have a different size than when the viewport was saved (the results pane
+                    // opened, say): keep what was in the middle in the middle.
+                    if let old = doc.viewportSize, geo.size.width > 0 { pan = Self.recentered(pan, from: old, to: geo.size) }
                 }
+                if geo.size.width > 0 { doc.viewportSize = geo.size }
                 fitOnceIfSized()
                 installScrollMonitor()
             }
@@ -149,8 +154,12 @@ struct GraphEditorView: View {
                 model.nodeAddRequest = nil
             }
             .onChange(of: model.selection) { _, s in if !s.isEmpty { selectedWire = nil } }
-            .onChange(of: geo.size) { _, s in
+            .onChange(of: geo.size) { old, s in
+                // Resizing (panels opening and closing) keeps the middle of the view where it was.
+                let from = old.width > 0 && old.height > 0 ? old : doc.viewportSize
+                if didInitialFit, let from, s.width > 0 { pan = Self.recentered(pan, from: from, to: s) }
                 viewSize = s
+                if s.width > 0 { doc.viewportSize = s }
                 fitOnceIfSized()
             }
             .onChange(of: model.editingPath) { _, _ in
@@ -472,6 +481,11 @@ struct GraphEditorView: View {
         let k = nz / zoom
         pan = CGSize(width: anchor.x - (anchor.x - pan.width) * k, height: anchor.y - (anchor.y - pan.height) * k)
         zoom = nz
+    }
+
+    /// The pan that keeps the view's centre on the same graph point when the canvas goes from one size to another.
+    static func recentered(_ pan: CGSize, from old: CGSize, to new: CGSize) -> CGSize {
+        CGSize(width: pan.width + (new.width - old.width) / 2, height: pan.height + (new.height - old.height) / 2)
     }
 
     /// Frames the graph the first time the editor has a real size.

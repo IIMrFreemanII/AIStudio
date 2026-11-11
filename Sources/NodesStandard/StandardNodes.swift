@@ -144,8 +144,8 @@ public struct EmptyLatentNode: NodeImplementation {
         type: "EmptyLatent", displayName: "Empty Latent", category: "latent",
         inputs: [
             // 0 = take the size the conditioning suggests (the condition image's aspect ratio), else 1024.
-            InputSpec("width", .int, default: .int(1024), widget: .number(min: 0, max: 2048, step: 32)),
-            InputSpec("height", .int, default: .int(1024), widget: .number(min: 0, max: 2048, step: 32)),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 0, max: 2048, step: 32), zeroLabel: "auto"),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 0, max: 2048, step: 32), zeroLabel: "auto"),
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}
@@ -163,11 +163,11 @@ public struct SamplerNode: NodeImplementation {
             InputSpec("conditioning", .conditioning),
             InputSpec("latent", .latent),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
             // < 1 with a VAE-encoded input latent: img2img strength. Inpainting (masked latent) uses 1.
             InputSpec("denoise", .float, default: .double(1), widget: .number(min: 0, max: 1, step: 0.05)),
             // Distilled guidance for models that take it (Flux); 0 = the model's default. Others ignore it.
-            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 20, step: 0.5)),
+            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 20, step: 0.5), zeroLabel: "auto"),
         ],
         outputs: [OutputSpec("latent", .latent)])
     public init() {}

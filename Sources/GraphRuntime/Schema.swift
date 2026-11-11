@@ -45,14 +45,17 @@ public struct InputSpec: Hashable, Sendable {
     public var defaultValue: JSONValue?
     public var widget: Widget?
     public var optional: Bool
+    /// What 0 means for a number input whose 0 is a sentinel ("auto", "all"); shown in place of the 0.
+    public var zeroLabel: String?
 
     public init(_ name: String, _ type: SocketType, default defaultValue: JSONValue? = nil, widget: Widget? = nil,
-                optional: Bool = false) {
+                optional: Bool = false, zeroLabel: String? = nil) {
         self.name = name
         self.type = type
         self.defaultValue = defaultValue
         self.widget = widget
         self.optional = optional
+        self.zeroLabel = zeroLabel
     }
 }
 

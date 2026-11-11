@@ -23,10 +23,10 @@ public struct TextToMusicNode: NodeImplementation {
             InputSpec("seconds", .float, default: .double(30), widget: .number(min: 10, max: 240, step: 1)),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             // 0 = the model's default.
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 20, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 20, step: 1), zeroLabel: "auto"),
             InputSpec("planner", .bool, default: .bool(true), widget: .toggle),
             // 0 = auto.
-            InputSpec("bpm", .int, default: .int(0), widget: .number(min: 0, max: 300, step: 1)),
+            InputSpec("bpm", .int, default: .int(0), widget: .number(min: 0, max: 300, step: 1), zeroLabel: "auto"),
             InputSpec("key", .string, default: .string("auto"), widget: .choice(MusicKeys.all)),
             InputSpec("time_signature", .string, default: .string("auto"), widget: .choice(MusicKeys.timeSignatures)),
             InputSpec("language", .string, default: .string("auto"), widget: .choice(MusicKeys.languages)),

@@ -64,6 +64,8 @@ final class WorkflowDocument: Identifiable {
 
     /// Zoom and pan of the graph editor, kept while the tab is in the background.
     @ObservationIgnored var viewport: (zoom: CGFloat, pan: CGSize)?
+    /// The canvas size when `viewport` was last saved, so a differently sized canvas can keep the same centre.
+    @ObservationIgnored var viewportSize: CGSize?
     /// The graph last written as this tab's draft.
     @ObservationIgnored var lastDraft: Graph?
 

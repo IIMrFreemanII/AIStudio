@@ -6,13 +6,24 @@ import SwiftUI
 /// for video and audio, A/B compare, and a strip of the tab's earlier results.
 struct ResultsPane: View {
     @Environment(AppModel.self) private var model
+    /// Only the title bar, with a hint: the tab has no results yet.
+    var collapsed = false
+
+    /// Whether the tab has anything to show: a result, a live preview, a file shown from Assets, or a run going.
+    static func hasContent(_ doc: WorkflowDocument, model: AppModel) -> Bool {
+        doc.previewImage != nil || doc.displayedImage != nil || doc.displayedURL != nil
+            || doc.displayedMediaURL != nil || !doc.outputs.isEmpty || model.runningDocID == doc.id
+    }
 
     var body: some View {
         let doc = model.active
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Text("Results").font(.mgHeadline)
-                if let url = doc.displayedURL, doc.previewImage == nil {
+                if collapsed {
+                    Text("None yet · ⌘↩ runs this workflow").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                        .lineLimit(1)
+                } else if let url = doc.displayedURL, doc.previewImage == nil {
                     Text(url.lastPathComponent).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -21,9 +32,11 @@ struct ResultsPane: View {
                     Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
                         .mgHelp("Reveal in Finder")
                 }
-                Button { model.openViewer() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
-                    .mgHelp("Open in the viewer (double-click the result)")
-                    .disabled(model.displayedResult == nil)
+                if !collapsed {
+                    Button { model.openViewer() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                        .mgHelp("Open in the viewer (double-click the result)")
+                        .disabled(model.displayedResult == nil)
+                }
                 Button { withAnimation { model.showResultsPane = false } } label: { Image(systemName: "chevron.down") }
                     .mgHelp("Hide the results pane (⌥⌘R)")
             }
@@ -34,9 +47,11 @@ struct ResultsPane: View {
             .background(MG.barOverContent)
             .overlay(alignment: .bottom) { MGDivider() }
             .overlay(alignment: .top) { MGDivider(gap: true) }
-            ResultContent(doc: doc, padding: 12)
-                .onTapGesture(count: 2) { model.openViewer() }
-                .overlay(alignment: .bottom) { if doc.outputs.count > 1 { ResultStrip(doc: doc) } }
+            if !collapsed {
+                ResultContent(doc: doc, padding: 12)
+                    .onTapGesture(count: 2) { model.openViewer() }
+                    .overlay(alignment: .bottom) { if doc.outputs.count > 1 { ResultStrip(doc: doc) } }
+            }
         }
         .background(MG.contentBackground)
     }
@@ -69,6 +84,12 @@ struct ResultContent: View {
                             MGMenuItem.button("Copy Image") { Self.copy(image) }
                         }
                     }
+            } else if model.runningDocID == doc.id {
+                // Running, before the first preview step arrives.
+                VStack(spacing: 10) {
+                    MGSpinner()
+                    Text("Running… the preview shows here as it samples").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                }
             } else {
                 MGEmptyState(symbol: "photo.on.rectangle.angled", title: "No results yet",
                              message: "Press ⌘↩ to run this workflow. Results also show on their Save and Preview nodes.")

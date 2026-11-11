@@ -432,9 +432,21 @@ struct ModelManagerView: View {
                     if entry.gated { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(MG.secondaryLabel) }
                 }
                 Text(entry.notes).font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
-                HStack(spacing: 8) {
+                // One quiet line: installed or not, size, license (a plain link, not a button).
+                HStack(spacing: 6) {
+                    if case .installed = status {
+                        Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(MG.success)
+                        Text("·")
+                    }
                     Text(String(format: "about %.1f GB", entry.approxGB))
-                    Link(entry.license, destination: URL(string: entry.licenseURL)!)
+                    Text("·")
+                    if let url = URL(string: entry.licenseURL) {
+                        Button { NSWorkspace.shared.open(url) } label: { Text(entry.license).underline() }
+                            .buttonStyle(.plain)
+                            .mgHelp("Read the license")
+                    } else {
+                        Text(entry.license)
+                    }
                 }
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 switch status {
@@ -459,17 +471,20 @@ struct ModelManagerView: View {
     func actions(_ entry: CatalogEntry, _ status: ModelStore.Status) -> some View {
         switch status {
         case .installed(let url):
-            VStack(alignment: .trailing, spacing: 4) {
-                Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(MG.success).font(.mgSubheadline)
-                HStack {
-                    if entry.kind == .image {
-                        Button("Use") { model.applyModelPath(url.path, undoManager: nil); model.preloadModel() }
-                    }
-                    Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
-                    Button(role: .destructive) { trashing = entry } label: { Image(systemName: "trash") }
+            HStack(spacing: 6) {
+                if entry.kind == .image {
+                    Button("Use") { model.applyModelPath(url.path, undoManager: nil); model.preloadModel() }
                 }
-                .controlSize(.small)
+                MGMenuButton(kind: .icon) {
+                    MGMenuItem.button("Show in Finder", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    MGMenuItem.divider
+                    MGMenuItem.button("Delete…", icon: "trash", destructive: true) { trashing = entry }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .mgHelp("Show in Finder or delete")
             }
+            .controlSize(.small)
         case .downloading:
             Button("Stop") { store.cancel(entry) }
         case .checking:

@@ -123,23 +123,39 @@ struct ToolCard: View {
     }
 }
 
-/// A unified diff, added lines green and removed ones red.
+/// A unified diff: line numbers, a +/− column, added lines green and removed ones red, ⋯ between hunks.
 struct DiffView: View {
     let diff: String
 
     var body: some View {
+        let rows = DiffNumbers.rows(diff)
+        let digits = String(rows.compactMap(\.number).max() ?? 0).count
+        let numbered = rows.contains { $0.number != nil }
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated()), id: \.offset) { _, line in
-                    let s = String(line)
-                    let added = s.hasPrefix("+"), removed = s.hasPrefix("-"), hunk = s.hasPrefix("@@")
-                    Text(hunk ? "⋯" : s.isEmpty ? " " : s)
+                ForEach(rows) { row in
+                    if row.gap {
+                        Text("⋯").font(.mgMono).foregroundStyle(MG.tertiaryLabel)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, numbered ? CGFloat(digits) * 8 + 14 : 6)
+                    } else {
+                        let tint = row.sign == "+" ? MG.success : row.sign == "-" ? MG.destructive : MG.secondaryLabel
+                        HStack(alignment: .firstTextBaseline, spacing: 0) {
+                            if numbered {
+                                Text(row.number.map(String.init) ?? "")
+                                    .foregroundStyle(MG.tertiaryLabel)
+                                    .frame(width: CGFloat(digits) * 8, alignment: .trailing)
+                                    .padding(.trailing, 6)
+                            }
+                            Text(row.sign.map(String.init) ?? " ").foregroundStyle(tint).frame(width: 12, alignment: .leading)
+                            Text(row.text.isEmpty ? " " : row.text).foregroundStyle(tint)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         .font(.mgMono)
-                        .foregroundStyle(hunk ? MG.tertiaryLabel : added ? MG.success : removed ? MG.destructive : MG.secondaryLabel)
-                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(added ? MG.success.opacity(0.10) : removed ? MG.destructive.opacity(0.10) : .clear)
+                        .background(row.sign == "+" ? MG.success.opacity(0.10) : row.sign == "-" ? MG.destructive.opacity(0.10) : .clear)
+                    }
                 }
             }
             .textSelection(.enabled)
@@ -354,13 +370,6 @@ struct CodingHeaderItems: View {
             }
             .mgHelp("Its own git worktree on \(w.branch), cut from \(w.base)")
         }
-        if doc.isCoding, doc.isStreaming {
-            Button { model.moveTaskToNewSession(doc) } label: {
-                Label("New Session", systemImage: "arrow.up.forward.square").lineLimit(1)
-            }
-            .buttonStyle(.mg(.bordered))
-            .mgHelp("Move Task to New Session: stop here and carry on in a separate session")
-        }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {
                 MGMenuItem.header("Running in the background")
@@ -403,6 +412,21 @@ struct CodingHeaderItems: View {
                 }
             }
             .mgHelp(doc.isGraphHelper ? helperDetail : doc.mode.detail)
+        }
+        if doc.isCoding {
+            MGMenuButton(kind: .icon) {
+                MGMenuItem.button("Move Task to New Session", icon: "arrow.up.forward.square", enabled: doc.isStreaming) {
+                    model.moveTaskToNewSession(doc)
+                }
+                if let url = doc.projectURL {
+                    MGMenuItem.button("Show Project in Finder", icon: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .mgHelp("More: move the running task to its own session, show the project")
         }
     }
 

@@ -13,6 +13,13 @@ struct ContentView: View {
     @AppStorage("sidebarPanel") private var panelRaw = SidebarPanel.workflows.rawValue
     @AppStorage("sidebarOpen") private var panelOpen = true
 
+    var graphEditor: some View {
+        GraphEditorView(doc: model.active)
+            .id(model.activeTabID)
+            .frame(minHeight: 240)
+            .overlay(alignment: .bottom) { ErrorBanner() }
+    }
+
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
@@ -36,17 +43,16 @@ struct ContentView: View {
                     TabStrip()
                     if let chat = model.activeChat {
                         ChatView(doc: chat).id(chat.id)
-                    } else {
-                    VSplitView {
-                        GraphEditorView(doc: model.active)
-                            .id(model.activeTabID)
-                            .frame(minHeight: 240)
-                            .overlay(alignment: .bottom) { ErrorBanner() }
-                        if model.showResultsPane {
+                    } else if model.showResultsPane && ResultsPane.hasContent(model.active, model: model) {
+                        VSplitView {
+                            graphEditor
                             ResultsPane()
                                 .frame(minHeight: 150, idealHeight: 280, maxHeight: .infinity)
                         }
-                    }
+                    } else {
+                        // Nothing to show yet: the results pane is just its title bar, so the graph gets the room.
+                        graphEditor
+                        if model.showResultsPane { ResultsPane(collapsed: true) }
                     }
                 }
                 .background(MG.windowBackground)
@@ -132,7 +138,8 @@ struct ContentView: View {
                 .accessibilityLabel("XY Plot")
             RunTargetPicker()
             Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
-                Label(model.isRunning ? "Queue" : "Generate", systemImage: "sparkles")
+                let verb = model.isRunning ? "Queue" : "Generate"
+                Label(model.batchCount > 1 ? "\(verb) \(model.batchCount)" : verb, systemImage: "sparkles")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(.mg(.prominent))
@@ -179,12 +186,13 @@ struct MemoryGauge: View {
         HStack(spacing: 6) {
             MGProgress(value: min(used / total, 1), tint: used / total > 0.8 ? MG.destructive : MG.accent)
                 .frame(width: 70)
-            Text(String(format: "%.1f GB", used / 1e9))
+            // Binary GB, the way Macs are sold ("48 GB"), not 10⁹ bytes.
+            Text(String(format: "%.1f of %.0f GB", used / 1_073_741_824, total / 1_073_741_824))
                 .font(.mgSubheadline.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
-        .mgHelp("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1e9)) of "
-              + "\(String(format: "%.0f", total / 1e9)) GB · click for loaded models")
+        .mgHelp("\(model.modelStatus) — MLX active memory \(String(format: "%.1f", used / 1_073_741_824)) of "
+              + "\(String(format: "%.0f", total / 1_073_741_824)) GB · click for loaded models")
     }
 }
 

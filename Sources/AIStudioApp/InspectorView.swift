@@ -145,24 +145,13 @@ struct WorkflowInspector: View {
                     .font(.mgSubheadline).foregroundStyle(.secondary)
             }
             MGSection("Model") {
-                LabeledContent("Status") {
+                LabeledContent("Loaded") {
                     HStack(spacing: 6) {
                         if model.modelLoading { MGSpinner().controlSize(.mini) }
                         Text(model.modelStatus).lineLimit(1).truncationMode(.middle)
                     }
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            Button { model.enqueue(undoManager: model.activeUndoManager) } label: {
-                Label(model.batchCount > 1 ? "Generate \(model.batchCount)" : "Generate", systemImage: "sparkles")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.mg(.prominent))
-            .controlSize(.large)
-            .padding(12)
-            .mgChrome(MG.barTint, material: .headerView)
-            .overlay(alignment: .top) { MGDivider() }
         }
         .onAppear { name = doc.name }
         .onChange(of: doc.id) { _, _ in name = model.active.name }
@@ -279,12 +268,12 @@ struct NodeInspector: View {
             }
         case (.int, _):
             MGFormRow(spec.name) {
-                TextField(spec.name, value: b.int(node.id, spec.name), format: .number.grouping(.never))
+                TextField(spec.name, value: b.int(node.id, spec.name), format: spec.intFormat)
                     .multilineTextAlignment(.trailing).frame(maxWidth: 120)
             }
         case (.float, _):
             MGFormRow(spec.name) {
-                TextField(spec.name, value: b.double(node.id, spec.name), format: .number)
+                TextField(spec.name, value: b.double(node.id, spec.name), format: spec.doubleFormat)
                     .multilineTextAlignment(.trailing).frame(maxWidth: 120)
             }
         case (.bool, _):

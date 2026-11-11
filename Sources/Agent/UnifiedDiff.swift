@@ -37,23 +37,45 @@ public enum UnifiedDiff {
         return out
     }
 
-    /// Unified-diff text with `context` unchanged lines around each change ("@@" between distant hunks).
+    /// Unified-diff text with `context` unchanged lines around each change, each hunk headed
+    /// "@@ -oldStart,oldCount +newStart,newCount @@" (1-based line numbers).
     public static func text(_ old: String, _ new: String, path: String = "", context: Int = 3) -> String {
         let ls = lines(old, new)
         let changed = ls.indices.filter { if case .same = ls[$0] { return false }; return true }
         guard !changed.isEmpty else { return "" }
+        // Each entry's line number in the old and the new text.
+        var numbers: [(old: Int, new: Int)] = []
+        var o = 1, n = 1
+        for l in ls {
+            numbers.append((o, n))
+            switch l {
+            case .same: o += 1; n += 1
+            case .removed: o += 1
+            case .added: n += 1
+            }
+        }
         var keep = Set<Int>()
         for c in changed { for k in max(0, c - context)...min(ls.count - 1, c + context) { keep.insert(k) } }
-        var out = path.isEmpty ? [] : ["--- \(path)", "+++ \(path)"]
-        var last = -2
+        // Runs of consecutive kept entries are the hunks.
+        var hunks: [[Int]] = []
         for k in keep.sorted() {
-            if k != last + 1 { out.append("@@") }
-            switch ls[k] {
-            case .same(let s): out.append(" " + s)
-            case .removed(let s): out.append("-" + s)
-            case .added(let s): out.append("+" + s)
+            if let last = hunks.last?.last, last == k - 1 { hunks[hunks.count - 1].append(k) } else { hunks.append([k]) }
+        }
+        var out = path.isEmpty ? [] : ["--- \(path)", "+++ \(path)"]
+        for hunk in hunks {
+            let oldCount = hunk.filter { if case .added = ls[$0] { return false }; return true }.count
+            let newCount = hunk.filter { if case .removed = ls[$0] { return false }; return true }.count
+            // An empty side starts at the line before it (diff's convention).
+            let first = numbers[hunk[0]]
+            out.append("@@ -\(oldCount == 0 ? first.old - 1 : first.old),\(oldCount) "
+                       + "+\(newCount == 0 ? first.new - 1 : first.new),\(newCount) @@")
+            for k in hunk {
+                switch ls[k] {
+                case .same(let s): out.append(" " + s)
+                case .removed(let s): out.append("-" + s)
+                case .added(let s): out.append("+" + s)
+                }
             }
-            last = k
         }
         return out.joined(separator: "\n")
     }
@@ -63,5 +85,55 @@ public enum UnifiedDiff {
         lines(old, new).reduce(into: (0, 0)) { acc, l in
             if case .added = l { acc.0 += 1 } else if case .removed = l { acc.1 += 1 }
         }
+    }
+}
+
+/// A unified diff split into rows with line numbers (new-file numbers; old ones for removed lines), read from the
+/// "@@ -a,b +c,d @@" hunk headers. Diffs saved before the headers had numbers ("@@" alone) get no numbers.
+public enum DiffNumbers {
+    public struct Row: Identifiable, Sendable {
+        public let id: Int
+        public var number: Int?
+        public var sign: Character?
+        public var text: String
+        public var gap = false
+    }
+
+    public static func rows(_ diff: String) -> [Row] {
+        var rows: [Row] = []
+        var old: Int?, new: Int?
+        for (i, line) in diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            let s = String(line)
+            if s.hasPrefix("@@") {
+                (old, new) = starts(s)
+                // No ⋯ before a first hunk that starts at the top of the file.
+                if !(rows.isEmpty && (new ?? 0) <= 1 && new != nil) { rows.append(Row(id: i, text: "⋯", gap: true)) }
+                continue
+            }
+            if rows.isEmpty, old == nil, s.hasPrefix("--- ") || s.hasPrefix("+++ ") { continue }
+            switch s.first {
+            case "+":
+                rows.append(Row(id: i, number: new, sign: "+", text: String(s.dropFirst())))
+                new = new.map { $0 + 1 }
+            case "-":
+                rows.append(Row(id: i, number: old, sign: "-", text: String(s.dropFirst())))
+                old = old.map { $0 + 1 }
+            default:
+                rows.append(Row(id: i, number: new, sign: nil, text: String(s.dropFirst())))
+                old = old.map { $0 + 1 }
+                new = new.map { $0 + 1 }
+            }
+        }
+        return rows
+    }
+
+    /// The old and new start lines in "@@ -3,4 +3,5 @@" (nil for a bare "@@").
+    public static func starts(_ header: String) -> (Int?, Int?) {
+        var old: Int?, new: Int?
+        for part in header.split(separator: " ") {
+            let number = Int(part.dropFirst().prefix { $0 != "," })
+            if part.hasPrefix("-") { old = number } else if part.hasPrefix("+") { new = number }
+        }
+        return (old, new)
     }
 }

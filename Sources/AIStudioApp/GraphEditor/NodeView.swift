@@ -56,15 +56,15 @@ struct NodeView: View {
     /// The node's latest output (Save / Preview nodes), and the live step preview while it samples.
     var result: NodeResult? = nil
     var livePreview: CGImage? = nil
-    /// The editor's zoom: zoomed out, widgets turn into plain values and titles grow so they stay readable.
+    /// The editor's zoom: zoomed out, a node shows just a big title, so it stays readable.
     var zoom: CGFloat = 1
     /// Model inputs whose wire is hidden: input → the node it comes from.
     var modelSources: [String: String] = [:]
     /// Links in and out (shown on a collapsed node).
     var linkCount = 0
 
-    /// 2: full detail; 1: values as text, no socket labels; 0: just the title (and result).
-    var detail: Int { zoom >= 0.6 ? 2 : zoom >= 0.35 ? 1 : 0 }
+    /// 2: full detail; 0: just a big title (and the result). Below 60% the values would be too small to read.
+    var detail: Int { zoom >= 0.6 ? 2 : 0 }
 
     var body: some View {
         let rows = NodeLayout.rows(node, schema)
@@ -83,9 +83,7 @@ struct NodeView: View {
                         .frame(height: NodeLayout.row)
                     }
                     ForEach(rows.widgets, id: \.name) { spec in
-                        Group {
-                            if detail == 2 { widget(spec) } else { plainValue(spec) }
-                        }
+                        widget(spec)
                         .frame(height: NodeLayout.widgetHeight(spec))
                         .padding(.horizontal, 10)
                     }
@@ -215,24 +213,6 @@ struct NodeView: View {
     }
 
     /// Zoomed out: a widget's value as plain text (cheaper than a live field, and readable).
-    func plainValue(_ spec: InputSpec) -> some View {
-        let value: String = {
-            switch bindings.get(node.id, spec.name) {
-            case .int(let i)?: return String(i)
-            case .double(let d)?: return d.formatted(.number.precision(.fractionLength(0...3)))
-            case .bool(let b)?: return b ? "on" : "off"
-            case .string(let s)?: return s.isEmpty ? "—" : s
-            default: return "—"
-            }
-        }()
-        return HStack(spacing: 6) {
-            Text(spec.name).foregroundStyle(MG.secondaryLabel)
-            Spacer(minLength: 4)
-            Text(verbatim: value).lineLimit(1).truncationMode(.middle)
-        }
-        .font(.mg(size: 11))
-    }
-
     @ViewBuilder var statusBadge: some View {
         switch state {
         case .running(let step, let total)?:
@@ -362,9 +342,9 @@ struct NodeView: View {
                 Group {
                     switch spec.type {
                     case .int:
-                        TextField("", value: bindings.int(node.id, spec.name), format: .number.grouping(.never))
+                        TextField("", value: bindings.int(node.id, spec.name), format: spec.intFormat)
                     case .float:
-                        TextField("", value: bindings.double(node.id, spec.name), format: .number)
+                        TextField("", value: bindings.double(node.id, spec.name), format: spec.doubleFormat)
                     default:
                         TextField("", text: bindings.string(node.id, spec.name))
                     }

@@ -23,6 +23,9 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The rail's caption under the icon (short enough for its width).
+    var caption: String { self == .nodes ? "Nodes" : title }
+
     var symbol: String {
         switch self {
         case .workflows: return "folder"
@@ -43,22 +46,29 @@ struct SidebarRail: View {
     @Binding var open: Bool
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             ForEach(SidebarPanel.allCases) { p in
                 Button {
                     if open && selection == p { open = false } else { selection = p; open = true }
                 } label: {
-                    Image(systemName: p.symbol)
-                        .font(.system(size: 15))
-                        .frame(width: 32, height: 32)
+                    // Icon with a small caption, so the rail reads without hovering.
+                    VStack(spacing: 2) {
+                        Image(systemName: p.symbol)
+                            .font(.system(size: 15))
+                            .frame(height: 20)
+                        Text(p.caption).font(.mg(size: 9)).lineLimit(1).fixedSize()
+                    }
+                        .frame(width: 54, height: 42)
                         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
                             .fill(open && selection == p ? MG.selection : .clear))
                         .foregroundStyle(open && selection == p ? MG.accent : MG.secondaryLabel)
+                        .contentShape(Rectangle())
                         .overlay(alignment: .topTrailing) {
                             if p == .queue, model.pendingCount + (model.isRunning ? 1 : 0) > 0 {
                                 Text("\(model.pendingCount + (model.isRunning ? 1 : 0))")
                                     .font(.mg(size: 9, weight: .bold)).foregroundStyle(MG.accentForeground)
                                     .padding(.horizontal, 4).background(Capsule().fill(MG.warning))
+                                    .offset(x: -8, y: 1)
                             }
                         }
                 }
@@ -68,7 +78,7 @@ struct SidebarRail: View {
             Spacer()
         }
         .padding(.vertical, 10)
-        .frame(width: 48)
+        .frame(width: 60)
         .mgChrome(MG.sidebarTint)
         .overlay(alignment: .trailing) { MGDivider(vertical: true) }
     }
