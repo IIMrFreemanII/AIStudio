@@ -452,16 +452,24 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   and the model's settings show the last start's breakdown, and the container log prints it.
 - **Faster starts** (the model's settings, or `PATCH` with these fields):
   - `loadFormat: "runai"` (**Fast weight loading**): vLLM reads the weights with Run:ai's streamer, many reads at
-    once (`AISTUDIO_RUNAI_CONCURRENCY`, default 16), instead of one shard at a time; usually much faster from the
-    network volume. vLLM models only.
+    once (`AISTUDIO_RUNAI_CONCURRENCY`, default 16), instead of one shard at a time. vLLM models only. It's made
+    for object storage and network file systems; on Modal's volume it was *slower*. Measured on 2026-11-11 with
+    Qwen3.8-Flash-Next FP8 (173 GiB) on 2× H200: the default loader read the weights in 76–128 s (start 5 min 42 s
+    – 6 min 48 s), the streamer in 165 s (start 7 min 1 s). Leave it off on Modal unless a measurement says
+    otherwise.
   - `snapshot: true` (**GPU snapshot**, experimental): the model runs in the `LLMSnap` class. Its first start loads
     the weights, warms the engine up, puts it to sleep (`--enable-sleep-mode`: weights to CPU memory) and Modal
     saves a GPU memory snapshot; later starts restore it and wake the engine instead of loading and compiling. Only
     for vLLM models on one GPU (Modal's GPU snapshots are alpha and don't handle several GPUs), only on a deployed
     app, and it can take two or three starts before the snapshot is used. Each settings change makes a new
     snapshot. If a model fails to start with it, turn it off.
-  - vLLM's compile, inductor and Triton caches live on the models volume (`llm/.cache/`), so only the first start
-    of a model on a GPU kind compiles from scratch.
+  - vLLM's compile, inductor and Triton caches, and FlashInfer's kernel builds, live on the models volume
+    (`llm/.cache/`), so only the first start of a model on a GPU kind compiles from scratch. The vLLM image also
+    has FlashInfer's prebuilt kernels (`flashinfer-cubin`, `flashinfer-jit-cache`, `AISTUDIO_FLASHINFER` /
+    `AISTUDIO_FLASHINFER_CUDA` must match vLLM's FlashInfer and the CUDA image): without them, the first start of
+    an MoE model builds FlashInfer's MoE kernels on the container's CPUs, which took over 25 minutes.
+  - A start that isn't ready after `AISTUDIO_LLM_BOOT_TIMEOUT` (default 30 min) fails with the engine's last log
+    lines, and **Stop** ends a start that's still loading.
 - Deploy settings: `AISTUDIO_LLM_IDLE`, `AISTUDIO_VLLM` (the vLLM version, default 0.33.0), `AISTUDIO_CUDA_IMAGE`,
   `AISTUDIO_LLAMA_IMAGE` (llama.cpp's server image, default `ghcr.io/ggml-org/llama.cpp:server-cuda`),
   `AISTUDIO_LLM_MAX_GPUS` (default 8).
