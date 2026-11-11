@@ -46,6 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-sessions") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runSessions(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-chat") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -194,7 +201,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Open tabs and their unsaved changes come back on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
-            AppDelegate.model?.chats.forEach { $0.jobs.stopAll() }
+            if let model = AppDelegate.model {
+                // A reply streaming in the background is stopped and saved (the tab's text stays).
+                for doc in model.chats + model.helperChats {
+                    if doc.isStreaming || doc.permission != nil || doc.question != nil || doc.plan != nil {
+                        model.stopReply(doc)
+                        model.saveChat(doc)
+                    }
+                }
+                model.chats.forEach { $0.jobs.stopAll() }
+            }
             AppDelegate.model?.saveSession()
         }
     }

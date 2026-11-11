@@ -182,7 +182,13 @@ struct PermissionCard: View {
         case .edit: return "Allow this change to \(request.preview.paths.first.map(\.lastPathComponent) ?? "the file")?"
         case .execute: return "Run this command?"
         case .graphEdit: return "Change the workflow?"
-        case .run: return "Run the workflow?"
+        case .run:
+            let title = (try? ToolArgs(json: request.call.arguments))?.string("title")
+            switch request.call.name {
+            case "start_session": return "Start a new session\(title.map { " “\($0)”" } ?? "")?"
+            case "hand_off": return "Hand this task off to a new session?"
+            default: return "Run the workflow?"
+            }
         case .network: return "Read \(request.preview.domain ?? "this web page")?"
         }
     }
@@ -226,6 +232,7 @@ struct TodoListView: View {
 
 /// A coding chat's project folder and permission mode, in the chat header.
 struct CodingHeaderItems: View {
+    @Environment(AppModel.self) private var model
     let doc: ChatDocument
 
     var allowed: String {
@@ -240,6 +247,37 @@ struct CodingHeaderItems: View {
             }
             .buttonStyle(.mg(.bordered))
             .mgHelp(url.path + " — the agent works in this folder (click to show it in Finder)")
+        }
+        if let w = doc.transcript.worktree {
+            MGMenuButton(kind: .bordered) {
+                MGMenuItem.button("Merge into \(w.base)…", icon: "arrow.triangle.merge") { model.mergeWorktree(doc) }
+                if doc.canCreatePR {
+                    MGMenuItem.button("Create Pull Request…", icon: "arrow.up.right.square") { model.createPullRequest(doc) }
+                }
+                MGMenuItem.button("Show Worktree in Finder", icon: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)])
+                }
+                MGMenuItem.divider
+                MGMenuItem.button("Remove Worktree…", icon: "trash") { model.removeWorktree(doc) }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.triangle.branch").foregroundStyle(MG.secondaryLabel)
+                    Text(w.branch).lineLimit(1).truncationMode(.middle)
+                    if let s = doc.worktreeStatus {
+                        if s.ahead > 0 { Text("+\(s.ahead)").foregroundStyle(MG.success) }
+                        if s.dirty > 0 { Text("•\(s.dirty)").foregroundStyle(MG.warning) }
+                    }
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
+                }
+            }
+            .mgHelp("Its own git worktree on \(w.branch), cut from \(w.base)")
+        }
+        if doc.isCoding, doc.isStreaming {
+            Button { model.moveTaskToNewSession(doc) } label: {
+                Label("New Session", systemImage: "arrow.up.forward.square").lineLimit(1)
+            }
+            .buttonStyle(.mg(.bordered))
+            .mgHelp("Move Task to New Session: stop here and carry on in a separate session")
         }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {

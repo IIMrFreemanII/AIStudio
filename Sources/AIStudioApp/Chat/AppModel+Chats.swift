@@ -37,12 +37,44 @@ extension AppModel {
         panel.canChooseFiles = false
         panel.prompt = "Open in Chat"
         panel.message = "The coding agent reads, edits and runs commands in this folder (asking first, by default)."
-        if panel.runModal() == .OK, let url = panel.url { newCodingChat(project: url) }
+        let box = NSButton(checkboxWithTitle: "Work in a new git worktree", target: nil, action: nil)
+        box.state = (UserDefaults.standard.object(forKey: "newChatWorktree") as? Bool ?? true) ? .on : .off
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 36))
+        box.frame = NSRect(x: 10, y: 6, width: 280, height: 24)
+        holder.addSubview(box)
+        panel.accessoryView = holder
+        panel.isAccessoryViewDisclosed = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let wanted = box.state == .on
+        if persistSettings { UserDefaults.standard.set(wanted, forKey: "newChatWorktree") }
+        guard wanted else { newCodingChat(project: url); return }
+        Task { @MainActor in
+            guard let repo = await GitWorktree.repoRoot(url) else { newCodingChat(project: url); return }
+            let f = DateFormatter()
+            f.dateFormat = "yyMMdd-HHmm"
+            let base = await GitWorktree.currentBranch(repo)
+            do {
+                let made = try await GitWorktree.create(repo: repo, branch: worktreeBranchPrefix + "session-" + f.string(from: Date()),
+                                                        base: base)
+                let doc = newCodingChat(project: made.path)
+                doc.transcript.title = url.lastPathComponent
+                doc.transcript.worktree = SessionWorktree(repo: repo.path, path: made.path.path, branch: made.branch,
+                                                          base: base ?? "HEAD")
+                refreshWorktreeStatus(doc)
+            } catch {
+                let doc = newCodingChat(project: url)
+                doc.attachNote = "Couldn't make a worktree: \(error.localizedDescription)"
+            }
+        }
     }
 
     /// Opens a saved chat (or brings its tab to the front).
     func openChat(_ id: UUID) {
-        if chats.contains(where: { $0.id == id }) { activeChatID = id; return }
+        if let doc = chats.first(where: { $0.id == id }) {
+            doc.tabOpen = true
+            activeChatID = id
+            return
+        }
         // A tab's graph helper opens docked on that tab.
         if let wf = tabs.first(where: { $0.helperChatID == id }) {
             activate(wf.id)
@@ -50,32 +82,52 @@ extension AppModel {
             showHelper = true
             return
         }
-        guard let t = chatStore.load(id) else { reloadChats(); return }
+        guard var t = chatStore.load(id) else { reloadChats(); return }
+        t.stopRunningTools()
         chats.append(ChatDocument(transcript: t))
         activeChatID = id
     }
 
     func activateChat(_ id: UUID) {
-        guard chats.contains(where: { $0.id == id }) else { return }
+        guard let doc = chats.first(where: { $0.id == id }) else { return }
+        doc.tabOpen = true
         activeChatID = id
     }
 
     func closeChat(_ id: UUID) {
         guard let i = chats.firstIndex(where: { $0.id == id }) else { return }
         let doc = chats[i]
-        doc.task?.cancel()
-        doc.jobs.stopAll()
+        let tabs = chats.filter(\.tabOpen)
+        let position = tabs.firstIndex { $0 === doc } ?? 0
+        if doc.isBusy {
+            // A working session goes on in the background: its tab closes, nothing stops.
+            doc.tabOpen = false
+            saveChat(doc)
+        } else {
+            doc.task?.cancel()
+            doc.jobs.stopAll()
+            saveChat(doc)
+            chats.remove(at: i)
+        }
+        if activeChatID == id {
+            let rest = chats.filter(\.tabOpen)
+            activeChatID = rest.isEmpty ? nil : rest[min(position, rest.count - 1)].id
+        }
+    }
+
+    /// Saves and unloads a hidden session that has nothing left going on.
+    func unloadIfHidden(_ doc: ChatDocument) {
+        guard !doc.tabOpen, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id else { return }
         saveChat(doc)
-        chats.remove(at: i)
-        if activeChatID == id { activeChatID = chats.isEmpty ? nil : chats[min(i, chats.count - 1)].id }
+        chats.removeAll { $0 === doc }
     }
 
     func deleteChat(_ id: UUID) {
         if let doc = chats.first(where: { $0.id == id }) {
-            doc.task?.cancel()
+            stopReply(doc)
             doc.jobs.stopAll()
             chats.removeAll { $0.id == id }
-            if activeChatID == id { activeChatID = chats.last?.id }
+            if activeChatID == id { activeChatID = chats.last { $0.tabOpen }?.id }
         }
         chatStore.delete(id, useTrash: !Self.isAutomatedRun)
         reloadChats()
@@ -140,6 +192,7 @@ extension AppModel {
         doc.transcript.append(turn)
         doc.pending = []
         doc.replyTo = nil
+        doc.autoContinues = 0
         reply(doc)
     }
 
@@ -232,7 +285,7 @@ extension AppModel {
             let inline = llm.model(key)?.reasoningParser == nil
             let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
-            var tools: [any AgentTool] = CodingTools.all + [WebFetchTool(), ExitPlanTool(), task]
+            var tools: [any AgentTool] = CodingTools.all + [WebFetchTool(), ExitPlanTool(), task] + SessionTools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             var setup = AgentSetup(tools: tools, root: root) {
@@ -378,34 +431,41 @@ extension AppModel {
             ctx.checkpoints = checkpoints(for: doc)
             ctx.turnID = sent.turns.last { $0.role == .user && $0.summary != true }?.id
             ctx.jobs = doc.jobs
+            ctx.sessions = AppSessionHost(model: self, parent: doc.id, depth: doc.transcript.depth ?? 0)
             if !doc.jobsObserved {
                 doc.jobsObserved = true
-                doc.jobs.onChange = { [weak doc] in
+                doc.jobs.onChange = { [weak self, weak doc] in
                     Task { @MainActor in
                         guard let doc else { return }
                         doc.runningJobs = doc.jobs.running.map(\.id)
+                        if doc.runningJobs.isEmpty, !doc.isStreaming { self?.unloadIfHidden(doc) }
                     }
                 }
             }
         }
-        ctx.approvePlan = { [weak doc] callID, plan in
+        doc.onPendingChange = { [weak self, weak doc] in
+            if let doc { self?.sessionChanged(doc) }
+        }
+        ctx.approvePlan = { [weak self, weak doc] callID, plan in
             await withCheckedContinuation { cont in
                 Task { @MainActor in
                     guard let doc else { cont.resume(returning: .keepPlanning(nil)); return }
                     doc.plan = PendingPlan(callID: callID, plan: plan)
                     doc.planAnswer = cont
+                    self?.sessionChanged(doc)
                 }
             }
         }
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
         }
-        ctx.askUser = { [weak doc] callID, questions in
+        ctx.askUser = { [weak self, weak doc] callID, questions in
             await withCheckedContinuation { cont in
                 Task { @MainActor in
                     guard let doc else { cont.resume(returning: nil); return }
                     doc.question = PendingQuestion(callID: callID, questions: questions)
                     doc.questionAnswer = cont
+                    self?.sessionChanged(doc)
                 }
             }
         }
@@ -446,12 +506,13 @@ extension AppModel {
                 }
                 let outcome = try await AgentLoop.run(
                     client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
-                    ask: { [weak doc] request in
+                    ask: { [weak self, weak doc] request in
                         await withCheckedContinuation { cont in
                             Task { @MainActor in
                                 guard let doc else { cont.resume(returning: .deny); return }
                                 doc.permissionAnswer = cont
                                 doc.permission = request
+                                self?.sessionChanged(doc)
                             }
                         }
                     },
@@ -542,7 +603,10 @@ extension AppModel {
             doc.engine = nil
             doc.task = nil
             doc.transcript.updated = Date()
+            self?.sessionChanged(doc, finished: true)
             self?.saveChat(doc)
+            self?.sessionRunEnded(doc)
+            self?.unloadIfHidden(doc)
             await self?.llm.refreshStatus(key)
         }
     }
@@ -552,7 +616,7 @@ extension AppModel {
     /// The open chat tabs and the one in front, for the next launch (transcripts are saved after each reply).
     func saveOpenChats() {
         guard persistSettings, !Self.isAutomatedRun else { return }
-        let ids = chats.filter { !$0.transcript.turns.isEmpty }.map(\.id.uuidString)
+        let ids = chats.filter { $0.tabOpen && !$0.transcript.turns.isEmpty }.map(\.id.uuidString)
         UserDefaults.standard.set(ids, forKey: "openChats")
         UserDefaults.standard.set(activeChatID?.uuidString, forKey: "activeChat")
     }
@@ -561,7 +625,10 @@ extension AppModel {
         reloadChats()
         guard persistSettings, !Self.isAutomatedRun else { return }
         for s in UserDefaults.standard.stringArray(forKey: "openChats") ?? [] {
-            if let id = UUID(uuidString: s), let t = chatStore.load(id) { chats.append(ChatDocument(transcript: t)) }
+            if let id = UUID(uuidString: s), var t = chatStore.load(id) {
+                t.stopRunningTools()
+                chats.append(ChatDocument(transcript: t))
+            }
         }
         if let s = UserDefaults.standard.string(forKey: "activeChat"), let id = UUID(uuidString: s),
            chats.contains(where: { $0.id == id }) {

@@ -70,7 +70,7 @@ final class AppModel {
     /// The open workflows, in tab order; there is always at least one.
     var tabs: [WorkflowDocument]
     /// The active workflow; choosing one brings it in front of a chat.
-    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil } } }
+    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil }; markFrontViewed() } }
     var active: WorkflowDocument { tabs.first { $0.id == activeTabID } ?? tabs[0] }
     var activeUndoManager: UndoManager { active.undoManager }
 
@@ -79,13 +79,16 @@ final class AppModel {
     /// Open chat tabs, after the workflow tabs in the tab strip.
     var chats: [ChatDocument] = []
     /// The chat in front of the graph (nil: the active workflow is in front).
-    var activeChatID: UUID?
+    var activeChatID: UUID? { didSet { markFrontViewed() } }
     var activeChat: ChatDocument? { chats.first { $0.id == activeChatID } }
     /// The graph helpers of workflow tabs, while open (docked, not tabs).
     var helperChats: [ChatDocument] = []
     /// The graph helper panel next to the graph.
     var showHelper = UserDefaults.standard.bool(forKey: "showHelper") {
-        didSet { if persistSettings && !Self.isAutomatedRun { UserDefaults.standard.set(showHelper, forKey: "showHelper") } }
+        didSet {
+            if persistSettings && !Self.isAutomatedRun { UserDefaults.standard.set(showHelper, forKey: "showHelper") }
+            markFrontViewed()
+        }
     }
     /// Saved chats, newest first (Chats panel).
     var chatSummaries: [ChatSummary] = []
@@ -93,6 +96,7 @@ final class AppModel {
     @ObservationIgnored lazy var llm: LLMCatalog = {
         let c = LLMCatalog(connections: connections)
         c.focus = { [weak self] in self?.activeChat?.modelKey }
+        c.working = { [weak self] in self?.workingModels ?? [] }
         return c
     }()
 

@@ -285,6 +285,10 @@ public enum ProjectContext {
         Run the project's build or tests after changes when you can, and report what you verified. When you're \
         done, say briefly what you changed. \(modeLine)
 
+        Sessions: for an independent task that should run in parallel, start_session starts a separate session \
+        (its own worktree by default) that reports back here; propose_session only suggests one. Pieces of your \
+        current task stay here.
+
         Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)

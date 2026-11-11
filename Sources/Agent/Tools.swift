@@ -92,6 +92,8 @@ public final class ToolContext: @unchecked Sendable {
     public var turnID: UUID?
     /// Commands left running in the background (`run_command` with `background`); outlive one reply.
     public var jobs: BackgroundJobs?
+    /// Starts and talks to other sessions (nil: this chat can't).
+    public var sessions: (any SessionHost)?
     /// Folders outside the project that may be read without asking (the skills' folders).
     public var readRoots: [URL] = []
     private var _callID = ""

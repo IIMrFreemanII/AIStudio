@@ -19,9 +19,10 @@ struct TabStrip: View {
                             }
                             .onDrop(of: [.text], delegate: TabDropDelegate(target: doc.id, dragging: $dragging, model: model))
                     }
-                    if !model.chats.isEmpty {
+                    let openChats = model.chats.filter(\.tabOpen)
+                    if !openChats.isEmpty {
                         Rectangle().fill(MG.separator).frame(width: 1, height: 18).padding(.horizontal, 4)
-                        ForEach(model.chats) { chat in
+                        ForEach(openChats) { chat in
                             ChatTabButton(chat: chat, active: chat.id == model.activeChatID)
                         }
                     }
