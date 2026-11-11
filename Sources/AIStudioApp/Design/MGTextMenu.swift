@@ -81,6 +81,23 @@ enum MGTextMenu {
             .button("Delete", enabled: editable && sel) { tv.delete(nil) },
             .divider,
             .button("Select All", shortcut: KeyboardShortcut("a"), enabled: !tv.string.isEmpty) { tv.selectAll(nil) },
-        ]
+        ] + (sel && !editable && ChatQuoting.active ? [
+            .divider,
+            .button("Reply with Selection") {
+                ChatQuoting.post((tv.string as NSString).substring(with: tv.selectedRange()))
+            },
+        ] : [])
+    }
+}
+
+/// Replies to a passage of a chat: text views and code blocks post it, the chat on screen puts it in its quote bar.
+enum ChatQuoting {
+    static let notification = Notification.Name("AIStudio.chatQuote")
+    /// A chat is on screen (its view counts itself in and out), so "Reply with Selection" is offered.
+    @MainActor static var visibleChats = 0
+    @MainActor static var active: Bool { visibleChats > 0 }
+
+    @MainActor static func post(_ text: String) {
+        NotificationCenter.default.post(name: notification, object: text)
     }
 }

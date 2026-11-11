@@ -131,6 +131,63 @@ struct LLMClientTests {
         #expect(ChatTranscript.title(from: "  \nFix the CLI flag parsing\nplease") == "Fix the CLI flag parsing")
     }
 
+    @Test func videosGoAsVideoURLParts() throws {
+        var t = ChatTranscript(serverID: "s", modelID: "m")
+        let video = String(repeating: "a", count: 64) + ".mp4"
+        t.append(ChatTurn(role: .user, text: "what happens?", images: ["b.jpg", video]))
+        #expect(ChatTurn.isVideo(video) && !ChatTurn.isVideo("b.jpg") && t.attachments == ["b.jpg", video])
+        let msgs = t.messages { $0 == video ? "upload:" + $0 : "data:image/jpeg;base64,AA==" }
+        #expect(msgs[0].parts.prefix(2) == [.image(url: "data:image/jpeg;base64,AA=="), .video(url: "upload:" + video)])
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ContentPart.video(url: "upload:x.mp4")))
+            as! [String: Any]
+        #expect(json["type"] as? String == "video_url")
+        #expect((json["video_url"] as? [String: Any])?["url"] as? String == "upload:x.mp4")
+        let back = try JSONDecoder().decode(ContentPart.self, from: JSONEncoder().encode(ContentPart.video(url: "u")))
+        #expect(back == .video(url: "u"))
+        // A message with a video goes in the list form (plain text would drop it).
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            ChatMessage(role: .user, parts: [.video(url: "upload:x.mp4"), .text("hi")]))) as! [String: Any]
+        #expect((encoded["content"] as? [[String: Any]])?.first?["type"] as? String == "video_url")
+        // Without vision nothing is sent for them.
+        #expect(t.messages { _ in nil }[0].parts == [.text("what happens?")])
+    }
+
+    @Test func followUpsComeOutOfTheText() {
+        let full = "Use 0.8.\n\n<followups>\n- Try 1.0\n* What's CFG?\n3. Compare them\n</followups>"
+        let (text, items) = FollowUps.split(full)
+        #expect(text == "Use 0.8." && items == ["Try 1.0", "What's CFG?", "Compare them"])
+        #expect(FollowUps.split("Use 0.8.\n\n<followups>\n- Try", streaming: true) == ("Use 0.8.", []))
+        #expect(FollowUps.split("Use 0.8.\n<follo", streaming: true).text == "Use 0.8.")
+        #expect(FollowUps.split("a < b").text == "a < b" && FollowUps.split("no block").items.isEmpty)
+        let many = "x<followups>" + (1...6).map { "- item \($0) " + String(repeating: "y", count: 100) }.joined(separator: "\n") + "</followups>"
+        let capped = FollowUps.split(many).items
+        #expect(capped.count == 4 && capped.allSatisfy { $0.count <= 80 })
+    }
+
+    @Test func quotesAndHiddenContextGoToTheModel() throws {
+        var t = ChatTranscript()
+        let reply = ChatTurn(role: .assistant, text: "strength 0.8")
+        t.append(ChatTurn(role: .user, text: "hi"))
+        t.append(reply)
+        var turn = ChatTurn(role: .user, text: "why?")
+        turn.quote = ChatQuote(turnID: reply.id, role: .assistant, text: "strength\n0.8")
+        turn.context = "[Widget \"S\" state: {\"strength\":0.8}]"
+        t.append(turn)
+        var withFollowUps = ChatTurn(role: .assistant, text: "because")
+        withFollowUps.followUps = ["More"]
+        t.append(withFollowUps)
+        let back = try JSONDecoder().decode(ChatTranscript.self, from: JSONEncoder().encode(t))
+        #expect(back == t && back.turns[2].quote?.turnID == reply.id && back.turns[3].followUps == ["More"])
+        let msgs = back.messages()
+        #expect(msgs[2].text == "Replying to this part of your reply:\n> strength\n> 0.8\n\nwhy?\n\n[Widget \"S\" state: {\"strength\":0.8}]")
+        #expect(msgs[3].text == "because")
+        #expect(ChatQuote(turnID: nil, role: .user, text: String(repeating: "a", count: 3000)).text.count == ChatQuote.maxLength)
+        var sys = ChatTranscript()
+        sys.systemPrompt = "be brief"
+        sys.append(ChatTurn(role: .user, text: "x"))
+        #expect(sys.messages().count == 2 && sys.messages(system: false).count == 1)
+    }
+
     @Test func editsAndRetriesBranch() {
         var t = ChatTranscript()
         let q1 = ChatTurn(role: .user, text: "q1")

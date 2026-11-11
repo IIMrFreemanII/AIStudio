@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     manager = JobManager(runner, files, args.data / "results")
     # LLMs from links (vLLM on this machine's GPUs, one model at a time; AISTUDIO_FAKE_LLM=1 for a fake engine).
     llm = LocalLLMService(args.models.resolve())
+    os.environ.setdefault("AISTUDIO_LLM_MEDIA", str(files.directory.resolve()))  # vLLM reads chats' videos there
     uvicorn.run(create_app(manager, token, llm=llm), host=args.host, port=args.port, log_level="info",
                 ws_max_size=16 << 20)
     return 0

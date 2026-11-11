@@ -232,6 +232,7 @@ enum Snapshot {
                      to: dir.appendingPathComponent("29-loaded-models.png"), size: CGSize(width: 380, height: LoadedModelsView.height(m) + 60))
 
         await renderChat(to: dir)
+        await renderInteractiveChat(to: dir)
         await renderCodingChat(to: dir)
         await renderGraphHelper(to: dir)
         await renderLLMSettings(to: dir)
@@ -410,6 +411,73 @@ enum Snapshot {
         m.llm.statuses[key] = ready
         panel(.chats)
         await render(m, to: dir.appendingPathComponent("50-chat.png"))
+    }
+
+    /// 52–53: the chat tools. An open question card (with a reply quote in the composer); then answered: the card
+    /// folded to its summary, a widget, a quoted message, follow-up chips.
+    static func renderInteractiveChat(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        let questions: [String: Any] = ["questions": [[
+            "question": "Which database should the app use?", "header": "Database",
+            "options": [["label": "SQLite (Recommended)", "description": "One file next to the app, no server to run"],
+                        ["label": "Postgres", "description": "A server: more to set up, scales further"],
+                        ["label": "Core Data", "description": "Apple's object graph on top of SQLite"]],
+        ], [
+            "question": "What should sync?", "header": "Sync", "multiSelect": true,
+            "options": [["label": "Projects"], ["label": "Settings"], ["label": "Outputs"]],
+        ]]]
+        let askJSON = String(decoding: try! JSONSerialization.data(withJSONObject: questions), as: UTF8.self)
+        var t = ChatTranscript(title: "Plan the storage", serverID: key.serverID, modelID: key.modelID)
+        t.append(ChatTurn(role: .user, text: "Plan how the app should store its projects."))
+        let asking = ChatTurn(role: .assistant, text: "A couple of choices are yours before I plan it:",
+                              toolCalls: [ToolCall(id: "q1", name: "ask_user", arguments: askJSON)], model: key.modelID)
+        t.append(asking)
+        var card = ChatTurn(role: .tool, text: "", toolCallID: "q1")
+        card.toolStatus = "running"
+        t.append(card)
+        let doc = ChatDocument(transcript: t)
+        doc.liveTurnID = asking.id
+        doc.question = PendingQuestion(callID: "q1", questions: (try? UserQuestion.parse(ToolArgs(json: askJSON))) ?? [])
+        doc.replyTo = ChatQuote(turnID: nil, role: .assistant, text: "One file next to the app, no server to run")
+        m.chats = [doc]
+        m.activeChatID = doc.id
+        var ready = LLMStatus(state: "ready", phase: "Ready", progress: 1)
+        ready.gpu = "B200"
+        ready.count = 1
+        m.llm.statuses[key] = ready
+        panel(.chats)
+        await render(m, to: dir.appendingPathComponent("52-chat-question.png"))
+
+        // Answered.
+        doc.question = nil
+        doc.replyTo = nil
+        doc.liveTurnID = nil
+        doc.transcript.update(card.id) {
+            $0.toolStatus = "done"
+            $0.text = "The user answered:\nDatabase: SQLite (Recommended)\nSync: Projects, Settings"
+            $0.toolDetail = "Database: SQLite (Recommended)\nSync: Projects, Settings"
+        }
+        let html = "<label>Rows <input type=range value=40></label><div style='height:80px;background:var(--mg-fill)'></div>"
+        let widgetArgs = String(decoding: try! JSONSerialization.data(withJSONObject: ["title": "Database size", "html": html]),
+                                as: UTF8.self)
+        let plan = ChatTurn(role: .assistant, text: """
+            SQLite it is. Projects and settings go in one database file in the library folder; outputs stay files.
+
+            Here's how big it gets as projects grow:
+            """, toolCalls: [ToolCall(id: "w1", name: "show_widget", arguments: widgetArgs)], model: key.modelID)
+        doc.transcript.append(plan)
+        var shown = ChatTurn(role: .tool, text: "Shown.", toolCallID: "w1")
+        shown.toolStatus = "done"
+        doc.transcript.append(shown)
+        var reply = ChatTurn(role: .user, text: "Why not keep outputs in it too?")
+        reply.quote = ChatQuote(turnID: plan.id, role: .assistant, text: "outputs stay files")
+        doc.transcript.append(reply)
+        var why = ChatTurn(role: .assistant, text: "Images and videos are large: as files they stream, and Finder can see them.",
+                           model: key.modelID)
+        why.followUps = ["How big can the database get?", "Show the schema", "What about backups?"]
+        doc.transcript.append(why)
+        await render(m, to: dir.appendingPathComponent("53-chat-answered.png"))
     }
 
     /// 41–49: the design system's own menus, picker, tooltips, alert, prompt, file pickers and controls.

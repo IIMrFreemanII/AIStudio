@@ -1,6 +1,7 @@
 """LLMs from links: link parsing, GPU sizing, parser guesses, and the /v1/llm API end to end with a fake Hugging
 Face (httpx.MockTransport) and the fake engine (no GPU, no vLLM)."""
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -16,7 +17,7 @@ from aistudio_gpu.llm import proxy, sizing
 from aistudio_gpu.llm.engine import FakeEngine, phase_of, vllm_command
 from aistudio_gpu.llm.facts import LinkError, ModelRef, facts_from_config, parse_link
 from aistudio_gpu.llm.profiles import guess
-from aistudio_gpu.llm.service import LocalLLMService
+from aistudio_gpu.llm.service import LocalLLMService, local_media
 from aistudio_gpu.local import LocalRunner
 
 TOKEN = "t" * 40
@@ -199,6 +200,14 @@ def test_vllm_command_has_parsers_and_expert_parallel(tmp_path):
     assert cmd[cmd.index("--max-num-seqs") + 1] == "64"  # one person's chats, not vLLM's 1024
     own = vllm_command({**m, "engineArgs": ["--max-num-seqs", "8"]}, tmp_path, 8000)
     assert own.count("--max-num-seqs") == 1 and own[own.index("--max-num-seqs") + 1] == "8"
+
+
+def test_vllm_reads_chat_media_from_the_uploads_folder_for_vision_models(tmp_path):
+    m = {"id": "qwen38", "count": 1, "context": 8192, "vision": True, "engineArgs": ["--kv-cache-dtype", "fp8"]}
+    cmd = vllm_command(m, tmp_path, 8000, media="/uploads")
+    assert cmd[cmd.index("--allowed-local-media-path") + 1] == "/uploads" and cmd[-2:] == ["--kv-cache-dtype", "fp8"]
+    assert "--allowed-local-media-path" not in vllm_command({**m, "vision": False}, tmp_path, 8000, media="/uploads")
+    assert "--allowed-local-media-path" not in vllm_command(m, tmp_path, 8000)
 
 
 def test_phases_from_vllm_log():
@@ -536,3 +545,97 @@ def test_fake_engine_sleeps_and_wakes():
     e.sleep()
     e.wake_up()
     assert seen[-3:] == ["Asleep", "Waking up", "Ready"]
+
+
+def video_message(name: str, text: str = "what happens here?") -> list:
+    return [{"role": "user", "content": [{"type": "video_url", "video_url": {"url": f"upload:{name}"}},
+                                         {"type": "text", "text": text}]}]
+
+
+def test_chat_videos_are_uploads_the_engine_reads_from_disk(client, tmp_path, monkeypatch):
+    seen = []
+    real = FakeEngine.chat
+
+    def recording(self, body):
+        seen.append(body)
+        return real(self, body)
+
+    monkeypatch.setattr(FakeEngine, "chat", recording)
+    mid = install(client)
+    data = b"\x00\x00\x00\x18ftypmp42 a tiny video"
+    name = hashlib.sha256(data).hexdigest() + ".mp4"
+    url = "/v1/llm/oai/v1/chat/completions"
+    missing = client.post(url, json={"model": mid, "messages": video_message(name)}, headers=AUTH)
+    assert missing.status_code == 404 and "upload it first" in missing.json()["error"]
+
+    assert client.put(f"/v1/files/{name}", content=data, headers=AUTH).status_code == 201
+    events = chat(client, mid, "", messages=video_message(name))
+    assert events[-1] == (None, "[DONE]")
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    assert "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"]).endswith("[1 video]")
+    part = seen[-1]["messages"][0]["content"][0]
+    path = (tmp_path / "uploads" / name).absolute()
+    assert part == {"type": "video_url", "video_url": {"url": path.as_uri()}}
+    assert local_media(seen[-1]["messages"], (tmp_path / "uploads").absolute()) == [path]
+    assert local_media(seen[-1]["messages"], tmp_path / "elsewhere") == []
+
+    bad = client.post(url, json={"model": mid, "messages": video_message("../../etc/passwd")}, headers=AUTH)
+    assert bad.status_code == 400
+
+
+def test_models_without_vision_or_on_llamacpp_refuse_videos(llm, tmp_path):
+    llm.files = FileStore(tmp_path / "uploads")
+    for m in ({"id": "text", "vision": False}, {"id": "gguf", "vision": True, "engine": "llamacpp"}):
+        with pytest.raises(ValueError, match="can't watch videos"):
+            llm.resolve_uploads(m, video_message("a" * 64 + ".mp4"))
+    plain = [{"role": "user", "content": "hi"}, {"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}]}]
+    assert llm.resolve_uploads({"id": "text", "vision": False}, plain) == plain
+
+
+def chat_tools():
+    return [{"type": "function", "function": {"name": n, "parameters": {"type": "object"}}}
+            for n in ("ask_user", "show_widget")]
+
+
+def reply_text(events):
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    calls = [tc for c in chunks if c["choices"] for tc in c["choices"][0]["delta"].get("tool_calls") or []]
+    return "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"]), calls
+
+
+def test_fake_engine_scripts_the_chat_tools(client):
+    mid = install(client)
+    text, calls = reply_text(chat(client, mid, "ask me something", tools=chat_tools()))
+    assert calls and calls[0]["function"]["name"] == "ask_user"
+    assert json.loads(calls[0]["function"]["arguments"])["questions"][0]["header"] == "Database"
+    msgs = [{"role": "user", "content": "ask me something"},
+            {"role": "assistant", "content": "Working on it.", "tool_calls": [
+                {"id": "call_0", "type": "function", "function": {"name": "ask_user", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_0", "content": "The user answered:\nDatabase: SQLite"}]
+    text, calls = reply_text(chat(client, mid, "", messages=msgs, tools=chat_tools()))
+    assert text == "Done: The user answered: Database: SQLite" and not calls
+
+    _, calls = reply_text(chat(client, mid, "show a widget", tools=chat_tools()))
+    assert calls[0]["function"]["name"] == "show_widget"
+    assert "aistudio.sendPrompt" in json.loads(calls[0]["function"]["arguments"])["html"]
+    # Without the tool in the request, no script: an echo.
+    text, calls = reply_text(chat(client, mid, "show a widget"))
+    assert text == "You said: show a widget" and not calls
+
+    text, _ = reply_text(chat(client, mid, "suggest something"))
+    assert text.endswith("<followups>\n- Tell me more\n- Show an example\n</followups>")
+
+
+def test_upload_urls_keep_the_uploads_path_through_links(llm, tmp_path):
+    # On Modal /uploads is a symlink to the container's own Volume mount: the URL must say /uploads.
+    real = tmp_path / "volume-mount"
+    real.mkdir()
+    link = tmp_path / "uploads"
+    link.symlink_to(real)
+    llm.files = FileStore(link)
+    name = "b" * 64 + ".mp4"
+    (real / name).write_bytes(b"x")
+    msgs = llm.resolve_uploads({"id": "m", "vision": True}, video_message(name))
+    url = msgs[0]["content"][0]["video_url"]["url"]
+    assert url == (link / name).absolute().as_uri() and "volume-mount" not in url

@@ -61,10 +61,13 @@ public struct ToolOutput: Equatable, Sendable {
     public var isError: Bool
     /// `data:` URLs (JPEG), sent to a vision model after the tool results.
     public var images: [String]
-    public init(_ text: String, isError: Bool = false, images: [String] = []) {
+    /// What the card shows once the call is done, in place of the preview's detail (an answered question's summary).
+    public var detail: String?
+    public init(_ text: String, isError: Bool = false, images: [String] = [], detail: String? = nil) {
         self.text = text
         self.isError = isError
         self.images = images
+        self.detail = detail
     }
 }
 
@@ -76,6 +79,9 @@ public final class ToolContext: @unchecked Sendable {
     private var _todos: [Todo] = []
     /// Streams a running command's output to its card: (call id, chunk).
     public var onOutput: (@Sendable (String, String) -> Void)?
+    /// Asks the user the questions of an `ask_user` call (call id, questions) and waits: one answer per question, or
+    /// nil when they skipped them (or nobody can answer: no UI).
+    public var askUser: (@Sendable (String, [UserQuestion]) async -> [UserAnswer]?)?
     public var callID = ""
 
     public struct Todo: Codable, Equatable, Sendable {

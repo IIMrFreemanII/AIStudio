@@ -28,6 +28,10 @@ from .engine import EngineError, EngineProcess, FakeEngine, fake_enabled
 IDLE = float(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
 LEASE = float(os.environ.get("AISTUDIO_LLM_LEASE", "1800"))
 ACTIVE = ("starting", "loading", "ready")
+# A chat's image or video that was uploaded first (PUT /v1/files/<sha256>.<ext>): {"type": "video_url",
+# "video_url": {"url": "upload:<sha256>.mp4"}}. Videos go this way so they aren't sent again with every message.
+UPLOAD = "upload:"
+MEDIA_PARTS = ("image_url", "video_url")
 
 
 class LLMService:
@@ -39,6 +43,8 @@ class LLMService:
         self._sync_http = sync_http
         self.last_chat: dict[str, float] = {}
         self.warmed: dict[str, float] = {}
+        # The job API's uploads (create_app sets it): where ``upload:`` media are. The engines read the same folder.
+        self.files = None
 
     # MARK: hooks a deployment implements
 
@@ -256,6 +262,7 @@ class LLMService:
         m = self._installed(mid)
         if not isinstance(body.get("messages"), list) or not body["messages"]:
             raise ValueError("expected messages")
+        body = {**body, "messages": self.resolve_uploads(m, body["messages"])}
         self.last_chat[mid] = time.time()
         stream = bool(body.get("stream"))
         body = {**body, "model": mid}
@@ -270,6 +277,57 @@ class LLMService:
             return {k: s[k] for k in ("state", "phase", "progress", "gpu", "count")}
 
         return True, proxy.relay(upstream, status, self.usd_per_second(m))
+
+
+    def resolve_uploads(self, m: dict, messages: list) -> list:
+        """The messages with each ``upload:<name>`` image or video URL swapped for the uploaded file's ``file://``
+        URL (vLLM reads it from the uploads folder, see ``engine.vllm_command``). Raises ``ValueError`` for media a
+        model can't take, ``LookupError`` for an upload the server doesn't have (pruned: upload it again)."""
+        out = []
+        for msg in messages:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if not isinstance(content, list):
+                out.append(msg)
+                continue
+            parts = []
+            for part in content:
+                kind = part.get("type") if isinstance(part, dict) else None
+                if kind in MEDIA_PARTS:
+                    if kind == "video_url" and (not m.get("vision") or m.get("engine") == "llamacpp"):
+                        raise ValueError(f"{m.get('name') or m['id']} can't watch videos")
+                    url = (part.get(kind) or {}).get("url") if isinstance(part.get(kind), dict) else None
+                    if isinstance(url, str) and url.startswith(UPLOAD):
+                        part = {**part, kind: {**part[kind], "url": self._upload_url(url[len(UPLOAD):])}}
+                parts.append(part)
+            out.append({**msg, "content": parts})
+        return out
+
+    def _upload_url(self, name: str) -> str:
+        from ..files import is_name
+
+        if not is_name(name):
+            raise ValueError(f"bad upload name {name!r}")
+        if self.files is None or not self.files.exists(name):
+            raise LookupError(f"{name} isn't on the server; upload it first")
+        self.files.touch(name)
+        # Absolute, but not resolved: on Modal /uploads is a link to this container's own mount of the Volume, and
+        # the GPU container only knows it as /uploads.
+        return self.files.path(name).absolute().as_uri()
+
+
+def local_media(messages: list, root: Path) -> list[Path]:
+    """The files under ``root`` that messages' ``file://`` image and video URLs point at."""
+    out = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        for part in content if isinstance(content, list) else []:
+            kind = part.get("type") if isinstance(part, dict) else None
+            url = part.get(kind, {}).get("url") if kind in MEDIA_PARTS and isinstance(part.get(kind), dict) else None
+            if isinstance(url, str) and url.startswith("file://"):
+                path = Path(url[len("file://"):])
+                if path.is_relative_to(root):
+                    out.append(path)
+    return out
 
 
 def fake_facts(link: str) -> facts_mod.Facts:

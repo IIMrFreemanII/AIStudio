@@ -32,6 +32,15 @@ struct ChatView: View {
             ChatComposer(doc: doc)
         }
         .background(MG.windowBackground)
+        .onAppear { ChatQuoting.visibleChats += 1 }
+        .onDisappear { ChatQuoting.visibleChats -= 1 }
+        .onReceive(NotificationCenter.default.publisher(for: ChatQuoting.notification)) { note in
+            guard let text = note.object as? String else { return }
+            // Several chats may be on screen (a tab and a docked helper): the one holding the passage takes it, else
+            // the one in front.
+            let holds = doc.transcript.turns.contains { $0.text.contains(text) || ($0.toolDetail ?? "").contains(text) }
+            if holds || (model.activeChat === doc && !compact) { model.quoteSelection(doc, text) }
+        }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             for provider in providers {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -247,9 +256,17 @@ struct ChatTranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(doc.transcript.turns.filter { $0.role != .tool }) { turn in
+                    let shown = doc.transcript.turns.filter { $0.role != .tool }
+                    ForEach(shown) { turn in
                         ChatTurnView(doc: doc, turn: turn)
                             .id(turn.id)
+                            .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)
+                                .fill(MG.accent.opacity(doc.highlightTurnID == turn.id ? 0.10 : 0)).padding(-6))
+                            .animation(.easeOut(duration: 0.3), value: doc.highlightTurnID)
+                    }
+                    if let last = shown.last, last.role == .assistant, let items = last.followUps, !items.isEmpty,
+                       !doc.isStreaming, doc.question == nil {
+                        FollowUpChips(doc: doc, items: items)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -266,7 +283,71 @@ struct ChatTranscriptView: View {
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: doc.highlightTurnID) { _, id in
+                if let id { withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) } }
+            }
+            .onChange(of: doc.question?.callID) { _, id in
+                if id != nil { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
         }
+    }
+}
+
+/// The model's suggested next messages under its last reply; a click sends one.
+struct FollowUpChips: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+    let items: [String]
+
+    var body: some View {
+        MGFlowLayout(spacing: 6) {
+            ForEach(items, id: \.self) { item in
+                Button { model.sendText(doc, item) } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.turn.down.right").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(MG.secondaryLabel)
+                        Text(item).font(.mgFootnote).lineLimit(1)
+                    }
+                    .padding(.horizontal, 10).frame(height: 26)
+                    .background(Capsule().fill(MG.fill))
+                    .mgHairline(Capsule(), color: MG.border)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .mgHelp("Send “\(item)”")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// What a message replies to, above its text (in the composer, with ✕; in a sent message, a click shows the original).
+struct QuoteBlock: View {
+    let quote: ChatQuote
+    var onTap: (() -> Void)? = nil
+    var onRemove: (() -> Void)? = nil
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1).fill(MG.accent).frame(width: 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Replying to \(quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply")",
+                      systemImage: "arrowshape.turn.up.left")
+                    .font(.mgFootnote.weight(.medium)).foregroundStyle(MG.secondaryLabel)
+                Text(quote.text).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(2).truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+            if let onRemove {
+                Button(action: onRemove) { Image(systemName: "xmark") }
+                    .buttonStyle(.mg(.icon)).controlSize(.small).mgHelp("Don't reply to it")
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+        .contentShape(Rectangle())
+        .onTapGesture { onTap?() }
+        .mgHelp(onTap != nil && quote.turnID != nil ? "Show the original" : "")
     }
 }
 
@@ -306,7 +387,13 @@ struct ChatTurnView: View {
                         }
                     }
                     .frame(maxWidth: 640)
-                } else if !turn.text.isEmpty {
+                } else if !turn.text.isEmpty || turn.quote != nil {
+                    if let q = turn.quote {
+                        HStack {
+                            Spacer(minLength: 80)
+                            QuoteBlock(quote: q, onTap: { model.showQuoted(doc, q) }).frame(maxWidth: 520)
+                        }
+                    }
                     HStack {
                         Spacer(minLength: 80)
                         Text(turn.text)
@@ -320,6 +407,8 @@ struct ChatTurnView: View {
                 HStack(spacing: 6) {
                     BranchSwitcher(doc: doc, turn: turn)
                     if doc.editingTurnID != turn.id, !doc.isStreaming {
+                        Button { model.quote(doc, turn.text, from: turn) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                            .buttonStyle(.mg(.icon)).controlSize(.small).mgHelp("Reply to this message")
                         Button { editText = turn.text; doc.editingTurnID = turn.id } label: { Image(systemName: "pencil") }
                             .buttonStyle(.mg(.icon)).controlSize(.small)
                             .mgHelp("Edit and send again (the old version stays as a branch)")
@@ -329,6 +418,7 @@ struct ChatTurnView: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
             .mgContextMenu {
                 MGMenuItem.button("Copy") { copy(turn.text) }
+                MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
                 MGMenuItem.button("Edit…", enabled: !doc.isStreaming) { editText = turn.text; doc.editingTurnID = turn.id }
             }
         case .assistant:
@@ -342,11 +432,18 @@ struct ChatTurnView: View {
                     WaitingLine(doc: doc)
                 }
                 ForEach(turn.toolCalls, id: \.id) { call in
-                    if doc.isAgent {
-                        ToolCard(doc: doc, call: call, result: doc.transcript.turns.last { $0.toolCallID == call.id })
-                    } else {
-                        Label("\(call.name)(\(call.arguments))", systemImage: "wrench.and.screwdriver")
-                            .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(2)
+                    let result = doc.transcript.turns.last { $0.toolCallID == call.id }
+                    Group {
+                        switch call.name {
+                        case "ask_user": QuestionCard(doc: doc, call: call, result: result)
+                        case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
+                        default: ToolCard(doc: doc, call: call, result: result)
+                        }
+                    }
+                    .mgContextMenu {
+                        MGMenuItem.button("Reply to This Result", enabled: result != nil) {
+                            if let r = result { model.quote(doc, r.text.isEmpty ? (r.toolDetail ?? "") : r.text, from: r) }
+                        }
                     }
                 }
                 if let e = turn.error {
@@ -363,6 +460,13 @@ struct ChatTurnView: View {
                                 .mgHelp("Another reply (this one stays as a branch)")
                             Button { copy(turn.text) } label: { Image(systemName: "doc.on.doc") }
                                 .buttonStyle(.mg(.icon)).controlSize(.small).mgHelp("Copy")
+                            if !turn.text.isEmpty {
+                                Button { model.quote(doc, turn.text, from: turn) } label: {
+                                    Image(systemName: "arrowshape.turn.up.left")
+                                }
+                                .buttonStyle(.mg(.icon)).controlSize(.small)
+                                .mgHelp("Reply to this message (or select a passage, then right-click › Reply with Selection)")
+                            }
                         }
                         if let s = turn.stats { StatsLine(stats: s, model: turn.model) }
                     }
@@ -370,6 +474,7 @@ struct ChatTurnView: View {
             }
             .mgContextMenu {
                 MGMenuItem.button("Copy") { copy(turn.text) }
+                MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
                 MGMenuItem.button("Regenerate", enabled: !doc.isStreaming) { model.regenerate(doc, turn.id) }
             }
         case .tool:
@@ -405,7 +510,7 @@ struct BranchSwitcher: View {
     }
 }
 
-/// Attached images (thumbnails) and file names.
+/// Attached images and videos (thumbnails) and file names.
 struct AttachmentStrip: View {
     let images: [String]
     let files: [String]
@@ -416,12 +521,24 @@ struct AttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(images, id: \.self) { name in
+                    let video = ChatTurn.isVideo(name)
+                    let file = folder.appendingPathComponent(name)
                     ZStack(alignment: .topTrailing) {
-                        if let image = NSImage(contentsOf: folder.appendingPathComponent(name)) {
-                            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                                .frame(width: 64, height: 64)
-                                .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
+                        ZStack {
+                            if let image = NSImage(contentsOf: video ? AppModel.posterURL(file) : file) {
+                                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                            } else {
+                                RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill)
+                            }
+                            if video {
+                                Image(systemName: "play.circle.fill").font(.title2)
+                                    .foregroundStyle(.white).shadow(radius: 2)
+                            }
                         }
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
+                        .onTapGesture(count: 2) { if video { NSWorkspace.shared.open(file) } }
+                        .mgHelp(video ? "Video (double-click to play)" : "Image")
                         remove(name)
                     }
                 }
@@ -578,14 +695,25 @@ struct ChatComposer: View {
                     doc.pending.removeAll { $0.name == name }
                 }
             }
-            if let note = blind ? "This model can't see images: they're left out of what it gets." : notice {
+            if doc.preparingVideos > 0 {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(doc.preparingVideos == 1 ? "Preparing the video…" : "Preparing \(doc.preparingVideos) videos…")
+                }
+                .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
+            if let note = blind ? "This model can't see images or videos: they're left out of what it gets."
+                : (notice ?? doc.attachNote) {
                 Label(note, systemImage: "exclamationmark.triangle").font(.mgFootnote).foregroundStyle(MG.warning)
+            }
+            if let q = doc.replyTo {
+                QuoteBlock(quote: q, onTap: { model.showQuoted(doc, q) }, onRemove: { doc.replyTo = nil })
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Button { choose() } label: { Image(systemName: "paperclip") }
                     .buttonStyle(.mg(.icon))
                     .controlSize(.large)
-                    .mgHelp("Attach images or text files (or drop them on the chat)")
+                    .mgHelp("Attach images, videos or text files (or drop them on the chat)")
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $doc.draft)
                         .font(.mgBody)
@@ -599,7 +727,8 @@ struct ChatComposer: View {
                             return .handled
                         }
                     if doc.draft.isEmpty {
-                        Text(doc.isGraphHelper ? "Ask the helper to build, change or fix this workflow…"
+                        Text(doc.question != nil ? "Answer the question above, or type your own answer…"
+                             : doc.isGraphHelper ? "Ask the helper to build, change or fix this workflow…"
                              : doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (⇧↩ for a new line)"
                              : "Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
                             .font(.mgBody).foregroundStyle(MG.placeholder)
@@ -610,7 +739,7 @@ struct ChatComposer: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.controlBackground))
                 .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous), color: MG.border)
-                if doc.isStreaming {
+                if doc.isStreaming && !(doc.question != nil && !doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
                     Button { model.stopReply(doc) } label: { Image(systemName: "stop.fill") }
                         .buttonStyle(.mg(.bordered))
                         .controlSize(.large)
@@ -619,7 +748,7 @@ struct ChatComposer: View {
                     Button { model.send(doc) } label: { Image(systemName: "arrow.up") }
                         .buttonStyle(.mg(.prominent))
                         .controlSize(.large)
-                        .disabled(doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && doc.pending.isEmpty)
+                        .disabled((doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && doc.pending.isEmpty) || doc.preparingVideos > 0)
                         .mgHelp("Send (↩)")
                 }
             }
@@ -635,8 +764,49 @@ struct ChatComposer: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.message = "Images, or text and code files up to 256 KB"
+        panel.message = "Images, videos, or text and code files up to 256 KB"
         guard panel.runModal() == .OK else { return }
+        doc.attachNote = nil
         notice = model.attach(panel.urls, to: doc)
+    }
+}
+
+/// Lays its views out in rows, wrapping to the next row when one is full (chips).
+struct MGFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(width: proposal.width ?? .infinity, subviews)
+        return CGSize(width: rows.map(\.width).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(width: bounds.width, subviews) {
+            var x = bounds.minX
+            for i in row.items {
+                let size = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: x, y: bounds.minY + row.y), proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+        }
+    }
+
+    private struct Row { var items: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0; var y: CGFloat = 0 }
+
+    private func arrange(width: CGFloat, _ subviews: Subviews) -> [Row] {
+        var rows: [Row] = [Row()]
+        for i in subviews.indices {
+            let size = subviews[i].sizeThatFits(.unspecified)
+            if !rows[rows.count - 1].items.isEmpty, rows[rows.count - 1].width + spacing + size.width > width {
+                let last = rows[rows.count - 1]
+                rows.append(Row(y: last.y + last.height + spacing))
+            }
+            var r = rows[rows.count - 1]
+            r.width += (r.items.isEmpty ? 0 : spacing) + size.width
+            r.height = max(r.height, size.height)
+            r.items.append(i)
+            rows[rows.count - 1] = r
+        }
+        return rows
     }
 }

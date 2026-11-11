@@ -417,7 +417,7 @@ def _llm_boot(self, snapshot: bool = False):
 
     from aistudio_gpu.llm import store
     from aistudio_gpu.llm.coldstart import ColdStartClock
-    from aistudio_gpu.llm.engine import EngineProcess
+    from aistudio_gpu.llm.engine import MEDIA_ENV, EngineProcess
 
     self.error = None
     self.alive = True
@@ -442,7 +442,7 @@ def _llm_boot(self, snapshot: bool = False):
         if snapshot:
             _llm_abandon(self, 1)
         return
-    self.proc = EngineProcess(m, MODELS, on_status)
+    self.proc = EngineProcess(m, MODELS, on_status, env={MEDIA_ENV: str(UPLOADS)})
     try:
         self.proc.start()
         self.proc.wait_ready(LLM_BOOT_TIMEOUT)
@@ -610,8 +610,29 @@ async def _llm_chat(self, body: dict):
 
     if self.error or self.proc is None:
         raise EngineError(self.error or "the engine isn't running")
+    import asyncio
+
+    await asyncio.to_thread(_llm_media_ready, body)
     async for chunk in self.proc.chat(body):
         yield chunk
+
+
+def _llm_media_ready(body: dict) -> None:
+    """Chats' uploaded images and videos (``file:///uploads/…``) are on the uploads Volume, committed by the front
+    desk when each upload completed: reload it when one isn't here yet (uploads never change, so only then). A
+    reload fails while a file on it is open (another chat's video being read), so it's tried a few times."""
+    import time
+
+    from aistudio_gpu.llm.service import local_media
+
+    paths = local_media(body.get("messages") or [], UPLOADS)
+    for attempt in range(5):
+        if all(p.exists() for p in paths):
+            return
+        try:
+            uploads.reload()
+        except Exception:  # noqa: BLE001
+            time.sleep(1 + attempt)
 
 
 def _llm_shutdown(self):
@@ -627,7 +648,7 @@ def _llm_shutdown(self):
         pass
 
 
-LLM_CLS = dict(volumes={MODELS: volume}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
+LLM_CLS = dict(volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
                memory=(65536, 524288), cpu=8)
 
 

@@ -151,8 +151,12 @@ public struct ReplyAccumulator: Sendable {
         }
     }
 
+    /// Whether the stream ended (`finish` was called).
+    public private(set) var finished = false
+
     /// Flushes text the think splitter held back.
     public mutating func finish() {
+        finished = true
         guard var s = splitter else { return }
         for p in s.finish() {
             switch p {

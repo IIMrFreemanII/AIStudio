@@ -317,3 +317,156 @@ struct HelperUndoBar: View {
         }
     }
 }
+
+/// An `ask_user` call: while it waits, the questions with their options (radio buttons or checkboxes) and an
+/// "Other" field; once answered, one line per question ("Database: SQLite"), which opens to the questions.
+struct QuestionCard: View {
+    let doc: ChatDocument
+    let call: ToolCall
+    let result: ChatTurn?
+    @State private var picked: [Int: Set<String>] = [:]
+    @State private var other: [Int: String] = [:]
+    @State private var open = false
+
+    var questions: [UserQuestion] {
+        (try? UserQuestion.parse(ToolArgs(json: call.arguments))) ?? []
+    }
+    var asking: Bool { doc.question?.callID == call.id }
+    var status: String { result?.toolStatus ?? "running" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if asking {
+                form
+            } else {
+                summary
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
+        .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous), color: asking ? MG.accent : MG.border)
+    }
+
+    var form: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(questions.enumerated()), id: \.offset) { i, q in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if let h = q.header, !h.isEmpty {
+                            Text(h.uppercased()).font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.accent)
+                        }
+                        if q.multiSelect { Text("Pick any").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel) }
+                    }
+                    Text(q.question).font(.mgCallout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                    ForEach(q.options, id: \.self) { o in
+                        option(o, question: i, multi: q.multiSelect)
+                    }
+                    HStack(spacing: 8) {
+                        Image(systemName: "pencil").foregroundStyle(MG.tertiaryLabel).frame(width: 16)
+                        TextField("Other…", text: Binding(get: { other[i] ?? "" }, set: { other[i] = $0 }))
+                            .textFieldStyle(.roundedBorder).font(.mgBody)
+                            .onSubmit { send() }
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Skip") { doc.answerQuestion(nil) }
+                    .buttonStyle(.mg(.bordered)).keyboardShortcut(.cancelAction)
+                Button("Send") { send() }
+                    .buttonStyle(.mg(.prominent)).disabled(answers.allSatisfy(\.isEmpty))
+            }
+        }
+        .padding(12)
+    }
+
+    func option(_ o: UserQuestion.Option, question i: Int, multi: Bool) -> some View {
+        let on = picked[i]?.contains(o.label) == true
+        return Button {
+            var set = picked[i] ?? []
+            if multi { if on { set.remove(o.label) } else { set.insert(o.label) } } else { set = on ? [] : [o.label] }
+            picked[i] = set
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: multi ? (on ? "checkmark.square.fill" : "square") : (on ? "largecircle.fill.circle" : "circle"))
+                    .foregroundStyle(on ? MG.accent : MG.secondaryLabel).frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(o.label).font(.mgBody).foregroundStyle(MG.label)
+                    if let d = o.description {
+                        Text(d).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 5).padding(.horizontal, 8)
+            .background(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
+                .fill(on ? MG.accent.opacity(0.10) : Color.clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    var answers: [UserAnswer] {
+        questions.indices.map { i in
+            let order = questions[i].options.map(\.label).filter { picked[i]?.contains($0) == true }
+            return UserAnswer(picked: order, other: other[i])
+        }
+    }
+
+    func send() {
+        let a = answers
+        guard !a.allSatisfy(\.isEmpty) else { return }
+        doc.answerQuestion(a)
+    }
+
+    var summary: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Group {
+                        switch status {
+                        case "running": MGSpinner().controlSize(.mini)
+                        case "done": Image(systemName: "questionmark.bubble.fill").foregroundStyle(MG.accent)
+                        default: Image(systemName: "xmark.circle.fill").foregroundStyle(MG.secondaryLabel)
+                        }
+                    }
+                    Text(line).font(.mgCallout).lineLimit(open ? nil : 1).truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(MG.tertiaryLabel).rotationEffect(.degrees(open ? 90 : 0))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if open {
+                MGDivider()
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(questions.enumerated()), id: \.offset) { _, q in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(q.question).font(.mgFootnote.weight(.medium))
+                            Text(q.options.map(\.label).joined(separator: " · ")).font(.mgFootnote)
+                                .foregroundStyle(MG.secondaryLabel)
+                        }
+                    }
+                    if let d = result?.toolDetail, status == "done" {
+                        Text(d).font(.mgFootnote).foregroundStyle(MG.label).textSelection(.enabled)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    var line: String {
+        switch status {
+        case "running": return questions.first?.question ?? "Asking…"
+        case "done":
+            let d = result?.toolDetail ?? ""
+            return d == "Skipped" ? "Skipped: \(questions.first?.question ?? "")" : d.replacingOccurrences(of: "\n", with: " · ")
+        default: return result?.text ?? "Not answered"
+        }
+    }
+}

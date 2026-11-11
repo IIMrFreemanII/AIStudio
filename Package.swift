@@ -370,7 +370,7 @@ let package = Package(
             // JetBrains Mono (OFL), the design system's typeface.
             resources: [.copy("Resources/Fonts")],
             // AVKit's SwiftUI VideoPlayer needs the framework linked explicitly in a SwiftPM executable.
-            linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation")]
+            linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation"), .linkedFramework("WebKit")]
         ),
         .testTarget(
             name: "MLXDiffusionCoreTests",
