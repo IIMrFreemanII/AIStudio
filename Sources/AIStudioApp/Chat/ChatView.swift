@@ -12,6 +12,14 @@ struct ChatView: View {
         VStack(spacing: 0) {
             ChatHeader(doc: doc)
             MGDivider()
+            if doc.isCoding && doc.mode == .bypass {
+                Label("Bypass Permissions: the agent edits files and runs commands in \(doc.projectURL?.lastPathComponent ?? "the project") without asking.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.mgFootnote).foregroundStyle(MG.warning)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(MG.warning.opacity(0.12))
+            }
             if doc.transcript.turns.isEmpty {
                 ChatEmptyState(doc: doc)
             } else {
@@ -84,6 +92,7 @@ struct ChatHeader: View {
                         .mgHelp("Start the model now, so the first message doesn't wait for it")
                 }
             }
+            CodingHeaderItems(doc: doc)
             Spacer(minLength: 8)
             MGMenuButton(kind: .icon) {
                 MGMenuItem.header("Thinking effort")
@@ -175,7 +184,7 @@ struct ChatTranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(doc.transcript.turns) { turn in
+                    ForEach(doc.transcript.turns.filter { $0.role != .tool }) { turn in
                         ChatTurnView(doc: doc, turn: turn)
                             .id(turn.id)
                     }
@@ -270,8 +279,12 @@ struct ChatTurnView: View {
                     WaitingLine(doc: doc)
                 }
                 ForEach(turn.toolCalls, id: \.id) { call in
-                    Label("\(call.name)(\(call.arguments))", systemImage: "wrench.and.screwdriver")
-                        .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(2)
+                    if doc.isCoding {
+                        ToolCard(doc: doc, call: call, result: doc.transcript.turns.last { $0.toolCallID == call.id })
+                    } else {
+                        Label("\(call.name)(\(call.arguments))", systemImage: "wrench.and.screwdriver")
+                            .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(2)
+                    }
                 }
                 if let e = turn.error {
                     Label(e, systemImage: e == "Stopped" ? "stop.circle" : "exclamationmark.triangle")
@@ -485,6 +498,9 @@ struct ChatComposer: View {
         let files = doc.pending.compactMap { if case .file(let f) = $0 { return f.name }; return nil }
         let blind = !images.isEmpty && doc.modelKey.flatMap { model.llm.model($0) }.map { $0.vision != true } == true
         VStack(alignment: .leading, spacing: 6) {
+            if doc.isCoding, !doc.todos.isEmpty, doc.todos.contains(where: { $0.status != "completed" }) || doc.isStreaming {
+                TodoListView(todos: doc.todos)
+            }
             if !doc.pending.isEmpty {
                 AttachmentStrip(images: images, files: files, folder: model.chatStore.filesFolder(doc.id)) { name in
                     doc.pending.removeAll { $0.name == name }
@@ -511,7 +527,8 @@ struct ChatComposer: View {
                             return .handled
                         }
                     if doc.draft.isEmpty {
-                        Text("Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
+                        Text(doc.isCoding ? "Ask the agent to change something in \(doc.projectURL?.lastPathComponent ?? "the project")…  (⇧↩ for a new line)"
+                             : "Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
                             .font(.mgBody).foregroundStyle(MG.placeholder)
                             .padding(.leading, 5).padding(.top, 1)
                             .allowsHitTesting(false)

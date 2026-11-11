@@ -29,6 +29,11 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var files: [ChatFile]?
     public var toolCalls: [ToolCall]
     public var toolCallID: String?
+    /// Tool results: what the call did ("Edit README.md"), how it ended (done, failed, denied), and its diff or
+    /// command for the card.
+    public var toolTitle: String?
+    public var toolStatus: String?
+    public var toolDetail: String?
     /// The model that wrote it (assistant turns).
     public var model: String?
     public var stats: RequestStats?
@@ -76,6 +81,12 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var systemPrompt: String?
     /// "low", "medium" or "high" (nil: the model's default).
     public var reasoningEffort: String?
+    /// A coding chat's project folder (nil: a plain chat, no tools).
+    public var projectPath: String?
+    /// A coding chat's permission mode ("ask", "acceptEdits", "plan", "bypass") and its "Always allow" answers.
+    public var permissionMode: String?
+    public var allowEdits: Bool?
+    public var allowCommands: [String]?
     /// Every turn, in the order they were made.
     public private(set) var nodes: [ChatTurn]
     public var activeLeaf: UUID?
@@ -220,7 +231,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
-        case choices, turns
+        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands
     }
 
     public init(from decoder: Decoder) throws {
@@ -233,6 +244,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
         systemPrompt = try c.decodeIfPresent(String.self, forKey: .systemPrompt)
         reasoningEffort = try c.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        projectPath = try c.decodeIfPresent(String.self, forKey: .projectPath)
+        permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+        allowEdits = try c.decodeIfPresent(Bool.self, forKey: .allowEdits)
+        allowCommands = try c.decodeIfPresent([String].self, forKey: .allowCommands)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
             self.nodes = nodes
             activeLeaf = try c.decodeIfPresent(UUID.self, forKey: .activeLeaf)
@@ -254,6 +269,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(modelID, forKey: .modelID)
         try c.encodeIfPresent(systemPrompt, forKey: .systemPrompt)
         try c.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+        try c.encodeIfPresent(projectPath, forKey: .projectPath)
+        try c.encodeIfPresent(permissionMode, forKey: .permissionMode)
+        try c.encodeIfPresent(allowEdits, forKey: .allowEdits)
+        try c.encodeIfPresent(allowCommands, forKey: .allowCommands)
         try c.encode(nodes, forKey: .nodes)
         try c.encodeIfPresent(activeLeaf, forKey: .activeLeaf)
         try c.encode(choices, forKey: .choices)

@@ -1,3 +1,4 @@
+import Agent
 import AppKit
 import GraphRuntime
 import LLMClient
@@ -231,7 +232,62 @@ enum Snapshot {
                      to: dir.appendingPathComponent("29-loaded-models.png"), size: CGSize(width: 380, height: LoadedModelsView.height(m) + 60))
 
         await renderChat(to: dir)
+        await renderCodingChat(to: dir)
         await renderChrome(m, to: dir)
+    }
+
+    /// 51: a coding chat: an edit's diff card, a finished command, and a write waiting for permission.
+    static func renderCodingChat(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        var t = ChatTranscript(title: "Add a --json flag", serverID: key.serverID, modelID: key.modelID)
+        t.projectPath = "/Users/me/Projects/todo-cli"
+        t.permissionMode = "ask"
+        t.allowCommands = ["swift build"]
+        t.append(ChatTurn(role: .user, text: "Add a --json flag to the list command and make sure it builds."))
+        let edit = ToolCall(id: "c1", name: "edit_file", arguments: "{}")
+        let build = ToolCall(id: "c2", name: "run_command", arguments: "{}")
+        var a1 = ChatTurn(role: .assistant, text: "I'll add the flag to `List` and print JSON when it's set.", model: key.modelID)
+        a1.reasoning = "List is in Sources/todo/List.swift; add @Flag json, branch in run()."
+        a1.thinkingSeconds = 3
+        a1.toolCalls = [edit, build]
+        t.append(a1)
+        var r1 = ChatTurn(role: .tool, text: "Edited Sources/todo/List.swift (+6 −1).", toolCallID: "c1")
+        r1.toolTitle = "Edit Sources/todo/List.swift"
+        r1.toolStatus = "done"
+        r1.toolDetail = "@@\n struct List: ParsableCommand {\n+    @Flag(help: \"Print JSON instead of a table.\")\n+    var json = false\n+\n     func run() throws {\n-        print(table(items))\n+        if json {\n+            print(try String(decoding: JSONEncoder().encode(items), as: UTF8.self))\n+        } else { print(table(items)) }\n     }"
+        t.append(r1)
+        var r2 = ChatTurn(role: .tool, text: "exit status 0\nBuilding for debugging...\nBuild complete! (4.21s)", toolCallID: "c2")
+        r2.toolTitle = "Run swift build"
+        r2.toolStatus = "done"
+        r2.toolDetail = "swift build"
+        t.append(r2)
+        let write = ToolCall(id: "c3", name: "write_file", arguments: "{}")
+        var a2 = ChatTurn(role: .assistant, text: "It builds. Adding a test for the JSON output:", model: key.modelID)
+        a2.toolCalls = [write]
+        t.append(a2)
+        var r3 = ChatTurn(role: .tool, text: "", toolCallID: "c3")
+        r3.toolTitle = "Create Tests/todoTests/ListJSONTests.swift"
+        r3.toolStatus = "running"
+        r3.toolDetail = "@@\n+import XCTest\n+@testable import todo\n+\n+final class ListJSONTests: XCTestCase {\n+    func testJSON() throws { … }\n+}"
+        t.append(r3)
+        let doc = ChatDocument(transcript: t)
+        doc.liveTurnID = a2.id
+        var preview = ToolPreview(kind: .diff, title: "Create Tests/todoTests/ListJSONTests.swift", detail: r3.toolDetail,
+                                  paths: [URL(fileURLWithPath: "/Users/me/Projects/todo-cli/Tests/todoTests/ListJSONTests.swift")])
+        preview.added = 6
+        doc.permission = PermissionRequest(call: write, preview: preview, effect: .edit, inProject: true)
+        doc.todos = [.init(content: "Add the --json flag", status: "completed"), .init(content: "Build", status: "completed"),
+                     .init(content: "Add a test", status: "in_progress")]
+        m.chats = [doc]
+        m.activeChatID = doc.id
+        var ready = LLMStatus(state: "ready", phase: "Ready", progress: 1)
+        ready.gpu = "H200"
+        ready.count = 2
+        ready.costUSD = 1.12
+        m.llm.statuses[key] = ready
+        panel(.chats)
+        await render(m, to: dir.appendingPathComponent("51-coding-chat.png"))
     }
 
     /// 50: a chat tab mid-conversation (thinking, Markdown, code, stats), the Chats panel open.

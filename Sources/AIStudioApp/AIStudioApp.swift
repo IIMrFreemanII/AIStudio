@@ -32,6 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-agent") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runAgent(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-chat") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -256,6 +263,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("t")
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            Button("New Coding Chat…") { model.chooseProjectAndChat() }
+                .keyboardShortcut("n", modifiers: [.command, .option, .shift])
             Button("Open…") { Self.openPanel(model: model) }
                 .keyboardShortcut("o")
             Divider()

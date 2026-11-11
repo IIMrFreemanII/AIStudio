@@ -8,6 +8,8 @@ struct ChatsPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             PanelHeader(title: "Chats") {
+                Button { model.chooseProjectAndChat() } label: { Image(systemName: "chevron.left.forwardslash.chevron.right") }
+                    .mgHelp("New coding chat in a project folder (⇧⌥⌘N)").accessibilityLabel("New coding chat")
                 Button { model.newChat() } label: { Image(systemName: "square.and.pencil") }
                     .mgHelp("New chat (⌥⌘N)").accessibilityLabel("New chat")
             }
@@ -23,13 +25,13 @@ struct ChatsPanel: View {
                     // Open chats that aren't saved yet (no messages).
                     ForEach(model.chats.filter { c in !model.chatSummaries.contains { $0.id == c.id } }) { c in
                         ChatRow(title: c.title, detail: c.transcript.modelID ?? "", date: nil,
-                                open: true, active: c.id == model.activeChatID)
+                                open: true, active: c.id == model.activeChatID, coding: c.isCoding)
                             .onTapGesture { model.activateChat(c.id) }
                     }
                     ForEach(model.chatSummaries) { s in
                         let open = model.chats.contains { $0.id == s.id }
                         ChatRow(title: model.chats.first { $0.id == s.id }?.title ?? s.title, detail: s.modelID ?? "",
-                                date: s.updated, open: open, active: s.id == model.activeChatID)
+                                date: s.updated, open: open, active: s.id == model.activeChatID, coding: s.coding)
                             .onTapGesture { model.openChat(s.id) }
                             .mgContextMenu {
                                 MGMenuItem.button("Open") { model.openChat(s.id) }
@@ -59,10 +61,11 @@ struct ChatRow: View {
     let date: Date?
     let open: Bool
     let active: Bool
+    var coding = false
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "bubble.left").font(.system(size: 11))
+            Image(systemName: coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left").font(.system(size: 11))
                 .foregroundStyle(active ? MG.accent : MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.mgCallout).lineLimit(1)

@@ -1,4 +1,5 @@
 import AIStudioProtocol
+import Agent
 import AppKit
 import Foundation
 import LLMClient
@@ -21,6 +22,34 @@ final class ChatDocument: Identifiable {
     /// The user message being edited in place.
     var editingTurnID: UUID?
     @ObservationIgnored var task: Task<Void, Never>?
+
+    // MARK: coding chats
+
+    /// A tool call waiting for the user's answer, and the question's answer channel.
+    var permission: PermissionRequest?
+    @ObservationIgnored var permissionAnswer: CheckedContinuation<PermissionAnswer, Never>?
+    /// Live output of running commands, by call id.
+    var toolOutputs: [String: String] = [:]
+    /// The agent's to-do list.
+    var todos: [ToolContext.Todo] = []
+
+    var isCoding: Bool { transcript.projectPath != nil }
+    var projectURL: URL? { transcript.projectPath.map { URL(fileURLWithPath: $0) } }
+    var mode: PermissionMode {
+        get { transcript.permissionMode.flatMap(PermissionMode.init(rawValue:)) ?? .ask }
+        set { transcript.permissionMode = newValue.rawValue }
+    }
+    var rules: AllowRules {
+        AllowRules(edits: transcript.allowEdits ?? false, commandPrefixes: transcript.allowCommands ?? [])
+    }
+
+    /// Answers the pending permission question.
+    func answer(_ a: PermissionAnswer) {
+        let c = permissionAnswer
+        permissionAnswer = nil
+        permission = nil
+        c?.resume(returning: a)
+    }
 
     init(transcript: ChatTranscript) {
         id = transcript.id
@@ -54,6 +83,7 @@ struct ChatSummary: Identifiable, Hashable {
     var title: String
     var updated: Date
     var modelID: String?
+    var coding = false
 }
 
 /// Saved chats in the library's `chats/` folder: `<id>.json` (the transcript) and `<id>/` (attachments).
@@ -91,7 +121,7 @@ struct ChatStore {
         return files.filter { $0.pathExtension == "json" }.compactMap { u -> ChatSummary? in
             guard let data = try? Data(contentsOf: u), let t = try? Self.decoder.decode(ChatTranscript.self, from: data)
             else { return nil }
-            return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID)
+            return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil)
         }.sorted { $0.updated > $1.updated }
     }
 
