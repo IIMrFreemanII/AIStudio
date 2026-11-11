@@ -308,10 +308,31 @@ struct LLMSettingsSheet: View {
     @State private var plan: LLMPlan?
     @State private var option: GPUOption?
     @State private var context = 0
-    @State private var fastLoad = false
+    /// How the engine reads the weights: "auto", "runai" or "processed" (fast start).
+    @State private var loadFormat = "auto"
     @State private var snapshot = false
     @State private var error: String?
     @State private var busy = false
+
+    /// Fast start needs one GPU: on several it shows (and saves) Standard.
+    var fastStartAllowed: Bool { (option?.count ?? model.llm.model(request.key)?.count ?? 1) == 1 }
+    var loadFormatShown: String { loadFormat == "processed" && !fastStartAllowed ? "auto" : loadFormat }
+
+    var loadFormatHelp: String {
+        switch loadFormatShown {
+        case "processed":
+            return "Fast start: the first start loads the model as usual, then saves a copy of its weights in the GPU's own layout "
+                + "(about as big as the model, on the server's volume) and takes about 2 minutes longer. Later starts load that "
+                + "copy: Qwen3.8-Flash-Next went from 111 s to 60 s of loading. A new copy is made by itself after a change of GPU "
+                + "or engine; switching back to Standard deletes it. One GPU only."
+        case "runai":
+            return "Reads the weights with Run:ai's streamer (many reads at once). Made for object storage: on Modal's volume it "
+                + "was slower than the default, so try it only on other servers."
+        default:
+            return fastStartAllowed ? "vLLM's own loader. Fast start loads big mixture-of-experts models about twice as fast."
+                : "vLLM's own loader. (Fast start works on one GPU.)"
+        }
+    }
 
     /// Snapshots need vLLM on one GPU (Modal's GPU snapshots don't handle several).
     var snapshotAllowed: Bool {
@@ -338,11 +359,12 @@ struct LLMSettingsSheet: View {
                     }
                 }
                 MGSection("Start-up") {
-                    MGFormRow("Fast weight loading") {
-                        Toggle("", isOn: $fastLoad).labelsHidden().disabled(gguf)
+                    MGFormRow("Weight loading") {
+                        MGPicker(selection: Binding(get: { gguf ? "auto" : loadFormatShown }, set: { loadFormat = $0 }),
+                                 options: [("auto", "Standard"), ("processed", "Fast start"), ("runai", "Run:ai streamer")])
+                            .disabled(gguf)
                     }
-                    .mgHelp(gguf ? "GGUF files are read by llama.cpp." :
-                            "Reads the weights with Run:ai's streamer (many reads at once). Made for object storage: on Modal's volume it was slower than the default, so try it only on other servers.")
+                    .mgHelp(gguf ? "GGUF files are read by llama.cpp." : loadFormatHelp)
                     MGFormRow("GPU snapshot (experimental)") {
                         Toggle("", isOn: Binding(get: { snapshot && snapshotAllowed }, set: { snapshot = $0 }))
                             .labelsHidden().disabled(!snapshotAllowed)
@@ -408,7 +430,7 @@ struct LLMSettingsSheet: View {
             plan = p
             option = p.options.first { $0.gpu == p.current.gpu && $0.count == p.current.count && $0.fits } ?? p.recommended
             context = p.current.context
-            fastLoad = model.llm.model(request.key)?.loadFormat == "runai"
+            loadFormat = model.llm.model(request.key)?.loadFormat ?? "auto"
             snapshot = model.llm.model(request.key)?.snapshot == true
             if !choices.contains(context) { context = choices.last { $0 <= context } ?? choices.first ?? context }
         } catch {
@@ -423,7 +445,7 @@ struct LLMSettingsSheet: View {
         do {
             var changes: [String: JSONValue] = ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
                                                  "context": .number(Double(context)), "snapshot": .bool(snapshot && snapshotAllowed)]
-            if model.llm.model(request.key)?.engine != "llamacpp" { changes["loadFormat"] = .string(fastLoad ? "runai" : "auto") }
+            if model.llm.model(request.key)?.engine != "llamacpp" { changes["loadFormat"] = .string(loadFormatShown) }
             _ = try await client.update(request.key.modelID, changes)
             if restart { await model.llm.stop(request.key) }
             await model.llm.refresh(request.key.serverID)

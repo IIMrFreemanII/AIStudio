@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -177,7 +178,8 @@ class LLMService:
 
     async def update(self, mid: str, changes: dict) -> dict:
         await self._reload()
-        m = store.patch(self.manifest(mid), changes)
+        before = self.manifest(mid)
+        m = store.patch(before, changes)
         if m.get("facts") and {"gpu", "count", "context"} & set(changes):
             p = sizing.plan(facts_mod.Facts(**m["facts"]), m["context"],
                             profiles.kv_dtype_bytes(m.get("engineArgs") or []))
@@ -188,6 +190,9 @@ class LLMService:
                 raise ValueError(f"{m['context']} tokens of context don't fit on {m['count']}× {m['gpu']} "
                                  f"(at most {o['maxContext']})")
         store.write(self.models_root, m)
+        if before.get("loadFormat") == "processed" and m.get("loadFormat") != "processed":
+            # Fast start turned off: its copy of the weights (as big as the checkpoint) goes.
+            shutil.rmtree(store.processed_dir(self.models_root, mid), ignore_errors=True)
         await self._commit()
         return m
 

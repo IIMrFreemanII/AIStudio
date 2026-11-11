@@ -26,7 +26,8 @@ Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (d
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
 fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
-``AISTUDIO_LLM_MAX_GPUS`` (default 8).
+``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
+they live on the models Volume).
 """
 
 
@@ -73,6 +74,12 @@ CIVITAI_SECRET = _secret_if_exists(os.environ.get("AISTUDIO_CIVITAI_SECRET", "ci
 app = modal.App("aistudio-gpu")
 volume = modal.Volume.from_name("aistudio-gpu-models", create_if_missing=True)
 uploads = modal.Volume.from_name("aistudio-gpu-uploads", create_if_missing=True)
+# Language models can live on their own Volume (AISTUDIO_LLM_VOLUME, a v2 Volume: higher read throughput than the
+# models Volume, which is v1), mounted at /llm-models; unset, they stay under /models/llm.
+LLM_VOLUME = os.environ.get("AISTUDIO_LLM_VOLUME", "")
+LLM_ROOT = Path("/llm-models") if LLM_VOLUME else MODELS
+llm_volume = (modal.Volume.from_name(LLM_VOLUME, version=2, create_if_missing=True) if LLM_VOLUME else volume)
+LLM_VOLUMES = {MODELS: volume, LLM_ROOT: llm_volume} if LLM_VOLUME else {MODELS: volume}
 events = modal.Queue.from_name("aistudio-gpu-events", create_if_missing=True)
 cancels = modal.Dict.from_name("aistudio-gpu-cancels", create_if_missing=True)
 # Fine-tune imports in progress ("family/id" → state), written by `import_model`, read by the front desk.
@@ -91,7 +98,7 @@ env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
-       "AISTUDIO_LLM_MAX_GPUS": os.environ.get("AISTUDIO_LLM_MAX_GPUS", "8")}
+       "AISTUDIO_LLM_MAX_GPUS": os.environ.get("AISTUDIO_LLM_MAX_GPUS", "8"), "AISTUDIO_LLM_VOLUME": LLM_VOLUME}
 
 front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS).env(env)
                .add_local_python_source("aistudio_gpu"))
@@ -113,10 +120,13 @@ vllm_base = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint(
              .uv_pip_install(f"flashinfer-cubin=={FLASHINFER_VERSION}", extra_index_url="https://flashinfer.ai/whl")
              .uv_pip_install(f"flashinfer-jit-cache=={FLASHINFER_VERSION}",
                              extra_index_url=f"https://flashinfer.ai/whl/{FLASHINFER_CUDA}")
-             .env({**env, "VLLM_CACHE_ROOT": f"{MODELS}/llm/.cache/vllm",
-                   "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor",
-                   "TRITON_CACHE_DIR": f"{MODELS}/llm/.cache/triton",
-                   "FLASHINFER_WORKSPACE_BASE": f"{MODELS}/llm/.cache/flashinfer"}))
+             .env({**env, "VLLM_CACHE_ROOT": f"{LLM_ROOT}/llm/.cache/vllm",
+                   "TORCHINDUCTOR_CACHE_DIR": f"{LLM_ROOT}/llm/.cache/inductor",
+                   "TRITON_CACHE_DIR": f"{LLM_ROOT}/llm/.cache/triton",
+                   "FLASHINFER_WORKSPACE_BASE": f"{LLM_ROOT}/llm/.cache/flashinfer"})
+             # AIStudio's vLLM plugin: the aistudio_processed load format (weights saved after vLLM's processing).
+             .add_local_dir(Path(__file__).parent / "vllm_plugin", "/opt/aistudio_vllm_plugin", copy=True)
+             .run_commands("python -m pip install --no-deps --no-build-isolation /opt/aistudio_vllm_plugin"))
 vllm_image = vllm_base.add_local_python_source("aistudio_gpu")
 # The same, for GPU memory snapshots: sleep/wake endpoints on, and inductor compiling in one thread (Modal's advice
 # for snapshots that include torch.compile). Local code goes last: Modal refuses build steps after it.
@@ -422,7 +432,7 @@ def _llm_boot(self, snapshot: bool = False):
     self.error = None
     self.alive = True
     self.proc = None
-    m = store.read(MODELS, self.model) or {}
+    m = store.read(LLM_ROOT, self.model) or {}
     self.manifest = m
     _llm_clock(self, ColdStartClock)
     # "requested" stays, so the app's "starting for N s" still counts the wait for a GPU.
@@ -436,13 +446,13 @@ def _llm_boot(self, snapshot: bool = False):
 
     _llm_publish(self)
     _llm_heartbeat(self)  # in a snapshot boot too, until just before the snapshot (Stop works, the status stays live)
-    if not m or not store.installed(MODELS, self.model):
+    if not m or not store.installed(LLM_ROOT, self.model):
         self.error = f"{self.model} isn't installed on the server"
         _llm_publish(self, state="failed", error=self.error)
         if snapshot:
             _llm_abandon(self, 1)
         return
-    self.proc = EngineProcess(m, MODELS, on_status, env={MEDIA_ENV: str(UPLOADS)})
+    self.proc = EngineProcess(m, LLM_ROOT, on_status, env={MEDIA_ENV: str(UPLOADS)})
     try:
         self.proc.start()
         self.proc.wait_ready(LLM_BOOT_TIMEOUT)
@@ -464,7 +474,7 @@ def _llm_boot(self, snapshot: bool = False):
         modal.experimental.stop_fetching_inputs()
         return
     try:
-        volume.commit()  # the compile caches, for the next cold start
+        llm_volume.commit()  # the compile caches, for the next cold start
     except Exception:  # noqa: BLE001
         pass
     if snapshot:
@@ -648,7 +658,7 @@ def _llm_shutdown(self):
         pass
 
 
-LLM_CLS = dict(volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
+LLM_CLS = dict(volumes={**LLM_VOLUMES, UPLOADS: uploads}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
                memory=(65536, 524288), cpu=8)
 
 
@@ -748,7 +758,7 @@ class LLMLlamaCpp:
         _llm_shutdown(self)
 
 
-@app.function(image=llm_import_image, cpu=4, memory=8192, volumes={MODELS: volume}, timeout=8 * 60 * 60,
+@app.function(image=llm_import_image, cpu=4, memory=8192, volumes=LLM_VOLUMES, timeout=8 * 60 * 60,
               secrets=[modal.Secret.from_name(n) for n in (HF_SECRET, CIVITAI_SECRET) if n])
 def import_llm(manifest: dict, files: list, tokens: dict):
     """Downloads an LLM (Hugging Face or Civitai) onto the models Volume (llm/install.py), on CPUs, then commits it."""
@@ -771,13 +781,13 @@ def import_llm(manifest: dict, files: list, tokens: dict):
     try:
         tokens = {"huggingface": tokens.get("huggingface") or os.environ.get("HF_TOKEN"),
                   "civitai": tokens.get("civitai") or os.environ.get("CIVITAI_TOKEN")}
-        install(MODELS, manifest, files, tokens, progress, cancelled)
-        volume.commit()
+        install(LLM_ROOT, manifest, files, tokens, progress, cancelled)
+        llm_volume.commit()
     except BaseException as e:  # noqa: BLE001
         progress({"state": "cancelled" if isinstance(e, InterruptedError) else "failed",
                   "error": f"{type(e).__name__}: {e}"})
         try:
-            volume.commit()
+            llm_volume.commit()
         except Exception:  # noqa: BLE001
             pass
 
@@ -792,7 +802,7 @@ def _llm_service():
         """Each model in its own ``LLM`` container; installs as ``import_llm`` calls; state in Dicts."""
 
         def __init__(self):
-            super().__init__(MODELS)
+            super().__init__(LLM_ROOT)
             self._reloaded = 0.0
             self._installs_cache: dict = {}
 
@@ -815,7 +825,7 @@ def _llm_service():
             if time.monotonic() - self._reloaded > 5:
                 self._reloaded = time.monotonic()
                 try:
-                    await volume.reload.aio()
+                    await llm_volume.reload.aio()
                 except Exception:  # noqa: BLE001
                     pass
             try:
@@ -825,7 +835,7 @@ def _llm_service():
 
         async def _commit(self):
             try:
-                await volume.commit.aio()
+                await llm_volume.commit.aio()
             except Exception:  # noqa: BLE001
                 pass
 
@@ -906,7 +916,7 @@ def _llm_service():
     return ModalLLMService()
 
 
-@app.function(image=front_image, cpu=1, memory=2048, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=300,
+@app.function(image=front_image, cpu=1, memory=2048, volumes={**LLM_VOLUMES, UPLOADS: uploads}, scaledown_window=300,
               max_containers=1, timeout=60 * 60,
               secrets=[modal.Secret.from_name(n) for n in (HF_SECRET, CIVITAI_SECRET) if n])
 @modal.concurrent(max_inputs=100)

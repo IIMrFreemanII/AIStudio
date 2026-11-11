@@ -24,6 +24,9 @@ from . import store
 Status = Callable[[str, "float | None"], None]  # (phase, progress 0…1 or None)
 
 PHASES: list[tuple[re.Pattern, str]] = [
+    # AIStudio's vLLM plugin (loadFormat "processed").
+    (re.compile(r"Saving processed weights to", re.I), "Saving fast-start weights"),
+    (re.compile(r"Loading processed weights from|No usable processed weights", re.I), "Loading weights"),
     (re.compile(r"Loading (safetensors )?checkpoint shards|Loading safetensors using|Loading weights|load_weights|"
                 r"load_tensors|llama_model_load", re.I), "Loading weights"),
     (re.compile(r"server is listening|main: model loaded", re.I), "Starting server"),
@@ -41,6 +44,25 @@ PERCENT = re.compile(r"(\d{1,3})%")
 RUNAI_CONCURRENCY = int(os.environ.get("AISTUDIO_RUNAI_CONCURRENCY", "16"))
 MEDIA_ENV = "AISTUDIO_LLM_MEDIA"  # the uploads folder chats' images and videos are read from (vllm_command)
 MAX_SEQS = int(os.environ.get("AISTUDIO_VLLM_MAX_SEQS", "64"))  # requests at once; 0 keeps vLLM's default
+# Batch sizes vLLM records CUDA graphs for ("" keeps vLLM's: 19 sizes up to 128, recorded twice per start, once to
+# measure their memory). One person's chats rarely run more than a few requests at once; bigger batches run without
+# a graph (slower per step, still correct). On a B200 with Qwen3.8-Flash-Next: 3 s instead of 10–18 s.
+GRAPH_SIZES = [int(s) for s in os.environ.get("AISTUDIO_VLLM_GRAPH_SIZES", "1,2,4,8").split(",") if s.strip()]
+# vLLM's advice after measuring free memory: "Replace gpu_memory_utilization config with `--kv-cache-memory=N`
+# (… GiB) to fit into requested memory". Passing it on later starts skips the measuring.
+KV_ADVICE = re.compile(r"--kv-cache-memory=(\d+)`? \([\d.]+ GiB\) to fit into requested memory")
+REMEMBER_KV = os.environ.get("AISTUDIO_VLLM_REMEMBER_KV", "1") != "0"
+
+
+def _has(extra: list[str], *flags: str) -> bool:
+    """Whether the user's engine arguments set one of ``flags`` ("--x", "--x=…", "-O3", "-cc.y=…" forms)."""
+    return any(a == f or a.startswith(f + "=") or (f in ("-O", "-cc") and a.startswith(f)) for a in extra
+               for f in flags)
+
+
+def kv_setup(manifest: dict) -> str:
+    """The key the measured KV cache size is remembered under (store.kv_setup, plus this server's defaults)."""
+    return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES)
 
 
 def phase_of(line: str) -> tuple[str, float | None] | None:
@@ -52,9 +74,10 @@ def phase_of(line: str) -> tuple[str, float | None] | None:
 
 
 def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.1",
-                 media: str | None = None) -> list[str]:
+                 media: str | None = None, kv_bytes: int | None = None) -> list[str]:
     """vLLM's OpenAI server for a safetensors model. ``media``: the folder of uploads that chats may point at
-    (``file://`` image and video URLs, see ``LLMService.resolve_uploads``), for models that take images."""
+    (``file://`` image and video URLs, see ``LLMService.resolve_uploads``), for models that take images.
+    ``kv_bytes``: the KV cache size an earlier start of the same setup measured (skips measuring it again)."""
     n = int(manifest.get("count") or 1)
     cmd = ["vllm", "serve", str(weights), "--served-model-name", manifest["id"], "--host", host, "--port", str(port),
            "--tensor-parallel-size", str(n), "--max-model-len", str(int(manifest["context"])),
@@ -68,6 +91,11 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
     if manifest.get("loadFormat") == "runai":
         cmd += ["--load-format", "runai_streamer", "--model-loader-extra-config",
                 json.dumps({"concurrency": RUNAI_CONCURRENCY})]
+    elif manifest.get("loadFormat") == "processed":
+        # AIStudio's vLLM plugin: loads the copy saved after vLLM's processing when it matches this setup, else the
+        # checkpoint (then saves a copy for the next start). One copy per GPU kind: they differ (kernel layouts).
+        cmd += ["--load-format", "aistudio_processed", "--model-loader-extra-config",
+                json.dumps({"dir": str(weights.parent / "processed" / str(manifest.get("gpu") or "gpu"))})]
     if manifest.get("snapshot"):
         cmd.append("--enable-sleep-mode")  # weights go to CPU memory before the snapshot, back after the restore
     if media and manifest.get("vision"):
@@ -79,6 +107,10 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
         # layers need one state slot per request, which on one GPU may not fit 1024 (Qwen3.8-Flash-Next on a B200
         # had room for 761).
         cmd += ["--max-num-seqs", str(MAX_SEQS)]
+    if GRAPH_SIZES and not _has(extra, "--compilation-config", "-cc", "-O", "--enforce-eager"):
+        cmd += ["--compilation-config", json.dumps({"cudagraph_capture_sizes": GRAPH_SIZES})]
+    if kv_bytes and not _has(extra, "--kv-cache-memory", "--gpu-memory-utilization"):
+        cmd += ["--kv-cache-memory", str(int(kv_bytes))]
     return cmd + extra
 
 
@@ -98,10 +130,11 @@ def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0
     return cmd + list(manifest.get("engineArgs") or [])
 
 
-def command(manifest: dict, weights: Path, port: int, media: str | None = None) -> list[str]:
+def command(manifest: dict, weights: Path, port: int, media: str | None = None,
+            kv_bytes: int | None = None) -> list[str]:
     if manifest.get("engine") == "llamacpp":
         return llama_command(manifest, weights, port)
-    return vllm_command(manifest, weights, port, media=media)
+    return vllm_command(manifest, weights, port, media=media, kv_bytes=kv_bytes)
 
 
 class EngineError(RuntimeError):
@@ -122,7 +155,8 @@ class EngineProcess:
 
     def start(self) -> None:
         weights = store.weights_dir(self.models_root, self.manifest["id"])
-        cmd = command(self.manifest, weights, self.port, self.env.get(MEDIA_ENV))
+        self.kv_bytes = self._remembered_kv()
+        cmd = command(self.manifest, weights, self.port, self.env.get(MEDIA_ENV), kv_bytes=self.kv_bytes)
         self.on_status("Starting engine", None)
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      env=self.env, start_new_session=True)
@@ -135,6 +169,8 @@ class EngineProcess:
             line = line.rstrip()
             self.log.append(line)
             print(line, flush=True)  # stays in the container's / service's log
+            if (m := KV_ADVICE.search(line)) and not getattr(self, "kv_bytes", None):
+                self._remember_kv(int(m.group(1)))
             if (p := phase_of(line)) is not None:
                 if p[0] == "Starting engine" and later:
                     continue
@@ -145,6 +181,8 @@ class EngineProcess:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.proc is None or self.proc.poll() is not None:
+                if getattr(self, "kv_bytes", None):  # maybe the remembered size no longer fits: measure next time
+                    self._remember_kv(None)
                 tail = "\n".join(list(self.log)[-25:])
                 name = "llama.cpp" if self.manifest.get("engine") == "llamacpp" else "vLLM"
                 raise EngineError(f"{name} exited while starting:\n{tail}" if tail else f"{name} exited while starting")
@@ -159,6 +197,23 @@ class EngineProcess:
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
+
+    # The KV cache size vLLM measured on the first start of a setup, passed as --kv-cache-memory on the later ones
+    # (saves measuring free memory and recording the CUDA graphs once more to size them). Forgotten when a start
+    # with it fails. Committed to the Volume with the rest after the start (modal_app.py).
+
+    def _remembered_kv(self) -> int | None:
+        if not REMEMBER_KV or self.manifest.get("engine") == "llamacpp":
+            return None
+        return store.kv_cache_memory(self.models_root, self.manifest["id"], kv_setup(self.manifest))
+
+    def _remember_kv(self, nbytes: int | None) -> None:
+        if not REMEMBER_KV:
+            return
+        try:
+            store.save_kv_cache_memory(self.models_root, self.manifest["id"], kv_setup(self.manifest), nbytes)
+        except OSError as e:
+            print(f"[aistudio] couldn't save the KV cache size: {e}", flush=True)
 
     # Memory snapshots (vLLM with --enable-sleep-mode): warm up, sleep (weights to CPU memory, KV cache freed),
     # snapshot; after the restore, wake up.
