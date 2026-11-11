@@ -486,6 +486,32 @@ def test_fake_agent_script(client):
     assert text == "Done: result 1"
 
 
+def test_fake_session_script(client):
+    mid = install(client)
+    tools = [{"type": "function", "function": {"name": "start_session", "parameters": {"type": "object"}}}]
+    msgs = [{"role": "user", "content": "start a session to create hello.txt"}]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+    assert call["function"]["name"] == "start_session"
+    assert json.loads(call["function"]["arguments"]) == {"title": "Hello file", "prompt": "create hello.txt and show it",
+                                                         "worktree": True}
+    msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
+             {"role": "tool", "tool_call_id": call["id"], "content": "Started"}]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    text = "".join(json.loads(d)["choices"][0]["delta"].get("content") or "" for n, d in events
+                   if n is None and d != "[DONE]" and json.loads(d)["choices"])
+    assert text == "Done: Started"
+    # without start_session offered, the same message falls through to the hello.txt script
+    write = [{"type": "function", "function": {"name": "write_file", "parameters": {"type": "object"}}}]
+    events = chat(client, mid, "", messages=msgs[:1], tools=write)
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+    assert call["function"]["name"] == "write_file"
+
+
 def test_fake_graph_helper_script(client):
     mid = install(client)
     tools = [{"type": "function", "function": {"name": "edit_graph", "parameters": {"type": "object"}}}]

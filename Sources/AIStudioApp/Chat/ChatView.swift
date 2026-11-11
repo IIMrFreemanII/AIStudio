@@ -51,6 +51,7 @@ struct ChatView: View {
             return !providers.isEmpty
         }
         .task { await model.llm.refreshAll() }
+        .task(id: doc.id) { model.refreshWorktreeStatus(doc) }
     }
 }
 
@@ -361,6 +362,8 @@ struct ChatTurnView: View {
 
     var body: some View {
         switch turn.role {
+        case .user where turn.sessionEvent != nil:
+            SessionEventCard(event: turn.sessionEvent!)
         case .user where turn.summary == true:
             SummaryRow(text: turn.text)
         case .user:
@@ -430,6 +433,7 @@ struct ChatTurnView: View {
                 if doc.isCoding {
                     MGMenuItem.button("Rewind to Here…", enabled: !doc.isStreaming) { model.prepareRewind(doc, to: turn.id) }
                 }
+                MGMenuItem.button("Fork from Here", enabled: !doc.isStreaming) { model.fork(doc, at: turn.id) }
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
@@ -448,6 +452,7 @@ struct ChatTurnView: View {
                         case "ask_user": QuestionCard(doc: doc, call: call, result: result)
                         case "exit_plan": PlanCard(doc: doc, call: call, result: result)
                         case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
+                        case "propose_session": SessionProposalCard(doc: doc, call: call, result: result)
                         default: ToolCard(doc: doc, call: call, result: result)
                         }
                     }
@@ -487,6 +492,7 @@ struct ChatTurnView: View {
                 MGMenuItem.button("Copy") { copy(turn.text) }
                 MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
                 MGMenuItem.button("Regenerate", enabled: !doc.isStreaming) { model.regenerate(doc, turn.id) }
+                MGMenuItem.button("Fork from Here", enabled: !doc.isStreaming && !live) { model.fork(doc, at: turn.id) }
             }
         case .tool:
             Text(turn.text).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(6)

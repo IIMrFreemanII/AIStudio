@@ -8,6 +8,8 @@ struct AgentSettingsSection: View {
     @State private var keySaved = false
     @State private var skills: [Skill] = []
     @State private var disabled: Set<String> = []
+    @AppStorage("notifySessions") private var notifySessions = true
+    @AppStorage("worktreeBranchPrefix") private var branchPrefix = "aistudio/"
 
     var body: some View {
         MGSection("Coding Agent") {
@@ -27,6 +29,10 @@ struct AgentSettingsSection: View {
                     if keySaved { Text("Key saved").font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
                 }
             }
+            MGFormRow("Worktree branch prefix") {
+                TextField("aistudio/", text: $branchPrefix).frame(maxWidth: 260)
+            }
+            Toggle("Notify when a background session finishes or needs you", isOn: $notifySessions)
             VStack(alignment: .leading, spacing: 6) {
                 Text("Skills").font(.mgCallout)
                 if skills.isEmpty {

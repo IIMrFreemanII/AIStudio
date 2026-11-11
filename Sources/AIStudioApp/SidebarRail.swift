@@ -14,7 +14,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .workflows: return "Workflows"
-        case .chats: return "Chats"
+        case .chats: return "Sessions"
         case .presets: return "Presets"
         case .assets: return "Assets"
         case .queue: return "Queue"
@@ -80,7 +80,7 @@ struct SidebarPanelView: View {
     var body: some View {
         switch panel {
         case .workflows: WorkflowsPanel()
-        case .chats: ChatsPanel()
+        case .chats: SessionsPanel()
         case .presets: PresetsPanel()
         case .assets: AssetsPanel()
         case .queue: QueuePanel()

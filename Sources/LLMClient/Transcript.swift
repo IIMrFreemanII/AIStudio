@@ -29,6 +29,41 @@ public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
     }
 }
 
+/// Where a session works when it has its own git worktree.
+public struct SessionWorktree: Codable, Equatable, Sendable, Hashable {
+    public var repo: String
+    public var path: String
+    public var branch: String
+    public var base: String
+    public init(repo: String, path: String, branch: String, base: String) {
+        self.repo = repo
+        self.path = path
+        self.branch = branch
+        self.base = base
+    }
+}
+
+/// A child session's report, posted into the session that started it.
+public struct SessionEvent: Codable, Equatable, Sendable, Hashable {
+    public var childID: UUID
+    public var title: String
+    public var status: String
+    public var branch: String?
+    public var report: String
+    public init(childID: UUID, title: String, status: String, branch: String? = nil, report: String) {
+        self.childID = childID
+        self.title = title
+        self.status = status
+        self.branch = branch
+        self.report = report
+    }
+
+    /// What the model gets for the report.
+    public var textForModel: String {
+        "[Session \u{201C}\(title)\u{201D} \(status == "done" ? "finished" : status)\(branch.map { " on branch \($0)" } ?? ""): \(report)]"
+    }
+}
+
 /// One message of a saved chat, with what the app shows around it (thinking, stats, errors).
 public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable { case user, assistant, tool }
@@ -68,6 +103,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     /// A summary of everything before it (the context was filling up, or the user asked to compact). A user turn; the
     /// model gets only it and what follows. Shown as a divider.
     public var summary: Bool?
+    /// A user turn: a child session's report (the model gets it as a bracketed note).
+    public var sessionEvent: SessionEvent?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,
@@ -137,6 +174,18 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var allowRuns: Bool?
     /// "Always allow" for web domains (`web_fetch`).
     public var allowDomains: [String]?
+    /// Sessions: pinned and archived in the list, when it was last looked at.
+    public var pinned: Bool?
+    public var archived: Bool?
+    public var lastViewed: Date?
+    /// The session that started this one (or that it was forked from).
+    public var parentID: UUID?
+    /// Its own git worktree, if it has one.
+    public var worktree: SessionWorktree?
+    /// The task it was started with.
+    public var brief: String?
+    /// 0 or nil for a top-level session, the parent's depth + 1 for children.
+    public var depth: Int?
     /// Every turn, in the order they were made.
     public private(set) var nodes: [ChatTurn]
     public var activeLeaf: UUID?
@@ -258,7 +307,11 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         // Everything before the latest summary is in it.
         let shown = turns
         let from = shown.lastIndex { $0.summary == true } ?? shown.startIndex
-        for t in shown[from...] where t.error == nil || !t.text.isEmpty {
+        for t in shown[from...] where t.error == nil || !t.text.isEmpty || t.sessionEvent != nil {
+            if let e = t.sessionEvent {
+                out.append(ChatMessage(role: .user, parts: [.text(e.textForModel)]))
+                continue
+            }
             if t.summary == true {
                 out.append(ChatMessage(role: .user, parts: [.text(ChatTurn.summaryPrefix + t.text)]))
                 continue
@@ -279,6 +332,38 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         return out
     }
 
+    /// A copy of the shown branch up to and including `turnID`, as a new chat: fresh turn ids, the same settings.
+    /// Nil when `turnID` isn't on the shown branch.
+    public func fork(upTo turnID: UUID, date: Date = Date()) -> ChatTranscript? {
+        let shown = turns
+        guard let end = shown.firstIndex(where: { $0.id == turnID }) else { return nil }
+        let range = Array(shown[...end])
+        var copy = ChatTranscript(title: "\(title) (fork)", serverID: serverID, modelID: modelID, date: date)
+        copy.systemPrompt = systemPrompt
+        copy.reasoningEffort = reasoningEffort
+        copy.projectPath = projectPath
+        copy.permissionMode = permissionMode
+        copy.allowEdits = allowEdits
+        copy.allowCommands = allowCommands
+        copy.allowDomains = allowDomains
+        copy.graphHelper = graphHelper
+        copy.allowRuns = allowRuns
+        copy.brief = brief
+        copy.parentID = id
+        copy.depth = depth
+        let newIDs = Dictionary(uniqueKeysWithValues: range.map { ($0.id, UUID()) })
+        for old in range {
+            var t = old
+            t.id = newIDs[old.id]!
+            if var q = t.quote {
+                q.turnID = q.turnID.flatMap { newIDs[$0] }
+                t.quote = q
+            }
+            copy.append(t)
+        }
+        return copy
+    }
+
     /// The images and videos attached to the shown branch's messages.
     public var attachments: [String] { turns.flatMap(\.images) }
 
@@ -295,6 +380,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
         case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
+        case pinned, archived, lastViewed, parentID, worktree, brief, depth
     }
 
     public init(from decoder: Decoder) throws {
@@ -314,6 +400,13 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
         allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
         allowDomains = try c.decodeIfPresent([String].self, forKey: .allowDomains)
+        pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned)
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived)
+        lastViewed = try c.decodeIfPresent(Date.self, forKey: .lastViewed)
+        parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
+        worktree = try c.decodeIfPresent(SessionWorktree.self, forKey: .worktree)
+        brief = try c.decodeIfPresent(String.self, forKey: .brief)
+        depth = try c.decodeIfPresent(Int.self, forKey: .depth)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
             self.nodes = nodes
             activeLeaf = try c.decodeIfPresent(UUID.self, forKey: .activeLeaf)
@@ -342,6 +435,13 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
         try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
         try c.encodeIfPresent(allowDomains, forKey: .allowDomains)
+        try c.encodeIfPresent(pinned, forKey: .pinned)
+        try c.encodeIfPresent(archived, forKey: .archived)
+        try c.encodeIfPresent(lastViewed, forKey: .lastViewed)
+        try c.encodeIfPresent(parentID, forKey: .parentID)
+        try c.encodeIfPresent(worktree, forKey: .worktree)
+        try c.encodeIfPresent(brief, forKey: .brief)
+        try c.encodeIfPresent(depth, forKey: .depth)
         try c.encode(nodes, forKey: .nodes)
         try c.encodeIfPresent(activeLeaf, forKey: .activeLeaf)
         try c.encode(choices, forKey: .choices)

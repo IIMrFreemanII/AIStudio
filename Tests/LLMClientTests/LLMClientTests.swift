@@ -252,6 +252,111 @@ struct LLMClientTests {
         #expect(t.turns.map(\.text) == ["hi", "hello"] && t.turns[1].parent == t.turns[0].id)
     }
 
+    @Test func sessionFieldsRoundTripAndOldFilesLackThem() throws {
+        var t = ChatTranscript(serverID: "s", modelID: "m")
+        t.pinned = true
+        t.archived = false
+        t.lastViewed = Date(timeIntervalSince1970: 500)
+        t.parentID = UUID()
+        t.worktree = SessionWorktree(repo: "/r", path: "/r/wt", branch: "b", base: "main")
+        t.brief = "do it"
+        t.depth = 2
+        var turn = ChatTurn(role: .user, text: "")
+        turn.sessionEvent = SessionEvent(childID: UUID(), title: "T", status: "done", branch: "b", report: "ok")
+        t.append(turn)
+        let back = try JSONDecoder().decode(ChatTranscript.self, from: JSONEncoder().encode(t))
+        #expect(back == t)
+        #expect(back.worktree?.base == "main" && back.depth == 2 && back.turns[0].sessionEvent?.report == "ok")
+        let old = try JSONDecoder().decode(ChatTranscript.self, from: Data("""
+            {"version":2,"id":"\(UUID().uuidString)","title":"Old","created":0,"updated":0,"nodes":[]}
+            """.utf8))
+        #expect(old.pinned == nil && old.archived == nil && old.lastViewed == nil && old.parentID == nil)
+        #expect(old.worktree == nil && old.brief == nil && old.depth == nil)
+    }
+
+    @Test func sessionEventTurnsBecomeUserNotes() {
+        var t = ChatTranscript(serverID: "s", modelID: "m")
+        var a = ChatTurn(role: .assistant, text: "")
+        a.sessionEvent = SessionEvent(childID: UUID(), title: "Fix", status: "done", branch: "fix-1", report: "all green")
+        a.error = "boom"
+        var b = ChatTurn(role: .user, text: "")
+        b.sessionEvent = SessionEvent(childID: UUID(), title: "Docs", status: "failed", report: "no access")
+        t.append(a)
+        t.append(b)
+        let msgs = t.messages()
+        #expect(msgs.map(\.role) == [.user, .user])
+        #expect(msgs[0].text == "[Session \u{201C}Fix\u{201D} finished on branch fix-1: all green]")
+        #expect(msgs[1].text == "[Session \u{201C}Docs\u{201D} failed: no access]")
+    }
+
+    @Test func forkCopiesTheShownBranchUpToATurn() throws {
+        var t = ChatTranscript(title: "Chat", serverID: "s", modelID: "m")
+        t.systemPrompt = "sys"
+        t.reasoningEffort = "high"
+        t.projectPath = "/p"
+        t.permissionMode = "plan"
+        t.allowEdits = true
+        t.allowCommands = ["ls"]
+        t.allowDomains = ["a.com"]
+        t.graphHelper = true
+        t.allowRuns = true
+        t.brief = "brief"
+        t.depth = 1
+        t.pinned = true
+        t.archived = true
+        t.lastViewed = Date()
+        t.worktree = SessionWorktree(repo: "/r", path: "/w", branch: "b", base: "main")
+        let u1 = ChatTurn(role: .user, text: "one")
+        let a1 = ChatTurn(role: .assistant, text: "two", toolCalls: [ToolCall(id: "call1", name: "f", arguments: "{}")])
+        var u2 = ChatTurn(role: .user, text: "three")
+        u2.quote = ChatQuote(turnID: u1.id, role: .user, text: "one")
+        let a2 = ChatTurn(role: .assistant, text: "four")
+        var u3 = ChatTurn(role: .user, text: "five")
+        u3.quote = ChatQuote(turnID: a2.id, role: .assistant, text: "four")
+        for x in [u1, a1, u2, a2, u3] { t.append(x) }
+        // A sibling branch that isn't shown.
+        let sibling = ChatTurn(role: .user, text: "other")
+        t.branch(from: u3.id, with: sibling)
+        t.select(u3.id)
+        let when = Date(timeIntervalSince1970: 1000)
+        let f = try #require(t.fork(upTo: u2.id, date: when))
+        #expect(f.turns.map(\.text) == ["one", "two", "three"])
+        #expect(f.turns[0].parent == nil && f.turns[1].parent == f.turns[0].id && f.turns[2].parent == f.turns[1].id)
+        #expect(Set(f.turns.map(\.id)).isDisjoint(with: [u1.id, a1.id, u2.id, a2.id, u3.id]))
+        #expect(f.turns[1].toolCalls.first?.id == "call1")
+        #expect(f.turns[2].quote?.turnID == f.turns[0].id && f.turns[2].quote?.text == "one")
+        #expect(f.activeLeaf == f.turns[2].id)
+        #expect(f.id != t.id && f.title == "Chat (fork)" && f.created == when && f.updated == when)
+        #expect(f.parentID == t.id && f.depth == 1)
+        #expect(f.serverID == "s" && f.modelID == "m" && f.systemPrompt == "sys" && f.reasoningEffort == "high")
+        #expect(f.projectPath == "/p" && f.permissionMode == "plan" && f.allowEdits == true)
+        #expect(f.allowCommands == ["ls"] && f.allowDomains == ["a.com"] && f.graphHelper == true)
+        #expect(f.allowRuns == true && f.brief == "brief")
+        #expect(f.pinned == nil && f.archived == nil && f.lastViewed == nil && f.worktree == nil)
+        // A quote of a turn after the cut loses its id.
+        let g = try #require(t.fork(upTo: u3.id))
+        #expect(g.turns.count == 5 && g.turns[4].quote?.turnID == g.turns[3].id)
+        let h = try #require(t.fork(upTo: a2.id))
+        #expect(h.turns.count == 4)
+        var late = ChatTranscript(serverID: "s", modelID: "m")
+        let x1 = ChatTurn(role: .user, text: "x1")
+        var x2 = ChatTurn(role: .assistant, text: "x2")
+        x2.quote = ChatQuote(turnID: UUID(), role: .user, text: "gone")
+        late.append(x1)
+        late.append(x2)
+        let k = try #require(late.fork(upTo: x2.id))
+        #expect(k.turns[1].quote?.turnID == nil && k.turns[1].quote?.text == "gone")
+        var q = late
+        var y = ChatTurn(role: .user, text: "y")
+        y.quote = ChatQuote(turnID: x2.id, role: .assistant, text: "x2")
+        q.append(y)
+        let cut = try #require(q.fork(upTo: x1.id))
+        #expect(cut.turns.count == 1)
+        // Not on the shown branch.
+        #expect(t.fork(upTo: sibling.id) == nil)
+        #expect(t.fork(upTo: UUID()) == nil)
+    }
+
     @Test func listingDecodes() throws {
         let json = #"""
         {"models":[{"id":"qwen38","name":"Qwen3.8","url":"Qwen/x","repo":"Qwen/x","gpu":"H200","count":2,

@@ -25,6 +25,10 @@ final class ChatDocument: Identifiable {
     var attachNote: String?
     /// The user message being edited in place.
     var editingTurnID: UUID?
+    /// Shown as a tab (a session that is still working when its tab is closed stays loaded, hidden).
+    var tabOpen = true
+    /// Called after a permission, question or plan card is answered (the dock badge).
+    @ObservationIgnored var onPendingChange: (@MainActor () -> Void)?
     @ObservationIgnored var task: Task<Void, Never>?
 
     // MARK: coding chats
@@ -64,6 +68,19 @@ final class ChatDocument: Identifiable {
     var rewindTarget: UUID?
     var rewindFiles: [URL]?
 
+    // MARK: sessions
+
+    /// Session reports that arrived while a reply was streaming; delivered when it ends.
+    var pendingEvents: [SessionEvent] = []
+    /// How many times a session report made this chat continue by itself since the user last wrote.
+    var autoContinues = 0
+    /// `propose_session` cards by call id, and what was decided (the started session's id; nil: dismissed).
+    var proposals: [String: SessionProposal] = [:]
+    var proposalDecisions: [String: UUID?] = [:]
+    /// Where its worktree stands against its base branch, and whether a pull request can be made.
+    var worktreeStatus: WorktreeStatus?
+    var canCreatePR = false
+
     var isCoding: Bool { transcript.projectPath != nil }
     /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).
     var isGraphHelper: Bool { transcript.graphHelper == true }
@@ -89,6 +106,7 @@ final class ChatDocument: Identifiable {
         permissionAnswer = nil
         permission = nil
         c?.resume(returning: a)
+        onPendingChange?()
     }
 
     /// Answers the open `ask_user` questions (nil: skipped) and lets the reply go on.
@@ -97,6 +115,7 @@ final class ChatDocument: Identifiable {
         questionAnswer = nil
         question = nil
         c?.resume(returning: answers)
+        onPendingChange?()
     }
 
     /// Answers the pending plan and lets the reply go on.
@@ -105,6 +124,7 @@ final class ChatDocument: Identifiable {
         planAnswer = nil
         plan = nil
         c?.resume(returning: a)
+        onPendingChange?()
     }
 
     init(transcript: ChatTranscript) {
@@ -153,6 +173,12 @@ struct ChatSummary: Identifiable, Hashable {
     var modelID: String?
     var coding = false
     var helper = false
+    var status: SessionStatus = .idle
+    var pinned = false
+    var archived = false
+    var parentID: UUID?
+    var branch: String?
+    var projectName: String?
 }
 
 /// Saved chats in the library's `chats/` folder: `<id>.json` (the transcript) and `<id>/` (attachments).
@@ -191,7 +217,9 @@ struct ChatStore {
             guard let data = try? Data(contentsOf: u), let t = try? Self.decoder.decode(ChatTranscript.self, from: data)
             else { return nil }
             return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil,
-                               helper: t.graphHelper == true)
+                               helper: t.graphHelper == true, status: t.savedStatus, pinned: t.pinned == true,
+                               archived: t.archived == true, parentID: t.parentID, branch: t.worktree?.branch,
+                               projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent })
         }.sorted { $0.updated > $1.updated }
     }
 
@@ -212,7 +240,7 @@ struct LLMKey: Hashable, Codable {
 
 /// The LLMs on the GPU servers: their listings and engine states, installs, and keeping a chat's model warm.
 ///
-/// Warmth: while a chat tab is in front, the app is active and the user did something in the last 10 minutes, its
+/// Warmth: sessions that are working or waiting keep their model warm. While a chat tab is in front, the app is active and the user did something in the last 10 minutes, its
 /// model gets a keepalive every minute (the server shuts the GPU down a few minutes after the last one). Its status
 /// is polled every 10 s while it isn't cold, for the chat header.
 @MainActor @Observable
@@ -228,6 +256,8 @@ final class LLMCatalog {
     @ObservationIgnored var lastActivity = Date()
     /// What should be kept warm now (set by the app model: the chat in front).
     @ObservationIgnored var focus: () -> LLMKey? = { nil }
+    /// The models of sessions that are working or waiting: kept warm whether or not the user is around.
+    @ObservationIgnored var working: () -> Set<LLMKey> = { [] }
 
     init(connections: ConnectionStore) { self.connections = connections }
 
@@ -311,14 +341,18 @@ final class LLMCatalog {
         ticks += 1
         // Installs in progress: refresh their server's listing.
         for (sid, l) in listings where !l.installs.isEmpty { await refresh(sid) }
-        guard let key = focus() else { return }
-        let st = status(key)
-        if st?.isActive == true || st == nil { await refreshStatus(key) }
-        let current = status(key)
-        // Keepalive once a minute while the user is around and the model is up.
-        if ticks % 6 == 0, current?.isActive == true, NSApp.isActive, Date().timeIntervalSince(lastActivity) < 600,
-           let client = client(key.serverID), let s = try? await client.keepalive(key.modelID) {
-            statuses[key] = s
+        let focused = focus()
+        let busy = working()
+        for key in busy.union(focused.map { [$0] } ?? []) {
+            let st = status(key)
+            if st?.isActive == true || st == nil { await refreshStatus(key) }
+            let current = status(key)
+            // Keepalive once a minute: for the chat in front while the user is around, for working sessions always.
+            let wanted = busy.contains(key) || (key == focused && NSApp.isActive && Date().timeIntervalSince(lastActivity) < 600)
+            if ticks % 6 == 0, current?.isActive == true, wanted,
+               let client = client(key.serverID), let s = try? await client.keepalive(key.modelID) {
+                statuses[key] = s
+            }
         }
     }
 }

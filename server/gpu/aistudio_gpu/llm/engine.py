@@ -305,7 +305,9 @@ class FakeEngine:
     With tools in the request and "create hello.txt" in the message, it acts as a coding agent: write_file, then
     run_command `cat hello.txt`, then "Done: " and the last tool result. With "add an upscale" it acts as the graph
     helper: get_graph, then edit_graph putting an ImageScale between `decode` and `save` (the text-to-image
-    template's ids), then "Done: " and the first line of the result."""
+    template's ids), then "Done: " and the first line of the result. With start_session offered and "start a session"
+    in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
+    "Done: " and the result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -377,7 +379,11 @@ class FakeEngine:
             yield chunk({"content": "Partly"})
             raise EngineError("the fake engine failed on purpose")
         script = []
-        if "create hello.txt" in last.lower():
+        tool_names = {(t.get("function") or {}).get("name") for t in body.get("tools") or []}
+        if "start a session" in last.lower() and "start_session" in tool_names:
+            script = [("start_session", {"title": "Hello file", "prompt": "create hello.txt and show it",
+                                         "worktree": True})]
+        elif "create hello.txt" in last.lower():
             script = [("write_file", {"path": "hello.txt", "content": "hi from the agent\n"}),
                       ("run_command", {"command": "cat hello.txt"})]
         elif "add an upscale" in last.lower():
@@ -393,7 +399,6 @@ class FakeEngine:
                                                                {"label": "Postgres", "description": "A server"}]}]})]
         elif "show a widget" in last.lower():
             script = [("show_widget", {"title": "Strength", "html": FAKE_WIDGET})]
-        tool_names = {(t.get("function") or {}).get("name") for t in body.get("tools") or []}
         if script and script[0][0] in ("ask_user", "show_widget") and script[0][0] not in tool_names:
             script = []  # the chat tools' scripts only when the chat offers them
         if body.get("tools") and script:
