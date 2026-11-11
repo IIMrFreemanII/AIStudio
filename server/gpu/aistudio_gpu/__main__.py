@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     from .api import create_app
     from .files import FileStore
     from .jobs import JobManager
+    from .llm.service import LocalLLMService
     from .local import LocalRunner
 
     runner = LocalRunner(args.models.resolve(), allow_gpu_tasks=not args.cpu_only)
@@ -61,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     files = FileStore(args.data / "uploads", max_bytes=int(float(os.environ.get("AISTUDIO_UPLOADS_GB", "20")) * 1e9))
     files.prune()
     manager = JobManager(runner, files, args.data / "results")
-    uvicorn.run(create_app(manager, token), host=args.host, port=args.port, log_level="info",
+    # LLMs from links (vLLM on this machine's GPUs, one model at a time; AISTUDIO_FAKE_LLM=1 for a fake engine).
+    llm = LocalLLMService(args.models.resolve())
+    uvicorn.run(create_app(manager, token, llm=llm), host=args.host, port=args.port, log_level="info",
                 ws_max_size=16 << 20)
     return 0
 

@@ -9,22 +9,25 @@
     # the URL and the token as  wk-….ws-…
 
 Layout:
-- ``api``: the front desk (FastAPI on 0.25 CPU core, proxy-auth protected). Checking it, uploading, and the CPU test
+- ``api``: the front desk (FastAPI on 1 CPU core, proxy-auth protected; it relays LLM streams too). Checking it, uploading, and the CPU test
   tasks never start a GPU. It scales to zero 5 min after the last request.
 - ``WanT2V`` / ``WanI2V`` and ``QwenImage`` (H100), ``Flux`` (L40S): GPU workers, one per model family, each with
   the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
 - ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
 - Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
+- ``LLM``: one container per installed language model (vLLM's OpenAI server inside, on the GPUs its manifest
+  names: ``LLM.with_options(gpu="H200:2")(model=id)``). The app keeps it warm with keepalives while a chat is open;
+  it scales to zero ``AISTUDIO_LLM_IDLE`` seconds (default 180) after the last chat or keepalive.
 - Volume ``aistudio-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
   up to ``AISTUDIO_UPLOADS_GB`` (default 20; least recently used go first). Workers copy inputs straight from it.
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
-fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20).
+fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
+``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLM_MAX_GPUS`` (default 8).
 """
 
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -41,6 +44,9 @@ GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
 UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
+LLM_IDLE = int(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
+VLLM_VERSION = os.environ.get("AISTUDIO_VLLM", "0.33.0")
+CUDA_BASE = os.environ.get("AISTUDIO_CUDA_IMAGE", "nvidia/cuda:12.9.1-devel-ubuntu24.04")
 
 
 def _secret_if_exists(name: str) -> str:
@@ -66,6 +72,10 @@ events = modal.Queue.from_name("aistudio-gpu-events", create_if_missing=True)
 cancels = modal.Dict.from_name("aistudio-gpu-cancels", create_if_missing=True)
 # Fine-tune imports in progress ("family/id" → state), written by `import_model`, read by the front desk.
 imports = modal.Dict.from_name("aistudio-gpu-imports", create_if_missing=True)
+# LLM engines (id → {state, phase, progress, started, beat, gpu, count, …}), written by the LLM containers.
+llm_state = modal.Dict.from_name("aistudio-gpu-llm", create_if_missing=True)
+# LLM installs in progress (id → state; "id:cancel" → True), written by `import_llm`.
+llm_installs = modal.Dict.from_name("aistudio-gpu-llm-installs", create_if_missing=True)
 
 SERVER_DEPS = ["fastapi==0.162.2", "httpx==0.28.1", "numpy==2.5.4", "pillow", "imageio-ffmpeg"]
 TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "accelerate==1.15.0", "peft==0.21.2",
@@ -74,10 +84,21 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
        "AISTUDIO_GPU_QWEN": GPU_QWEN,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
-       "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1"}
+       "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
+       "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
+       "AISTUDIO_LLM_MAX_GPUS": os.environ.get("AISTUDIO_LLM_MAX_GPUS", "8")}
 
 front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS).env(env)
                .add_local_python_source("aistudio_gpu"))
+# Downloads LLMs onto the volume (no torch needed).
+llm_import_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, "huggingface_hub")
+                    .env(env).add_local_python_source("aistudio_gpu"))
+# vLLM's OpenAI server; its compile and CUDA-graph caches live on the models volume, so restarts reuse them.
+vllm_image = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint([])
+              .uv_pip_install(f"vllm=={VLLM_VERSION}", "httpx")
+              .env({**env, "VLLM_CACHE_ROOT": f"{MODELS}/llm/.cache/vllm",
+                    "TORCHINDUCTOR_CACHE_DIR": f"{MODELS}/llm/.cache/inductor"})
+              .add_local_python_source("aistudio_gpu"))
 gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS).env(env)
              .add_local_python_source("aistudio_gpu"))
 
@@ -361,7 +382,236 @@ class ModalVariants:
         return removed
 
 
-@app.function(image=front_image, cpu=0.25, memory=1024, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=300,
+# MARK: LLMs
+
+@app.cls(image=vllm_image, gpu="H100", volumes={MODELS: volume}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60,
+         max_containers=1, memory=(65536, 524288), cpu=8)
+@modal.concurrent(max_inputs=64)
+class LLM:
+    """One language model: vLLM's OpenAI server on localhost, started from the model's manifest. Its state goes to
+    the ``llm_state`` Dict (phases while starting, a heartbeat every 15 s while up) for the front desk."""
+
+    model: str = modal.parameter()
+
+    @modal.enter()
+    def boot(self):
+        import threading
+        import time
+
+        from aistudio_gpu.llm import store
+        from aistudio_gpu.llm.engine import VLLMProcess
+
+        self.error = None
+        self.alive = True
+        m = store.read(MODELS, self.model) or {}
+        base = {"started": time.time(), "gpu": m.get("gpu"), "count": m.get("count"), "updated": m.get("updated"),
+                "container": os.environ.get("MODAL_TASK_ID")}
+        self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
+
+        def publish(**kw):
+            self.current = {**self.current, **kw, "beat": time.time()}
+            try:
+                llm_state[self.model] = self.current
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_status(phase, progress):
+            publish(state="ready" if phase == "Ready" else "loading", phase=phase, progress=progress)
+
+        def heartbeat():
+            while self.alive:
+                time.sleep(15)
+                if self.alive:
+                    publish()
+
+        publish()
+        threading.Thread(target=heartbeat, daemon=True).start()
+        if not m or not store.installed(MODELS, self.model):
+            self.error = f"{self.model} isn't installed on the server"
+            publish(state="failed", error=self.error)
+            return
+        self.proc = VLLMProcess(m, MODELS, on_status)
+        try:
+            self.proc.start()
+            self.proc.wait_ready()
+        except Exception as e:  # noqa: BLE001
+            self.error = str(e)[:4000]
+            publish(state="failed", error=self.error)
+            self.proc.stop()
+            modal.experimental.stop_fetching_inputs()
+            return
+        try:
+            volume.commit()  # the compile caches, for the next cold start
+        except Exception:  # noqa: BLE001
+            pass
+        if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
+            modal.experimental.stop_fetching_inputs()
+
+    @modal.method()
+    async def chat(self, body: dict):
+        from aistudio_gpu.llm.engine import EngineError
+
+        if self.error:
+            raise EngineError(self.error)
+        async for chunk in self.proc.chat(body):
+            yield chunk
+
+    @modal.method()
+    def ping(self) -> dict:
+        return self.current
+
+    @modal.method()
+    def stop(self) -> None:
+        modal.experimental.stop_fetching_inputs()
+
+    @modal.exit()
+    def shutdown(self):
+        import time
+
+        self.alive = False
+        if getattr(self, "proc", None) is not None:
+            self.proc.stop()
+        try:
+            llm_state[self.model] = {**self.current, "state": "cold", "phase": None, "ended": time.time(),
+                                     "beat": time.time()}
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@app.function(image=llm_import_image, cpu=4, memory=8192, volumes={MODELS: volume}, timeout=8 * 60 * 60,
+              secrets=[modal.Secret.from_name(n) for n in (HF_SECRET,) if n])
+def import_llm(manifest: dict, files: list, token: str | None):
+    """Downloads an LLM from Hugging Face onto the models Volume (llm/install.py), on CPUs, then commits it."""
+    import time
+
+    from aistudio_gpu.llm.install import install
+
+    key = manifest["id"]
+    last = {"t": 0.0, "cancel": False}
+
+    def progress(p: dict):
+        llm_installs[key] = {**(llm_installs.get(key) or {}), **p}
+
+    def cancelled() -> bool:
+        if time.monotonic() - last["t"] > 2:
+            last["t"] = time.monotonic()
+            last["cancel"] = bool(llm_installs.get(key + ":cancel"))
+        return last["cancel"]
+
+    try:
+        install(MODELS, manifest, [tuple(f) for f in files], token or os.environ.get("HF_TOKEN"), progress, cancelled)
+        volume.commit()
+    except BaseException as e:  # noqa: BLE001
+        progress({"state": "cancelled" if isinstance(e, InterruptedError) else "failed",
+                  "error": f"{type(e).__name__}: {e}"})
+        try:
+            volume.commit()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _llm_service():
+    import time
+
+    from aistudio_gpu.llm.engine import EngineError
+    from aistudio_gpu.llm.service import ACTIVE, LLMService
+
+    class ModalLLMService(LLMService):
+        """Each model in its own ``LLM`` container; installs as ``import_llm`` calls; state in Dicts."""
+
+        def __init__(self):
+            super().__init__(MODELS)
+            self._reloaded = 0.0
+            self._installs_cache: dict = {}
+
+        def _obj(self, m: dict):
+            n = int(m.get("count") or 1)
+            gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
+            return LLM.with_options(gpu=gpu)(model=m["id"])
+
+        async def _reload(self):
+            if time.monotonic() - self._reloaded > 5:
+                self._reloaded = time.monotonic()
+                try:
+                    await volume.reload.aio()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                self._installs_cache = {k: v async for k, v in llm_installs.items.aio()}
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def _commit(self):
+            try:
+                await volume.commit.aio()
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def _engine_state(self, mid, m):
+            s = dict(await llm_state.get.aio(mid) or {"state": "cold"})
+            now = time.time()
+            if s.get("state") in ("loading", "ready") and now - (s.get("beat") or 0) > 60:
+                s.update(state="cold", ended=s.get("beat"))  # the container is gone
+            if s.get("state") == "starting" and now - (s.get("requested") or 0) > 20 * 60:
+                s.update(state="cold")
+            return s
+
+        async def _engine_warm(self, mid, m):
+            s = await self._engine_state(mid, m)
+            if s.get("state") in ACTIVE:
+                return
+            await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU", "requested": time.time(),
+                                          "gpu": m.get("gpu"), "count": m.get("count")})
+            await self._obj(m).ping.spawn.aio()
+
+        async def _engine_ping(self, mid, m):
+            await self._obj(m).ping.spawn.aio()
+
+        async def _engine_stop(self, mid, m):
+            s = await self._engine_state(mid, m)
+            await llm_state.put.aio(mid + ":stop", time.time())
+            if s.get("state") == "ready":
+                await self._obj(m).stop.spawn.aio()
+
+        async def _engine_chat(self, mid, m, body):
+            s = await self._engine_state(mid, m)
+            if s.get("state") == "failed" and s.get("updated") == m.get("updated") and \
+                    time.time() - (s.get("beat") or 0) < 30 * 60:
+                raise EngineError(f"the model failed to start: {s.get('error')}. Change its settings or press "
+                                  "Start again.")
+            if s.get("state") not in ACTIVE:
+                await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU",
+                                              "requested": time.time(), "gpu": m.get("gpu"), "count": m.get("count")})
+            async for chunk in self._obj(m).chat.remote_gen.aio(body):
+                yield chunk
+
+        async def warm(self, mid):
+            s = await llm_state.get.aio(mid)
+            if s and s.get("state") == "failed":
+                await llm_state.put.aio(mid, {"state": "cold"})
+            return await super().warm(mid)
+
+        async def _start_install(self, manifest, files, token):
+            mid = manifest["id"]
+            await llm_installs.pop.aio(mid + ":cancel", None)
+            state = {"state": "starting", "name": manifest["name"]}
+            await llm_installs.put.aio(mid, state)
+            self._installs_cache[mid] = state
+            await import_llm.spawn.aio(manifest, [list(f) for f in files], token)
+            return {"id": mid, **state}
+
+        def _installs(self):
+            return {k: v for k, v in self._installs_cache.items() if not k.endswith(":cancel")}
+
+        def _cancel_install(self, mid):
+            llm_installs[mid + ":cancel"] = True
+            llm_installs.pop(mid, None)
+            self._installs_cache.pop(mid, None)
+
+    return ModalLLMService()
+
+
+@app.function(image=front_image, cpu=1, memory=2048, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=300,
               max_containers=1, timeout=60 * 60,
               secrets=[modal.Secret.from_name(n) for n in (HF_SECRET, CIVITAI_SECRET) if n])
 @modal.concurrent(max_inputs=100)
@@ -382,4 +632,4 @@ def api():
     files.prune()
     manager = JobManager(runner, files, data / "results", idle_seconds=IDLE)
     # No token check here: Modal's proxy auth rejects requests without a proxy token before they reach us.
-    return create_app(manager, token=None, variants=ModalVariants())
+    return create_app(manager, token=None, variants=ModalVariants(), llm=_llm_service())

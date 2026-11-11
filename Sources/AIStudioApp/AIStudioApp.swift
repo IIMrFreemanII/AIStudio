@@ -32,6 +32,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-chat") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runChat(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-remote") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -247,11 +254,15 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n")
             Button("New Tab") { model.newTab() }
                 .keyboardShortcut("t")
+            Button("New Chat") { model.newChat() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
             Button("Open…") { Self.openPanel(model: model) }
                 .keyboardShortcut("o")
             Divider()
-            Button("Close Tab") { TabCommands.close(model.active, model: model) }
-                .keyboardShortcut("w")
+            Button("Close Tab") {
+                if let chat = model.activeChat { model.closeChat(chat.id) } else { TabCommands.close(model.active, model: model) }
+            }
+            .keyboardShortcut("w")
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") { TabCommands.save(model.active, model: model) }
@@ -262,17 +273,25 @@ struct AppCommands: Commands {
         }
         // Each tab has its own undo history.
         CommandGroup(replacing: .undoRedo) {
-            let _ = (model.undoRevision, model.activeTabID)
-            Button(model.activeUndoManager.canUndo ? "Undo \(model.activeUndoManager.undoActionName)" : "Undo") {
-                model.activeUndoManager.undo()
+            let _ = (model.undoRevision, model.activeTabID, model.activeChatID)
+            if model.activeChat != nil {
+                // A chat in front: its text field's own undo.
+                Button("Undo") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
+                    .keyboardShortcut("z")
+                Button("Redo") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+            } else {
+                Button(model.activeUndoManager.canUndo ? "Undo \(model.activeUndoManager.undoActionName)" : "Undo") {
+                    model.activeUndoManager.undo()
+                }
+                .keyboardShortcut("z")
+                .disabled(!model.activeUndoManager.canUndo)
+                Button(model.activeUndoManager.canRedo ? "Redo \(model.activeUndoManager.redoActionName)" : "Redo") {
+                    model.activeUndoManager.redo()
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!model.activeUndoManager.canRedo)
             }
-            .keyboardShortcut("z")
-            .disabled(!model.activeUndoManager.canUndo)
-            Button(model.activeUndoManager.canRedo ? "Redo \(model.activeUndoManager.redoActionName)" : "Redo") {
-                model.activeUndoManager.redo()
-            }
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .disabled(!model.activeUndoManager.canRedo)
         }
         CommandMenu("Generate") {
             Button("Queue Workflow") { model.enqueue(undoManager: model.activeUndoManager) }

@@ -12,12 +12,18 @@ struct TabStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
                     ForEach(model.tabs) { doc in
-                        TabButton(doc: doc, active: doc.id == model.activeTabID)
+                        TabButton(doc: doc, active: doc.id == model.activeTabID && model.activeChatID == nil)
                             .onDrag {
                                 dragging = doc.id
                                 return NSItemProvider(object: doc.id.uuidString as NSString)
                             }
                             .onDrop(of: [.text], delegate: TabDropDelegate(target: doc.id, dragging: $dragging, model: model))
+                    }
+                    if !model.chats.isEmpty {
+                        Rectangle().fill(MG.separator).frame(width: 1, height: 18).padding(.horizontal, 4)
+                        ForEach(model.chats) { chat in
+                            ChatTabButton(chat: chat, active: chat.id == model.activeChatID)
+                        }
                     }
                 }
                 .padding(.horizontal, 6)
@@ -36,6 +42,55 @@ struct TabStrip: View {
         .overlay(alignment: .bottom) { MGDivider() }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { model.newTab() }
+    }
+}
+
+/// A chat's tab: its title, a spinner while a reply streams, × to close.
+struct ChatTabButton: View {
+    @Environment(AppModel.self) private var model
+    let chat: ChatDocument
+    let active: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if chat.isStreaming {
+                MGSpinner().controlSize(.mini)
+            } else {
+                Image(systemName: "bubble.left").font(.system(size: 11))
+                    .foregroundStyle(active ? MG.accent : MG.secondaryLabel)
+            }
+            Text(chat.title).font(.mg(size: 12.5, weight: active ? .medium : .regular)).lineLimit(1)
+                .foregroundStyle(active ? MG.label : MG.secondaryLabel)
+            ZStack {
+                if hovering || active {
+                    Button { model.closeChat(chat.id) } label: {
+                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    }
+                    .buttonStyle(.mg(.icon))
+                    .controlSize(.mini)
+                    .mgHelp("Close chat (⌘W)")
+                }
+            }
+            .frame(width: 18, height: 18)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 5)
+        .frame(height: 28)
+        .frame(maxWidth: 220)
+        .background {
+            RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
+                .fill(active ? MG.selectedTab : hovering ? MG.hover : .clear)
+                .mgShadow(active ? MGShadow.control : MGShadowSpec(x: 0, y: 0, blur: 0, color: .clear))
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture { model.activateChat(chat.id) }
+        .mgHelp(chat.transcript.modelID.map { "Chat with \($0)" } ?? "Chat")
+        .mgContextMenu {
+            MGMenuItem.button("Close Chat", shortcut: KeyboardShortcut("w")) { model.closeChat(chat.id) }
+            MGMenuItem.button("New Chat", shortcut: KeyboardShortcut("n", modifiers: [.command, .option])) { model.newChat() }
+        }
     }
 }
 

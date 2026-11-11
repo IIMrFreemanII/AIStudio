@@ -1,0 +1,207 @@
+import AIStudioProtocol
+import AppKit
+import Foundation
+import LLMClient
+import Observation
+
+/// An open chat tab: the saved transcript plus what only exists while it's open (the draft, the reply streaming in).
+@MainActor @Observable
+final class ChatDocument: Identifiable {
+    let id: UUID
+    var transcript: ChatTranscript
+    var draft = ""
+    /// The assistant turn being written, while a reply streams.
+    var liveTurnID: UUID?
+    /// The engine's state reported during the request (cold start phases).
+    var engine: EngineStatus?
+    /// When the request in progress started.
+    var requestStarted: Date?
+    @ObservationIgnored var task: Task<Void, Never>?
+
+    init(transcript: ChatTranscript) {
+        id = transcript.id
+        self.transcript = transcript
+    }
+
+    var title: String { transcript.title }
+    var isStreaming: Bool { liveTurnID != nil }
+    var modelKey: LLMKey? {
+        guard let s = transcript.serverID, let m = transcript.modelID else { return nil }
+        return LLMKey(serverID: s, modelID: m)
+    }
+}
+
+/// A chat in the Chats panel (read from its file's header fields).
+struct ChatSummary: Identifiable, Hashable {
+    var id: UUID
+    var title: String
+    var updated: Date
+    var modelID: String?
+}
+
+/// Saved chats in the library's `chats/` folder: `<id>.json` (the transcript) and `<id>/` (attachments).
+struct ChatStore {
+    let root: URL
+
+    func url(_ id: UUID) -> URL { root.appendingPathComponent("\(id.uuidString).json") }
+    func filesFolder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
+
+    static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }()
+
+    static let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+
+    func load(_ id: UUID) -> ChatTranscript? {
+        guard let data = try? Data(contentsOf: url(id)) else { return nil }
+        return try? Self.decoder.decode(ChatTranscript.self, from: data)
+    }
+
+    func save(_ t: ChatTranscript) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Self.encoder.encode(t).write(to: url(t.id), options: .atomic)
+    }
+
+    func list() -> [ChatSummary] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }.compactMap { u -> ChatSummary? in
+            guard let data = try? Data(contentsOf: u), let t = try? Self.decoder.decode(ChatTranscript.self, from: data)
+            else { return nil }
+            return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID)
+        }.sorted { $0.updated > $1.updated }
+    }
+
+    /// To the Trash (deleted outright in automated runs).
+    func delete(_ id: UUID, useTrash: Bool) {
+        for u in [url(id), filesFolder(id)] where FileManager.default.fileExists(atPath: u.path) {
+            if useTrash { try? FileManager.default.trashItem(at: u, resultingItemURL: nil) }
+            else { try? FileManager.default.removeItem(at: u) }
+        }
+    }
+}
+
+/// A model on a GPU server.
+struct LLMKey: Hashable, Codable {
+    var serverID: String
+    var modelID: String
+}
+
+/// The LLMs on the GPU servers: their listings and engine states, installs, and keeping a chat's model warm.
+///
+/// Warmth: while a chat tab is in front, the app is active and the user did something in the last 10 minutes, its
+/// model gets a keepalive every minute (the server shuts the GPU down a few minutes after the last one). Its status
+/// is polled every 10 s while it isn't cold, for the chat header.
+@MainActor @Observable
+final class LLMCatalog {
+    var listings: [String: LLMListing] = [:]
+    var errors: [String: String] = [:]
+    var statuses: [LLMKey: LLMStatus] = [:]
+    var refreshing: Set<String> = []
+    @ObservationIgnored let connections: ConnectionStore
+    @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var ticks = 0
+    @ObservationIgnored private var monitor: Any?
+    @ObservationIgnored var lastActivity = Date()
+    /// What should be kept warm now (set by the app model: the chat in front).
+    @ObservationIgnored var focus: () -> LLMKey? = { nil }
+
+    init(connections: ConnectionStore) { self.connections = connections }
+
+    func client(_ serverID: String) -> LLMServerClient? {
+        guard let c = connections.connection(serverID), c.kind == .gpu, let url = c.url else { return nil }
+        return LLMServerClient(baseURL: url, token: ConnectionToken.read(serverID) ?? "")
+    }
+
+    var servers: [ServerConnection] { connections.gpuServers }
+
+    /// Installed models, server by server.
+    var models: [(server: ServerConnection, model: LLMModel)] {
+        servers.flatMap { s in (listings[s.id]?.models ?? []).filter { $0.installed != false }.map { (s, $0) } }
+    }
+
+    func model(_ key: LLMKey) -> LLMModel? {
+        listings[key.serverID]?.models.first { $0.id == key.modelID }
+    }
+
+    func status(_ key: LLMKey) -> LLMStatus? { statuses[key] ?? model(key)?.status }
+
+    func refresh(_ serverID: String) async {
+        guard let client = client(serverID) else { return }
+        refreshing.insert(serverID)
+        defer { refreshing.remove(serverID) }
+        do {
+            let l = try await client.models()
+            listings[serverID] = l
+            errors[serverID] = nil
+            for m in l.models { if let s = m.status { statuses[LLMKey(serverID: serverID, modelID: m.id)] = s } }
+        } catch {
+            errors[serverID] = error.localizedDescription
+        }
+    }
+
+    func refreshAll() async {
+        for s in servers { await refresh(s.id) }
+    }
+
+    func refreshStatus(_ key: LLMKey) async {
+        guard let client = client(key.serverID), let s = try? await client.status(key.modelID) else { return }
+        statuses[key] = s
+    }
+
+    func warm(_ key: LLMKey) async {
+        guard let client = client(key.serverID) else { return }
+        do { statuses[key] = try await client.warm(key.modelID) } catch { errors[key.serverID] = error.localizedDescription }
+    }
+
+    func stop(_ key: LLMKey) async {
+        guard let client = client(key.serverID) else { return }
+        if let s = try? await client.stop(key.modelID) { statuses[key] = s }
+    }
+
+    func remove(_ key: LLMKey) async {
+        guard let client = client(key.serverID) else { return }
+        do {
+            try await client.remove(key.modelID)
+            statuses[key] = nil
+        } catch {
+            errors[key.serverID] = error.localizedDescription
+        }
+        await refresh(key.serverID)
+    }
+
+    // MARK: warmth
+
+    /// Starts the keepalive / status timer and the activity monitor (once).
+    func start() {
+        guard timer == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .scrollWheel]) { [weak self] e in
+            self?.lastActivity = Date()
+            return e
+        }
+        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+            Task { @MainActor in await self?.tick() }
+        }
+    }
+
+    func tick() async {
+        ticks += 1
+        // Installs in progress: refresh their server's listing.
+        for (sid, l) in listings where !l.installs.isEmpty { await refresh(sid) }
+        guard let key = focus() else { return }
+        let st = status(key)
+        if st?.isActive == true || st == nil { await refreshStatus(key) }
+        let current = status(key)
+        // Keepalive once a minute while the user is around and the model is up.
+        if ticks % 6 == 0, current?.isActive == true, NSApp.isActive, Date().timeIntervalSince(lastActivity) < 600,
+           let client = client(key.serverID), let s = try? await client.keepalive(key.modelID) {
+            statuses[key] = s
+        }
+    }
+}

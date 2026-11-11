@@ -247,6 +247,15 @@ modal deploy server/gpu/modal_app.py                               # then add th
 The same server runs on a GPU box you rent by the hour (`scripts/bootstrap-gpu-server.sh aistudio-gpu`), or locally
 for tests (`python -m aistudio_gpu serve`; on a Mac it uses Metal).
 
+### Chats with language models
+
+**Chats** (rail, or ⌥⌘N) talk to language models on the same GPU server: add any Hugging Face model by its link
+(Servers › Language Models › +). The server reads the model's config, picks the cheapest GPUs it fits on (up to 8×
+H100/H200/B200), downloads it to its volume and serves it with vLLM. Chats open as tabs next to the workflows, stream
+the reply with the model's thinking in a collapsible block, render Markdown and code, and show tokens per second and
+what each reply cost. The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
+docs/remote-server.md › Language models.
+
 [docs/remote-server.md](docs/remote-server.md) covers choosing a host (your own Mac, a cloud Mac, serverless GPUs that
 bill only for GPU seconds), networking with Tailscale or an SSH tunnel, the bootstrap scripts, getting models onto the
 server, the dashboard, Modal setup and costs, and troubleshooting.
@@ -325,8 +334,9 @@ Graphs can also hold `groups` (visual frames), `subgraphs` (definitions shared b
   - `GraphEditor/`: the node editor; `TabStrip`, `SidebarRail` (Workflows, Presets, Assets, Queue, Node Library), `QueuePanel` (with the Output list), `Assets.swift` (imports and drops), `ResultsPane` (with the viewer), `PresetGallery`, the inspector (`InspectorView`, `NodeExtras`) and `AddToWorkflow` (the chains in `SimpleChains.swift`).
 - `Sources/AIStudioProtocol`: the remote protocol shared by the server, the app and the tests: 20-byte binary event records (`WireEvent`), JSON control messages, metrics ring buffers, `GraphTransport` (rewrites a graph's files for a server, content-addressed uploads) and `RemoteClient` (URLSession and WebSocket client with resumable transfers and reconnect).
 - `Sources/AIStudioServer`: `aistudio-cli serve` on Hummingbird: the run queue (`Scheduler`), event fan-out with per-client coalescing and latest-wins previews (`Hub`), uploads (`FileStore`), auth and the path sandbox, and the web dashboard (built from `web/dashboard`, Svelte 5 + uPlot, by `scripts/build-dashboard.sh`).
+- `Sources/LLMClient`: chats with LLMs on a GPU server: OpenAI-compatible streaming (SSE, `<think>` splitting, tool-call assembly), the server's `/v1/llm` routes, saved transcripts. The chat UI is `Sources/AIStudioApp/Chat`.
 - `Sources/NodesRemote`: the Cloud GPU nodes and their client of the GPU server's job API (uploads, a WebSocket of the same binary event records as the Mac server, cancel, result download).
-- `server/gpu`: the GPU server (Python): a FastAPI front desk and workers for Wan 2.2, FLUX.1 dev and Qwen-Image (diffusers), ACE-Step 1.5 XL, Stable Audio 3 and Qwen3-TTS; `modal_app.py` deploys it to Modal, `Dockerfile` to a GPU box; tests with `pytest` (CPU test tasks and tiny random-weight models).
+- `server/gpu`: the GPU server (Python): a FastAPI front desk and workers for Wan 2.2, FLUX.1 dev and Qwen-Image (diffusers), ACE-Step 1.5 XL, Stable Audio 3 and Qwen3-TTS, and language models from links (`aistudio_gpu/llm`: sizing, installs, vLLM, an SSE proxy); `modal_app.py` deploys it to Modal, `Dockerfile` to a GPU box; tests with `pytest` (CPU test tasks and tiny random-weight models).
 - `Sources/aistudio-cli`: the command line front end (including `serve`, `download` and `bench-remote`).
 
 The architecture is ported from diffusers' `pipeline_qwenimage21.py`, `transformer_qwenimage21.py` and `autoencoder_kl_qwenimage21.py`.

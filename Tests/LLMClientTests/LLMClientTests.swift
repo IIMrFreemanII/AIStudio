@@ -1,0 +1,142 @@
+import Foundation
+import Testing
+@testable import LLMClient
+
+/// The pieces of a chat stream: SSE framing, OpenAI chunks, the server's `aistudio.*` events, `<think>` splitting,
+/// tool-call assembly, and what requests and transcripts encode to.
+struct LLMClientTests {
+    func parse(_ text: String) -> [SSEEvent] {
+        var p = SSEParser()
+        var out = text.components(separatedBy: "\n").compactMap { p.feed(line: $0) }
+        if let e = p.flush() { out.append(e) }
+        return out
+    }
+
+    @Test func sseFramesEventsCommentsAndMultilineData() {
+        let events = parse(": ping\n\nevent: aistudio.status\ndata: {\"state\":\"loading\"}\n\ndata: a\ndata: b\r\n\ndata: [DONE]")
+        #expect(events == [SSEEvent(event: "aistudio.status", data: "{\"state\":\"loading\"}"),
+                           SSEEvent(data: "a\nb"), SSEEvent(data: "[DONE]")])
+    }
+
+    @Test func chunksBecomeEventsAndDoneStops() throws {
+        var got: [ChatEvent] = []
+        let chunk = #"{"choices":[{"index":0,"delta":{"reasoning":"hm ","content":"Hi"},"finish_reason":null}]}"#
+        #expect(try !OpenAIChatClient.handle(SSEEvent(data: chunk)) { got.append($0) })
+        let tool = #"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read","arguments":"{\"a\""}}]},"finish_reason":"tool_calls"}]}"#
+        _ = try OpenAIChatClient.handle(SSEEvent(data: tool)) { got.append($0) }
+        let usage = #"{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":7}}"#
+        _ = try OpenAIChatClient.handle(SSEEvent(data: usage)) { got.append($0) }
+        _ = try OpenAIChatClient.handle(SSEEvent(event: "aistudio.status", data: #"{"state":"loading","phase":"Loading weights","progress":0.41}"#)) { got.append($0) }
+        _ = try OpenAIChatClient.handle(SSEEvent(event: "aistudio.usage", data: #"{"seconds":2.5,"ttftMs":300,"tokPerSec":41.2,"completionTokens":7,"costUSD":0.0063}"#)) { got.append($0) }
+        #expect(try OpenAIChatClient.handle(SSEEvent(data: "[DONE]")) { got.append($0) })
+        #expect(got == [
+            .reasoning("hm "), .content("Hi"),
+            .toolCall(index: 0, id: "c1", name: "read", arguments: "{\"a\""), .finish(reason: "tool_calls"),
+            .usage(promptTokens: 12, completionTokens: 7),
+            .status(EngineStatus(state: "loading", phase: "Loading weights", progress: 0.41)),
+            .stats(RequestStats(seconds: 2.5, ttftMs: 300, tokPerSec: 41.2, completionTokens: 7, costUSD: 0.0063)),
+        ])
+    }
+
+    @Test func serverErrorsThrow() {
+        #expect(throws: LLMError.server("the GPU ran out")) {
+            try OpenAIChatClient.handle(SSEEvent(event: "aistudio.error", data: #"{"error":"the GPU ran out"}"#)) { _ in }
+        }
+        #expect(throws: LLMError.server("bad model")) {
+            try OpenAIChatClient.handle(SSEEvent(data: #"{"error":{"message":"bad model"}}"#)) { _ in }
+        }
+    }
+
+    @Test func thinkTagsSplitAcrossChunks() {
+        var s = ThinkSplitter()
+        var pieces: [ThinkSplitter.Piece] = []
+        for chunk in ["<th", "ink>let me ", "see</thi", "nk>\n\nThe answer", " is 4. <", "b>"] {
+            pieces += s.feed(chunk)
+        }
+        pieces += s.finish()
+        let reasoning = pieces.compactMap { if case .reasoning(let r) = $0 { return r }; return nil }.joined()
+        let content = pieces.compactMap { if case .content(let c) = $0 { return c }; return nil }.joined()
+        #expect(reasoning == "let me see")
+        #expect(content == "The answer is 4. <b>")
+    }
+
+    @Test func accumulatorPrefersTheServersReasoningField() {
+        var a = ReplyAccumulator()
+        a.add(.reasoning("thinking"))
+        a.add(.content("<think>not thinking</think>text"))
+        a.finish()
+        #expect(a.reasoning == "thinking" && a.content == "<think>not thinking</think>text")
+
+        var b = ReplyAccumulator()
+        for t in ["<think>", "plan", "</think>", "done"] { b.add(.content(t)) }
+        b.finish()
+        #expect(b.reasoning == "plan" && b.content == "done")
+    }
+
+    @Test func toolCallsAssembleByIndex() {
+        var t = ToolCallAssembler()
+        t.add(index: 1, id: "b", name: "grep", arguments: "{}")
+        t.add(index: 0, id: "a", name: "read_file", arguments: "{\"path\": ")
+        t.add(index: 0, id: nil, name: nil, arguments: "\"README.md\"}")
+        t.add(index: 2, id: nil, name: "glob", arguments: "{}")
+        #expect(t.calls == [ToolCall(id: "a", name: "read_file", arguments: "{\"path\": \"README.md\"}"),
+                            ToolCall(id: "b", name: "grep", arguments: "{}"),
+                            ToolCall(id: "call_2", name: "glob", arguments: "{}")])
+    }
+
+    @Test func requestEncodesLikeOpenAI() throws {
+        var r = ChatRequest(model: "qwen38", messages: [
+            .system("be brief"),
+            ChatMessage(role: .user, parts: [.image(url: "data:image/jpeg;base64,AA=="), .text("what is this?")]),
+            ChatMessage(role: .assistant, parts: [.text("")], toolCalls: [ToolCall(id: "c1", name: "f", arguments: "{}")]),
+            ChatMessage(role: .tool, parts: [.text("ok")], toolCallID: "c1"),
+        ])
+        r.reasoningEffort = "low"
+        r.chatTemplateKwargs = ["enable_thinking": .bool(false)]
+        r.tools = [ToolSpec(name: "f", description: "does f", parameters: .object(["type": .string("object")]))]
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(r)) as! [String: Any]
+        #expect(json["model"] as? String == "qwen38" && json["stream"] as? Bool == true)
+        #expect((json["stream_options"] as? [String: Bool])?["include_usage"] == true)
+        #expect(json["reasoning_effort"] as? String == "low")
+        #expect((json["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"] == false)
+        #expect(json["temperature"] == nil)
+        let msgs = json["messages"] as! [[String: Any]]
+        #expect(msgs[0]["content"] as? String == "be brief")
+        let parts = msgs[1]["content"] as! [[String: Any]]
+        #expect(parts[0]["type"] as? String == "image_url" && parts[1]["text"] as? String == "what is this?")
+        let call = (msgs[2]["tool_calls"] as! [[String: Any]])[0]
+        #expect(call["type"] as? String == "function" && (call["function"] as? [String: String])?["name"] == "f")
+        #expect(msgs[3]["tool_call_id"] as? String == "c1")
+        let tool = (json["tools"] as! [[String: Any]])[0]
+        #expect((tool["function"] as? [String: Any])?["description"] as? String == "does f")
+    }
+
+    @Test func transcriptRoundTripsAndSkipsFailedReplies() throws {
+        var t = ChatTranscript(serverID: "s", modelID: "m")
+        t.systemPrompt = "sys"
+        t.turns = [ChatTurn(role: .user, text: "hi", images: ["a.jpg"]), ChatTurn(role: .assistant, text: "")]
+        t.turns[1].error = "cancelled"
+        t.turns.append(ChatTurn(role: .assistant, text: "hello"))
+        t.turns[2].stats = RequestStats(seconds: 1, costUSD: 0.01)
+        let data = try JSONEncoder().encode(t)
+        let back = try JSONDecoder().decode(ChatTranscript.self, from: data)
+        #expect(back == t && back.costUSD == 0.01)
+        let msgs = back.messages { $0 == "a.jpg" ? "data:image/jpeg;base64,AA==" : nil }
+        #expect(msgs.map(\.role) == [.system, .user, .assistant])
+        #expect(msgs[1].parts.first == .image(url: "data:image/jpeg;base64,AA=="))
+        #expect(ChatTranscript.title(from: "  \nFix the CLI flag parsing\nplease") == "Fix the CLI flag parsing")
+    }
+
+    @Test func listingDecodes() throws {
+        let json = #"""
+        {"models":[{"id":"qwen38","name":"Qwen3.8","url":"Qwen/x","repo":"Qwen/x","gpu":"H200","count":2,
+         "context":131072,"nativeContext":262144,"vision":true,"installed":true,"engine":"vllm",
+         "status":{"id":"qwen38","state":"ready","phase":"Ready","progress":1,"uptime":12.5,"usdPerSecond":0.0025,
+                   "costUSD":0.03,"idleSeconds":180,"leaseSeconds":1800,"lastChat":null,"error":null,"gpu":"H200","count":2}}],
+         "installs":{"tiny":{"state":"downloading","bytes":10,"total":100}}}
+        """#
+        let l = try JSONDecoder().decode(LLMListing.self, from: Data(json.utf8))
+        #expect(l.models[0].gpuLabel == "2× H200" && l.models[0].status?.isActive == true)
+        #expect(l.installs["tiny"]?.total == 100)
+    }
+}

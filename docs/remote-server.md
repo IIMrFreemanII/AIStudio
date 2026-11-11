@@ -411,6 +411,37 @@ Speech currently takes longer than the audio it makes (plain PyTorch attention, 
 downloads took about 3 minutes for music and speech together and 2 minutes for Stable Audio 3, including its
 conversion.
 
+### Language models (chats)
+
+The same deployment runs language models for the app's **chats** (Chats in the rail, or ⌥⌘N). Any Hugging Face model
+in safetensors works (full precision, FP8, AWQ, GPTQ); GGUF files and Civitai links come in a later milestone. Each
+model runs in its own `LLM` container: vLLM's OpenAI-compatible server on the GPUs the model needs, behind the front
+desk's `/v1/llm/…` routes (same proxy token; `GET /v1/llm/oai/v1/models` and `POST /v1/llm/oai/v1/chat/completions`
+work with any OpenAI client).
+
+- **Add one:** Servers › Language Models › **+** (or a chat's model menu › Add a Model from a Link…). Paste
+  `owner/name` or the model's URL and press **Look Up**: the server reads its config (no download) and lists the GPU
+  options it fits on, cheapest first, with the longest context each allows. Gated models use the Hugging Face token
+  from the Models window (sent with the request, used once, never stored).
+- **Install:** `import_llm` (4 CPUs) downloads the files straight to the models volume: about 3–5 minutes per 100 GB.
+- **GPUs:** L40S (1–2), A100 80 GB, H100, H200 or B200, on 1, 2, 4 or 8 of them. The pick is the cheapest that holds
+  the weights plus the KV cache for the context you chose (vLLM gets 90% of the memory). Mixture-of-experts models
+  split across GPUs with expert parallelism. Change it later with `PATCH /v1/llm/models/<id>`.
+- **Warm while you chat:** the first message starts the container (the chat shows *Waiting for a GPU*, then *Loading
+  weights 41%*). While a chat with that model is in front, the app is active and you used it in the last 10 minutes,
+  it sends a keepalive every minute. The container stops `AISTUDIO_LLM_IDLE` seconds (default 180) after the last
+  message or keepalive, and keepalives stop counting 30 minutes after the last message (`AISTUDIO_LLM_LEASE`). The
+  power button in the chat (or Servers › model › Shut Down GPU) stops it at once.
+- **Cost:** Modal bills the container's whole life, warm and idle, per GPU-second. A chat shows each reply's GPU time
+  in dollars and the engine's running total; for example Qwen3.8-Flash-Next FP8 (180 GB) on 2× H200 is about
+  $9.08 an hour while warm, so an hour of chatting plus the 3-minute idle tail costs about $9.50. Cold starts load the
+  weights from the volume (a few minutes for 100+ GB) and are billed too.
+- Deploy settings: `AISTUDIO_LLM_IDLE`, `AISTUDIO_VLLM` (the vLLM version, default 0.33.0), `AISTUDIO_CUDA_IMAGE`,
+  `AISTUDIO_LLM_MAX_GPUS` (default 8).
+
+A GPU box serves the same routes (`python -m aistudio_gpu serve`): there the model runs on the box's own GPUs, one
+model at a time, and the cost shows as $0.
+
 ### Check a deployment without spending GPU time
 
 The front desk also runs three CPU test tasks (`test-video`, `test-image`, `test-audio`): a moving pattern or a tone,

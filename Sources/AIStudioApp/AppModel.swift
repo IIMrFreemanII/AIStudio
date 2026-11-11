@@ -69,9 +69,26 @@ final class AppModel {
 
     /// The open workflows, in tab order; there is always at least one.
     var tabs: [WorkflowDocument]
-    var activeTabID: UUID
+    /// The active workflow; choosing one brings it in front of a chat.
+    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil } } }
     var active: WorkflowDocument { tabs.first { $0.id == activeTabID } ?? tabs[0] }
     var activeUndoManager: UndoManager { active.undoManager }
+
+    // MARK: chats
+
+    /// Open chat tabs, after the workflow tabs in the tab strip.
+    var chats: [ChatDocument] = []
+    /// The chat in front of the graph (nil: the active workflow is in front).
+    var activeChatID: UUID?
+    var activeChat: ChatDocument? { chats.first { $0.id == activeChatID } }
+    /// Saved chats, newest first (Chats panel).
+    var chatSummaries: [ChatSummary] = []
+    /// The LLMs on the GPU servers, and keeping a chat's model warm.
+    @ObservationIgnored lazy var llm: LLMCatalog = {
+        let c = LLMCatalog(connections: connections)
+        c.focus = { [weak self] in self?.activeChat?.modelKey }
+        return c
+    }()
 
     // The active tab's document state, so editing code reads like there is one graph.
     var graph: Graph {
@@ -197,6 +214,8 @@ final class AppModel {
     @ObservationIgnored weak var store: ModelStore?
     /// The Add from Link / Add File sheet, opened from a LoRA node's menu.
     var libraryRequest: LibraryAddRequest?
+    /// The Add a Model from a Link sheet (language models on a GPU server).
+    var llmAddRequest: LLMAddRequest?
 
     // MARK: library
 
@@ -270,6 +289,7 @@ final class AppModel {
         reloadPresets()
         reloadAssets()
         if restoreSession ?? (persistSettings && !Self.isAutomatedRun) { restoreTabs() }
+        restoreOpenChats()
         if persistSettings { startSessionAutosave() }
         reloadHistory()
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in

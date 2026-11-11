@@ -38,7 +38,8 @@ extension AppModel {
     // MARK: tabs
 
     func activate(_ id: UUID) {
-        guard tabs.contains(where: { $0.id == id }), id != activeTabID else { return }
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        activeChatID = nil
         activeTabID = id
     }
 
@@ -53,6 +54,7 @@ extension AppModel {
 
     @discardableResult
     func openTab(_ graph: Graph, name: String, fileURL: URL? = nil, presetID: String? = nil) -> WorkflowDocument {
+        activeChatID = nil
         let doc = WorkflowDocument(name: fileURL == nil ? uniqueTabName(name) : name, graph: graph, fileURL: fileURL,
                                    presetID: presetID)
         if let i = tabs.firstIndex(where: { $0.id == activeTabID }) { tabs.insert(doc, at: i + 1) } else { tabs.append(doc) }
@@ -353,6 +355,7 @@ extension AppModel {
     /// Writes changed drafts and the tab list; called every couple of seconds and on quit.
     func saveSession() {
         guard persistSettings else { return }
+        saveOpenChats()
         let store = sessionStore
         for doc in tabs where doc.lastDraft != doc.graph {
             do { try store.writeDraft(doc.graph, id: doc.id); doc.lastDraft = doc.graph } catch {}
