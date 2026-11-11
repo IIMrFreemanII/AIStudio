@@ -182,4 +182,27 @@ struct LLMClientTests {
         #expect(l.models[0].gpuLabel == "2× H200" && l.models[0].status?.isActive == true)
         #expect(l.installs["tiny"]?.total == 100)
     }
+
+    @Test func statusDecodesTheColdStartSummary() throws {
+        let json = """
+        {"id":"m","state":"loading","phase":"Loading weights","progress":0.4,"bootSeconds":75.2,
+         "coldStart":{"last":{"at":1.0,"seconds":192.4,"waitSeconds":20,"how":"cold","gpu":"H200","count":2,
+           "loadFormat":"runai","phases":[{"name":"Waiting for a GPU","seconds":20},{"name":"Starting container","seconds":0.3},
+           {"name":"Loading weights","seconds":130.1},{"name":"Compiling","seconds":42}]},
+         "typicalSeconds":185,"count":3}}
+        """
+        let s = try JSONDecoder().decode(LLMStatus.self, from: Data(json.utf8))
+        #expect(s.bootSeconds == 75.2 && s.coldStart?.typicalSeconds == 185 && s.coldStart?.count == 3)
+        let last = try #require(s.coldStart?.last)
+        #expect(last.loadFormat == "runai" && last.phases.count == 4)
+        // The short phase is left out of the breakdown.
+        #expect(last.breakdown == "Waiting for a GPU 20 s · Loading weights 2 min 10 s · Compiling 42 s")
+        #expect(ColdStartRecord.duration(192.4) == "3 min 12 s" && ColdStartRecord.duration(120) == "2 min"
+                && ColdStartRecord.duration(48.4) == "48 s")
+        // Older servers send neither.
+        let old = try JSONDecoder().decode(LLMStatus.self, from: Data(#"{"state":"cold"}"#.utf8))
+        #expect(old.coldStart == nil && old.bootSeconds == nil)
+        let model = try JSONDecoder().decode(LLMModel.self, from: Data(#"{"id":"m","name":"M","repo":"o/m","gpu":"H100","count":1,"context":8192,"loadFormat":"runai","snapshot":true}"#.utf8))
+        #expect(model.loadFormat == "runai" && model.snapshot == true)
+    }
 }

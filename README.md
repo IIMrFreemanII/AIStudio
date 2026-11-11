@@ -265,7 +265,7 @@ The chat's permission mode decides what asks first: **Ask** (reads are free; edi
 Always allow / Deny), **Auto-accept Edits**, **Plan** (read only) and **Bypass Permissions**. Reads and edits outside
 the project folder always ask, except in Bypass. "Always allow" remembers all edits, or a command prefix
 (`swift build`, `git status`), for that chat. The agent gets the project's `AGENTS.md` or `CLAUDE.md`. Models need
-tool calling (most recent ones; the server picks the parser). The GPU stays warm while a chat is in front and stops a few minutes after the last message. See
+tool calling (most recent ones; the server picks the parser). The GPU stays warm while a chat is in front and stops a few minutes after the last message. Starts are timed phase by phase (the chat says how long one usually takes); a model's settings can turn on fast weight loading (Run:ai's streamer) and, for one-GPU vLLM models, an experimental GPU memory snapshot. See
 docs/remote-server.md › Language models.
 
 The **Graph Helper** (the wand in the toolbar, or ⇧⌘H) is a chat docked next to the graph that works on that tab's

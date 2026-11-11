@@ -35,6 +35,7 @@ PHASES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"Initializing|init engine|Initializing a V\d+ LLM engine|world_size", re.I), "Starting engine"),
 ]
 PERCENT = re.compile(r"(\d{1,3})%")
+RUNAI_CONCURRENCY = int(os.environ.get("AISTUDIO_RUNAI_CONCURRENCY", "16"))
 
 
 def phase_of(line: str) -> tuple[str, float | None] | None:
@@ -56,6 +57,11 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
         cmd += ["--reasoning-parser", manifest["reasoningParser"]]
     if n > 1 and manifest.get("experts"):
         cmd.append("--enable-expert-parallel")
+    if manifest.get("loadFormat") == "runai":
+        cmd += ["--load-format", "runai_streamer", "--model-loader-extra-config",
+                json.dumps({"concurrency": RUNAI_CONCURRENCY})]
+    if manifest.get("snapshot"):
+        cmd.append("--enable-sleep-mode")  # weights go to CPU memory before the snapshot, back after the restore
     return cmd + list(manifest.get("engineArgs") or [])
 
 
@@ -131,6 +137,22 @@ class EngineProcess:
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
+    # Memory snapshots (vLLM with --enable-sleep-mode): warm up, sleep (weights to CPU memory, KV cache freed),
+    # snapshot; after the restore, wake up.
+
+    def warmup(self, requests: int = 2) -> None:
+        body = {"model": self.manifest["id"], "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 8}
+        for _ in range(requests):
+            httpx.post(self.url + "/v1/chat/completions", json=body, timeout=300).raise_for_status()
+
+    def sleep(self, level: int = 1) -> None:
+        httpx.post(self.url + "/sleep", params={"level": level}, timeout=600).raise_for_status()
+
+    def wake_up(self) -> None:
+        self.on_status("Waking up", None)
+        httpx.post(self.url + "/wake_up", timeout=600).raise_for_status()
+        self.wait_ready(timeout=600)
+
     async def chat(self, body: dict) -> AsyncIterator[bytes]:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None)) as client:
             async with client.stream("POST", self.url + "/v1/chat/completions", json=body) as r:
@@ -192,6 +214,16 @@ class FakeEngine:
 
     def alive(self) -> bool:
         return self.running
+
+    def warmup(self, requests: int = 2) -> None:
+        pass
+
+    def sleep(self, level: int = 1) -> None:
+        self.on_status("Asleep", None)
+
+    def wake_up(self) -> None:
+        self.on_status("Waking up", None)
+        self.on_status("Ready", 1.0)
 
     async def chat(self, body: dict) -> AsyncIterator[bytes]:
         mid = self.manifest["id"]

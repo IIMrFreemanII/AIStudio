@@ -12,7 +12,9 @@ from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Fields the app may change after installing (PATCH /v1/llm/models/{id}).
-PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs"}
+PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot"}
+# How vLLM reads the weights: its default loader, or Run:ai's streamer (many reads at once; faster from network volumes).
+LOAD_FORMATS = ("auto", "runai")
 
 
 def root(models_root: Path) -> Path:
@@ -87,6 +89,14 @@ def patch(manifest: dict, changes: dict) -> dict:
         raise ValueError("context is at least 1024 tokens")
     if not isinstance(out.get("engineArgs"), list) or not all(isinstance(a, str) for a in out["engineArgs"]):
         raise ValueError("engineArgs is a list of strings")
+    if out.get("loadFormat", "auto") not in LOAD_FORMATS:
+        raise ValueError("loadFormat is auto or runai")
+    if out.get("loadFormat", "auto") != "auto" and out.get("engine") == "llamacpp":
+        raise ValueError("the fast loader is for vLLM models (GGUF files are read by llama.cpp)")
+    if not isinstance(out.get("snapshot", False), bool):
+        raise ValueError("snapshot is true or false")
+    if out.get("snapshot") and (out.get("engine") == "llamacpp" or out["count"] != 1):
+        raise ValueError("GPU snapshots work for vLLM models on one GPU only")
     out["updated"] = time.time()
     return out
 

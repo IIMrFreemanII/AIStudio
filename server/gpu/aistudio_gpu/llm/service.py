@@ -22,7 +22,7 @@ import httpx
 from ..tasks import GPU_PRICES
 from . import facts as facts_mod
 from . import install as install_mod
-from . import profiles, proxy, sizing, store
+from . import coldstart, profiles, proxy, sizing, store
 from .engine import EngineError, EngineProcess, FakeEngine, fake_enabled
 
 IDLE = float(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
@@ -65,6 +65,9 @@ class LLMService:
 
     def _cancel_install(self, mid: str) -> None:
         raise NotImplementedError
+
+    async def _coldstarts(self, mid: str) -> list:  # the model's last boots, oldest first (coldstart.py)
+        return []
 
     async def _reload(self) -> None:  # the volume, where writes from other containers show up
         pass
@@ -212,7 +215,11 @@ class LLMService:
                 "error": s.get("error"), "gpu": s.get("gpu") or m.get("gpu"), "count": s.get("count") or m.get("count"),
                 "uptime": round(uptime, 1), "usdPerSecond": price, "costUSD": round(uptime * price, 4),
                 "idleSeconds": self.idle, "leaseSeconds": self.lease,
-                "lastChat": self.last_chat.get(mid)}
+                "lastChat": self.last_chat.get(mid),
+                # Seconds since the start was asked for, while starting (the app compares it with the typical start).
+                "bootSeconds": round(now - (s.get("requested") or started or now), 1)
+                if s.get("state") in ("starting", "loading") else None,
+                "coldStart": coldstart.summary(await self._coldstarts(mid), m.get("updated"))}
 
     async def warm(self, mid: str) -> dict:
         m = self._installed(mid)
@@ -302,6 +309,10 @@ class LocalLLMService(LLMService):
         self.install_states: dict[str, dict] = {}
         self.install_cancels: dict[str, threading.Event] = {}
         self.reaper: asyncio.Task | None = None
+        self.history: dict[str, list] = {}
+
+    async def _coldstarts(self, mid):
+        return self.history.get(mid, [])
 
     # installs
 
@@ -356,9 +367,12 @@ class LocalLLMService(LLMService):
                 await asyncio.to_thread(proc.stop)
                 self._set(other, state="cold", ended=time.time())
 
+            clock = coldstart.ColdStartClock()
+
             def on_status(phase, progress):
                 state = "ready" if phase == "Ready" else ("loading" if phase != "Starting engine" else "starting")
                 self._set(mid, state=state, phase=phase, progress=progress)
+                clock.phase(phase)
 
             proc = self.engine_factory(m, self.models_root, on_status)
             self.engine = (mid, proc)
@@ -370,6 +384,9 @@ class LocalLLMService(LLMService):
                 try:
                     proc.start()
                     proc.wait_ready()
+                    record = clock.finish(gpu=m.get("gpu"), count=m.get("count"), updated=m.get("updated"),
+                                          loadFormat=m.get("loadFormat") or "auto")
+                    self.history[mid] = coldstart.remember(self.history.get(mid), record)
                 except BaseException as e:  # noqa: BLE001
                     self._set(mid, state="failed", error=str(e)[:4000], ended=time.time())
                     if self.engine and self.engine[1] is proc:
