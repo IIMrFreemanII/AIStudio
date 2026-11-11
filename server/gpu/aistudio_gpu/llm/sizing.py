@@ -1,6 +1,7 @@
 """Which GPUs a model fits on, and the cheapest.
 
-Per GPU it needs its share of the weights (tensor parallel splits them, expert parallel too), a fixed overhead
+Per GPU it needs its share of the weights (tensor parallel splits them, expert parallel too; n-gram embedding
+tables that vLLM keeps in CPU memory, ``Facts.cpu_bytes``, don't count), a fixed overhead
 (CUDA context, activations, CUDA graphs, a vision encoder) and the KV cache for the context. vLLM is given 90% of the
 memory; what's left after the weights and overhead is KV cache, which sets the longest context that fits.
 
@@ -13,6 +14,7 @@ memory; what's left after the weights and overhead is KV cache, which sets the l
   (NVFP4).
 - GGUF on llama.cpp splits the model by layers instead (no head constraint); its KV cache is split the same way.
 - The pick: the cheapest option whose longest context reaches the one asked for; failing that, the longest.
+  Options with a caveat (FP8 on A100) are picked only when nothing else fits.
 """
 
 from __future__ import annotations
@@ -91,7 +93,8 @@ def options(f: Facts, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> lis
             if n > 1 and f.engine != "llamacpp" and f.attention_heads and f.attention_heads % n:
                 continue
             why = unsupported(f, gpu)
-            weights = f.weight_bytes / n + replicated_bytes
+            on_gpus = f.weight_bytes - (f.cpu_bytes if f.engine != "llamacpp" else 0)  # less what stays in CPU memory
+            weights = on_gpus / n + replicated_bytes
             budget = mib * (1 << 20) * UTILIZATION - weights - OVERHEAD - (VISION_OVERHEAD if f.vision else 0)
             per_token = kv_bytes_per_token(f, n, kv_dtype_bytes) or 1
             context = int(min(f.native_context, max(0.0, budget) / per_token)) if budget > 0 else 0
@@ -107,6 +110,8 @@ def recommend(opts: list[Option], context: int) -> Option | None:
     fitting = [o for o in opts if o.fits]
     if not fitting:
         return None
+    # Options with a caveat ("FP8 runs slower on A100") stay in the list, but aren't picked when another fits.
+    fitting = [o for o in fitting if not o.note] or fitting
     enough = [o for o in fitting if o.max_context >= context]
     if enough:
         return min(enough, key=lambda o: (o.usd_per_hour, o.count))

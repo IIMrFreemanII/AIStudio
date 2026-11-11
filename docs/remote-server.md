@@ -433,8 +433,14 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   from the Models window (sent with the request, used once, never stored).
 - **Install:** `import_llm` (4 CPUs) downloads the files straight to the models volume: about 3–5 minutes per 100 GB.
 - **GPUs:** L40S (1–2), A100 80 GB, H100, H200 or B200, on 1, 2, 4 or 8 of them. The pick is the cheapest that holds
-  the weights plus the KV cache for the context you chose (vLLM gets 90% of the memory). Mixture-of-experts models
-  split across GPUs with expert parallelism. Change it later in Servers › the model's settings (it
+  the weights plus the KV cache for the context you chose (vLLM gets 90% of the memory); options that come with a
+  caveat (FP8 on A100 runs slower) are listed but only picked when nothing else fits. Mixture-of-experts models
+  split across GPUs with expert parallelism. N-gram embedding tables that vLLM keeps in CPU memory don't count
+  against the GPUs: inspect reads their size from the safetensors headers (Qwen3.8-Flash-Next: 51.2 GB of its
+  185.5 GB, so FP8 fits one B200 and NVIDIA's NVFP4 build one H200). vLLM runs at most 64 requests at once
+  (`AISTUDIO_VLLM_MAX_SEQS`; a model's own `--max-num-seqs` wins): fewer CUDA graphs to capture at each start,
+  and linear-attention models need a state slot per request (Qwen FP8 on one B200 has room for 761, not vLLM's
+  default 1024). Change it later in Servers › the model's settings (it
   takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
 - **Warm while you chat:** the first message starts the container (the chat shows *Waiting for a GPU*, then *Loading
   weights 41%*). While a chat with that model is in front, the app is active and you used it in the last 10 minutes,
@@ -462,14 +468,21 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
     saves a GPU memory snapshot; later starts restore it and wake the engine instead of loading and compiling. Only
     for vLLM models on one GPU (Modal's GPU snapshots are alpha and don't handle several GPUs), only on a deployed
     app, and it can take two or three starts before the snapshot is used. Each settings change makes a new
-    snapshot. If a model fails to start with it, turn it off.
+    snapshot. If a model fails to start with it, turn it off. Stop or a failure during the snapshot boot ends the
+    container without a snapshot. Tried on 2026-11-11 with Qwen3.8-Flash-Next FP8 on one B200: sleep mode worked
+    (36 s, 124.5 GiB of weights to CPU memory) and Modal logged *Creating GPU memory snapshot* on three starts,
+    but none restored (no *Restoring Function from memory snapshot*), so each start was a full boot plus about
+    1.5 min of saving. A snapshot that big may be beyond what Modal's alpha handles; check the Function's
+    Containers tab in the Modal dashboard before relying on it.
   - vLLM's compile, inductor and Triton caches, and FlashInfer's kernel builds, live on the models volume
     (`llm/.cache/`), so only the first start of a model on a GPU kind compiles from scratch. The vLLM image also
     has FlashInfer's prebuilt kernels (`flashinfer-cubin`, `flashinfer-jit-cache`, `AISTUDIO_FLASHINFER` /
     `AISTUDIO_FLASHINFER_CUDA` must match vLLM's FlashInfer and the CUDA image): without them, the first start of
     an MoE model builds FlashInfer's MoE kernels on the container's CPUs, which took over 25 minutes.
   - A start that isn't ready after `AISTUDIO_LLM_BOOT_TIMEOUT` (default 30 min) fails with the engine's last log
-    lines, and **Stop** ends a start that's still loading.
+    lines. **Stop** ends a start that's still loading (within about a minute: the container's heartbeat sees it)
+    or still waiting for a GPU (the request is cancelled), and the pending request is cancelled so Modal doesn't
+    start another container in its place.
 - Deploy settings: `AISTUDIO_LLM_IDLE`, `AISTUDIO_VLLM` (the vLLM version, default 0.33.0), `AISTUDIO_CUDA_IMAGE`,
   `AISTUDIO_LLAMA_IMAGE` (llama.cpp's server image, default `ghcr.io/ggml-org/llama.cpp:server-cuda`),
   `AISTUDIO_LLM_MAX_GPUS` (default 8).
