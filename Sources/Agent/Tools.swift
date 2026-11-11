@@ -45,6 +45,8 @@ public struct ToolPreview: Equatable, Sendable {
     /// Every path the call touches, resolved (for the in-project check).
     public var paths: [URL] = []
     public var command: String?
+    /// The host a `.network` call reads from (for the permission rules and "Always allow").
+    public var domain: String?
 
     public init(kind: Kind, title: String, detail: String? = nil, paths: [URL] = [], command: String? = nil) {
         self.kind = kind
@@ -82,7 +84,28 @@ public final class ToolContext: @unchecked Sendable {
     /// Asks the user the questions of an `ask_user` call (call id, questions) and waits: one answer per question, or
     /// nil when they skipped them (or nobody can answer: no UI).
     public var askUser: (@Sendable (String, [UserQuestion]) async -> [UserAnswer]?)?
-    public var callID = ""
+    /// Shows an `exit_plan` plan for approval (call id, plan markdown) and waits for the answer (nil: no UI).
+    public var approvePlan: (@Sendable (String, String) async -> PlanAnswer)?
+    /// Saves files before the agent changes them, so the user can rewind (nil: no checkpoints).
+    public var checkpoints: CheckpointStore?
+    /// The user message the current reply answers: what checkpoints are filed under.
+    public var turnID: UUID?
+    /// Commands left running in the background (`run_command` with `background`); outlive one reply.
+    public var jobs: BackgroundJobs?
+    /// Folders outside the project that may be read without asking (the skills' folders).
+    public var readRoots: [URL] = []
+    private var _callID = ""
+    private var _mode = PermissionMode.ask
+    /// The call being run. Calls run at the same time (`task`) each see their own, through `ToolCallScope`.
+    public var callID: String {
+        get { ToolCallScope.id ?? lock.withLock { _callID } }
+        set { lock.withLock { _callID = newValue } }
+    }
+    /// The permission mode now: the loop starts it from its config, and `exit_plan` changes it.
+    public var mode: PermissionMode {
+        get { lock.withLock { _mode } }
+        set { lock.withLock { _mode = newValue } }
+    }
 
     public struct Todo: Codable, Equatable, Sendable {
         public var content: String
@@ -106,9 +129,15 @@ public final class ToolContext: @unchecked Sendable {
         return url.standardizedFileURL.resolvingSymlinksInPath()
     }
 
-    public func inProject(_ url: URL) -> Bool {
-        let r = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        return url.path == root.path || url.path.hasPrefix(r)
+    public func inProject(_ url: URL) -> Bool { Self.contains(root, url) }
+
+    /// Reads of `url` are free: it's in the project or in one of `readRoots`.
+    public func canRead(_ url: URL) -> Bool { inProject(url) || readRoots.contains { Self.contains($0, url) } }
+
+    static func contains(_ folder: URL, _ url: URL) -> Bool {
+        let f = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let r = f.hasSuffix("/") ? f : f + "/"
+        return url.path == f || url.path.hasPrefix(r)
     }
 
     /// The path as shown: relative to the project when inside it.
@@ -130,6 +159,19 @@ public final class ToolContext: @unchecked Sendable {
     static func modified(_ url: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
+}
+
+/// The id of the tool call a task runs, for calls run at the same time (see `ToolContext.callID`).
+public enum ToolCallScope {
+    @TaskLocal public static var id: String?
+}
+
+/// The user's answer to an `exit_plan` plan.
+public enum PlanAnswer: Equatable, Sendable {
+    /// Go ahead, in this mode (`.acceptEdits` or `.ask`).
+    case approve(PermissionMode)
+    /// Not yet: keep planning, with the user's note (if any).
+    case keepPlanning(String?)
 }
 
 public protocol AgentTool: Sendable {
@@ -345,6 +387,7 @@ public struct EditFileTool: AgentTool {
         let url = ctx.resolve(try args.required("path"))
         try ctx.checkFresh(url)
         let (_, before, after) = try apply(args, ctx)
+        if let cp = ctx.checkpoints, let turn = ctx.turnID { try await cp.save(url, turn: turn) }
         try after.write(to: url, atomically: true, encoding: .utf8)
         ctx.markRead(url)
         let (a, r) = UnifiedDiff.counts(before, after)
@@ -377,6 +420,7 @@ public struct WriteFileTool: AgentTool {
         let content = try args.required("content")
         let exists = FileManager.default.fileExists(atPath: url.path)
         if exists { try ctx.checkFresh(url) }
+        if let cp = ctx.checkpoints, let turn = ctx.turnID { try await cp.save(url, turn: turn) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try content.write(to: url, atomically: true, encoding: .utf8)
         ctx.markRead(url)
@@ -387,20 +431,24 @@ public struct WriteFileTool: AgentTool {
 public struct RunCommandTool: AgentTool {
     public init() {}
     public let name = "run_command"
-    public let description = "Run a shell command (zsh) in the project folder and return its output and exit status. No interactive programs. Default timeout 120 s, at most 600."
+    public let description = "Run a shell command (zsh) in the project folder and return its output and exit status. No interactive programs. Default timeout 120 s, at most 600. With background true it keeps running (a dev server, a watcher) and returns at once with a job id."
     public var parameters: JSONValue {
-        schema(["command": ("string", "The command"), "timeout": ("integer", "Seconds before it is stopped")], required: ["command"])
+        schema(["command": ("string", "The command"), "timeout": ("integer", "Seconds before it is stopped"),
+                "background": ("boolean", "Leave it running (a dev server, a watcher) and return at once with a job id. Read its output with command_output, end it with stop_command.")],
+               required: ["command"])
     }
     public let effect = ToolEffect.execute
 
     public func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview {
         let cmd = try args.required("command")
-        return ToolPreview(kind: .command, title: "Run \(cmd.split(separator: "\n").first.map(String.init) ?? cmd)",
+        let first = cmd.split(separator: "\n").first.map(String.init) ?? cmd
+        return ToolPreview(kind: .command, title: (args.bool("background") ? "Run in background: " : "Run ") + first,
                            detail: cmd, paths: [ctx.root], command: cmd)
     }
 
     public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
         let cmd = try args.required("command")
+        if args.bool("background") { return try await runInBackground(cmd, ctx) }
         let timeout = TimeInterval(min(600, max(1, args.int("timeout") ?? 120)))
         let id = ctx.callID
         let sink = ctx.onOutput
@@ -410,6 +458,23 @@ public struct RunCommandTool: AgentTool {
         if r.cancelled { head = "stopped (cancelled)" }
         let body = r.output.isEmpty ? "(no output)" : clip(r.output)
         return ToolOutput("\(head)\n\(body)", isError: r.status != 0 || r.timedOut)
+    }
+
+    private func runInBackground(_ cmd: String, _ ctx: ToolContext) async throws -> ToolOutput {
+        guard let jobs = ctx.jobs else {
+            return ToolOutput("Background commands aren't available here: run it without background.", isError: true)
+        }
+        let job = try jobs.start(cmd, cwd: ctx.root)
+        for _ in 0..<30 where job.isRunning {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let output = job.readNew()
+        let status = job.status
+        var text = "Started \(job.id) in the background."
+        if let status { text += " It already ended with exit status \(status)." }
+        text += "\n" + (output.isEmpty ? "(no output yet)" : output)
+        text += "\nRead more with command_output (id \"\(job.id)\"); end it with stop_command."
+        return ToolOutput(text, isError: (status ?? 0) != 0)
     }
 }
 
@@ -452,7 +517,8 @@ public struct TodoWriteTool: AgentTool {
 /// The coding agent's tools.
 public enum CodingTools {
     public static let all: [any AgentTool] = [ReadFileTool(), ListFilesTool(), SearchTool(), EditFileTool(),
-                                              WriteFileTool(), RunCommandTool(), TodoWriteTool()]
+                                              WriteFileTool(), RunCommandTool(), CommandOutputTool(), StopCommandTool(),
+                                              TodoWriteTool()]
 }
 
 // MARK: helpers

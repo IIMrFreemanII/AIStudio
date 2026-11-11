@@ -131,6 +131,31 @@ struct LLMClientTests {
         #expect(ChatTranscript.title(from: "  \nFix the CLI flag parsing\nplease") == "Fix the CLI flag parsing")
     }
 
+    @Test func messagesStartFromTheLatestSummary() throws {
+        var t = ChatTranscript(serverID: "s", modelID: "m")
+        t.systemPrompt = "sys"
+        t.append(ChatTurn(role: .user, text: "old question"))
+        t.append(ChatTurn(role: .assistant, text: "old answer"))
+        var s1 = ChatTurn(role: .user, text: "first summary")
+        s1.summary = true
+        t.append(s1)
+        t.append(ChatTurn(role: .assistant, text: "middle"))
+        var s2 = ChatTurn(role: .user, text: "second summary")
+        s2.summary = true
+        t.append(s2)
+        t.append(ChatTurn(role: .assistant, text: "after"))
+        t.append(ChatTurn(role: .user, text: "next"))
+        let msgs = t.messages()
+        #expect(msgs.map(\.role) == [.system, .user, .assistant, .user])
+        #expect(msgs[1].text == ChatTurn.summaryPrefix + "second summary")
+        #expect(msgs[2].text == "after" && msgs[3].text == "next")
+        // Old files have no `summary` key.
+        let old = try JSONDecoder().decode(ChatTurn.self, from: Data("""
+            {"id":"\(UUID().uuidString)","role":"user","text":"x","images":[],"toolCalls":[],"date":0}
+            """.utf8))
+        #expect(old.summary == nil)
+    }
+
     @Test func videosGoAsVideoURLParts() throws {
         var t = ChatTranscript(serverID: "s", modelID: "m")
         let video = String(repeating: "a", count: 64) + ".mp4"

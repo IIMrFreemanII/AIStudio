@@ -64,6 +64,7 @@ extension AppModel {
         guard let i = chats.firstIndex(where: { $0.id == id }) else { return }
         let doc = chats[i]
         doc.task?.cancel()
+        doc.jobs.stopAll()
         saveChat(doc)
         chats.remove(at: i)
         if activeChatID == id { activeChatID = chats.isEmpty ? nil : chats[min(i, chats.count - 1)].id }
@@ -72,6 +73,7 @@ extension AppModel {
     func deleteChat(_ id: UUID) {
         if let doc = chats.first(where: { $0.id == id }) {
             doc.task?.cancel()
+            doc.jobs.stopAll()
             chats.removeAll { $0.id == id }
             if activeChatID == id { activeChatID = chats.last?.id }
         }
@@ -115,7 +117,12 @@ extension AppModel {
             doc.answerQuestion(q.questions.map { _ in UserAnswer(other: text) })
             return
         }
-        guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming, doc.preparingVideos == 0 else { return }
+        if text == "/compact", !doc.transcript.turns.isEmpty {
+            doc.draft = ""
+            compact(doc)
+            return
+        }
+        guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming, !doc.compacting, doc.preparingVideos == 0 else { return }
         doc.draft = ""
         if doc.transcript.turns.isEmpty {
             doc.transcript.title = ChatTranscript.title(from: text.isEmpty ? doc.pending.first?.name ?? "" : text)
@@ -126,6 +133,10 @@ extension AppModel {
         }, files: files.isEmpty ? nil : files)
         turn.quote = doc.replyTo
         turn.context = widgetContext(doc)
+        // A coding chat's `/skill args`: the typed text stays, the model also gets the skill's instructions.
+        if let root = doc.projectURL, let expansion = SkillStore.expand(text, skills: loadSkills(root: root)) {
+            turn.context = [turn.context, expansion].compactMap { $0 }.joined(separator: "\n\n")
+        }
         doc.transcript.append(turn)
         doc.pending = []
         doc.replyTo = nil
@@ -217,9 +228,21 @@ extension AppModel {
         }
         lastChatModel = key
         if let root = doc.projectURL {
-            runAgent(doc, key: key, client: client, setup: AgentSetup(tools: CodingTools.all, root: root) {
-                await ProjectContext.systemPrompt(root: root, mode: doc.mode)
-            }, add: add)
+            let skills = loadSkills(root: root)
+            let inline = llm.model(key)?.reasoningParser == nil
+            let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + [WebFetchTool()],
+                                reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
+            var tools: [any AgentTool] = CodingTools.all + [WebFetchTool(), ExitPlanTool(), task]
+            if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
+            if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
+            var setup = AgentSetup(tools: tools, root: root) {
+                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode)
+                let section = SkillStore.promptSection(skills)
+                return section.isEmpty ? base : base + "\n\n" + section
+            }
+            setup.readRoots = skills.map(\.folder)
+            setup.coding = true
+            runAgent(doc, key: key, client: client, setup: setup, add: add)
             return
         }
         if doc.isGraphHelper {
@@ -328,6 +351,7 @@ extension AppModel {
         doc.task?.cancel()
         if doc.permission != nil { doc.answer(.deny) }
         if doc.question != nil { doc.answerQuestion(nil) }
+        if doc.plan != nil { doc.answerPlan(.keepPlanning(nil)) }
     }
 
     // MARK: the coding agent
@@ -346,7 +370,33 @@ extension AppModel {
         config.reasoningEffort = doc.transcript.reasoningEffort
         config.inlineThinking = llm.model(key)?.reasoningParser == nil
         config.vision = vision
+        let limit = contextLimit(for: key)
+        config.contextLimit = limit
         let ctx = ToolContext(root: setup.root)
+        ctx.readRoots = setup.readRoots
+        if setup.coding {
+            ctx.checkpoints = checkpoints(for: doc)
+            ctx.turnID = sent.turns.last { $0.role == .user && $0.summary != true }?.id
+            ctx.jobs = doc.jobs
+            if !doc.jobsObserved {
+                doc.jobsObserved = true
+                doc.jobs.onChange = { [weak doc] in
+                    Task { @MainActor in
+                        guard let doc else { return }
+                        doc.runningJobs = doc.jobs.running.map(\.id)
+                    }
+                }
+            }
+        }
+        ctx.approvePlan = { [weak doc] callID, plan in
+            await withCheckedContinuation { cont in
+                Task { @MainActor in
+                    guard let doc else { cont.resume(returning: .keepPlanning(nil)); return }
+                    doc.plan = PendingPlan(callID: callID, plan: plan)
+                    doc.planAnswer = cont
+                }
+            }
+        }
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
         }
@@ -377,7 +427,23 @@ extension AppModel {
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
             do {
                 let media = try await self?.mediaURLs(sent, doc: doc, vision: vision, client: client) ?? [:]
-                let history = sent.messages(system: false) { media[$0] }
+                var history = sent.messages(system: false) { media[$0] }
+                // A history that already fills most of the context: summarize all but the last message first.
+                if let limit, history.count >= 2, Double(Compactor.estimate(history)) > 0.75 * Double(limit),
+                   let lastUser = sent.turns.last(where: { $0.role == .user && $0.summary != true }),
+                   let summary = try? await Compactor.summarize(client: client.chat, model: key.modelID,
+                                                                messages: [.system(system)] + history.dropLast(), limit: limit) {
+                    var t = ChatTurn(role: .user, text: summary + "\n\n## The latest message\n" + lastUser.textForModel)
+                    t.summary = true
+                    // The summary goes between the last message and the reply being written.
+                    if let parent = doc.transcript.turn(start.id)?.parent {
+                        doc.transcript.activeLeaf = parent
+                        doc.transcript.append(t)
+                        doc.transcript.update(start.id) { $0.parent = t.id }
+                        doc.transcript.select(start.id)
+                    }
+                    history = [.user(ChatTurn.summaryPrefix + t.text)]
+                }
                 let outcome = try await AgentLoop.run(
                     client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
                     ask: { [weak doc] request in
@@ -394,8 +460,10 @@ extension AppModel {
                             doc?.transcript.allowEdits = rules.edits
                             doc?.transcript.allowCommands = rules.commandPrefixes
                             doc?.transcript.allowRuns = rules.runs ? true : nil
+                            doc?.transcript.allowDomains = rules.domains.isEmpty ? nil : rules.domains
                         }
                     },
+                    modeChanged: { [weak doc] m in await MainActor.run { doc?.mode = m } },
                     events: { event in
                         await MainActor.run {
                             switch event {
@@ -425,6 +493,9 @@ extension AppModel {
                             case .assistantFinished:
                                 st.acc.finish()
                                 publish()
+                                if let p = st.acc.promptTokens {
+                                    doc.contextUsed = p + (st.acc.completionTokens ?? 0)
+                                }
                             case .toolStarted(let call, let preview):
                                 var t = ChatTurn(role: .tool, text: "", toolCallID: call.id)
                                 t.toolTitle = preview.title
@@ -442,6 +513,11 @@ extension AppModel {
                                     }
                                 }
                                 doc.todos = ctx.todos
+                            case .compacted(let summary):
+                                // The next assistant message follows the summary.
+                                var t = ChatTurn(role: .user, text: summary)
+                                t.summary = true
+                                doc.transcript.append(t)
                             }
                         }
                     })
@@ -460,6 +536,7 @@ extension AppModel {
             }
             if doc.permission != nil { doc.answer(.deny) }
             if doc.question != nil { doc.answerQuestion(nil) }
+            if doc.plan != nil { doc.answerPlan(.keepPlanning(nil)) }
             setup.finished()
             doc.liveTurnID = nil
             doc.engine = nil
@@ -499,6 +576,10 @@ struct AgentSetup {
     var root: URL
     var system: @MainActor () async -> String
     var finished: @MainActor () -> Void = {}
+    /// Folders (skills') the tools may read besides the project.
+    var readRoots: [URL] = []
+    /// A coding chat: its file changes are checkpointed and its background commands tracked.
+    var coding = false
 
     init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
         self.tools = tools

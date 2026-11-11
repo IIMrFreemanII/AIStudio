@@ -281,6 +281,23 @@ extension SmokeTest {
         if tools.first?.toolDetail?.contains("+hi from the agent") != true { say("no diff on the write card"); ok = false }
         if doc.transcript.allowCommands != ["cat"] { say("always-allow not kept: \(doc.transcript.allowCommands ?? [])"); ok = false }
 
+        // Rewind to the first message: hello.txt (which the agent created) goes away, the message goes back in the
+        // field and the chat is shown from before it.
+        if let first = doc.transcript.turns.first(where: { $0.role == .user }) {
+            model.prepareRewind(doc, to: first.id)
+            for _ in 0..<50 where doc.rewindFiles == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+            let listed = doc.rewindFiles?.map(\.lastPathComponent) ?? []
+            if listed != ["hello.txt"] { say("rewind lists \(listed)"); ok = false }
+            model.rewind(doc, files: true, chat: true)
+            let hello = repo.appendingPathComponent("hello.txt").path
+            for _ in 0..<50 where FileManager.default.fileExists(atPath: hello) { try? await Task.sleep(nanoseconds: 100_000_000) }
+            if FileManager.default.fileExists(atPath: hello) { say("rewind left hello.txt"); ok = false }
+            if doc.draft != first.text || !doc.transcript.turns.isEmpty {
+                say("rewind: draft \"\(doc.draft)\", \(doc.transcript.turns.count) turns shown"); ok = false
+            }
+            say("rewind: \(ok ? "files and chat restored" : "failed")")
+        } else { say("no user turn to rewind to"); ok = false }
+
         // Plan mode: refused without a question; the file stays as it is.
         try? FileManager.default.removeItem(at: repo.appendingPathComponent("hello.txt"))
         asked = []

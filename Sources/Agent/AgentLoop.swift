@@ -23,6 +23,9 @@ public enum AgentEvent: Sendable {
     case toolStarted(call: ToolCall, preview: ToolPreview)
     case toolOutput(callID: String, chunk: String)
     case toolFinished(callID: String, output: ToolOutput, status: ToolStatus)
+    /// The conversation so far was replaced by this summary (the context was filling up): later requests start from
+    /// it.
+    case compacted(summary: String)
 }
 
 /// A call that needs the user's answer.
@@ -65,6 +68,10 @@ public struct AgentConfig: Sendable {
     public var inlineThinking = false
     /// The model takes images: tools' images are sent to it (else it's told it can't see them).
     public var vision = false
+    /// The model's context in tokens: when set, the loop compacts the conversation as it nears the limit.
+    public var contextLimit: Int?
+    /// The share of `contextLimit` that triggers compaction.
+    public var compactAt = 0.75
 
     public init(model: String, tools: [any AgentTool] = CodingTools.all, mode: PermissionMode = .ask,
                 rules: AllowRules = AllowRules()) {
@@ -83,15 +90,16 @@ public enum AgentLoop {
                            context ctx: ToolContext,
                            ask: @escaping @Sendable (PermissionRequest) async -> PermissionAnswer,
                            rulesChanged: @escaping @Sendable (AllowRules) async -> Void = { _ in },
+                           modeChanged: @escaping @Sendable (PermissionMode) async -> Void = { _ in },
                            events: @escaping @Sendable (AgentEvent) async -> Void) async throws -> AgentOutcome {
         var messages = initial
         var rules = config.rules
         let byName = Dictionary(config.tools.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
-        let specs = config.tools.map(\.spec)
+        ctx.mode = config.mode
         for _ in 0..<config.maxSteps {
             try Task.checkCancellation()
             var request = ChatRequest(model: config.model, messages: messages)
-            request.tools = specs
+            request.tools = config.tools.filter { $0.name != "exit_plan" || ctx.mode == .plan }.map(\.spec)
             request.reasoningEffort = config.reasoningEffort
             await events(.assistantStarted)
             var acc = ReplyAccumulator(inlineThinking: config.inlineThinking)
@@ -105,11 +113,48 @@ public enum AgentLoop {
             messages.append(ChatMessage(role: .assistant, parts: [.text(acc.content)], toolCalls: calls))
             if calls.isEmpty { return .finished }
 
+            let appendedFrom = messages.count
             var images: [String] = []
-            for call in calls {
+            var results = [(output: ToolOutput, status: ToolStatus)?](repeating: nil, count: calls.count)
+            var i = 0
+            while i < calls.count {
                 try Task.checkCancellation()
-                var (output, status) = await runCall(call, byName: byName, mode: config.mode, rules: &rules, ctx: ctx,
-                                                     ask: ask, rulesChanged: rulesChanged, events: events)
+                var j = i
+                if calls[i].name == "task" { while j < calls.count, calls[j].name == "task" { j += 1 } }
+                if j - i >= 2 {
+                    let group = Array(i..<j)
+                    let modeBefore = ctx.mode
+                    let rulesNow = rules
+                    await withTaskGroup(of: (Int, ToolOutput, ToolStatus).self) { g in
+                        for k in group {
+                            let call = calls[k]
+                            g.addTask {
+                                var own = rulesNow
+                                let (o, st) = await ToolCallScope.$id.withValue(call.id) {
+                                    await runCall(call, byName: byName, rules: &own, ctx: ctx, ask: ask,
+                                                  rulesChanged: rulesChanged, events: events)
+                                }
+                                return (k, o, st)
+                            }
+                        }
+                        for await (k, o, st) in g { results[k] = (o, st) }
+                    }
+                    if ctx.mode != modeBefore { await modeChanged(ctx.mode) }
+                    i = j
+                } else {
+                    let modeBefore = ctx.mode
+                    let call = calls[i]
+                    let (o, st) = await ToolCallScope.$id.withValue(call.id) {
+                        await runCall(call, byName: byName, rules: &rules, ctx: ctx, ask: ask,
+                                      rulesChanged: rulesChanged, events: events)
+                    }
+                    results[i] = (o, st)
+                    if ctx.mode != modeBefore { await modeChanged(ctx.mode) }
+                    i += 1
+                }
+            }
+            for (k, call) in calls.enumerated() {
+                guard var (output, status) = results[k] else { continue }
                 if !output.images.isEmpty {
                     if config.vision { images += output.images }
                     else { output.text += "\n(\(output.images.count) image(s) left out: this model can't see images.)" }
@@ -122,11 +167,38 @@ public enum AgentLoop {
                 messages.append(ChatMessage(role: .user, parts: [.text("The images from the tool results above, in order:")]
                                             + images.map { .image(url: $0) }))
             }
+
+            if let limit = config.contextLimit {
+                let used = (acc.promptTokens ?? Compactor.estimate(Array(messages[..<(appendedFrom - 1)])))
+                    + (acc.completionTokens ?? 0) + Compactor.estimate(Array(messages[appendedFrom...]))
+                let threshold = config.compactAt * Double(limit)
+                if Double(used) > threshold {
+                    let before = Compactor.estimate(messages)
+                    messages = Compactor.trim(messages)
+                    // The server's token count is the better measure; trimming only takes off what it saved.
+                    let usedAfterTrim = used - max(0, before - Compactor.estimate(messages))
+                    if Double(usedAfterTrim) > threshold {
+                        do {
+                            let summary = try await Compactor.summarize(client: client, model: config.model, messages: messages,
+                                                                        limit: limit)
+                            var fresh: [ChatMessage] = []
+                            if let first = messages.first, first.role == .system { fresh.append(first) }
+                            fresh.append(.user(ChatTurn.summaryPrefix + summary + "\n\nContinue the task from where it left off."))
+                            messages = fresh
+                            await events(.compacted(summary: summary))
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            // Carry on with the trimmed messages.
+                        }
+                    }
+                }
+            }
         }
         return .stepLimit
     }
 
-    static func runCall(_ call: ToolCall, byName: [String: any AgentTool], mode: PermissionMode, rules: inout AllowRules,
+    static func runCall(_ call: ToolCall, byName: [String: any AgentTool], rules: inout AllowRules,
                         ctx: ToolContext, ask: @Sendable (PermissionRequest) async -> PermissionAnswer,
                         rulesChanged: @Sendable (AllowRules) async -> Void,
                         events: @Sendable (AgentEvent) async -> Void) async -> (ToolOutput, ToolStatus) {
@@ -146,9 +218,10 @@ public enum AgentLoop {
             return (ToolOutput("\(call.name): \(error.localizedDescription)", isError: true), .failed)
         }
         await events(.toolStarted(call: call, preview: preview))
-        let inProject = preview.paths.allSatisfy(ctx.inProject)
-        switch PermissionEngine.decide(effect: tool.effect, inProject: inProject, command: preview.command, mode: mode,
-                                       rules: rules) {
+        // Reads may also go to the skills' folders without asking.
+        let inProject = preview.paths.allSatisfy(tool.effect == .read ? ctx.canRead : ctx.inProject)
+        switch PermissionEngine.decide(effect: tool.effect, inProject: inProject, command: preview.command,
+                                       domain: preview.domain, mode: ctx.mode, rules: rules) {
         case .deny(let why):
             return (ToolOutput(why, isError: true), .denied)
         case .ask:
@@ -161,6 +234,9 @@ public enum AgentLoop {
             case .allowAlways:
                 if tool.effect == .edit, inProject { rules.edits = true }
                 if tool.effect == .run { rules.runs = true }
+                if tool.effect == .network, let d = preview.domain?.lowercased(), !d.isEmpty, !rules.domains.contains(d) {
+                    rules.domains.append(d)
+                }
                 if tool.effect == .execute, let cmd = preview.command {
                     let prefix = AllowRules.prefix(of: cmd)
                     if !prefix.isEmpty, !rules.commandPrefixes.contains(prefix) { rules.commandPrefixes.append(prefix) }
@@ -197,10 +273,10 @@ public enum ProjectContext {
         }
         let modeLine: String
         switch mode {
-        case .plan: modeLine = "You are in plan mode: only read and search. Don't edit files or run commands; finish with a concrete plan."
+        case .plan: modeLine = "You are in plan mode: only read and search (web_fetch is allowed). Don't edit files or run commands. When the plan is ready, call exit_plan with it: the user approves it, or asks for changes."
         case .ask: modeLine = "The user approves each edit and command, and may decline one: then ask what they want instead."
         case .acceptEdits: modeLine = "Edits in the project are applied without asking; the user approves each command."
-        case .bypass: modeLine = "Edits and commands run without asking. Be careful: nothing is undone automatically."
+        case .bypass: modeLine = "Edits and commands run without asking. Edits can be rewound from the chat; what commands do can't."
         }
         let day = ISO8601DateFormatter.string(from: date, timeZone: .current, formatOptions: [.withFullDate])
         return """
@@ -214,5 +290,61 @@ public enum ProjectContext {
         Shell: zsh on macOS (no interactive commands; stdin is closed)
         \(git.status == 0 && !git.output.isEmpty ? "Git status:\n\(git.output)" : "Not a git repository.")\(instructions)
         """
+    }
+}
+
+/// Keeping a long conversation inside the model's context: estimate its size, drop old tool output, summarize.
+public enum Compactor {
+    /// Rough tokens: characters of text and tool-call arguments / 4, plus 1,000 per image or video.
+    public static func estimate(_ messages: [ChatMessage]) -> Int {
+        var chars = 0
+        var media = 0
+        for m in messages {
+            for p in m.parts {
+                switch p {
+                case .text(let t): chars += t.count
+                case .image, .video: media += 1
+                }
+            }
+            for c in m.toolCalls { chars += c.arguments.count }
+        }
+        return chars / 4 + media * 1_000
+    }
+
+    static let removed = "[output removed to save context]"
+
+    /// Old tool output (all but the last `keepLast` tool messages) over 200 characters is dropped.
+    public static func trim(_ messages: [ChatMessage], keepLast: Int = 6) -> [ChatMessage] {
+        let toolIndexes = messages.indices.filter { messages[$0].role == .tool }
+        let old = Set(toolIndexes.dropLast(keepLast))
+        var out = messages
+        for i in old where out[i].text.count > 200 { out[i].parts = [.text(removed)] }
+        return out
+    }
+
+    static let summarySystem = "You compact a conversation between a user and a coding agent so the agent can continue with less context. Write a summary that keeps everything needed to continue: the user's requests and preferences, decisions made, files read and changed (paths and what changed), commands run and their results, errors, and the exact current state: what was being done and what comes next. Use short headed sections and bullets. Don't add anything new."
+
+    public static func summarize(client: any ChatStreaming, model: String, messages: [ChatMessage],
+                                 limit: Int?) async throws -> String {
+        var parts: [String] = []
+        for m in messages {
+            switch m.role {
+            case .system: continue
+            case .user: parts.append("## User\n" + clip(m.text, max: 6_000))
+            case .assistant:
+                var s = "## Assistant\n" + clip(m.text, max: 6_000)
+                for c in m.toolCalls { s += "\nCalls: \(c.name)(\(clip(c.arguments, max: 500)))" }
+                parts.append(s)
+            case .tool: parts.append("## Tool result\n" + clip(m.text, max: 2_000))
+            }
+        }
+        let render = clip(parts.joined(separator: "\n\n"), max: max((limit ?? 32_768) * 2, 20_000))
+        let request = ChatRequest(model: model, messages: [.system(summarySystem), .user(render + "\n\nWrite the summary now.")])
+        var acc = ReplyAccumulator(inlineThinking: true)
+        for try await e in client.stream(request) { acc.add(e) }
+        acc.finish()
+        let summary = acc.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if summary.isEmpty { throw ToolError("the summary came back empty") }
+        return summary
     }
 }

@@ -183,6 +183,7 @@ struct PermissionCard: View {
         case .execute: return "Run this command?"
         case .graphEdit: return "Change the workflow?"
         case .run: return "Run the workflow?"
+        case .network: return "Read \(request.preview.domain ?? "this web page")?"
         }
     }
 
@@ -194,6 +195,7 @@ struct PermissionCard: View {
             let p = AllowRules.prefix(of: cmd)
             return p.isEmpty ? nil : "Always Allow “\(p)”"
         case .run: return "Allow Runs in This Chat"
+        case .network: return request.preview.domain.map { "Always Allow \($0)" }
         default: return nil
         }
     }
@@ -227,7 +229,7 @@ struct CodingHeaderItems: View {
     let doc: ChatDocument
 
     var allowed: String {
-        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []))
+        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []) + doc.rules.domains)
             .joined(separator: ", ")
     }
 
@@ -239,18 +241,37 @@ struct CodingHeaderItems: View {
             .buttonStyle(.mg(.bordered))
             .mgHelp(url.path + " — the agent works in this folder (click to show it in Finder)")
         }
+        if !doc.runningJobs.isEmpty {
+            MGMenuButton(kind: .bordered) {
+                MGMenuItem.header("Running in the background")
+                for id in doc.runningJobs {
+                    let command = doc.jobs.job(id)?.command ?? ""
+                    MGMenuItem.button("\(id) — \(command.prefix(40))", icon: "stop.circle") { doc.jobs.job(id)?.stop() }
+                }
+                MGMenuItem.divider
+                MGMenuItem.button("Stop All") { doc.jobs.stopAll() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "terminal").foregroundStyle(MG.secondaryLabel)
+                    Text("\(doc.runningJobs.count) running")
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
+                }
+            }
+            .mgHelp("Commands the agent left running (click one to stop it)")
+        }
         if doc.isAgent {
             MGMenuButton(kind: .bordered) {
                 for m in PermissionMode.allCases {
                     MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
                 }
-                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs {
+                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty {
                     MGMenuItem.divider
                     MGMenuItem.header("Always allowed: " + allowed)
                     MGMenuItem.button("Forget Always-Allow Answers") {
                         doc.transcript.allowEdits = nil
                         doc.transcript.allowCommands = nil
                         doc.transcript.allowRuns = nil
+                        doc.transcript.allowDomains = nil
                     }
                 }
             } label: {
@@ -468,5 +489,116 @@ struct QuestionCard: View {
             return d == "Skipped" ? "Skipped: \(questions.first?.question ?? "")" : d.replacingOccurrences(of: "\n", with: " · ")
         default: return result?.text ?? "Not answered"
         }
+    }
+}
+
+/// An `exit_plan` call: the plan, and while it waits for approval, the buttons that start it (in a mode) or keep
+/// planning (with a note).
+struct PlanCard: View {
+    let doc: ChatDocument
+    let call: ToolCall
+    let result: ChatTurn?
+    @State private var note = ""
+
+    var plan: String { (try? ToolArgs(json: call.arguments).string("plan")) ?? "" }
+    var asking: Bool { doc.plan?.callID == call.id }
+    var status: String { result?.toolStatus ?? "running" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Plan", systemImage: "doc.text.magnifyingglass")
+                .font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.accent)
+            MarkdownView(text: plan)
+            MGDivider()
+            if asking {
+                HStack(spacing: 8) {
+                    Button("Approve, Auto-accept Edits") { doc.answerPlan(.approve(.acceptEdits)) }
+                        .buttonStyle(.mg(.prominent)).keyboardShortcut(.defaultAction)
+                    Button("Approve, Ask Each Time") { doc.answerPlan(.approve(.ask)) }.buttonStyle(.mg(.bordered))
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: 8) {
+                    TextField("Note for the agent (optional)", text: $note)
+                        .textFieldStyle(.roundedBorder).font(.mgBody)
+                        .onSubmit { keepPlanning() }
+                    Button("Keep Planning") { keepPlanning() }.buttonStyle(.mg(.bordered))
+                }
+            } else {
+                HStack(spacing: 6) {
+                    if status == "running" { MGSpinner().controlSize(.mini) }
+                    Text(statusLine).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
+        .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous), color: asking ? MG.accent : MG.border)
+    }
+
+    var statusLine: String {
+        if status == "running" { return "Waiting…" }
+        return result?.toolDetail ?? result?.text ?? "Not answered"
+    }
+
+    func keepPlanning() {
+        let n = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        doc.answerPlan(.keepPlanning(n.isEmpty ? nil : n))
+    }
+}
+
+/// "Rewind to before this message?": the files that would be restored, and what to put back.
+struct RewindCard: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    var message: String {
+        let text = doc.rewindTarget.flatMap { doc.transcript.turn($0)?.text } ?? ""
+        let one = text.replacingOccurrences(of: "\n", with: " ")
+        return one.count > 60 ? String(one.prefix(60)) + "…" : one
+    }
+
+    var body: some View {
+        let files = doc.rewindFiles
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Rewind to before “\(message)”?").font(.mgCallout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+            if let files {
+                if files.isEmpty {
+                    Text("No file changes to undo.").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                } else {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("These files go back as they were:").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        ForEach(files.prefix(12), id: \.path) { f in
+                            Text(relative(f)).font(.mgMono).lineLimit(1).truncationMode(.middle)
+                        }
+                        if files.count > 12 {
+                            Text("and \(files.count - 12) more").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        }
+                    }
+                }
+            } else {
+                Text("Loading…").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
+            Text("Changes made by commands aren't undone.").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+            HStack(spacing: 8) {
+                Button("Rewind Files and Chat") { model.rewind(doc, files: true, chat: true) }
+                    .buttonStyle(.mg(.prominent)).keyboardShortcut(.defaultAction)
+                Button("Chat Only") { model.rewind(doc, files: false, chat: true) }.buttonStyle(.mg(.bordered))
+                Button("Files Only") { model.rewind(doc, files: true, chat: false) }
+                    .buttonStyle(.mg(.bordered)).disabled(files?.isEmpty ?? true)
+                Spacer(minLength: 0)
+                Button("Cancel") { doc.rewindTarget = nil; doc.rewindFiles = nil }
+                    .buttonStyle(.mg(.bordered)).keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
+        .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous), color: MG.accent)
+    }
+
+    func relative(_ url: URL) -> String {
+        guard let root = doc.projectURL?.standardizedFileURL.path, url.path.hasPrefix(root + "/") else { return url.path }
+        return String(url.path.dropFirst(root.count + 1))
     }
 }
