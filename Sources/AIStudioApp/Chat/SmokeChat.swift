@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import LLMClient
 
@@ -88,10 +89,52 @@ extension SmokeTest {
             + "\(Int(llm.status(key)?.uptime ?? 0)) s, \(String(format: "$%.3f", llm.status(key)?.costUSD ?? 0))")
         if llm.status(key)?.state != "ready" { say("engine not ready after the replies"); ok = false }
 
-        // Closing and reopening the tab brings the conversation back.
+        // Branches: another first reply, then back; an edited first question; attachments.
+        func waitReply() async -> ChatTurn? {
+            let start = Date()
+            while doc.isStreaming, Date().timeIntervalSince(start) < (fake ? 30 : 3600) {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return doc.transcript.turns.last
+        }
+        let firstReply = doc.transcript.turns[1]
+        model.regenerate(doc, firstReply.id)
+        let retry = await waitReply()
+        if doc.transcript.turns.count != 2 || doc.transcript.siblings(of: firstReply.id).count != 2 || retry?.error != nil {
+            say("regenerate didn't make a second version"); ok = false
+        }
+        doc.transcript.select(firstReply.id)
+        if doc.transcript.turns.count != 4 { say("going back to the first version lost the rest"); ok = false }
+        model.resend(doc, editing: doc.transcript.turns[0].id, text: "an edited question")
+        let edited = await waitReply()
+        if fake, edited?.text != "You said: an edited question" { say("edit: \(edited?.text ?? "no reply")"); ok = false }
+        if doc.transcript.siblings(of: doc.transcript.turns[0].id).count != 2 { say("edit didn't branch"); ok = false }
+        let tmp = FileManager.default.temporaryDirectory
+        let note = tmp.appendingPathComponent("smoke-note.txt")
+        try? "the note says 42".write(to: note, atomically: true, encoding: .utf8)
+        let png = tmp.appendingPathComponent("smoke-attach.png")
+        if let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2400, pixelsHigh: 1200, bitsPerSample: 8,
+                                      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                      bytesPerRow: 0, bitsPerPixel: 0) {
+            try? rep.representation(using: .png, properties: [:])?.write(to: png)
+        }
+        if let why = model.attach([note, png], to: doc) { say("attach: \(why)"); ok = false }
+        if case .image(let name)? = doc.pending.first(where: { if case .image = $0 { return true }; return false }),
+           let img = NSImage(contentsOf: model.chatStore.filesFolder(doc.id).appendingPathComponent(name)),
+           let rep = img.representations.first, max(rep.pixelsWide, rep.pixelsHigh) <= 1536 {
+        } else { say("the image wasn't saved at most 1536 px"); ok = false }
+        doc.draft = "with attachments"
+        model.send(doc)
+        let withFiles = await waitReply()
+        if fake, withFiles?.text.contains("the note says 42") != true { say("the file didn't reach the model"); ok = false }
+        if doc.transcript.turns.dropLast().last?.images.count != 1 { say("the image isn't on the message"); ok = false }
+        let shown = doc.transcript.turns.count
+        say("branches and attachments: \(doc.transcript.nodes.count) turns, \(shown) shown")
+
+        // Closing and reopening the tab brings the conversation back, on the same branch.
         model.closeChat(doc.id)
         model.openChat(doc.id)
-        if model.activeChat?.transcript.turns.count != 4 { say("reopened chat lost turns"); ok = false }
+        if model.activeChat?.transcript.turns.count != shown { say("reopened chat lost turns"); ok = false }
         model.closeChat(doc.id)
 
         if fake {

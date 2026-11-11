@@ -1,20 +1,22 @@
 """The LLM routes, mounted on the front desk (same auth as the job API):
 
-    POST   /v1/llm/inspect              {"url", "hfToken"?, "context"?} → facts, parser profile, GPU plan, suggested id
-    POST   /v1/llm/install              {"url", "id"?, "name"?, "gpu"?, "count"?, "context"?, "toolParser"?,
-                                         "reasoningParser"?, "engineArgs"?, "hfToken"?} → the install's state (202)
+    POST   /v1/llm/inspect              {"url", "hfToken"?, "civitaiToken"?, "context"?, "quant"?} → facts (GGUF
+                                         quantizations in "ggufOptions"), parser profile, GPU plan, suggested id
+    POST   /v1/llm/install              {"url", "id"?, "name"?, "gpu"?, "count"?, "context"?, "quant"?, "toolParser"?,
+                                         "reasoningParser"?, "engineArgs"?, "hfToken"?, "civitaiToken"?} → state (202)
     GET    /v1/llm/models               {"models": [manifest + status], "installs": {id: state}}
     PATCH  /v1/llm/models/{id}          {"gpu"?, "count"?, "context"?, "name"?, "toolParser"?, …} → manifest
     DELETE /v1/llm/models/{id}          stops and removes it → 204 / 404
     POST   /v1/llm/models/{id}/warm     starts it (returns at once) → status
     POST   /v1/llm/models/{id}/keepalive keeps it warm a while longer → status (+ "ignored" past the lease)
     POST   /v1/llm/models/{id}/stop     shuts it down now → status
+    GET    /v1/llm/models/{id}/plan     its GPU options again (to change GPUs or context) and the current choice
     GET    /v1/llm/models/{id}/status   {state: cold|starting|loading|ready|failed, phase, progress, uptime, gpu,
                                          count, usdPerSecond, costUSD, …}
     GET    /v1/llm/oai/v1/models        OpenAI's model list (installed models)
     POST   /v1/llm/oai/v1/chat/completions  OpenAI chat completions (streamed as SSE; see proxy.py)
 
-The HF token in a body is used for that request only; it is never stored or logged.
+Tokens in a body (Hugging Face, Civitai) are used for that request only; they are never stored or logged.
 """
 
 from __future__ import annotations
@@ -85,6 +87,10 @@ def llm_router(service: LLMService) -> APIRouter:
     @r.post("/models/{mid}/stop")
     async def stop(mid: str):
         return await guarded(service.stop(mid))
+
+    @r.get("/models/{mid}/plan")
+    async def plan(mid: str, context: int | None = None):
+        return await guarded(service.plan(mid, context))
 
     @r.get("/models/{mid}/status")
     async def status(mid: str):

@@ -1,6 +1,7 @@
 import AppKit
 import LLMClient
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A chat tab: the model and its GPU at the top, the conversation, and the message field.
 struct ChatView: View {
@@ -19,6 +20,15 @@ struct ChatView: View {
             ChatComposer(doc: doc)
         }
         .background(MG.windowBackground)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in model.attach([url], to: doc) }
+                }
+            }
+            return !providers.isEmpty
+        }
         .task { await model.llm.refreshAll() }
     }
 }
@@ -192,26 +202,62 @@ struct ChatTurnView: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
     let turn: ChatTurn
+    @State private var editText = ""
 
     var live: Bool { doc.liveTurnID == turn.id }
 
     var body: some View {
         switch turn.role {
         case .user:
-            HStack {
-                Spacer(minLength: 80)
-                Text(turn.text)
-                    .font(.mgBody)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.selection))
-                    .mgContextMenu {
-                        MGMenuItem.button("Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(turn.text, forType: .string)
+            VStack(alignment: .trailing, spacing: 6) {
+                if !turn.images.isEmpty || !(turn.files ?? []).isEmpty {
+                    AttachmentStrip(images: turn.images, files: (turn.files ?? []).map(\.name),
+                                    folder: model.chatStore.filesFolder(doc.id))
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                if doc.editingTurnID == turn.id {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        TextEditor(text: $editText)
+                            .font(.mgBody).scrollContentBackground(.hidden)
+                            .frame(minHeight: 60, maxHeight: 220).fixedSize(horizontal: false, vertical: true)
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.controlBackground))
+                            .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous), color: MG.border)
+                        HStack {
+                            Button("Cancel") { doc.editingTurnID = nil }.buttonStyle(.mg(.bordered))
+                            Button("Send") {
+                                doc.editingTurnID = nil
+                                model.resend(doc, editing: turn.id, text: editText)
+                            }
+                            .buttonStyle(.mg(.prominent))
+                            .disabled(editText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
+                    .frame(maxWidth: 640)
+                } else if !turn.text.isEmpty {
+                    HStack {
+                        Spacer(minLength: 80)
+                        Text(turn.text)
+                            .font(.mgBody)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.selection))
+                    }
+                }
+                HStack(spacing: 6) {
+                    BranchSwitcher(doc: doc, turn: turn)
+                    if doc.editingTurnID != turn.id, !doc.isStreaming {
+                        Button { editText = turn.text; doc.editingTurnID = turn.id } label: { Image(systemName: "pencil") }
+                            .buttonStyle(.mg(.icon)).controlSize(.small)
+                            .mgHelp("Edit and send again (the old version stays as a branch)")
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .mgContextMenu {
+                MGMenuItem.button("Copy") { copy(turn.text) }
+                MGMenuItem.button("Edit…", enabled: !doc.isStreaming) { editText = turn.text; doc.editingTurnID = turn.id }
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 8) {
@@ -228,37 +274,102 @@ struct ChatTurnView: View {
                         .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(2)
                 }
                 if let e = turn.error {
-                    HStack(spacing: 8) {
-                        Label(e, systemImage: e == "Stopped" ? "stop.circle" : "exclamationmark.triangle")
-                            .font(.mgFootnote).foregroundStyle(e == "Stopped" ? MG.secondaryLabel : MG.destructive)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if turn.id == doc.transcript.turns.last?.id, !doc.isStreaming {
-                            Button("Retry") { retry() }.buttonStyle(.mg(.borderless)).font(.mgFootnote)
-                        }
-                    }
+                    Label(e, systemImage: e == "Stopped" ? "stop.circle" : "exclamationmark.triangle")
+                        .font(.mgFootnote).foregroundStyle(e == "Stopped" ? MG.secondaryLabel : MG.destructive)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if !live, let s = turn.stats {
-                    StatsLine(stats: s, model: turn.model)
+                if !live {
+                    HStack(spacing: 6) {
+                        BranchSwitcher(doc: doc, turn: turn)
+                        if !doc.isStreaming {
+                            Button { model.regenerate(doc, turn.id) } label: { Image(systemName: "arrow.clockwise") }
+                                .buttonStyle(.mg(.icon)).controlSize(.small)
+                                .mgHelp("Another reply (this one stays as a branch)")
+                            Button { copy(turn.text) } label: { Image(systemName: "doc.on.doc") }
+                                .buttonStyle(.mg(.icon)).controlSize(.small).mgHelp("Copy")
+                        }
+                        if let s = turn.stats { StatsLine(stats: s, model: turn.model) }
+                    }
                 }
             }
             .mgContextMenu {
-                MGMenuItem.button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(turn.text, forType: .string)
-                }
-                MGMenuItem.button("Regenerate", enabled: turn.id == doc.transcript.turns.last?.id && !doc.isStreaming) {
-                    retry()
-                }
+                MGMenuItem.button("Copy") { copy(turn.text) }
+                MGMenuItem.button("Regenerate", enabled: !doc.isStreaming) { model.regenerate(doc, turn.id) }
             }
         case .tool:
             Text(turn.text).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(6)
         }
     }
 
-    /// Replaces the last reply with a new one.
-    func retry() {
-        if doc.transcript.turns.last?.role == .assistant { doc.transcript.turns.removeLast() }
-        model.reply(doc)
+    func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+}
+
+/// ‹ 2 / 3 › between a message's versions (edits of a question, retries of an answer).
+struct BranchSwitcher: View {
+    let doc: ChatDocument
+    let turn: ChatTurn
+
+    var body: some View {
+        let siblings = doc.transcript.siblings(of: turn.id)
+        if siblings.count > 1, let i = siblings.firstIndex(where: { $0.id == turn.id }) {
+            HStack(spacing: 2) {
+                Button { doc.transcript.select(siblings[i - 1].id) } label: { Image(systemName: "chevron.left") }
+                    .disabled(i == 0 || doc.isStreaming)
+                Text("\(i + 1) / \(siblings.count)").font(.mgFootnote).foregroundStyle(MG.secondaryLabel).monospacedDigit()
+                Button { doc.transcript.select(siblings[i + 1].id) } label: { Image(systemName: "chevron.right") }
+                    .disabled(i == siblings.count - 1 || doc.isStreaming)
+            }
+            .buttonStyle(.mg(.icon))
+            .controlSize(.small)
+            .mgHelp("Versions of this message")
+        }
+    }
+}
+
+/// Attached images (thumbnails) and file names.
+struct AttachmentStrip: View {
+    let images: [String]
+    let files: [String]
+    let folder: URL
+    var onRemove: ((String) -> Void)? = nil
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(images, id: \.self) { name in
+                    ZStack(alignment: .topTrailing) {
+                        if let image = NSImage(contentsOf: folder.appendingPathComponent(name)) {
+                            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                                .frame(width: 64, height: 64)
+                                .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
+                        }
+                        remove(name)
+                    }
+                }
+                ForEach(files, id: \.self) { name in
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.text")
+                        Text(name).lineLimit(1)
+                        remove(name)
+                    }
+                    .font(.mgFootnote)
+                    .padding(.horizontal, 8).frame(height: 26)
+                    .background(Capsule().fill(MG.fill))
+                }
+            }
+        }
+        .frame(height: images.isEmpty ? 28 : 66)
+    }
+
+    @ViewBuilder
+    func remove(_ name: String) -> some View {
+        if let onRemove {
+            Button { onRemove(name) } label: { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.plain).foregroundStyle(MG.secondaryLabel).mgHelp("Remove")
+        }
     }
 }
 
@@ -367,42 +478,60 @@ struct ChatComposer: View {
     @Environment(AppModel.self) private var model
     @Bindable var doc: ChatDocument
     @FocusState private var focused: Bool
+    @State private var notice: String?
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $doc.draft)
-                    .font(.mgBody)
-                    .scrollContentBackground(.hidden)
-                    .focused($focused)
-                    .frame(minHeight: 40, maxHeight: 180)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onKeyPress(.return, phases: .down) { press in
-                        if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
-                        model.send(doc)
-                        return .handled
-                    }
-                if doc.draft.isEmpty {
-                    Text("Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
-                        .font(.mgBody).foregroundStyle(MG.placeholder)
-                        .padding(.leading, 5).padding(.top, 1)
-                        .allowsHitTesting(false)
+        let images = doc.pending.compactMap { if case .image(let n) = $0 { return n }; return nil }
+        let files = doc.pending.compactMap { if case .file(let f) = $0 { return f.name }; return nil }
+        let blind = !images.isEmpty && doc.modelKey.flatMap { model.llm.model($0) }.map { $0.vision != true } == true
+        VStack(alignment: .leading, spacing: 6) {
+            if !doc.pending.isEmpty {
+                AttachmentStrip(images: images, files: files, folder: model.chatStore.filesFolder(doc.id)) { name in
+                    doc.pending.removeAll { $0.name == name }
                 }
             }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.controlBackground))
-            .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous), color: MG.border)
-            if doc.isStreaming {
-                Button { model.stopReply(doc) } label: { Image(systemName: "stop.fill") }
-                    .buttonStyle(.mg(.bordered))
+            if let note = blind ? "This model can't see images: they're left out of what it gets." : notice {
+                Label(note, systemImage: "exclamationmark.triangle").font(.mgFootnote).foregroundStyle(MG.warning)
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                Button { choose() } label: { Image(systemName: "paperclip") }
+                    .buttonStyle(.mg(.icon))
                     .controlSize(.large)
-                    .mgHelp("Stop the reply")
-            } else {
-                Button { model.send(doc) } label: { Image(systemName: "arrow.up") }
-                    .buttonStyle(.mg(.prominent))
-                    .controlSize(.large)
-                    .disabled(doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .mgHelp("Send (↩)")
+                    .mgHelp("Attach images or text files (or drop them on the chat)")
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: $doc.draft)
+                        .font(.mgBody)
+                        .scrollContentBackground(.hidden)
+                        .focused($focused)
+                        .frame(minHeight: 40, maxHeight: 180)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .onKeyPress(.return, phases: .down) { press in
+                            if press.modifiers.contains(.shift) || press.modifiers.contains(.option) { return .ignored }
+                            model.send(doc)
+                            return .handled
+                        }
+                    if doc.draft.isEmpty {
+                        Text("Message \(doc.transcript.modelID ?? "the model")…  (⇧↩ for a new line)")
+                            .font(.mgBody).foregroundStyle(MG.placeholder)
+                            .padding(.leading, 5).padding(.top, 1)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.controlBackground))
+                .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous), color: MG.border)
+                if doc.isStreaming {
+                    Button { model.stopReply(doc) } label: { Image(systemName: "stop.fill") }
+                        .buttonStyle(.mg(.bordered))
+                        .controlSize(.large)
+                        .mgHelp("Stop the reply")
+                } else {
+                    Button { model.send(doc) } label: { Image(systemName: "arrow.up") }
+                        .buttonStyle(.mg(.prominent))
+                        .controlSize(.large)
+                        .disabled(doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && doc.pending.isEmpty)
+                        .mgHelp("Send (↩)")
+                }
             }
         }
         .padding(.horizontal, 24)
@@ -410,5 +539,14 @@ struct ChatComposer: View {
         .frame(maxWidth: 860)
         .frame(maxWidth: .infinity)
         .onAppear { focused = true }
+    }
+
+    func choose() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.message = "Images, or text and code files up to 256 KB"
+        guard panel.runModal() == .OK else { return }
+        notice = model.attach(panel.urls, to: doc)
     }
 }

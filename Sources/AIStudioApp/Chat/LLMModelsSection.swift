@@ -7,6 +7,19 @@ struct LLMAddRequest: Identifiable {
     var serverID: String?
 }
 
+/// Asks for an installed model's settings sheet.
+struct LLMSettingsRequest: Identifiable {
+    let id = UUID()
+    var key: LLMKey
+}
+
+/// The user's logins for model links, read from the Keychain only when they're saved.
+@MainActor
+enum LinkLogins {
+    static var hf: String? { HFToken.isSaved ? HFToken.read() : nil }
+    static var civitai: String? { KeychainToken.civitai.isSaved ? KeychainToken.civitai.read() : nil }
+}
+
 /// Servers panel section: the language models on the GPU servers, installs in progress, and Add from Link.
 struct LLMModelsSection: View {
     @Environment(AppModel.self) private var model
@@ -42,6 +55,9 @@ struct LLMModelsSection: View {
                             } else {
                                 MGMenuItem.button("Start", icon: "play") { Task { await llm.warm(key) } }
                             }
+                            MGMenuItem.button("GPUs and Context…", icon: "slider.horizontal.3") {
+                                model.llmSettingsRequest = LLMSettingsRequest(key: key)
+                            }
                             MGMenuItem.divider
                             MGMenuItem.button("Remove…", destructive: true) { confirmRemove(key, m) }
                         }
@@ -73,7 +89,8 @@ struct LLMModelRow: View {
             Image(systemName: "text.bubble").foregroundStyle(MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.name).font(.mgCallout.weight(.medium)).lineLimit(1)
-                Text([server, model.gpuLabel, "\(model.context / 1024)k context", model.vision == true ? "vision" : nil]
+                Text([server, model.gpuLabel, "\(model.context / 1024)k context", model.engine == "llamacpp" ? "GGUF" : nil,
+                      model.source == "civitai" ? "Civitai" : nil, model.vision == true ? "vision" : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 EngineChip(status: status, model: model)
@@ -95,7 +112,7 @@ struct InstallRow: View {
                 Spacer()
                 Text(label).font(.mgFootnote).foregroundStyle(state.state == "failed" ? MG.destructive : MG.secondaryLabel)
             }
-            if state.state == "downloading" || state.state == "starting" {
+            if ["downloading", "starting", "unpacking"].contains(state.state) {
                 MGProgress(value: state.total.map { t in Double(state.bytes ?? 0) / Double(max(t, 1)) }).frame(height: 4)
             }
             if let e = state.error {
@@ -111,6 +128,7 @@ struct InstallRow: View {
             guard let t = state.total, t > 0 else { return "Downloading" }
             return String(format: "%.0f of %.0f GB", Double(state.bytes ?? 0) / 1e9, Double(t) / 1e9)
         case "starting": return "Starting"
+        case "unpacking": return "Unpacking"
         case "failed": return "Failed"
         case "cancelled": return "Cancelled"
         default: return state.state.capitalized
@@ -133,12 +151,13 @@ struct LLMAddSheet: View {
     @State private var context = 0
     @State private var name = ""
     @State private var modelID = ""
+    @State private var quant: String?
 
     var body: some View {
         let servers = model.llm.servers
         VStack(alignment: .leading, spacing: 14) {
             Text("Add a Model from a Link").font(.mgHeadline)
-            Text("A Hugging Face model (owner/name or its URL), in safetensors: full precision, FP8, AWQ or GPTQ. It downloads to the GPU server; nothing comes to this Mac.")
+            Text("A Hugging Face model (owner/name or its URL) in safetensors (full precision, FP8, AWQ, GPTQ) or GGUF, or a Civitai model with a GGUF file or a zipped model folder. It downloads to the GPU server; nothing comes to this Mac.")
                 .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             MGSection {
                 if servers.count > 1 {
@@ -148,9 +167,10 @@ struct LLMAddSheet: View {
                 }
                 MGFormRow("Link") {
                     HStack {
-                        TextField("Link", text: $link, prompt: Text("Qwen/Qwen3.8-Flash-Next-FP8"))
+                        TextField("Link", text: $link, prompt: Text("Qwen/Qwen3.8-Flash-Next-FP8 or a Civitai link"))
                             .frame(width: 300)
                             .onSubmit { Task { await lookUp() } }
+                            .onChange(of: link) { _, _ in quant = nil }
                         Button("Look Up") { Task { await lookUp() } }
                             .disabled(link.trimmingCharacters(in: .whitespaces).isEmpty || busy)
                     }
@@ -159,6 +179,13 @@ struct LLMAddSheet: View {
             if let f = found {
                 details(f)
                 MGSection {
+                    if let opts = f.facts.ggufOptions, opts.count > 1 {
+                        MGFormRow("Quantization") {
+                            MGPicker(selection: Binding(get: { quant ?? f.facts.quant?["type"]?.string ?? opts[0].quant },
+                                                        set: { q in quant = q; Task { await lookUp() } }),
+                                     options: opts.map { ($0.quant, String(format: "%@ · %.0f GB", $0.quant, Double($0.bytes) / 1e9)) })
+                        }
+                    }
                     MGFormRow("GPUs") {
                         MGPicker(selection: Binding(get: { option ?? f.plan.recommended ?? f.plan.options[0] },
                                                     set: { option = $0; clampContext() }),
@@ -193,7 +220,8 @@ struct LLMAddSheet: View {
     @ViewBuilder
     func details(_ f: LLMInspection) -> some View {
         let gb = Double(f.facts.weightBytes) / 1e9
-        let quant = f.facts.quant?["method"]?.string.map { $0.uppercased() } ?? "full precision"
+        let quant = f.facts.engine == "llamacpp" ? "GGUF \(f.facts.quant?["type"]?.string ?? "")"
+            : f.facts.quant?["method"]?.string.map { $0.uppercased() } ?? "full precision"
         VStack(alignment: .leading, spacing: 4) {
             Text(f.facts.repo).font(.mgCallout.weight(.semibold))
             Text("\(f.facts.modelType) · \(String(format: "%.0f GB", gb)) · \(quant) · \(f.facts.nativeContext / 1024)k context"
@@ -235,8 +263,8 @@ struct LLMAddSheet: View {
         error = nil
         defer { busy = false }
         do {
-            let f = try await client.inspect(url: link.trimmingCharacters(in: .whitespaces),
-                                             hfToken: HFToken.isSaved ? HFToken.read() : nil)
+            let f = try await client.inspect(url: link.trimmingCharacters(in: .whitespaces), hfToken: LinkLogins.hf,
+                                             civitaiToken: LinkLogins.civitai, quant: quant)
             found = f
             option = f.plan.recommended
             context = min(f.plan.context, f.plan.recommended?.maxContext ?? f.plan.context)
@@ -258,8 +286,105 @@ struct LLMAddSheet: View {
             _ = try await client.install(LLMInstallRequest(
                 url: link.trimmingCharacters(in: .whitespaces), id: modelID.isEmpty ? nil : modelID,
                 name: name.isEmpty ? nil : name, gpu: o.gpu, count: o.count, context: context,
-                hfToken: HFToken.isSaved ? HFToken.read() : nil))
+                quant: found?.facts.engine == "llamacpp" ? found?.facts.quant?["type"]?.string : nil,
+                hfToken: LinkLogins.hf, civitaiToken: LinkLogins.civitai))
             await model.llm.refresh(serverID)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// An installed model's GPUs and context: the options it fits, from the facts the server kept. Takes effect the next
+/// time it starts (a running one can restart now).
+struct LLMSettingsSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.mgDismiss) private var dismiss
+    let request: LLMSettingsRequest
+    @State private var plan: LLMPlan?
+    @State private var option: GPUOption?
+    @State private var context = 0
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        let m = model.llm.model(request.key)
+        let running = model.llm.status(request.key)?.isActive == true
+        VStack(alignment: .leading, spacing: 14) {
+            Text("\(m?.name ?? request.key.modelID): GPUs and Context").font(.mgHeadline)
+            if let plan {
+                MGSection {
+                    MGFormRow("GPUs") {
+                        MGPicker(selection: Binding(get: { option ?? plan.options[0] }, set: { option = $0; clamp() }),
+                                 options: plan.options.filter(\.fits).map {
+                                     ($0, String(format: "%@ · $%.2f/h · up to %dk", $0.label, $0.usdPerHour, $0.maxContext / 1024))
+                                 })
+                    }
+                    MGFormRow("Context") {
+                        MGPicker(selection: $context, options: choices.map { ($0, "\($0 / 1024)k tokens") })
+                    }
+                }
+                if running {
+                    Text("The model is running: the change applies after it restarts.")
+                        .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                }
+            } else if error == nil {
+                MGSpinner().controlSize(.small)
+            }
+            if let error {
+                Label(error, systemImage: "xmark.octagon").font(.mgSubheadline).foregroundStyle(MG.destructive)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                if busy { MGSpinner().controlSize(.small) }
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                if running {
+                    Button("Save and Restart") { Task { await save(restart: true) } }.disabled(plan == nil || busy)
+                }
+                Button("Save") { Task { await save(restart: false) } }
+                    .buttonStyle(.mg(.prominent)).keyboardShortcut(.defaultAction).disabled(plan == nil || busy)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .task { await load() }
+    }
+
+    var choices: [Int] {
+        guard let o = option ?? plan?.options.first else { return [] }
+        var out = [8192, 16384, 32768, 65536, 131072, 262144, 524288].filter { $0 < o.maxContext }
+        out.append(o.maxContext)
+        return out
+    }
+
+    func clamp() {
+        if !choices.contains(context) { context = choices.last { $0 <= max(context, choices.first ?? 0) } ?? choices.first ?? 0 }
+    }
+
+    func load() async {
+        guard let client = model.llm.client(request.key.serverID) else { return }
+        do {
+            let p = try await client.plan(request.key.modelID)
+            plan = p
+            option = p.options.first { $0.gpu == p.current.gpu && $0.count == p.current.count && $0.fits } ?? p.recommended
+            context = p.current.context
+            if !choices.contains(context) { context = choices.last { $0 <= context } ?? choices.first ?? context }
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func save(restart: Bool) async {
+        guard let client = model.llm.client(request.key.serverID), let o = option else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await client.update(request.key.modelID, ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
+                                                              "context": .number(Double(context))])
+            if restart { await model.llm.stop(request.key) }
+            await model.llm.refresh(request.key.serverID)
             dismiss()
         } catch {
             self.error = error.localizedDescription

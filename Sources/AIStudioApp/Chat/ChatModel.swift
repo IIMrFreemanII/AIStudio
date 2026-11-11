@@ -16,6 +16,10 @@ final class ChatDocument: Identifiable {
     var engine: EngineStatus?
     /// When the request in progress started.
     var requestStarted: Date?
+    /// Attachments for the message being written.
+    var pending: [PendingAttachment] = []
+    /// The user message being edited in place.
+    var editingTurnID: UUID?
     @ObservationIgnored var task: Task<Void, Never>?
 
     init(transcript: ChatTranscript) {
@@ -28,6 +32,19 @@ final class ChatDocument: Identifiable {
     var modelKey: LLMKey? {
         guard let s = transcript.serverID, let m = transcript.modelID else { return nil }
         return LLMKey(serverID: s, modelID: m)
+    }
+}
+
+/// An image (a file in the chat's folder) or a text file waiting to be sent.
+enum PendingAttachment: Hashable {
+    case image(String)
+    case file(ChatFile)
+
+    var name: String {
+        switch self {
+        case .image(let n): return n
+        case .file(let f): return f.name
+        }
     }
 }
 

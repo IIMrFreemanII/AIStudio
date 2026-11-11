@@ -94,7 +94,9 @@ def patch(manifest: dict, changes: dict) -> dict:
 def new_manifest(mid: str, name: str, url: str, facts, profile: dict, gpu: str, count: int, context: int) -> dict:
     return {
         "id": mid, "name": name or facts.repo, "url": url, "repo": facts.repo, "revision": facts.revision,
-        "sha": facts.sha, "engine": "vllm", "architecture": facts.architecture, "modelType": facts.model_type,
+        "sha": facts.sha, "engine": facts.engine, "source": facts.source, "ggufFile": facts.gguf_file,
+        "mmproj": facts.mmproj, "facts": facts.stored(),
+        "architecture": facts.architecture, "modelType": facts.model_type,
         "quant": facts.quant, "weightBytes": facts.weight_bytes, "nativeContext": facts.native_context,
         "vision": facts.vision, "experts": facts.experts, "toolParser": profile["toolParser"],
         "reasoningParser": profile["reasoningParser"], "engineArgs": profile["engineArgs"], "gpu": gpu,

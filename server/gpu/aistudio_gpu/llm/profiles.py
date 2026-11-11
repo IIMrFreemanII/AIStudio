@@ -29,6 +29,11 @@ BY_TYPE: list[tuple[str, str | None, str | None, list[str]]] = [
 
 def guess(f: Facts) -> dict:
     """{"toolParser", "reasoningParser", "engineArgs"} for a model."""
+    if f.engine == "llamacpp":
+        # llama.cpp reads tool calls through the model's own chat template (--jinja); "llama.cpp" marks that its
+        # reasoning format splits out <think> blocks.
+        return {"toolParser": "llama.cpp", "reasoningParser": "llama.cpp" if "<think>" in f.chat_template else None,
+                "engineArgs": []}
     mt = f.model_type.lower()
     tool, reasoning, args = None, None, []
     for prefix, t, r, a in BY_TYPE:

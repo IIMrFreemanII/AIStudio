@@ -413,11 +413,19 @@ conversion.
 
 ### Language models (chats)
 
-The same deployment runs language models for the app's **chats** (Chats in the rail, or ⌥⌘N). Any Hugging Face model
-in safetensors works (full precision, FP8, AWQ, GPTQ); GGUF files and Civitai links come in a later milestone. Each
-model runs in its own `LLM` container: vLLM's OpenAI-compatible server on the GPUs the model needs, behind the front
-desk's `/v1/llm/…` routes (same proxy token; `GET /v1/llm/oai/v1/models` and `POST /v1/llm/oai/v1/chat/completions`
-work with any OpenAI client).
+The same deployment runs language models for the app's **chats** (Chats in the rail, or ⌥⌘N). Each model runs in its
+own container behind the front desk's `/v1/llm/…` routes (same proxy token; `GET /v1/llm/oai/v1/models` and
+`POST /v1/llm/oai/v1/chat/completions` work with any OpenAI client):
+
+- **Hugging Face, safetensors** (full precision, FP8, AWQ, GPTQ): vLLM (`LLM` class), split across GPUs with tensor
+  and expert parallelism.
+- **Hugging Face, GGUF** (a repo of GGUF files, or a link to one file; split files are fine): llama.cpp's server
+  (`LLMLlamaCpp` class), layers split across GPUs. Look Up lists the repo's quantizations (Q4_K_M first) and reads
+  the chosen file's header with HTTP Range requests, without downloading it. A `mmproj` file in the repo gives vision.
+- **Civitai** (`civitai.com/models/<id>`, optionally `?modelVersionId=`): a GGUF file runs on llama.cpp; a zip of a
+  Hugging Face model folder on vLLM (its `config.json` is read from inside the zip remotely, and only that folder is
+  unpacked). A lone `.safetensors` file is refused: it has no config or tokenizer. Most Civitai downloads need the API
+  key from the Models window (or the `civitai` Modal secret).
 
 - **Add one:** Servers › Language Models › **+** (or a chat's model menu › Add a Model from a Link…). Paste
   `owner/name` or the model's URL and press **Look Up**: the server reads its config (no download) and lists the GPU
@@ -426,7 +434,8 @@ work with any OpenAI client).
 - **Install:** `import_llm` (4 CPUs) downloads the files straight to the models volume: about 3–5 minutes per 100 GB.
 - **GPUs:** L40S (1–2), A100 80 GB, H100, H200 or B200, on 1, 2, 4 or 8 of them. The pick is the cheapest that holds
   the weights plus the KV cache for the context you chose (vLLM gets 90% of the memory). Mixture-of-experts models
-  split across GPUs with expert parallelism. Change it later with `PATCH /v1/llm/models/<id>`.
+  split across GPUs with expert parallelism. Change it later in Servers › the model › **GPUs and Context…** (it
+  takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
 - **Warm while you chat:** the first message starts the container (the chat shows *Waiting for a GPU*, then *Loading
   weights 41%*). While a chat with that model is in front, the app is active and you used it in the last 10 minutes,
   it sends a keepalive every minute. The container stops `AISTUDIO_LLM_IDLE` seconds (default 180) after the last
@@ -437,6 +446,7 @@ work with any OpenAI client).
   $9.08 an hour while warm, so an hour of chatting plus the 3-minute idle tail costs about $9.50. Cold starts load the
   weights from the volume (a few minutes for 100+ GB) and are billed too.
 - Deploy settings: `AISTUDIO_LLM_IDLE`, `AISTUDIO_VLLM` (the vLLM version, default 0.33.0), `AISTUDIO_CUDA_IMAGE`,
+  `AISTUDIO_LLAMA_IMAGE` (llama.cpp's server image, default `ghcr.io/ggml-org/llama.cpp:server-cuda`),
   `AISTUDIO_LLM_MAX_GPUS` (default 8).
 
 A GPU box serves the same routes (`python -m aistudio_gpu serve`): there the model runs on the box's own GPUs, one

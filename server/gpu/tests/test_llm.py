@@ -62,9 +62,16 @@ def test_parse_link(link, repo, rev):
     assert (ref.repo, ref.revision) == (repo, rev)
 
 
+def test_parse_gguf_and_civitai_links():
+    from aistudio_gpu.llm.facts import CivitaiRef
+    ref = parse_link("https://huggingface.co/bartowski/x-GGUF/blob/main/Q8/x-Q8_0-00001-of-00002.gguf")
+    assert (ref.repo, ref.revision, ref.file) == ("bartowski/x-GGUF", "main", "Q8/x-Q8_0-00001-of-00002.gguf")
+    assert parse_link("https://civitai.com/models/123/some-name?modelVersionId=456") == CivitaiRef(123, 456)
+    assert parse_link("https://civitai.com/api/download/models/789") == CivitaiRef(None, 789)
+
+
 @pytest.mark.parametrize("link,why", [
-    ("https://civitai.com/models/123", "Civitai"),
-    ("https://huggingface.co/bartowski/x-GGUF/blob/main/x-Q4_K_M.gguf", "GGUF"),
+    ("https://civitai.com/images/123", "Civitai link"),
     ("https://example.com/o/m", "only Hugging Face"),
     ("not a repo", "isn't a Hugging Face repo"),
     ("", "paste"),

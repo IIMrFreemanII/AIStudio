@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import LLMClient
 
 /// Chat tabs: opening, closing, sending, and saving them.
@@ -79,26 +80,56 @@ extension AppModel {
     /// Sends the draft as a user message and streams the reply.
     func send(_ doc: ChatDocument) {
         let text = doc.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !doc.isStreaming else { return }
+        guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming else { return }
         doc.draft = ""
-        if doc.transcript.turns.isEmpty { doc.transcript.title = ChatTranscript.title(from: text) }
-        doc.transcript.turns.append(ChatTurn(role: .user, text: text))
+        if doc.transcript.turns.isEmpty {
+            doc.transcript.title = ChatTranscript.title(from: text.isEmpty ? doc.pending.first?.name ?? "" : text)
+        }
+        let files = doc.pending.compactMap { if case .file(let f) = $0 { return f }; return nil }
+        doc.transcript.append(ChatTurn(role: .user, text: text, images: doc.pending.compactMap {
+            if case .image(let name) = $0 { return name }; return nil
+        }, files: files.isEmpty ? nil : files))
+        doc.pending = []
         reply(doc)
     }
 
-    /// Streams an assistant reply to the transcript as it stands.
-    func reply(_ doc: ChatDocument) {
+    /// Sends an edited version of a user message: a new branch from the same point, then a reply.
+    func resend(_ doc: ChatDocument, editing id: UUID, text: String) {
+        guard !doc.isStreaming, let old = doc.transcript.turn(id), old.role == .user else { return }
+        var turn = ChatTurn(role: .user, text: text, images: old.images, files: old.files)
+        turn.date = Date()
+        doc.transcript.branch(from: id, with: turn)
+        reply(doc)
+    }
+
+    /// Another reply in place of `id` (kept as a sibling), from the same messages before it.
+    func regenerate(_ doc: ChatDocument, _ id: UUID) {
+        guard !doc.isStreaming, let old = doc.transcript.turn(id), old.role == .assistant else { return }
+        // Send only up to the message it answers (that message's newest branch may go on past it).
+        doc.transcript.activeLeaf = old.parent
+        reply(doc, nextTo: id)
+    }
+
+    /// Streams an assistant reply after the shown branch (or next to `sibling`, a retry).
+    func reply(_ doc: ChatDocument, nextTo sibling: UUID? = nil) {
+        func add(_ t: ChatTurn) {
+            if let sibling { doc.transcript.branch(from: sibling, with: t) } else { doc.transcript.append(t) }
+        }
         guard let key = doc.modelKey, let client = llm.client(key.serverID) else {
             var t = ChatTurn(role: .assistant, text: "")
             t.error = llm.servers.isEmpty ? "Add a GPU server in Servers first." : "Choose a model for this chat."
-            doc.transcript.turns.append(t)
+            add(t)
             return
         }
         lastChatModel = key
-        var request = ChatRequest(model: key.modelID, messages: doc.transcript.messages())
+        let vision = llm.model(key)?.vision == true
+        let folder = chatStore.filesFolder(doc.id)
+        var request = ChatRequest(model: key.modelID, messages: doc.transcript.messages { name in
+            vision ? Self.imageDataURL(folder.appendingPathComponent(name)) : nil
+        })
         request.reasoningEffort = doc.transcript.reasoningEffort
         let turn = ChatTurn(role: .assistant, text: "", model: key.modelID)
-        doc.transcript.turns.append(turn)
+        add(turn)
         doc.liveTurnID = turn.id
         doc.requestStarted = Date()
         doc.engine = nil
@@ -111,14 +142,13 @@ extension AppModel {
             var thinkStart: Date?
             var thinkEnd: Date?
             @MainActor func publish() {
-                guard let i = doc.transcript.turns.firstIndex(where: { $0.id == turn.id }) else { return }
-                var t = doc.transcript.turns[i]
-                t.text = acc.content
-                t.reasoning = acc.reasoning.isEmpty ? nil : acc.reasoning
-                t.toolCalls = acc.tools.calls
-                t.stats = acc.stats
-                if let s = thinkStart { t.thinkingSeconds = (thinkEnd ?? Date()).timeIntervalSince(s) }
-                doc.transcript.turns[i] = t
+                doc.transcript.update(turn.id) { t in
+                    t.text = acc.content
+                    t.reasoning = acc.reasoning.isEmpty ? nil : acc.reasoning
+                    t.toolCalls = acc.tools.calls
+                    t.stats = acc.stats
+                    if let s = thinkStart { t.thinkingSeconds = (thinkEnd ?? Date()).timeIntervalSince(s) }
+                }
             }
             do {
                 for try await e in client.chat.stream(request) {
@@ -141,10 +171,8 @@ extension AppModel {
             } catch {
                 acc.finish()
                 publish()
-                if let i = doc.transcript.turns.firstIndex(where: { $0.id == turn.id }) {
-                    doc.transcript.turns[i].error = (error is CancellationError || Task.isCancelled)
-                        ? "Stopped" : error.localizedDescription
-                }
+                let message = (error is CancellationError || Task.isCancelled) ? "Stopped" : error.localizedDescription
+                doc.transcript.update(turn.id) { $0.error = message }
             }
             doc.liveTurnID = nil
             doc.engine = nil
@@ -153,6 +181,49 @@ extension AppModel {
             self?.saveChat(doc)
             await self?.llm.refreshStatus(key)
         }
+    }
+
+    // MARK: attachments
+
+    /// Adds files to the message being written: images (resized to at most 1536 px, saved with the chat as JPEG)
+    /// and text files up to 256 KB. Returns why any were left out.
+    @discardableResult
+    func attach(_ urls: [URL], to doc: ChatDocument) -> String? {
+        var skipped: [String] = []
+        let folder = chatStore.filesFolder(doc.id)
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            if ["png", "jpg", "jpeg", "heic", "webp", "gif", "tiff", "bmp"].contains(ext) {
+                guard let name = Self.saveImage(url, into: folder) else { skipped.append(url.lastPathComponent); continue }
+                doc.pending.append(.image(name))
+            } else if let data = try? Data(contentsOf: url), data.count <= 256 * 1024,
+                      let text = String(data: data, encoding: .utf8) {
+                doc.pending.append(.file(ChatFile(name: url.lastPathComponent, text: text)))
+            } else {
+                skipped.append(url.lastPathComponent)
+            }
+        }
+        return skipped.isEmpty ? nil
+            : "Left out \(skipped.joined(separator: ", ")): only images and text files up to 256 KB can be attached."
+    }
+
+    static func saveImage(_ url: URL, into folder: URL) -> String? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 1536,
+                  kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+        else { return nil }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = UUID().uuidString + ".jpg"
+        guard let dest = CGImageDestinationCreateWithURL(folder.appendingPathComponent(name) as CFURL,
+                                                         "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? name : nil
+    }
+
+    static func imageDataURL(_ url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return "data:image/jpeg;base64," + data.base64EncodedString()
     }
 
     func stopReply(_ doc: ChatDocument) {
