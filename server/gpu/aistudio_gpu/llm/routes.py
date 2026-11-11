@@ -14,7 +14,9 @@
     GET    /v1/llm/models/{id}/status   {state: cold|starting|loading|ready|failed, phase, progress, uptime, gpu,
                                          count, usdPerSecond, costUSD, …}
     GET    /v1/llm/oai/v1/models        OpenAI's model list (installed models)
-    POST   /v1/llm/oai/v1/chat/completions  OpenAI chat completions (streamed as SSE; see proxy.py)
+    POST   /v1/llm/oai/v1/chat/completions  OpenAI chat completions (streamed as SSE; see proxy.py). Images and
+                                         videos can be uploads (PUT /v1/files first): {"type": "video_url",
+                                         "video_url": {"url": "upload:<sha256>.mp4"}} (404 when it isn't there)
 
 Tokens in a body (Hugging Face, Civitai) are used for that request only; they are never stored or logged.
 """

@@ -20,11 +20,25 @@ final class ChatDocument: Identifiable {
     var requestStarted: Date?
     /// Attachments for the message being written.
     var pending: [PendingAttachment] = []
+    /// Videos being made smaller before they're added to `pending`, and why the last one couldn't be.
+    var preparingVideos = 0
+    var attachNote: String?
     /// The user message being edited in place.
     var editingTurnID: UUID?
     @ObservationIgnored var task: Task<Void, Never>?
 
     // MARK: coding chats
+
+    /// The `ask_user` questions waiting for the user's answer (their card), and the answer channel.
+    var question: PendingQuestion?
+    @ObservationIgnored var questionAnswer: CheckedContinuation<[UserAnswer]?, Never>?
+    /// The passage the message being written replies to.
+    var replyTo: ChatQuote?
+    /// Widgets' last reported state (JSON), by tool call id, and what was last sent to the model.
+    var widgetStates: [String: String] = [:]
+    @ObservationIgnored var sentWidgetStates: [String: String] = [:]
+    /// A turn to scroll to and flash (a quote's original).
+    var highlightTurnID: UUID?
 
     /// A tool call waiting for the user's answer, and the question's answer channel.
     var permission: PermissionRequest?
@@ -61,6 +75,14 @@ final class ChatDocument: Identifiable {
         c?.resume(returning: a)
     }
 
+    /// Answers the open `ask_user` questions (nil: skipped) and lets the reply go on.
+    func answerQuestion(_ answers: [UserAnswer]?) {
+        let c = questionAnswer
+        questionAnswer = nil
+        question = nil
+        c?.resume(returning: answers)
+    }
+
     init(transcript: ChatTranscript) {
         id = transcript.id
         self.transcript = transcript
@@ -74,7 +96,13 @@ final class ChatDocument: Identifiable {
     }
 }
 
-/// An image (a file in the chat's folder) or a text file waiting to be sent.
+/// `ask_user` questions shown as a card until the user answers.
+struct PendingQuestion: Equatable {
+    var callID: String
+    var questions: [UserQuestion]
+}
+
+/// An image or video (a file in the chat's folder) or a text file waiting to be sent.
 enum PendingAttachment: Hashable {
     case image(String)
     case file(ChatFile)

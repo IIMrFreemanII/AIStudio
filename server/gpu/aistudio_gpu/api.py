@@ -92,6 +92,9 @@ def create_app(manager: JobManager, token: str | None = None, fetcher: Fetcher |
     if llm is not None:
         from .llm.routes import llm_router
 
+        if getattr(llm, "files", None) is None:
+            llm.files = files  # chats' uploaded images and videos
+
         app.include_router(llm_router(llm))
 
     @app.head("/v1/files/{name}")

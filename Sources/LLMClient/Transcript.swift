@@ -10,6 +10,25 @@ public struct ChatFile: Codable, Equatable, Sendable, Hashable {
     }
 }
 
+/// What a message replies to: a passage of an earlier message (its role, and its id when it's known).
+public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
+    public static let maxLength = 2000
+    public var turnID: UUID?
+    public var role: ChatTurn.Role
+    public var text: String
+    public init(turnID: UUID?, role: ChatTurn.Role, text: String) {
+        self.turnID = turnID
+        self.role = role
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.text = t.count > Self.maxLength ? String(t.prefix(Self.maxLength - 1)) + "…" : t
+    }
+
+    /// As Markdown, for the model: each line behind `> `.
+    public var markdown: String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+    }
+}
+
 /// One message of a saved chat, with what the app shows around it (thinking, stats, errors).
 public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable { case user, assistant, tool }
@@ -23,7 +42,7 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var reasoning: String?
     /// How long it thought, in seconds.
     public var thinkingSeconds: Double?
-    /// Attached images: file names in the chat's files folder.
+    /// Attached images and videos (`.mp4`, see `isVideo`): file names in the chat's files folder.
     public var images: [String]
     /// Attached text files.
     public var files: [ChatFile]?
@@ -40,6 +59,12 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     /// Why the reply stopped early (a failed request, a cancel). The turn isn't sent back to the model.
     public var error: String?
     public var date: Date
+    /// Assistant turns: the follow-ups the model suggested (taken out of its text, see `FollowUps`).
+    public var followUps: [String]?
+    /// User turns: the passage it replies to.
+    public var quote: ChatQuote?
+    /// User turns: what the model gets besides the text, not shown (the chat's widgets' state).
+    public var context: String?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,
@@ -54,6 +79,19 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
         self.toolCallID = toolCallID
         self.model = model
         self.date = date
+    }
+
+    /// Whether an attachment is a video (the app saves them as `<sha256>.mp4`).
+    public static func isVideo(_ name: String) -> Bool { name.lowercased().hasSuffix(".mp4") }
+
+    /// The text the model gets for a user message: the passage it replies to, the message and its files, then the
+    /// hidden context.
+    public var textForModel: String {
+        var parts: [String] = []
+        if let quote { parts.append("Replying to this part of \(quote.role == .user ? "my earlier message" : quote.role == .tool ? "a tool result" : "your reply"):\n" + quote.markdown) }
+        parts.append(textWithFiles)
+        if let context, !context.isEmpty { parts.append(context) }
+        return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 
     /// The text the model gets: the message, then each attached file in a fenced block.
@@ -201,18 +239,21 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     /// What the chat has cost so far (every reply's GPU time, other branches included).
     public var costUSD: Double { nodes.compactMap { $0.stats?.costUSD }.reduce(0, +) }
 
-    /// The shown branch as OpenAI messages, without failed replies. `image(name)` gives an attached image's data URL
-    /// (nil leaves it out).
-    public func messages(image: (String) -> String? = { _ in nil }) -> [ChatMessage] {
+    /// The shown branch as OpenAI messages, without failed replies. `image(name)` gives an attached image's data URL,
+    /// or a video's URL (`upload:<name>`); nil leaves it out.
+    /// `system` false leaves the chat's system prompt out (the caller sends its own, with it inside).
+    public func messages(system: Bool = true, image: (String) -> String? = { _ in nil }) -> [ChatMessage] {
         var out: [ChatMessage] = []
-        if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if system, let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             out.append(.system(systemPrompt))
         }
         for t in turns where t.error == nil || !t.text.isEmpty {
             switch t.role {
             case .user:
-                var parts: [ContentPart] = t.images.compactMap { image($0) }.map { .image(url: $0) }
-                parts.append(.text(t.textWithFiles))
+                var parts: [ContentPart] = t.images.compactMap { name in
+                    image(name).map { ChatTurn.isVideo(name) ? .video(url: $0) : .image(url: $0) }
+                }
+                parts.append(.text(t.textForModel))
                 out.append(ChatMessage(role: .user, parts: parts))
             case .assistant:
                 out.append(ChatMessage(role: .assistant, parts: [.text(t.text)], toolCalls: t.toolCalls))
@@ -222,6 +263,9 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         }
         return out
     }
+
+    /// The images and videos attached to the shown branch's messages.
+    public var attachments: [String] { turns.flatMap(\.images) }
 
     /// A title from the first user message: its first non-blank line, at most 48 characters.
     public static func title(from text: String) -> String {

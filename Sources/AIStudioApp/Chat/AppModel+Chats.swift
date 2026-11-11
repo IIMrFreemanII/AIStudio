@@ -108,17 +108,83 @@ extension AppModel {
     /// Sends the draft as a user message and streams the reply.
     func send(_ doc: ChatDocument) {
         let text = doc.draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming else { return }
+        // A question card is open: what's typed answers it ("Other" for each question), and the reply goes on.
+        if let q = doc.question {
+            guard !text.isEmpty else { return }
+            doc.draft = ""
+            doc.answerQuestion(q.questions.map { _ in UserAnswer(other: text) })
+            return
+        }
+        guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming, doc.preparingVideos == 0 else { return }
         doc.draft = ""
         if doc.transcript.turns.isEmpty {
             doc.transcript.title = ChatTranscript.title(from: text.isEmpty ? doc.pending.first?.name ?? "" : text)
         }
         let files = doc.pending.compactMap { if case .file(let f) = $0 { return f }; return nil }
-        doc.transcript.append(ChatTurn(role: .user, text: text, images: doc.pending.compactMap {
+        var turn = ChatTurn(role: .user, text: text, images: doc.pending.compactMap {
             if case .image(let name) = $0 { return name }; return nil
-        }, files: files.isEmpty ? nil : files))
+        }, files: files.isEmpty ? nil : files)
+        turn.quote = doc.replyTo
+        turn.context = widgetContext(doc)
+        doc.transcript.append(turn)
         doc.pending = []
+        doc.replyTo = nil
         reply(doc)
+    }
+
+    /// Sends `text` as the user's message (a follow-up chip, a widget's `sendPrompt`), unless a reply is running.
+    func sendText(_ doc: ChatDocument, _ text: String) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !doc.isStreaming, doc.question == nil else { return }
+        let draft = doc.draft
+        doc.draft = t
+        send(doc)
+        doc.draft = draft  // what was being written stays
+    }
+
+    /// Starts a reply to a passage: the quote bar above the composer.
+    func quote(_ doc: ChatDocument, _ text: String, from turn: ChatTurn?) {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        doc.replyTo = ChatQuote(turnID: turn?.id, role: turn?.role ?? .assistant, text: t)
+    }
+
+    /// A reply to a selection: the source is the newest shown message (or tool result) that contains it.
+    func quoteSelection(_ doc: ChatDocument, _ text: String) {
+        let needle = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = doc.transcript.turns.last { $0.text.contains(needle) || ($0.toolDetail ?? "").contains(needle) }
+        quote(doc, needle, from: source)
+    }
+
+    /// Shows the turn a quote came from: its branch, scrolled to and flashed.
+    func showQuoted(_ doc: ChatDocument, _ quote: ChatQuote) {
+        guard let id = quote.turnID, doc.transcript.turn(id) != nil else { return }
+        if !doc.transcript.turns.contains(where: { $0.id == id }) { doc.transcript.select(id) }
+        // A tool result is shown on the card of the assistant turn that made the call.
+        var target = id
+        if let t = doc.transcript.turn(id), t.role == .tool, let call = t.toolCallID,
+           let owner = doc.transcript.turns.last(where: { $0.toolCalls.contains { $0.id == call } }) {
+            target = owner.id
+        }
+        doc.highlightTurnID = target
+        Task { @MainActor [weak doc] in
+            try? await Task.sleep(for: .seconds(1.2))
+            if doc?.highlightTurnID == target { doc?.highlightTurnID = nil }
+        }
+    }
+
+    /// Widgets whose state changed since the last message, for the model (hidden in the user's message).
+    func widgetContext(_ doc: ChatDocument) -> String? {
+        let changed = doc.widgetStates.filter { doc.sentWidgetStates[$0.key] != $0.value }
+        guard !changed.isEmpty else { return nil }
+        doc.sentWidgetStates.merge(changed) { _, new in new }
+        let calls = doc.transcript.turns.flatMap(\.toolCalls)
+        let lines = changed.sorted { $0.key < $1.key }.map { id, state -> String in
+            let title = calls.last { $0.id == id && $0.name == "show_widget" }
+                .flatMap { try? ToolArgs(json: $0.arguments).string("title") } ?? "widget"
+            return "[Widget \"\(title)\" state: \(state)]"
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Sends an edited version of a user message: a new branch from the same point, then a reply.
@@ -174,78 +240,34 @@ extension AppModel {
             runAgent(doc, key: key, client: client, setup: setup, add: add)
             return
         }
-        let vision = llm.model(key)?.vision == true
-        let folder = chatStore.filesFolder(doc.id)
-        var request = ChatRequest(model: key.modelID, messages: doc.transcript.messages { name in
-            vision ? Self.imageDataURL(folder.appendingPathComponent(name)) : nil
-        })
-        request.reasoningEffort = doc.transcript.reasoningEffort
-        let turn = ChatTurn(role: .assistant, text: "", model: key.modelID)
-        add(turn)
-        doc.liveTurnID = turn.id
-        doc.requestStarted = Date()
-        doc.engine = nil
-        llm.lastActivity = Date()
-        let inline = llm.model(key)?.reasoningParser == nil
-        doc.task = Task { @MainActor [weak self, weak doc] in
-            guard let doc else { return }
-            var acc = ReplyAccumulator(inlineThinking: inline)
-            var lastPublish = Date.distantPast
-            var thinkStart: Date?
-            var thinkEnd: Date?
-            @MainActor func publish() {
-                doc.transcript.update(turn.id) { t in
-                    t.text = acc.content
-                    t.reasoning = acc.reasoning.isEmpty ? nil : acc.reasoning
-                    t.toolCalls = acc.tools.calls
-                    t.stats = acc.stats
-                    if let s = thinkStart { t.thinkingSeconds = (thinkEnd ?? Date()).timeIntervalSince(s) }
-                }
-            }
-            do {
-                for try await e in client.chat.stream(request) {
-                    acc.add(e)
-                    switch e {
-                    case .status(let s): doc.engine = s
-                    case .reasoning: if thinkStart == nil { thinkStart = Date() }; doc.engine = nil
-                    case .content, .toolCall:
-                        if thinkStart != nil, thinkEnd == nil { thinkEnd = Date() }
-                        doc.engine = nil
-                    default: break
-                    }
-                    if Date().timeIntervalSince(lastPublish) > 0.05 {
-                        lastPublish = Date()
-                        publish()
-                    }
-                }
-                acc.finish()
-                publish()
-            } catch {
-                acc.finish()
-                publish()
-                let message = (error is CancellationError || Task.isCancelled) ? "Stopped" : error.localizedDescription
-                doc.transcript.update(turn.id) { $0.error = message }
-            }
-            doc.liveTurnID = nil
-            doc.engine = nil
-            doc.task = nil
-            doc.transcript.updated = Date()
-            self?.saveChat(doc)
-            await self?.llm.refreshStatus(key)
-        }
+        // A plain chat: the chat tools (questions, widgets) when the model calls tools, in the project-less library.
+        let root = library.root
+        runAgent(doc, key: key, client: client, setup: AgentSetup(tools: [], root: root) { "" }, add: add)
     }
 
     // MARK: attachments
 
-    /// Adds files to the message being written: images (resized to at most 1536 px, saved with the chat as JPEG)
-    /// and text files up to 256 KB. Returns why any were left out.
+    /// Adds files to the message being written: images (resized to at most 1536 px, saved with the chat as JPEG),
+    /// videos (made smaller in the background, see `saveVideo`) and text files up to 256 KB. Returns why any were left
+    /// out.
     @discardableResult
     func attach(_ urls: [URL], to doc: ChatDocument) -> String? {
         var skipped: [String] = []
         let folder = chatStore.filesFolder(doc.id)
         for url in urls {
             let ext = url.pathExtension.lowercased()
-            if ["png", "jpg", "jpeg", "heic", "webp", "gif", "tiff", "bmp"].contains(ext) {
+            if Self.videoExtensions.contains(ext) {
+                doc.preparingVideos += 1
+                Task { @MainActor [weak doc] in
+                    let result = await Self.saveVideo(url, into: folder)
+                    guard let doc else { return }
+                    doc.preparingVideos -= 1
+                    switch result {
+                    case .success(let name): doc.pending.append(.image(name))
+                    case .failure(let e): doc.attachNote = "Couldn't attach \(url.lastPathComponent): \(e.localizedDescription)"
+                    }
+                }
+            } else if ["png", "jpg", "jpeg", "heic", "webp", "gif", "tiff", "bmp"].contains(ext) {
                 guard let name = Self.saveImage(url, into: folder) else { skipped.append(url.lastPathComponent); continue }
                 doc.pending.append(.image(name))
             } else if let data = try? Data(contentsOf: url), data.count <= 256 * 1024,
@@ -256,7 +278,7 @@ extension AppModel {
             }
         }
         return skipped.isEmpty ? nil
-            : "Left out \(skipped.joined(separator: ", ")): only images and text files up to 256 KB can be attached."
+            : "Left out \(skipped.joined(separator: ", ")): only images, videos and text files up to 256 KB can be attached."
     }
 
     static func saveImage(_ url: URL, into folder: URL) -> String? {
@@ -273,6 +295,30 @@ extension AppModel {
         return CGImageDestinationFinalize(dest) ? name : nil
     }
 
+    /// The URL each attachment of the sent branch goes to the model as: images as data URLs, videos uploaded to the GPU
+    /// server first (once: uploads are content-addressed) as `upload:<name>`. A model without vision gets neither.
+    func mediaURLs(_ transcript: ChatTranscript, doc: ChatDocument, vision: Bool,
+                   client: LLMServerClient) async throws -> [String: String] {
+        guard vision else { return [:] }
+        let folder = chatStore.filesFolder(doc.id)
+        var out: [String: String] = [:]
+        for name in transcript.attachments where out[name] == nil {
+            let file = folder.appendingPathComponent(name)
+            if ChatTurn.isVideo(name) {
+                guard FileManager.default.fileExists(atPath: file.path) else { continue }
+                doc.engine = EngineStatus(state: "starting", phase: "Uploading video")
+                out[name] = try await client.uploadMedia(file) { [weak doc] sent, total, _ in
+                    let p = total > 0 ? Double(sent) / Double(total) : nil
+                    Task { @MainActor in doc?.engine = EngineStatus(state: "starting", phase: "Uploading video", progress: p) }
+                }
+                doc.engine = nil
+            } else {
+                out[name] = Self.imageDataURL(file)
+            }
+        }
+        return out
+    }
+
     static func imageDataURL(_ url: URL) -> String? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return "data:image/jpeg;base64," + data.base64EncodedString()
@@ -281,6 +327,7 @@ extension AppModel {
     func stopReply(_ doc: ChatDocument) {
         doc.task?.cancel()
         if doc.permission != nil { doc.answer(.deny) }
+        if doc.question != nil { doc.answerQuestion(nil) }
     }
 
     // MARK: the coding agent
@@ -290,15 +337,27 @@ extension AppModel {
     func runAgent(_ doc: ChatDocument, key: LLMKey, client: LLMServerClient, setup: AgentSetup,
                   add: @escaping (ChatTurn) -> Void) {
         let vision = llm.model(key)?.vision == true
-        let folder = chatStore.filesFolder(doc.id)
-        let history = doc.transcript.messages { name in vision ? Self.imageDataURL(folder.appendingPathComponent(name)) : nil }
-        var config = AgentConfig(model: key.modelID, tools: setup.tools, mode: doc.mode, rules: doc.rules)
+        let sent = doc.transcript  // the branch as it is now, before the reply's turns
+        // Models without a tool parser can't take tools (vLLM refuses them): no chat tools, nothing said about them.
+        let callsTools = llm.model(key)?.toolParser != nil
+        let plain = setup.tools.isEmpty
+        var config = AgentConfig(model: key.modelID, tools: setup.tools + (callsTools ? ChatTools.all : []),
+                                 mode: doc.mode, rules: doc.rules)
         config.reasoningEffort = doc.transcript.reasoningEffort
         config.inlineThinking = llm.model(key)?.reasoningParser == nil
         config.vision = vision
         let ctx = ToolContext(root: setup.root)
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
+        }
+        ctx.askUser = { [weak doc] callID, questions in
+            await withCheckedContinuation { cont in
+                Task { @MainActor in
+                    guard let doc else { cont.resume(returning: nil); return }
+                    doc.question = PendingQuestion(callID: callID, questions: questions)
+                    doc.questionAnswer = cont
+                }
+            }
         }
         doc.requestStarted = Date()
         doc.engine = nil
@@ -311,8 +370,14 @@ extension AppModel {
         doc.task = Task { @MainActor [weak self, weak doc] in
             guard let doc else { return }
             @MainActor func publish() { st.publish(into: doc) }
-            let system = await setup.system()
+            // One system message: the chat's own prompt, the agent's, and the chat features.
+            let own = await setup.system()
+            let system = plain ? ChatPrompt.system(user: sent.systemPrompt, tools: callsTools)
+                : [sent.systemPrompt ?? "", own, ChatPrompt.section(tools: callsTools)]
+                    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
             do {
+                let media = try await self?.mediaURLs(sent, doc: doc, vision: vision, client: client) ?? [:]
+                let history = sent.messages(system: false) { media[$0] }
                 let outcome = try await AgentLoop.run(
                     client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
                     ask: { [weak doc] request in
@@ -373,6 +438,7 @@ extension AppModel {
                                     doc.transcript.update(t.id) {
                                         $0.text = output.text
                                         $0.toolStatus = status.rawValue
+                                        if let detail = output.detail { $0.toolDetail = detail }
                                     }
                                 }
                                 doc.todos = ctx.todos
@@ -393,6 +459,7 @@ extension AppModel {
                 }
             }
             if doc.permission != nil { doc.answer(.deny) }
+            if doc.question != nil { doc.answerQuestion(nil) }
             setup.finished()
             doc.liveTurnID = nil
             doc.engine = nil
@@ -465,8 +532,10 @@ final class AgentRunState: @unchecked Sendable {
 
     @MainActor func publish(into doc: ChatDocument) {
         let acc = acc, start = thinkStart, end = thinkEnd
+        let (text, followUps) = FollowUps.split(acc.content, streaming: !acc.finished)
         doc.transcript.update(turn) { t in
-            t.text = acc.content
+            t.text = text
+            t.followUps = followUps.isEmpty ? nil : followUps
             t.reasoning = acc.reasoning.isEmpty ? nil : acc.reasoning
             t.toolCalls = acc.tools.calls
             t.stats = acc.stats

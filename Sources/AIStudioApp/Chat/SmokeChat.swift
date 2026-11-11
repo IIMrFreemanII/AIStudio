@@ -1,7 +1,9 @@
+import AVFoundation
 import Agent
 import AppKit
 import Foundation
 import LLMClient
+import SwiftUI
 
 extension SmokeTest {
     /// `--smoke-chat <url> [--smoke-token-file <file>] [--llm <link or id>] [--prompt <text>]`: adds the GPU server,
@@ -58,6 +60,18 @@ extension SmokeTest {
         // Two messages: the second checks the history goes along.
         let doc = model.newChat(model: key)
         var ok = true
+        // A real model may ask a question card at any step: answered with each question's first option (and said),
+        // except in the live run's own question step.
+        let answerer = fake ? nil : Task { @MainActor in
+            while !Task.isCancelled {
+                if let q = doc.question, !liveOwnsQuestions {
+                    say("(it asked: \(q.questions.map { "\($0.label): \($0.options.map(\.label).joined(separator: " | "))" }.joined(separator: "; ")) — answering the first options)")
+                    doc.answerQuestion(q.questions.map { UserAnswer(picked: [$0.options[0].label]) })
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+            }
+        }
+        defer { answerer?.cancel() }
         for (n, text) in [prompt, "and once more"].enumerated() {
             doc.draft = text
             model.send(doc)
@@ -73,6 +87,9 @@ extension SmokeTest {
                 + "\(s?.tokPerSec.map { String(format: "%.0f tok/s", $0) } ?? "? tok/s"), "
                 + "first token \(s?.ttftMs.map { String(format: "%.1f s", $0 / 1000) } ?? "?"), "
                 + "\(s?.costUSD.map { String(format: "$%.4f", $0) } ?? "$?")")
+            let tools = doc.transcript.turns.suffix(from: max(0, doc.transcript.turns.lastIndex { $0.role == .user } ?? 0))
+                .flatMap(\.toolCalls).map(\.name)
+            if !tools.isEmpty { say("  tools: \(tools.joined(separator: ", "))") }
             if reply.text.isEmpty { say("empty reply"); ok = false }
             if s == nil { say("no stats"); ok = false }
             if fake {
@@ -153,6 +170,33 @@ extension SmokeTest {
         let withFiles = await waitReply()
         if fake, withFiles?.text.contains("the note says 42") != true { say("the file didn't reach the model"); ok = false }
         if doc.transcript.turns.dropLast().last?.images.count != 1 { say("the image isn't on the message"); ok = false }
+        // A video (models with vision): made smaller on this Mac, uploaded, and read by the engine from the uploads.
+        if llm.model(key)?.vision == true {
+            let mov = tmp.appendingPathComponent("smoke-clip.mov")
+            if await writeTestVideo(to: mov) {
+                model.attach([mov], to: doc)
+                for _ in 0..<600 where doc.preparingVideos > 0 { try? await Task.sleep(for: .milliseconds(50)) }
+                let video = doc.pending.compactMap { if case .image(let n) = $0, ChatTurn.isVideo(n) { return n }; return nil }.first
+                if let video {
+                    let file = model.chatStore.filesFolder(doc.id).appendingPathComponent(video)
+                    if !FileManager.default.fileExists(atPath: AppModel.posterURL(file).path) { say("no poster frame"); ok = false }
+                    doc.draft = "what happens in it?"
+                    model.send(doc)
+                    let watched = await waitReply()
+                    if !fake { say("video reply: \((watched?.text.isEmpty == false ? watched?.text : watched?.error) ?? "none")") }
+                    if fake, watched?.text.hasSuffix("[1 video]") != true {
+                        say("the video didn't reach the engine: \(watched?.text ?? watched?.error ?? "no reply")"); ok = false
+                    }
+                    say("video: \(video.prefix(12))… \((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize).map { "\($0 / 1024) KB" } ?? "?")")
+                } else {
+                    say("video not attached: \(doc.attachNote ?? "?")"); ok = false
+                }
+            } else {
+                say("couldn't write a test video"); ok = false
+            }
+        }
+        if fake { ok = await runInteractive(model, doc: doc, waitReply: waitReply, say: say) && ok }
+        else if CommandLine.arguments.contains("--interactive") { ok = await runLive(model, doc: doc, waitReply: waitReply, say: say) && ok }
         let shown = doc.transcript.turns.count
         say("branches and attachments: \(doc.transcript.nodes.count) turns, \(shown) shown")
 
@@ -338,5 +382,187 @@ extension SmokeTest {
         model.deleteChat(chat.id)
         say(ok ? "OK" : "FAILED")
         return ok
+    }
+
+    /// Two seconds of a moving square (H.264, 1280×720, 10 fps).
+    static func writeTestVideo(to url: URL) async -> Bool {
+        try? FileManager.default.removeItem(at: url)
+        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return false }
+        let (w, h) = (1280, 720)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: w, AVVideoHeightKey: h])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: w, kCVPixelBufferHeightKey as String: h])
+        writer.add(input)
+        guard writer.startWriting() else { return false }
+        writer.startSession(atSourceTime: .zero)
+        for i in 0..<20 {
+            while !input.isReadyForMoreMediaData { try? await Task.sleep(for: .milliseconds(5)) }
+            guard let pool = adaptor.pixelBufferPool else { return false }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+            guard let buffer else { return false }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+            let row = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0..<h {
+                for x in 0..<w {
+                    let inside = abs(x - 100 - i * 50) < 80 && abs(y - h / 2) < 80
+                    let px = base + y * row + x * 4
+                    px[0] = inside ? 40 : 200; px[1] = inside ? 40 : 120; px[2] = inside ? 230 : 30; px[3] = 255
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(i), timescale: 10))
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        return writer.status == .completed
+    }
+
+    /// The chat tools with the fake engine: a question card answered by clicking and by typing, a widget (its page
+    /// in a real web view: height, state, fetch blocked), follow-up chips, and a quoted reply.
+    static func runInteractive(_ model: AppModel, doc: ChatDocument, waitReply: () async -> ChatTurn?,
+                               say: (String) -> Void) async -> Bool {
+        var ok = true
+        func waitQuestion() async -> PendingQuestion? {
+            for _ in 0..<300 where doc.question == nil && doc.isStreaming { try? await Task.sleep(for: .milliseconds(50)) }
+            return doc.question
+        }
+        // A question, answered on its card.
+        model.sendText(doc, "ask me which database")
+        if let q = await waitQuestion() {
+            if q.questions.first?.label != "Database" { say("question: \(q.questions)"); ok = false }
+            doc.answerQuestion([UserAnswer(picked: ["Postgres"])])
+            let reply = await waitReply()
+            if reply?.text != "Done: The user answered: Database: Postgres" { say("answered: \(reply?.text ?? "none")"); ok = false }
+            let card = doc.transcript.turns.last { $0.role == .tool }
+            if card?.toolDetail != "Database: Postgres" || card?.toolStatus != "done" {
+                say("question card: \(card?.toolDetail ?? "none") \(card?.toolStatus ?? "")"); ok = false
+            }
+        } else { say("no question card"); ok = false }
+        // Answered by typing in the composer: "Other".
+        model.sendText(doc, "ask me again")
+        if await waitQuestion() != nil {
+            doc.draft = "a flat file"
+            model.send(doc)
+            let reply = await waitReply()
+            if reply?.text.contains("Other: \"a flat file\"") != true { say("typed answer: \(reply?.text ?? "none")"); ok = false }
+        } else { say("no second question card"); ok = false }
+        // A widget: the call, and its page in a web view (the real one, offscreen).
+        model.sendText(doc, "show a widget")
+        let widget = await waitReply()
+        let call = doc.transcript.turns.flatMap(\.toolCalls).last { $0.name == "show_widget" }
+        if call == nil || widget?.text.hasPrefix("Done: Shown to the user") != true {
+            say("widget: \(widget?.text ?? "none")"); ok = false
+        }
+        let page = await probeWidget("""
+            <p id="x">probe</p><script>
+            fetch("https://example.com/").then(() => aistudio.reportState({fetch: "allowed"}),
+                                               () => aistudio.reportState({fetch: "blocked"}));
+            </script>
+            """)
+        if page.height == nil || page.height! >= 300 { say("the widget's height: \(page.height.map { "\($0)" } ?? "none")"); ok = false }
+        if page.state != "{\"fetch\":\"blocked\"}" { say("widget fetch: \(page.state ?? "no state")"); ok = false }
+        // Its state goes with the next message.
+        if let id = call?.id { doc.widgetStates[id] = "{\"strength\":0.5}" }
+        // Follow-ups.
+        model.sendText(doc, "suggest something")
+        let suggested = await waitReply()
+        if suggested?.followUps != ["Tell me more", "Show an example"] || suggested?.text.hasPrefix("You said: suggest something") != true || suggested?.text.contains("<followups") == true {
+            say("follow-ups: \(suggested?.followUps ?? []) in \(suggested?.text ?? "none")"); ok = false
+        }
+        let sentTurn = doc.transcript.turns.last { $0.role == .user }
+        if sentTurn?.context?.contains("[Widget \"Strength\" state: {\"strength\":0.5}]") != true {
+            say("widget state not sent: \(sentTurn?.context ?? "none")"); ok = false
+        }
+        // A quoted reply.
+        if let s = suggested { model.quote(doc, "You said", from: s) }
+        doc.draft = "why that?"
+        model.send(doc)
+        let quoted = await waitReply()
+        if quoted?.text.contains("> You said") != true || doc.transcript.turns.dropLast().last?.quote == nil {
+            say("quote: \(quoted?.text ?? "none")"); ok = false
+        }
+        say("interactive: question cards, widget (height \(page.height.map { "\(Int($0))" } ?? "?"), \(page.state ?? "-")), follow-ups, quote")
+        return ok
+    }
+
+    /// The live run is answering a question card itself (the run's answerer leaves it alone).
+    @MainActor static var liveOwnsQuestions = false
+
+    /// `--interactive` with a real model: what it does with the chat tools. Reports more than it checks (a model may
+    /// word things its own way): a question card (answered with each question's first option), a widget (its page
+    /// loaded in a real web view), follow-ups and a quoted reply.
+    static func runLive(_ model: AppModel, doc: ChatDocument, waitReply: () async -> ChatTurn?,
+                        say: (String) -> Void) async -> Bool {
+        var ok = true
+        liveOwnsQuestions = true
+        defer { liveOwnsQuestions = false }
+        func clip(_ s: String?, _ n: Int = 300) -> String { (s ?? "none").replacingOccurrences(of: "\n", with: " ").prefix(n).description }
+        // A question card.
+        model.sendText(doc, "I want to build a small note-taking app. Before suggesting anything, ask me which platform and which storage I prefer.")
+        for _ in 0..<6000 where doc.question == nil && doc.isStreaming { try? await Task.sleep(for: .milliseconds(100)) }
+        if let q = doc.question {
+            for x in q.questions { say("asked: \(x.label): \(x.question) [\(x.options.map(\.label).joined(separator: " | "))]\(x.multiSelect ? " (multi)" : "")") }
+            doc.answerQuestion(q.questions.map { UserAnswer(picked: [$0.options[0].label]) })
+            let r = await waitReply()
+            say("after the answer: \(clip(r?.text)) · follow-ups: \(r?.followUps ?? [])")
+        } else {
+            let r = doc.transcript.turns.last
+            say("no question card; it said: \(clip(r?.text)) \(r?.error ?? "")"); ok = false
+        }
+        liveOwnsQuestions = false  // later questions: the answerer
+        // A widget.
+        model.sendText(doc, "Show me an interactive widget: a slider for a LoRA strength from 0 to 1 and a Chart.js bar chart (from a CDN) of how much of the style is kept at a few strengths, with the current one highlighted. Add a button that asks you to explain the current value.")
+        let w = await waitReply()
+        if let call = doc.transcript.turns.flatMap(\.toolCalls).last(where: { $0.name == "show_widget" }),
+           let args = try? ToolArgs(json: call.arguments), let html = args.string("html") {
+            say("widget \"\(args.string("title") ?? "?")\": \(html.count) chars, CDN: \(WidgetPage.cdnHosts.filter { html.contains($0) }), "
+                + "sendPrompt: \(html.contains("sendPrompt")), reportState: \(html.contains("reportState")), theme vars: \(html.contains("--mg-"))")
+            let probe = await probeWidget(html + """
+                <script>addEventListener("load", function () { setTimeout(function () {
+                  aistudio.reportState({ chart: typeof Chart, canvases: document.querySelectorAll("canvas").length,
+                                         errors: (window.__errs || []).slice(0, 3) }); }, 1500); });
+                </script>
+                """, errorsFirst: true)
+            say("widget page: height \(probe.height.map { "\(Int($0))" } ?? "none"), \(probe.state ?? "no state")")
+            if probe.height == nil { ok = false }
+            say("then: \(clip(w?.text, 200))")
+        } else {
+            say("no widget; it said: \(clip(w?.text)) \(w?.error ?? "")"); ok = false
+        }
+        // A quoted reply.
+        if let last = doc.transcript.turns.last(where: { $0.role == .assistant && !$0.text.isEmpty }) {
+            let passage = String(last.text.prefix(80))
+            model.quote(doc, passage, from: last)
+            doc.draft = "Explain this part in one sentence."
+            model.send(doc)
+            let r = await waitReply()
+            say("quote \"\(clip(passage, 60))\" → \(clip(r?.text, 200))")
+        }
+        return ok
+    }
+
+    /// Loads a widget page in `WidgetWebView` in an offscreen window; returns its first height and state reports.
+    /// `errorsFirst` collects the page's script errors in `window.__errs` (for the live run to report).
+    static func probeWidget(_ html: String, errorsFirst: Bool = false) async -> (height: CGFloat?, state: String?) {
+        final class Box { var height: CGFloat?; var state: String? }
+        let box = Box()
+        let page = errorsFirst ? """
+            <script>window.__errs = []; addEventListener("error", function (e) {
+              window.__errs.push(String(e.message || (e.target && (e.target.src || e.target.href)) || e)); }, true);</script>
+            """ + html : html
+        let view = WidgetWebView(html: page, title: "probe", onHeight: { box.height = $0 }, onState: { box.state = $0 })
+        let window = NSWindow(contentRect: NSRect(x: -3000, y: -3000, width: 600, height: 300), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.contentView = NSHostingView(rootView: view.frame(width: 600, height: 300))
+        window.orderFrontRegardless()
+        for _ in 0..<(errorsFirst ? 400 : 200) where box.height == nil || box.state == nil || (errorsFirst && !(box.state ?? "").contains("canvases")) {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        window.orderOut(nil)
+        return (box.height, box.state)
     }
 }

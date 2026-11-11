@@ -241,6 +241,16 @@ public struct LLMServerClient: Sendable {
 
     public var chat: OpenAIChatClient { OpenAIChatClient(http: http) }
 
+    /// Uploads a chat's video unless the server has it (resumable; the file's name must be `<sha256>.<ext>`, as the
+    /// app saves them) and returns the URL a message uses for it: `upload:<name>`.
+    public func uploadMedia(_ file: URL,
+                            progress: (@Sendable (_ sent: Int64, _ total: Int64, _ start: Int64) -> Void)? = nil)
+        async throws -> String {
+        let bytes = (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
+        _ = try await http.upload(name: file.lastPathComponent, file: file, bytes: bytes, progress: progress)
+        return "upload:" + file.lastPathComponent
+    }
+
     public func inspect(url: String, hfToken: String? = nil, civitaiToken: String? = nil, context: Int? = nil,
                         quant: String? = nil) async throws -> LLMInspection {
         var body: [String: JSONValue] = ["url": .string(url)]

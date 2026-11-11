@@ -36,18 +36,21 @@ public enum JSONValue: Codable, Equatable, Sendable, Hashable {
     public var number: Double? { if case .number(let n) = self { return n }; return nil }
 }
 
-/// A part of a user message: text, or an image (a `data:` URL or an http one).
+/// A part of a user message: text, an image (a `data:` URL or an http one) or a video (`upload:<name>`, a file
+/// uploaded to the GPU server first, or an http URL).
 public enum ContentPart: Codable, Equatable, Sendable, Hashable {
     case text(String)
     case image(url: String)
+    case video(url: String)
 
-    enum CodingKeys: String, CodingKey { case type, text, image_url }
+    enum CodingKeys: String, CodingKey { case type, text, image_url, video_url }
     struct ImageURL: Codable { var url: String }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(String.self, forKey: .type) {
         case "image_url": self = .image(url: try c.decode(ImageURL.self, forKey: .image_url).url)
+        case "video_url": self = .video(url: try c.decode(ImageURL.self, forKey: .video_url).url)
         default: self = .text(try c.decodeIfPresent(String.self, forKey: .text) ?? "")
         }
     }
@@ -61,6 +64,9 @@ public enum ContentPart: Codable, Equatable, Sendable, Hashable {
         case .image(let url):
             try c.encode("image_url", forKey: .type)
             try c.encode(ImageURL(url: url), forKey: .image_url)
+        case .video(let url):
+            try c.encode("video_url", forKey: .type)
+            try c.encode(ImageURL(url: url), forKey: .video_url)
         }
     }
 }
@@ -128,8 +134,8 @@ public struct ChatMessage: Encodable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(role, forKey: .role)
-        // Plain text as a string (every server takes that); images need the list form.
-        if parts.contains(where: { if case .image = $0 { return true }; return false }) {
+        // Plain text as a string (every server takes that); images and videos need the list form.
+        if parts.contains(where: { if case .text = $0 { return false }; return true }) {
             try c.encode(parts, forKey: .content)
         } else {
             try c.encode(text, forKey: .content)
@@ -209,6 +215,14 @@ public struct EngineStatus: Codable, Equatable, Sendable {
     public var progress: Double?
     public var gpu: String?
     public var count: Int?
+
+    public init(state: String, phase: String? = nil, progress: Double? = nil, gpu: String? = nil, count: Int? = nil) {
+        self.state = state
+        self.phase = phase
+        self.progress = progress
+        self.gpu = gpu
+        self.count = count
+    }
 }
 
 /// What a request took (`event: aistudio.usage`, sent before `[DONE]`).

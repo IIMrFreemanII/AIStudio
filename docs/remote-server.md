@@ -442,6 +442,25 @@ own container behind the front desk's `/v1/llm/…` routes (same proxy token; `G
   and linear-attention models need a state slot per request (Qwen FP8 on one B200 has room for 761, not vLLM's
   default 1024). Change it later in Servers › the model's settings (it
   takes effect at the next start; **Save and Restart** applies it now), or `PATCH /v1/llm/models/<id>`.
+- **Images and videos** (models with vision): attach them to a message (paperclip, or drop them on the chat).
+  Images are resized to at most 1536 px and sent with each message. Videos (`.mp4`, `.mov`, `.m4v`) are
+  re-encoded on the Mac to at most 960×540 and 10 minutes, then uploaded once to the server's uploads
+  (`PUT /v1/files/<sha256>.mp4`, the volume the image and video jobs use). Messages point at the upload
+  (`{"type": "video_url", "video_url": {"url": "upload:<sha256>.mp4"}}`), so a video isn't sent again with every
+  message. The front desk turns that into a `file:///uploads/…` URL, which vLLM reads from the uploads volume
+  (`--allowed-local-media-path`) and samples frames from. llama.cpp models take images only.
+- **Questions, widgets, follow-ups, replies:** every chat runs the agent loop. Models with a tool parser get two
+  chat tools, which every permission mode allows:
+  - `ask_user`: a question card with options and an "Other" field. The reply waits for your answer, and typing in
+    the composer answers "Other".
+  - `show_widget`: HTML/JS drawn in a sandboxed web view. Scripts and styles come only from cdnjs, jsdelivr or
+    unpkg, enforced by a CSP that's parsed first plus a WebKit content rule list. There's no fetch and no other
+    sites. `aistudio.sendPrompt` and `aistudio.reportState` talk back, and the reported state goes with your next
+    message.
+
+  The system prompt asks for a trailing `<followups>` block, which the app shows as chips. **Reply** (a message's
+  button, a code block's button, or a selection › right-click › Reply with Selection) quotes the passage in your
+  next message.
 - **Warm while you chat:** the first message starts the container (the chat shows *Waiting for a GPU*, then *Loading
   weights 41%*). While a chat with that model is in front, the app is active and you used it in the last 10 minutes,
   it sends a keepalive every minute. The container stops `AISTUDIO_LLM_IDLE` seconds (default 180) after the last

@@ -115,6 +115,13 @@ struct CodeBlockView: View {
                         .font(.mgFootnote)
                 }
                 .buttonStyle(.mg(.borderless))
+                if ChatQuoting.active {
+                    Button { ChatQuoting.post(code) } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left").font(.mgFootnote)
+                    }
+                    .buttonStyle(.mg(.borderless))
+                    .mgHelp("Reply to this code")
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
