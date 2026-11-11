@@ -64,8 +64,8 @@ public struct ImageScaleNode: NodeImplementation {
             InputSpec("image", .image),
             // > 0 wins over width/height.
             InputSpec("factor", .float, default: .double(1.5), widget: .number(min: 0, max: 4, step: 0.25)),
-            InputSpec("width", .int, default: .int(0), widget: .number(min: 0, max: 4096, step: 16)),
-            InputSpec("height", .int, default: .int(0), widget: .number(min: 0, max: 4096, step: 16)),
+            InputSpec("width", .int, default: .int(0), widget: .number(min: 0, max: 4096, step: 16), zeroLabel: "auto"),
+            InputSpec("height", .int, default: .int(0), widget: .number(min: 0, max: 4096, step: 16), zeroLabel: "auto"),
         ],
         outputs: [OutputSpec("image", .image)])
     public init() {}

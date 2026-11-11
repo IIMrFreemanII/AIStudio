@@ -71,7 +71,6 @@ struct ChatHeader: View {
                     effortMenu
                 }
                 HStack(spacing: 8) {
-                    engineItems
                     CodingHeaderItems(doc: doc)
                     Spacer(minLength: 4)
                     cost
@@ -82,7 +81,6 @@ struct ChatHeader: View {
         } else {
             HStack(spacing: 10) {
                 modelMenu
-                engineItems
                 CodingHeaderItems(doc: doc)
                 Spacer(minLength: 8)
                 effortMenu
@@ -93,10 +91,13 @@ struct ChatHeader: View {
         }
     }
 
+    /// The model and its GPU in one control: name and engine state in the label; switching models, starting and
+    /// shutting down in the menu.
     @ViewBuilder var modelMenu: some View {
         let llm = model.llm
         let key = doc.modelKey
         let m = key.flatMap { llm.model($0) }
+        let chip = key.map { EngineChip(status: engineStatus($0), model: m, streaming: doc.isStreaming, plain: true) }
             MGMenuButton(kind: .bordered) {
                 if llm.models.isEmpty {
                     MGMenuItem.header("No models yet")
@@ -113,39 +114,38 @@ struct ChatHeader: View {
                         }
                     }
                 }
+                if let key {
+                    MGMenuItem.divider
+                    if llm.status(key)?.isActive == true {
+                        MGMenuItem.button("Shut the GPU Down Now", icon: "power") { Task { await llm.stop(key) } }
+                    } else {
+                        MGMenuItem.button("Start the Model Now", icon: "play") { Task { await llm.warm(key) } }
+                    }
+                }
                 MGMenuItem.divider
                 MGMenuItem.button("Add a Model from a Link…", icon: "link") { model.llmAddRequest = LLMAddRequest() }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "cpu").foregroundStyle(MG.secondaryLabel)
                     Text(m?.name ?? doc.transcript.modelID ?? "Choose a model").lineLimit(1)
+                    if let chip {
+                        Rectangle().fill(MG.separator).frame(width: 1, height: 14)
+                        chip
+                    }
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
                 }
             }
-            .mgHelp("The model this chat talks to")
+            .mgHelp(chip.map { "The model this chat talks to. " + $0.helpText } ?? "The model this chat talks to")
     }
 
-    @ViewBuilder var engineItems: some View {
+    /// The engine's state: the reply stream's status lines while it streams, else the server's.
+    func engineStatus(_ key: LLMKey) -> LLMStatus? {
         let llm = model.llm
-        let key = doc.modelKey
-        let m = key.flatMap { llm.model($0) }
-            if let key {
-                EngineChip(status: doc.engine.map { e in
-                               var st = LLMStatus(state: e.state, phase: e.phase, progress: e.progress)
-                               st.coldStart = llm.status(key)?.coldStart  // the stream's status lines don't carry it
-                               return st
-                           } ?? llm.status(key), model: m, streaming: doc.isStreaming)
-                let st = llm.status(key)
-                if st?.isActive == true {
-                    Button { Task { await llm.stop(key) } } label: { Image(systemName: "power") }
-                        .buttonStyle(.mg(.icon))
-                        .mgHelp("Shut the GPU down now (it also stops by itself a few minutes after the last message)")
-                } else {
-                    Button { Task { await llm.warm(key) } } label: { Image(systemName: "play.fill") }
-                        .buttonStyle(.mg(.icon))
-                        .mgHelp("Start the model now, so the first message doesn't wait for it")
-                }
-            }
+        return doc.engine.map { e in
+            var st = LLMStatus(state: e.state, phase: e.phase, progress: e.progress)
+            st.coldStart = llm.status(key)?.coldStart  // the stream's status lines don't carry it
+            return st
+        } ?? llm.status(key)
     }
 
     @ViewBuilder var effortMenu: some View {
@@ -164,9 +164,9 @@ struct ChatHeader: View {
 
     @ViewBuilder var cost: some View {
             if doc.transcript.costUSD > 0 {
-                Text(String(format: "$%.3f", doc.transcript.costUSD))
+                Text(String(format: "This chat $%.3f", doc.transcript.costUSD))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
-                    .mgHelp("GPU time this chat's replies used")
+                    .mgHelp("The GPU time this chat's replies used. The model's figure is the GPU's whole warm period, for every chat.")
             }
     }
 }
@@ -176,10 +176,24 @@ struct EngineChip: View {
     let status: LLMStatus?
     let model: LLMModel?
     var streaming = false
+    /// Inside another control's label: no capsule of its own and no tooltip (the control shows `helpText`).
+    var plain = false
+
+    var helpText: String { help(status?.state ?? "cold") }
 
     var body: some View {
+        if plain { content } else {
+            content
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(Capsule().fill(MG.fill))
+                .mgHelp(helpText)
+        }
+    }
+
+    var content: some View {
         let s = status?.state ?? "cold"
-        HStack(spacing: 6) {
+        return HStack(spacing: 6) {
             switch s {
             case "starting", "loading":
                 MGSpinner().controlSize(.mini)
@@ -195,10 +209,6 @@ struct EngineChip: View {
                 MGProgress(value: p).frame(width: 60, height: 4)
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 24)
-        .background(Capsule().fill(MG.fill))
-        .mgHelp(help(s))
     }
 
     func label(_ s: String) -> String {
@@ -210,7 +220,7 @@ struct EngineChip: View {
             return (status?.phase ?? "Loading") + usually
         case "ready":
             var parts = [streaming ? "Generating" : "Ready", gpu]
-            if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f", c)) }
+            if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
             return parts.filter { !$0.isEmpty }.joined(separator: " · ")
         case "failed": return "Failed to start"
         default: return gpu.isEmpty ? "Cold" : "Cold · \(gpu)"
@@ -797,7 +807,7 @@ struct ChatComposer: View {
                 .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.controlBackground))
                 .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous), color: MG.border)
                 if doc.isStreaming && !(doc.question != nil && !doc.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                    Button { model.stopReply(doc) } label: { Image(systemName: "stop.fill") }
+                    Button { model.stopReply(doc) } label: { Label("Stop", systemImage: "stop.fill").labelStyle(.titleAndIcon) }
                         .buttonStyle(.mg(.bordered))
                         .controlSize(.large)
                         .mgHelp("Stop the reply")

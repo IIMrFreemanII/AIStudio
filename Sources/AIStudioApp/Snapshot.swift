@@ -258,7 +258,7 @@ enum Snapshot {
         var r1 = ChatTurn(role: .tool, text: "Edited Sources/todo/List.swift (+6 −1).", toolCallID: "c1")
         r1.toolTitle = "Edit Sources/todo/List.swift"
         r1.toolStatus = "done"
-        r1.toolDetail = "@@\n struct List: ParsableCommand {\n+    @Flag(help: \"Print JSON instead of a table.\")\n+    var json = false\n+\n     func run() throws {\n-        print(table(items))\n+        if json {\n+            print(try String(decoding: JSONEncoder().encode(items), as: UTF8.self))\n+        } else { print(table(items)) }\n     }"
+        r1.toolDetail = "@@ -12,5 +12,10 @@\n struct List: ParsableCommand {\n+    @Flag(help: \"Print JSON instead of a table.\")\n+    var json = false\n+\n     func run() throws {\n-        print(table(items))\n+        if json {\n+            print(try String(decoding: JSONEncoder().encode(items), as: UTF8.self))\n+        } else { print(table(items)) }\n     }"
         t.append(r1)
         var r2 = ChatTurn(role: .tool, text: "exit status 0\nBuilding for debugging...\nBuild complete! (4.21s)", toolCallID: "c2")
         r2.toolTitle = "Run swift build"
@@ -272,7 +272,7 @@ enum Snapshot {
         var r3 = ChatTurn(role: .tool, text: "", toolCallID: "c3")
         r3.toolTitle = "Create Tests/todoTests/ListJSONTests.swift"
         r3.toolStatus = "running"
-        r3.toolDetail = "@@\n+import XCTest\n+@testable import todo\n+\n+final class ListJSONTests: XCTestCase {\n+    func testJSON() throws { … }\n+}"
+        r3.toolDetail = "@@ -0,0 +1,6 @@\n+import XCTest\n+@testable import todo\n+\n+final class ListJSONTests: XCTestCase {\n+    func testJSON() throws { … }\n+}"
         t.append(r3)
         let doc = ChatDocument(transcript: t)
         doc.liveTurnID = a2.id

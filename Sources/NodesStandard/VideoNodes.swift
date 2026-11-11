@@ -45,7 +45,7 @@ public struct VideoSamplerNode: NodeImplementation {
             InputSpec("latent", .latent),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             // 0 = the model's default schedule.
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 50, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 50, step: 1), zeroLabel: "auto"),
             InputSpec("image", .image, optional: true),
             // fast = the model's distilled few-step mode; full = its original sampler with guidance (Wan only).
             InputSpec("quality", .string, default: .string("fast"), widget: .choice(VideoQuality.allCases.map(\.rawValue))),
@@ -100,7 +100,7 @@ public struct TextToAudioNode: NodeImplementation {
             InputSpec("seconds", .float, default: .double(10), widget: .number(min: 0.5, max: 600, step: 0.5)),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             // 0 = the model's default.
-            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 200, step: 1)),
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 200, step: 1), zeroLabel: "auto"),
         ],
         outputs: [OutputSpec("audio", .audio)])
     public init() {}

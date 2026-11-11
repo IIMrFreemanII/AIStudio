@@ -169,7 +169,16 @@ struct ToolTests {
 
     @Test func diffText() {
         let t = UnifiedDiff.text("a\nb\nc\nd\ne\nf\ng\nh\n", "a\nb\nc\nD\ne\nf\ng\nh\n", context: 1)
-        #expect(t == "@@\n c\n-d\n+D\n e")
+        #expect(t == "@@ -3,3 +3,3 @@\n c\n-d\n+D\n e")
+        // Two distant changes are two hunks, each with its own line numbers; a new file starts at line 1.
+        let two = UnifiedDiff.text("1\n2\n3\n4\n5\n6\n7\n8", "1\nX\n3\n4\n5\n6\nY\n8", context: 0)
+        #expect(two == "@@ -2,1 +2,1 @@\n-2\n+X\n@@ -7,1 +7,1 @@\n-7\n+Y")
+        #expect(UnifiedDiff.text("", "a\nb").hasPrefix("@@ -1,1 +1,2 @@"))
+        // A hunk below the top of the file opens with ⋯; then new-file numbers, old ones for removed lines.
+        let rows = DiffNumbers.rows("@@ -3,3 +3,4 @@\n c\n-d\n+D\n+E\n e")
+        #expect(rows.first?.gap == true)
+        #expect(rows.dropFirst().map(\.number) == [3, 4, 4, 5, 6])
+        #expect(DiffNumbers.rows("@@\n+x").map(\.number) == [nil, nil])  // saved before hunks had numbers
         #expect(UnifiedDiff.counts("", "x\ny") == (2, 1))
     }
 }
