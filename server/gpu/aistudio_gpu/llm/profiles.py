@@ -59,3 +59,49 @@ def kv_dtype_bytes(engine_args: list[str]) -> int:
             value = a.split("=", 1)[1] if "=" in a else (engine_args[i + 1] if i + 1 < len(engine_args) else "")
             return 1 if value.startswith("fp8") else 2
     return 2
+
+
+# MARK: thinking effort
+
+_LEVELS = ["low", "medium", "high"]
+_SWITCH = ["off", "on"]
+_HYBRID = ("qwen3", "glm45", "llama.cpp")
+
+
+def _switch_key(m: dict) -> str | None:
+    """The chat-template argument that turns thinking on or off for a hybrid model, else None."""
+    parser = m.get("reasoningParser")
+    if parser in _HYBRID:
+        return "enable_thinking"
+    if parser == "deepseek_r1":
+        facts = m.get("facts") or {}
+        if str(facts.get("model_type") or "").lower().startswith("deepseek_v3"):
+            # The manifest keeps no chat template, so also go by the V3.1+ names (R1 shares the model type).
+            name = f"{m.get('repo') or ''} {m.get('name') or ''}".lower()
+            if "thinking" in str(facts.get("chat_template") or "") or any(v in name for v in ("v3.1", "v3.2", "v3.5")):
+                return "thinking"
+    return None
+
+
+def efforts(m: dict) -> list[str]:
+    """The thinking levels a model supports, for the app's menu: [] when it can't be controlled."""
+    if m.get("reasoningParser") == "openai_gptoss":
+        return list(_LEVELS)
+    return list(_SWITCH) if _switch_key(m) else []
+
+
+def apply_effort(body: dict, m: dict) -> dict:
+    """Maps body["reasoning_effort"] to the model's own control, in place, and returns body."""
+    effort = body.get("reasoning_effort")
+    if effort is None:
+        return body
+    if m.get("reasoningParser") == "openai_gptoss":
+        body["reasoning_effort"] = {"off": "low", "on": "medium"}.get(effort, effort)
+        return body
+    del body["reasoning_effort"]
+    key = _switch_key(m)
+    if key:
+        kwargs = dict(body.get("chat_template_kwargs") or {})
+        kwargs[key] = effort not in ("off", "low")
+        body["chat_template_kwargs"] = kwargs
+    return body

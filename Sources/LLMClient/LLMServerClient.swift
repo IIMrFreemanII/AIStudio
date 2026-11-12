@@ -31,6 +31,8 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var mtpLayers: Int?
     /// Drafts tokens with those layers (speculative decoding; nil means on when the model has them).
     public var mtp: Bool?
+    /// Thinking levels the model takes ("low"/"medium"/"high", or "off"/"on"); [] can't be controlled; nil: older server.
+    public var efforts: [String]?
 
     public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && engine != "llamacpp" }
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
@@ -57,6 +59,9 @@ public struct LLMStatus: Codable, Equatable, Sendable {
     public var bootSeconds: Double?
     /// The model's last cold start and how long one usually takes.
     public var coldStart: ColdStartSummary?
+    /// Tokens the running engine's KV cache holds, and how many full-context requests fit at once.
+    public var kvTokens: Int?
+    public var maxConcurrency: Double?
 
     public init(state: String, phase: String? = nil, progress: Double? = nil) {
         self.state = state
@@ -140,6 +145,8 @@ public struct GPUOption: Codable, Equatable, Hashable, Sendable {
     public var fits: Bool
     public var usdPerHour: Double
     public var maxContext: Int
+    /// Tokens this option's KV cache holds (not capped at the model's window).
+    public var kvTokens: Int?
     public var weightsPerGPUGB: Double?
     public var kvPerTokenKB: Double?
     public var note: String?
@@ -202,6 +209,8 @@ public struct LLMPlan: Codable, Equatable, Sendable {
     }
 
     public var context: Int
+    /// The model's window, capped at 1,048,576.
+    public var nativeContext: Int?
     public var recommended: GPUOption?
     public var options: [GPUOption]
     public var current: Current
@@ -278,7 +287,11 @@ public struct LLMServerClient: Sendable {
     }
 
     /// An installed model's GPU options again, and its current choice (to change them).
-    public func plan(_ id: String) async throws -> LLMPlan { try await send("v1/llm/models/\(id)/plan", method: "GET", body: nil as String?) }
+    /// With `context`, the server re-plans for that many tokens (`recommended` is the cheapest option that fits).
+    public func plan(_ id: String, context: Int? = nil) async throws -> LLMPlan {
+        let query = context.map { "?context=\($0)" } ?? ""
+        return try await send("v1/llm/models/\(id)/plan\(query)", method: "GET", body: nil as String?)
+    }
 
     public func remove(_ id: String) async throws {
         let (data, response) = try await http.session.data(for: http.request("v1/llm/models/\(id)", method: "DELETE"))
@@ -302,7 +315,13 @@ public struct LLMServerClient: Sendable {
     }
 
     private func send<B: Encodable, T: Decodable>(_ path: String, method: String, body: B?) async throws -> T {
-        var r = http.request(path, method: method)
+        // A query string can't ride in `appendingPathComponent` (it would be escaped), so it is split off and put back.
+        let parts = path.split(separator: "?", maxSplits: 1).map(String.init)
+        var r = http.request(parts[0], method: method)
+        if parts.count > 1, let url = r.url, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            c.percentEncodedQuery = parts[1]
+            r.url = c.url ?? url
+        }
         if let body {
             r.httpBody = try JSONEncoder().encode(body)
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")

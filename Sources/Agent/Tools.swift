@@ -94,6 +94,10 @@ public final class ToolContext: @unchecked Sendable {
     public var jobs: BackgroundJobs?
     /// Starts and talks to other sessions (nil: this chat can't).
     public var sessions: (any SessionHost)?
+    /// Starts flows (multi-agent scripts) for this chat (nil: this chat can't).
+    public var flows: (any FlowHost)?
+    /// What the flow tool's approval card shows; the app sets it.
+    public var flowLimits: (concurrency: Int, maxAgents: Int) = (4, 30)
     /// Folders outside the project that may be read without asking (the skills' folders).
     public var readRoots: [URL] = []
     private var _callID = ""

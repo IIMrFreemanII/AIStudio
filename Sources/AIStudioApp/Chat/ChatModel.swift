@@ -86,6 +86,15 @@ final class ChatDocument: Identifiable {
     var proposals: [String: SessionProposal] = [:]
     var proposalDecisions: [String: UUID?] = [:]
 
+    // MARK: flows
+
+    /// Flow results that arrived while a reply was streaming; delivered when it ends.
+    var pendingFlowEvents: [FlowEvent] = []
+    /// The run a `flow` tool call started, by call id (in memory; the tool's result text names the run too).
+    var flowRunByCall: [String: String] = [:]
+    /// The run shown in the flow panel (nil: closed).
+    var flowPanelRunID: String?
+
     // MARK: git
 
     /// The chat's repository at a glance (nil: not a repository, or not looked at yet).

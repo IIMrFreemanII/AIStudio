@@ -35,6 +35,16 @@ UPLOAD = "upload:"
 MEDIA_PARTS = ("image_url", "video_url")
 
 
+def check_window(context, native: int | None) -> None:
+    """Raises ``ValueError`` for a context above the model's window or the 1M cap."""
+    if not context or int(context) <= 0:
+        return
+    window = min(native or sizing.MAX_CONTEXT, sizing.MAX_CONTEXT)
+    if int(context) > window:
+        why = "the 1M cap" if native is None or native > sizing.MAX_CONTEXT else f"this model's window ({native} tokens)"
+        raise ValueError(f"{int(context)} tokens is more than {why}")
+
+
 class LLMService:
     billed = True  # the Modal prices apply (a GPU box is paid for by the hour, not by these)
 
@@ -129,6 +139,7 @@ class LLMService:
         for k in ("toolParser", "reasoningParser", "engineArgs"):
             if k in body:
                 profile[k] = body[k]
+        check_window(body.get("context"), f.native_context)
         plan = sizing.plan(f, body.get("context"), profiles.kv_dtype_bytes(profile["engineArgs"]))
         gpu, count = body.get("gpu"), body.get("count")
         option = None
@@ -157,7 +168,7 @@ class LLMService:
         await self._reload()
         models = []
         for m in store.listing(self.models_root):
-            models.append({**m, "status": await self.status(m["id"], m)})
+            models.append({**m, "efforts": profiles.efforts(m), "status": await self.status(m["id"], m)})
         return {"models": models, "installs": {k: v for k, v in self._installs().items() if v.get("state") != "done"}}
 
     def manifest(self, mid: str) -> dict:
@@ -181,6 +192,8 @@ class LLMService:
         before = self.manifest(mid)
         m = store.patch(before, changes)
         if m.get("facts") and {"gpu", "count", "context"} & set(changes):
+            if "context" in changes:
+                check_window(m["context"], int(m["facts"].get("native_context") or 0) or None)
             p = sizing.plan(facts_mod.Facts(**m["facts"]), m["context"],
                             profiles.kv_dtype_bytes(m.get("engineArgs") or []))
             o = next((o for o in p["options"] if o["gpu"] == m["gpu"] and o["count"] == m["count"]), None)
@@ -194,7 +207,7 @@ class LLMService:
             # Fast start turned off: its copy of the weights (as big as the checkpoint) goes.
             shutil.rmtree(store.processed_dir(self.models_root, mid), ignore_errors=True)
         await self._commit()
-        return m
+        return {**m, "efforts": profiles.efforts(m)}
 
     async def remove(self, mid: str) -> bool:
         await self._reload()
@@ -218,11 +231,14 @@ class LLMService:
     async def status(self, mid: str, m: dict | None = None) -> dict:
         m = m or self.manifest(mid)
         s = await self._engine_state(mid, m)
+        kv = {"kvTokens": int(s["kv_tokens"])} if s.get("kv_tokens") else {}
+        if s.get("max_concurrency"):
+            kv["maxConcurrency"] = float(s["max_concurrency"])
         now = time.time()
         started = s.get("started")
         uptime = max(0.0, (s.get("ended") or now) - started) if started else 0.0
         price = self.usd_per_second({**m, "gpu": s.get("gpu") or m.get("gpu"), "count": s.get("count") or m.get("count")})
-        return {"id": mid, "state": s.get("state", "cold"), "phase": s.get("phase"), "progress": s.get("progress"),
+        return {**kv, "id": mid, "state": s.get("state", "cold"), "phase": s.get("phase"), "progress": s.get("progress"),
                 "error": s.get("error"), "gpu": s.get("gpu") or m.get("gpu"), "count": s.get("count") or m.get("count"),
                 "uptime": round(uptime, 1), "usdPerSecond": price, "costUSD": round(uptime * price, 4),
                 "idleSeconds": self.idle, "leaseSeconds": self.lease,
@@ -270,7 +286,7 @@ class LLMService:
         body = {**body, "messages": self.resolve_uploads(m, body["messages"])}
         self.last_chat[mid] = time.time()
         stream = bool(body.get("stream"))
-        body = {**body, "model": mid}
+        body = profiles.apply_effort({**body, "model": mid}, m)
         if stream:
             body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
         upstream = self._engine_chat(mid, m, body)
@@ -414,6 +430,9 @@ class LocalLLMService(LLMService):
         s = dict(self.states.get(mid) or {"state": "cold"})
         if s.get("state") in ACTIVE and (self.engine is None or self.engine[0] != mid):
             s["state"] = "cold"
+        elif s.get("state") == "ready" and (proc := self.engine[1] if self.engine else None) is not None:
+            if getattr(proc, "kv_tokens", 0):
+                s["kv_tokens"], s["max_concurrency"] = proc.kv_tokens, getattr(proc, "max_concurrency", 0.0)
         return s
 
     def _set(self, mid, **kw):

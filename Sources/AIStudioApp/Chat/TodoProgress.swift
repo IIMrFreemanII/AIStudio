@@ -20,7 +20,7 @@ extension ChatTranscript {
     var todoListIsCurrent: Bool {
         guard let last = lastTodoCall else { return false }
         let shown = turns
-        guard let u = shown.lastIndex(where: { $0.role == .user && $0.summary != true && $0.sessionEvent == nil }) else { return true }
+        guard let u = shown.lastIndex(where: { $0.role == .user && $0.summary != true && $0.sessionEvent == nil && $0.flowEvent == nil }) else { return true }
         return last.index > u
     }
 

@@ -23,7 +23,8 @@ public struct TaskTool: AgentTool {
     public let name = "task"
     public let description = "Hand a self-contained research question to a subagent that reads and searches on its own (read-only) and reports back. Use it for broad searches across many files, so their contents don't fill this conversation. Its prompt must be complete: it doesn't see this conversation. Several task calls in one message run at the same time."
     public var parameters: JSONValue {
-        schema(["description": ("string", "A 3–6 word label"), "prompt": ("string", "The full task for the subagent")],
+        schema(["description": ("string", "A 3–6 word label"), "prompt": ("string", "The full task for the subagent"),
+                "effort": ("string", "Thinking effort for the subagent: 'low' for quick lookups, 'high' for hard analysis; models with on/off thinking take 'off'/'on'. Default: this chat's.")],
                required: ["description", "prompt"])
     }
     public let effect = ToolEffect.read
@@ -44,7 +45,7 @@ public struct TaskTool: AgentTool {
         sub.readRoots = ctx.readRoots
         var config = AgentConfig(model: model, tools: tools, mode: .plan)
         config.maxSteps = 30
-        config.reasoningEffort = reasoningEffort
+        config.reasoningEffort = args.string("effort") ?? reasoningEffort
         config.inlineThinking = inlineThinking
         let onOutput = ctx.onOutput
         let last = LastText()

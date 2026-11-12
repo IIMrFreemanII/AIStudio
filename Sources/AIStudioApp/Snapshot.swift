@@ -235,8 +235,10 @@ enum Snapshot {
         await renderInteractiveChat(to: dir)
         await renderCodingChat(to: dir)
         await renderGitChanges(to: dir)
+        await renderFlowPanel(to: dir)
         await renderGraphHelper(to: dir)
         await renderLLMSettings(to: dir)
+        await renderLLMContext(to: dir)
         await renderChrome(m, to: dir)
     }
 
@@ -264,6 +266,70 @@ enum Snapshot {
         doc.diffCache["uncommitted|Sources/todo/List.swift"] = diff
         doc.commitDraft = "Add a --json flag to list"
         await render(m, to: dir.appendingPathComponent("59-git-changes.png"))
+    }
+
+    /// 61: the same chat after the agent started a flow: its run card in the transcript, and the panel open on the run
+    /// (two review agents done, three verify agents running / done / failed, an edit agent queued with its branch).
+    static func renderFlowPanel(to dir: URL) async {
+        let (m, doc) = codingChatModel()
+        doc.permission = nil
+        doc.liveTurnID = nil
+        doc.todos = []
+        if let c3 = doc.transcript.turns.first(where: { $0.toolCallID == "c3" }) {
+            doc.transcript.update(c3.id) { $0.toolStatus = "done"; $0.text = "Created Tests/todoTests/ListJSONTests.swift." }
+        }
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        var a = ChatTurn(role: .assistant, text: "The change builds. This is a good moment for a review pass, so I'm starting the review flow:", model: key.modelID)
+        a.toolCalls = [ToolCall(id: "f1", name: "flow", arguments: "{}")]
+        doc.transcript.append(a)
+        var r = ChatTurn(role: .tool, text: "Flow “review-changes” started (run snap0001). It runs in the background.", toolCallID: "f1")
+        r.toolTitle = "Flow: review-changes"
+        r.toolStatus = "done"
+        doc.transcript.append(r)
+
+        let now = Date()
+        var run = FlowRun(id: "snap0001", chatID: doc.id,
+                          meta: FlowMeta(name: "review-changes", description: "Review the working tree, verify each finding, fix the real ones.",
+                                         phases: ["Review", "Verify", "Fix"]),
+                          script: "export const meta = {}", maxAgents: 30, concurrency: 4)
+        run.startedAt = now.addingTimeInterval(-134)
+        run.currentPhase = "Verify"
+        func agent(_ id: String, _ label: String, _ phase: String, _ status: FlowAgentStatus, mode: FlowAgentMode = .read,
+                   started: Double, ended: Double? = nil, tokens: (Int, Int) = (0, 0), steps: [String] = []) -> FlowAgentRecord {
+            var rec = FlowAgentRecord(spec: FlowAgentSpec(id: id, label: label, phase: phase, prompt: label, mode: mode),
+                                      startedAt: now.addingTimeInterval(-started))
+            rec.status = status
+            rec.steps = steps
+            rec.endedAt = ended.map { now.addingTimeInterval(-$0) }
+            rec.usage = FlowUsage(promptTokens: tokens.0, completionTokens: tokens.1, seconds: 20, costUSD: 0.03, usdPerSecond: 0.0031)
+            return rec
+        }
+        var r1 = agent("a1", "Review: correctness", "Review", .done, started: 130, ended: 82, tokens: (41_200, 3_100),
+                       steps: ["Read Sources/todo/List.swift", "Read Tests/todoTests/ListJSONTests.swift"])
+        r1.text = "Two findings: the encoder isn't configured for stable key order, and an empty list prints `null` instead of `[]`."
+        var r2 = agent("a2", "Review: tests and docs", "Review", .done, started: 130, ended: 90, tokens: (28_700, 2_400),
+                       steps: ["Read README.md", "Search --json"])
+        r2.text = "The README doesn't mention --json."
+        var v1 = agent("a3", "Verify: empty list prints null", "Verify", .running, started: 70, tokens: (12_300, 640),
+                       steps: ["Read Sources/todo/List.swift", "Run swift run todo list --json"])
+        v1.usage.completionTokens = 640
+        var v2 = agent("a4", "Verify: unstable key order", "Verify", .done, started: 70, ended: 41, tokens: (18_900, 1_050),
+                       steps: ["Read Sources/todo/List.swift"])
+        v2.json = .object(["real": .bool(true), "reason": .string("JSONEncoder isn't given .sortedKeys, so output differs between runs.")])
+        var v3 = agent("a5", "Verify: README gap", "Verify", .failed, started: 70, ended: 52, tokens: (9_800, 210),
+                       steps: ["Read README.md"])
+        v3.error = "the reply didn't match the schema: no JSON found"
+        var f1 = agent("a6", "Fix: sorted keys", "Fix", .running, mode: .edit, started: 20, tokens: (3_100, 90),
+                       steps: ["Run git status"])
+        f1.branch = "aistudio/flow-snap0001-fix-sorted-keys"
+        run.agents = [r1, r2, v1, v2, v3, f1]
+        run.logs = ["2 findings to verify", "verifying…"]
+        let controller = FlowController(run: run, chatID: doc.id, readOnly: true)
+        FlowRegistry.controllers["snap0001"] = controller
+        doc.flowRunByCall["f1"] = "snap0001"
+        doc.flowPanelRunID = "snap0001"
+        controller.expandedAgent = "a5"
+        await render(m, to: dir.appendingPathComponent("61-flow-panel.png"))
     }
 
     static func codingChatModel() -> (AppModel, ChatDocument) {
@@ -389,6 +455,33 @@ enum Snapshot {
         m.llmSettingsRequest = LLMSettingsRequest(key: key, preview: p)
         await render(m, to: dir.appendingPathComponent("58-llm-settings.png"))
         m.llmSettingsRequest = nil
+    }
+
+    /// 60: the settings sheet with a 1M-token model: the context is chosen first and the GPUs follow (1M: 2× H200,
+    /// 1× H200 too small; 256k: 1× H200).
+    static func renderLLMContext(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
+        let listing = #"{"installs":{},"models":[{"id":"qwen3.8-flash-next","name":"Qwen3.8-Flash-Next","repo":"Qwen/Qwen3.8-Flash-Next","gpu":"H200","count":2,"context":1048576,"engine":"vllm","loadFormat":"auto","snapshot":false,"installed":true}]}"#
+        let options = #"[{"gpu":"H200","count":1,"fits":true,"usdPerHour":3.96,"maxContext":262144,"kvTokens":262144},{"gpu":"H200","count":2,"fits":true,"usdPerHour":7.92,"maxContext":1048576,"kvTokens":1200000},{"gpu":"H200","count":4,"fits":true,"usdPerHour":15.84,"maxContext":1048576,"kvTokens":3000000}]"#
+        func plan(_ context: Int, _ recommended: String, _ cur: (Int, Int)) -> LLMPlan? {
+            let json = #"{"context":\#(context),"nativeContext":1048576,"recommended":\#(recommended),"options":\#(options),"current":{"gpu":"H200","count":\#(cur.0),"context":\#(cur.1)}}"#
+            return try? JSONDecoder().decode(LLMPlan.self, from: Data(json.utf8))
+        }
+        let two = #"{"gpu":"H200","count":2,"fits":true,"usdPerHour":7.92,"maxContext":1048576,"kvTokens":1200000}"#
+        let one = #"{"gpu":"H200","count":1,"fits":true,"usdPerHour":3.96,"maxContext":262144,"kvTokens":262144}"#
+        guard let l = try? JSONDecoder().decode(LLMListing.self, from: Data(listing.utf8)),
+              let big = plan(1_048_576, two, (2, 1_048_576)), let small = plan(262_144, one, (1, 262_144)) else { return }
+        m.llm.listings[key.serverID] = l
+        panel(nil)
+        m.llmSettingsRequest = LLMSettingsRequest(key: key, preview: big)
+        await render(m, to: dir.appendingPathComponent("60-llm-context-1m.png"))
+        m.llmSettingsRequest = nil
+        let m2 = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        m2.llm.listings[key.serverID] = l
+        m2.llmSettingsRequest = LLMSettingsRequest(key: key, preview: small)
+        await render(m2, to: dir.appendingPathComponent("60-llm-context-256k.png"))
+        m2.llmSettingsRequest = nil
     }
 
     /// 50: a chat tab mid-conversation (thinking, Markdown, code, stats), the Chats panel open.

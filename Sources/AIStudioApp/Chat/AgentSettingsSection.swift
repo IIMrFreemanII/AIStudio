@@ -12,6 +12,8 @@ struct AgentSettingsSection: View {
     @AppStorage("worktreeBranchPrefix") private var branchPrefix = "aistudio/"
     @AppStorage("gitCoAuthor") private var gitCoAuthor = true
     @AppStorage("codeGraph") private var codeGraph = true
+    @AppStorage("flowConcurrency") private var flowConcurrency = 0
+    @AppStorage("flowMaxAgents") private var flowMaxAgents = 30
     @State private var graphifyPath: String?
     @State private var installing = false
     @State private var installError: String?
@@ -63,6 +65,19 @@ struct AgentSettingsSection: View {
                 .font(.mgFootnote)
                 if let installError {
                     Text(installError).font(.mgFootnote).foregroundStyle(MG.destructive).textSelection(.enabled).lineLimit(4)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                MGFormRow("Flows: agents at a time") {
+                    MGPicker(selection: $flowConcurrency,
+                             options: [(0, "Auto")] + [2, 3, 4, 6, 8, 12, 16].map { ($0, "\($0)") })
+                }
+                Text("Auto fits the GPU's memory (KV cache).").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
+            MGFormRow("Max agents per flow") {
+                HStack(spacing: 8) {
+                    Text("\(flowMaxAgents)").foregroundStyle(MG.secondaryLabel).monospacedDigit()
+                    MGStepper(value: $flowMaxAgents, in: 5...100, step: 5)
                 }
             }
             Toggle("Notify when a background session finishes or needs you", isOn: $notifySessions)
