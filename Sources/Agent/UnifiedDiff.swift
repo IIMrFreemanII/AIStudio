@@ -102,15 +102,21 @@ public enum DiffNumbers {
     public static func rows(_ diff: String) -> [Row] {
         var rows: [Row] = []
         var old: Int?, new: Int?
+        // True at the start and after "diff --git": git's file header lines (index, mode, ---/+++ …) are skipped
+        // until a hunk begins.
+        var header = true
         for (i, line) in diff.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             let s = String(line)
+            if s.hasPrefix("diff --git") { header = true; continue }
+            if header, !s.hasPrefix("@@") { continue }
             if s.hasPrefix("@@") {
+                header = false
                 (old, new) = starts(s)
                 // No ⋯ before a first hunk that starts at the top of the file.
                 if !(rows.isEmpty && (new ?? 0) <= 1 && new != nil) { rows.append(Row(id: i, text: "⋯", gap: true)) }
                 continue
             }
-            if rows.isEmpty, old == nil, s.hasPrefix("--- ") || s.hasPrefix("+++ ") { continue }
+            if s.hasPrefix("\\ ") { continue }  // "\ No newline at end of file"
             switch s.first {
             case "+":
                 rows.append(Row(id: i, number: new, sign: "+", text: String(s.dropFirst())))
@@ -130,7 +136,11 @@ public enum DiffNumbers {
     /// The old and new start lines in "@@ -3,4 +3,5 @@" (nil for a bare "@@").
     public static func starts(_ header: String) -> (Int?, Int?) {
         var old: Int?, new: Int?
-        for part in header.split(separator: " ") {
+        // Only the text between the first "@@" and the next one (a trailing function name may hold anything).
+        guard let open = header.range(of: "@@") else { return (nil, nil) }
+        let rest = header[open.upperBound...]
+        let body = rest.range(of: "@@").map { rest[..<$0.lowerBound] } ?? rest
+        for part in body.split(separator: " ") {
             let number = Int(part.dropFirst().prefix { $0 != "," })
             if part.hasPrefix("-") { old = number } else if part.hasPrefix("+") { new = number }
         }

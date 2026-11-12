@@ -182,6 +182,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var parentID: UUID?
     /// Its own git worktree, if it has one.
     public var worktree: SessionWorktree?
+    /// The Changes pane is open (coding chats).
+    public var changesOpen: Bool?
     /// The task it was started with.
     public var brief: String?
     /// 0 or nil for a top-level session, the parent's depth + 1 for children.
@@ -380,7 +382,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
         case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
-        case pinned, archived, lastViewed, parentID, worktree, brief, depth
+        case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen
     }
 
     public init(from decoder: Decoder) throws {
@@ -405,6 +407,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         lastViewed = try c.decodeIfPresent(Date.self, forKey: .lastViewed)
         parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
         worktree = try c.decodeIfPresent(SessionWorktree.self, forKey: .worktree)
+        changesOpen = try c.decodeIfPresent(Bool.self, forKey: .changesOpen)
         brief = try c.decodeIfPresent(String.self, forKey: .brief)
         depth = try c.decodeIfPresent(Int.self, forKey: .depth)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
@@ -440,6 +443,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(lastViewed, forKey: .lastViewed)
         try c.encodeIfPresent(parentID, forKey: .parentID)
         try c.encodeIfPresent(worktree, forKey: .worktree)
+        try c.encodeIfPresent(changesOpen, forKey: .changesOpen)
         try c.encodeIfPresent(brief, forKey: .brief)
         try c.encodeIfPresent(depth, forKey: .depth)
         try c.encode(nodes, forKey: .nodes)

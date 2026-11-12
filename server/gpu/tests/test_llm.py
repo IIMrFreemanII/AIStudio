@@ -14,7 +14,7 @@ from aistudio_gpu.api import create_app
 from aistudio_gpu.files import FileStore
 from aistudio_gpu.jobs import JobManager
 from aistudio_gpu.llm import proxy, sizing
-from aistudio_gpu.llm.engine import FakeEngine, phase_of, vllm_command
+from aistudio_gpu.llm.engine import FAKE_COMMIT, FAKE_PR, FakeEngine, phase_of, vllm_command
 from aistudio_gpu.llm.facts import LinkError, ModelRef, facts_from_config, parse_link
 from aistudio_gpu.llm.profiles import guess
 from aistudio_gpu.llm.service import LocalLLMService, local_media
@@ -529,6 +529,15 @@ def test_fake_agent_todo_script(client):
         msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
                  {"role": "tool", "tool_call_id": call["id"], "content": f"result {step}"}]
     assert names == ["todo_write", "write_file", "run_command"]
+
+
+def test_fake_commit_and_pr_drafts(client):
+    mid = install(client)
+    for ask, reply in [("Write the commit message now.", FAKE_COMMIT), ("Write the pull request now.", FAKE_PR)]:
+        events = chat(client, mid, "", messages=[{"role": "user", "content": f"Diff:\n...\n\n{ask}"}])
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"])
+        assert text == reply
 
 
 def test_fake_graph_helper_script(client):

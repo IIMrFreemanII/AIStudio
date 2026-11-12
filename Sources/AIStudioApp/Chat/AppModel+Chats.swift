@@ -60,7 +60,7 @@ extension AppModel {
                 doc.transcript.title = url.lastPathComponent
                 doc.transcript.worktree = SessionWorktree(repo: repo.path, path: made.path.path, branch: made.branch,
                                                           base: base ?? "HEAD")
-                refreshWorktreeStatus(doc)
+                refreshGitSoon(doc)
             } catch {
                 let doc = newCodingChat(project: url)
                 doc.attachNote = "Couldn't make a worktree: \(error.localizedDescription)"
@@ -288,8 +288,9 @@ extension AppModel {
             var tools: [any AgentTool] = CodingTools.all + [WebFetchTool(), ExitPlanTool(), task] + SessionTools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
+            let coAuthor = gitCoAuthorLine(for: doc)
             var setup = AgentSetup(tools: tools, root: root) {
-                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode)
+                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor)
                 let section = SkillStore.promptSection(skills)
                 return section.isEmpty ? base : base + "\n\n" + section
             }
@@ -568,6 +569,7 @@ extension AppModel {
                             case .toolOutput:
                                 break  // ctx.onOutput streams it
                             case .toolFinished(let id, let output, let status):
+                                if doc.isCoding { self?.refreshGitSoon(doc) }
                                 if let t = doc.transcript.turns.last(where: { $0.toolCallID == id }) {
                                     doc.transcript.update(t.id) {
                                         $0.text = output.text

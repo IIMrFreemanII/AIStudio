@@ -234,6 +234,7 @@ enum Snapshot {
         await renderChat(to: dir)
         await renderInteractiveChat(to: dir)
         await renderCodingChat(to: dir)
+        await renderGitChanges(to: dir)
         await renderGraphHelper(to: dir)
         await renderLLMSettings(to: dir)
         await renderChrome(m, to: dir)
@@ -241,6 +242,31 @@ enum Snapshot {
 
     /// 51: a coding chat: an edit's diff card, a finished command, and a write waiting for permission.
     static func renderCodingChat(to dir: URL) async {
+        let (m, _) = codingChatModel()
+        await render(m, to: dir.appendingPathComponent("51-coding-chat.png"))
+    }
+
+    /// 59: the same chat with the Changes pane open: files, a diff, the commit box, and the branch and pull request chips.
+    static func renderGitChanges(to dir: URL) async {
+        let (m, doc) = codingChatModel()
+        let diff = doc.transcript.turns.first { $0.toolCallID == "c1" }?.toolDetail ?? ""
+        let files = [GitChange(path: "Sources/todo/List.swift", kind: .modified, added: 6, removed: 1),
+                     GitChange(path: "Tests/todoTests/ListJSONTests.swift", kind: .untracked, added: 6, removed: 0),
+                     GitChange(path: "README.md", kind: .modified, added: 2, removed: 0)]
+        doc.git = GitState(
+            root: URL(fileURLWithPath: "/Users/me/Projects/todo-cli"),
+            status: GitStatus(branch: "json-flag", head: "a1b2c3d", upstream: "origin/json-flag", ahead: 0, behind: 0, files: files),
+            base: "main", baseChanges: files, aheadOfBase: 2, ghReady: true,
+            pr: PRInfo(number: 16, url: "https://github.com/me/todo-cli/pull/16", title: "Add a --json flag", state: "OPEN",
+                       draft: false, review: nil, passed: 3, failed: 0, pending: 1, mergeState: nil))
+        doc.changesOpen = true
+        doc.selectedChange = "Sources/todo/List.swift"
+        doc.diffCache["uncommitted|Sources/todo/List.swift"] = diff
+        doc.commitDraft = "Add a --json flag to list"
+        await render(m, to: dir.appendingPathComponent("59-git-changes.png"))
+    }
+
+    static func codingChatModel() -> (AppModel, ChatDocument) {
         let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
         let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-flash-next")
         var t = ChatTranscript(title: "Add a --json flag", serverID: key.serverID, modelID: key.modelID)
@@ -290,7 +316,7 @@ enum Snapshot {
         ready.costUSD = 1.12
         m.llm.statuses[key] = ready
         panel(.chats)
-        await render(m, to: dir.appendingPathComponent("51-coding-chat.png"))
+        return (m, doc)
     }
 
     /// 57: the graph helper docked on a workflow tab, after a reply that added an upscale (its cards and Undo bar).

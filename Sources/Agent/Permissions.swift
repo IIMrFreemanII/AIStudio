@@ -108,6 +108,7 @@ public enum PermissionEngine {
             return mode == .acceptEdits || rules.edits ? .allow : .ask
         case .execute:
             if mode == .plan { return .deny("Plan mode is read only: commands don't run.") }
+            if let command, GitSafety.risk(command) != nil { return .ask }
             if let command, rules.allows(command: command) { return .allow }
             return .ask
         case .graphEdit:
@@ -121,5 +122,71 @@ public enum PermissionEngine {
             if let domain, rules.allows(domain: domain) { return .allow }
             return .ask
         }
+    }
+}
+
+/// Git and GitHub commands that ask every time, whatever the "always allow" rules say.
+public enum GitSafety {
+    /// Why a command needs the user's OK every time (shown on the permission card), nil when it's an ordinary command.
+    public static func risk(_ command: String) -> String? {
+        let parts = command.components(separatedBy: CharacterSet(charactersIn: ";|&\n"))
+        for part in parts {
+            let tokens = part.split(whereSeparator: { $0 == " " || $0 == "\t" }).map {
+                String($0).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+            if let r = risk(tokens) { return r }
+        }
+        return nil
+    }
+
+    private static func risk(_ tokens: [String]) -> String? {
+        guard let first = tokens.first else { return nil }
+        if first == "gh" {
+            guard tokens.count >= 3, tokens[1] == "pr" else { return nil }
+            switch tokens[2] {
+            case "create": return "It opens a pull request on GitHub."
+            case "merge": return "It merges a pull request on GitHub."
+            case "close": return "It closes a pull request on GitHub."
+            default: return nil
+            }
+        }
+        guard first == "git" else { return nil }
+        var i = 1
+        while i < tokens.count, tokens[i].hasPrefix("-") { i += (tokens[i] == "-C" || tokens[i] == "-c") ? 2 : 1 }
+        guard i < tokens.count else { return nil }
+        let sub = tokens[i]
+        let args = Array(tokens[(i + 1)...])
+        func has(_ flags: String...) -> Bool { args.contains { flags.contains($0) } }
+        // A short-flag cluster such as -fd or -xdf.
+        func cluster(_ letter: Character) -> Bool {
+            args.contains { $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.dropFirst().contains(letter) }
+        }
+
+        if sub == "push", has("-f", "--force", "--force-if-includes") || cluster("f")
+            || args.contains(where: { $0.hasPrefix("--force-with-lease") || $0.hasPrefix("+") }) {
+            return "Force-pushing rewrites the remote branch's history."
+        }
+        if ["commit", "push", "merge", "rebase"].contains(sub), has("--no-verify") { return "It skips the repository's hooks." }
+        if sub == "push" { return "It sends commits to the remote." }
+        if sub == "reset", has("--hard") { return "It discards uncommitted changes." }
+        if sub == "clean", has("--force") || cluster("f") { return "It deletes untracked files." }
+        if sub == "checkout" {
+            let dashes = args.firstIndex(of: "--")
+            if (dashes.map { $0 + 1 < args.count } ?? false) || has(".", "-f", "--force") { return "It discards changes to files." }
+        }
+        if sub == "restore", !(has("--staged", "-S") && !has("--worktree", "-W")) { return "It discards changes to files." }
+        if sub == "branch", has("-D") || (has("--delete", "-d") && has("--force", "-f")) {
+            return "It deletes a branch even if it isn't merged."
+        }
+        if sub == "stash", let a = args.first, a == "drop" || a == "clear" { return "It deletes stashed changes." }
+        if ["rebase", "filter-branch", "filter-repo"].contains(sub) { return "It rewrites commit history." }
+        if sub == "commit", has("--amend") { return "It rewrites the last commit." }
+        if sub == "config" {
+            let writes = has("--unset", "--unset-all", "--add", "--replace-all", "--edit", "-e", "--remove-section",
+                             "--rename-section")
+            let reads = has("--get", "--get-all", "--list", "-l") || args.filter { !$0.hasPrefix("-") }.count == 1
+            if writes || !reads { return "It changes git settings." }
+        }
+        return nil
     }
 }

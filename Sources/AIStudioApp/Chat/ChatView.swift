@@ -9,27 +9,37 @@ struct ChatView: View {
     let doc: ChatDocument
     /// Docked next to the graph (the graph helper): a narrower, two-row header.
     var compact = false
+    @AppStorage("changesWidth") private var changesWidth = 440.0
 
     var body: some View {
-        VStack(spacing: 0) {
-            ChatHeader(doc: doc, compact: compact)
-            MGDivider()
-            if doc.isAgent && doc.mode == .bypass {
-                Label(doc.isGraphHelper ? "Bypass Permissions: the helper edits and runs the workflow without asking."
-                      : "Bypass Permissions: the agent edits files and runs commands in \(doc.projectURL?.lastPathComponent ?? "the project") without asking.",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.mgFootnote).foregroundStyle(MG.warning)
-                    .padding(.horizontal, 14).padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(MG.warning.opacity(0.12))
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                ChatHeader(doc: doc, compact: compact)
+                MGDivider()
+                if doc.isAgent && doc.mode == .bypass {
+                    Label(doc.isGraphHelper ? "Bypass Permissions: the helper edits and runs the workflow without asking."
+                          : "Bypass Permissions: the agent edits files and runs commands in \(doc.projectURL?.lastPathComponent ?? "the project") without asking.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.mgFootnote).foregroundStyle(MG.warning)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(MG.warning.opacity(0.12))
+                }
+                if doc.isGraphHelper { HelperUndoBar(doc: doc) }
+                if doc.transcript.turns.isEmpty {
+                    ChatEmptyState(doc: doc)
+                } else {
+                    ChatTranscriptView(doc: doc)
+                }
+                ChatComposer(doc: doc)
             }
-            if doc.isGraphHelper { HelperUndoBar(doc: doc) }
-            if doc.transcript.turns.isEmpty {
-                ChatEmptyState(doc: doc)
-            } else {
-                ChatTranscriptView(doc: doc)
+            .frame(maxWidth: .infinity)
+            if doc.isCoding && doc.changesOpen && !compact {
+                MGDivider(vertical: true, gap: true)
+                GitChangesPane(doc: doc)
+                    .frame(width: changesWidth)
+                    .overlay(alignment: .leading) { MGResizeHandle(width: $changesWidth, range: 360...700).offset(x: -3) }
             }
-            ChatComposer(doc: doc)
         }
         .background(MG.windowBackground)
         .onAppear { ChatQuoting.visibleChats += 1 }
@@ -51,7 +61,21 @@ struct ChatView: View {
             return !providers.isEmpty
         }
         .task { await model.llm.refreshAll() }
-        .task(id: doc.id) { model.refreshWorktreeStatus(doc) }
+        .task(id: doc.id) { model.refreshGitSoon(doc) }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            model.refreshGitSoon(doc)
+        }
+        .task(id: doc.git?.pr.map { "\($0.number)-\($0.pending)" }) {
+            // Checks are running: look again every 30 seconds.
+            while (doc.git?.pr?.pending ?? 0) > 0 {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                if Task.isCancelled { break }
+                await model.refreshGit(doc)
+            }
+        }
+        .mgSheet("create-pr-\(doc.id)", item: Binding(get: { doc.prSheet }, set: { doc.prSheet = $0 })) { _ in
+            CreatePRSheet(doc: doc).environment(model)
+        }
     }
 }
 
@@ -64,31 +88,40 @@ struct ChatHeader: View {
 
     var body: some View {
         if compact {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
+            twoRows
+        } else {
+            // One row when everything fits at full width; two rows (model on top) rather than squeezing the chips to
+            // "…" — e.g. with the Changes pane open.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
                     modelMenu
-                    Spacer(minLength: 4)
-                    effortMenu
-                }
-                HStack(spacing: 8) {
                     CodingHeaderItems(doc: doc)
-                    Spacer(minLength: 4)
+                    Spacer(minLength: 8)
+                    effortMenu
                     cost
                 }
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                twoRows
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-        } else {
-            HStack(spacing: 10) {
+        }
+    }
+
+    var twoRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 modelMenu
-                CodingHeaderItems(doc: doc)
-                Spacer(minLength: 8)
+                Spacer(minLength: 4)
                 effortMenu
+            }
+            HStack(spacing: 8) {
+                CodingHeaderItems(doc: doc)
+                Spacer(minLength: 4)
                 cost
             }
-            .padding(.horizontal, 14)
-            .frame(height: 44)
         }
+        .padding(.horizontal, compact ? 10 : 14)
+        .padding(.vertical, 8)
     }
 
     /// The model and its GPU in one control: name and engine state in the label; switching models, starting and

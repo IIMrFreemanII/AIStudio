@@ -18,7 +18,7 @@ public struct WorktreeStatus: Equatable, Sendable {
 /// git helpers for sessions that work in their own worktree and branch.
 public enum GitWorktree {
     private static func git(_ args: String, in dir: URL, timeout: TimeInterval = 120) async -> ShellRunner.Result {
-        await ShellRunner().run("git " + args, cwd: dir, timeout: timeout)
+        await Git.run(args, in: dir, timeout: timeout)
     }
 
     private static func clip(_ s: String) -> String {

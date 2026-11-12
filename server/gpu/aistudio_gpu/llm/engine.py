@@ -293,6 +293,10 @@ FAKE_WIDGET = """<label>Strength <input id="s" type="range" min="0" max="1" step
   aistudio.reportState({strength: 0.8});
 </script>"""
 
+# The fake engine's canned drafts for the "draft a commit message" and "draft a pull request" buttons.
+FAKE_COMMIT = "Add hello.txt\n\nCreates hello.txt with a greeting from the agent."
+FAKE_PR = "Add hello.txt\n\n## Summary\n- Adds hello.txt with a greeting\n\n## Test plan\n- cat hello.txt"
+
 
 class FakeEngine:
     """Answers like vLLM with a scripted reply: thinking, then text that repeats the last user message; a tool call
@@ -308,7 +312,8 @@ class FakeEngine:
     template's ids), then "Done: " and the first line of the result. With start_session offered and "start a session"
     in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
     "Done: " and the result. "create hello.txt with a todo list" calls todo_write (two steps, the first in progress)
-    before the hello.txt script."""
+    before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
+    FAKE_PR."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -421,6 +426,10 @@ class FakeEngine:
             last_result = (tool_results[-1].strip().splitlines() or [""])[0] if "upscale" in last.lower() \
                 else tool_results[-1].strip().replace("\n", " ")
             words = f"Done: {last_result}".split(" ")
+        elif "write the commit message now." in last.lower():
+            words = FAKE_COMMIT.split(" ")
+        elif "write the pull request now." in last.lower():
+            words = FAKE_PR.split(" ")
         else:
             words = f"You said: {last}".split(" ")
         for i, w in enumerate(words):
