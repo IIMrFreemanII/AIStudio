@@ -32,9 +32,9 @@ public struct TaskTool: AgentTool {
         ToolPreview(kind: .read, title: "Task: \(try args.required("description"))", detail: try args.required("prompt"))
     }
 
-    static func systemPrompt(root: URL) -> String {
+    static func systemPrompt(root: URL, codeGraph: Bool = false) -> String {
         let day = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
-        return "You are a research subagent working in the project at \(root.path) on the user's Mac. Answer the task below using the read-only tools; you can't edit files, run commands or ask the user. Finish with a concise report of what you found, with file paths and line numbers.\nToday: \(day)"
+        return "You are a research subagent working in the project at \(root.path) on the user's Mac. Answer the task below using the read-only tools; you can't edit files, run commands or ask the user. Finish with a concise report of what you found, with file paths and line numbers.\nToday: \(day)" + (codeGraph ? "\nUse code_graph first to locate code (it returns file:line), then read only those lines." : "")
     }
 
     public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
@@ -49,7 +49,7 @@ public struct TaskTool: AgentTool {
         let onOutput = ctx.onOutput
         let last = LastText()
         let outcome = try await AgentLoop.run(
-            client: client, messages: [.system(TaskTool.systemPrompt(root: ctx.root)), .user(prompt)], config: config,
+            client: client, messages: [.system(TaskTool.systemPrompt(root: ctx.root, codeGraph: tools.contains { $0.name == "code_graph" })), .user(prompt)], config: config,
             context: sub, ask: { _ in .deny },
             events: { e in
                 switch e {

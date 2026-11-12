@@ -404,6 +404,11 @@ class FakeEngine:
                           {"op": "add", "id": "upscale", "type": "ImageScale",
                            "inputs": {"image": {"node": "decode", "output": "image"}, "factor": 2}},
                           {"op": "connect", "from": "upscale", "output": "image", "to": "save", "input": "image"}]})]
+        elif "map the project" in last.lower() and "code_graph" in tool_names:
+            # The read goes to the first location the graph returned (step 0's result), README.md when it has none.
+            m = re.search(r"([\w./-]+\.\w+):(\d+)", tool_results[0]) if tool_results else None
+            read_args = {"path": m.group(1), "offset": int(m.group(2)), "limit": 20} if m else {"path": "README.md"}
+            script = [("code_graph", {"action": "query", "target": "greet"}), ("read_file", read_args)]
         elif "ask me" in last.lower():
             script = [("ask_user", {"questions": [{"question": "Which database should I use?", "header": "Database",
                                                    "options": [{"label": "SQLite (Recommended)",
