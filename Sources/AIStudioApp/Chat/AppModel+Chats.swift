@@ -283,14 +283,17 @@ extension AppModel {
         if let root = doc.projectURL {
             let skills = loadSkills(root: root)
             let inline = llm.model(key)?.reasoningParser == nil
-            let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + [WebFetchTool()],
+            let codeGraph = codeGraphEnabled
+            let graphTools: [any AgentTool] = codeGraph ? [CodeGraphTool()] : []
+            let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + graphTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
-            var tools: [any AgentTool] = CodingTools.all + [WebFetchTool(), ExitPlanTool(), task] + SessionTools.all
+            var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), ExitPlanTool(), task] + SessionTools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
             var setup = AgentSetup(tools: tools, root: root) {
-                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor)
+                let map = codeGraph ? await ProjectGraphs.shared.hubs(root: root) : nil
+                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor, projectMap: map)
                 let section = SkillStore.promptSection(skills)
                 return section.isEmpty ? base : base + "\n\n" + section
             }
@@ -569,7 +572,10 @@ extension AppModel {
                             case .toolOutput:
                                 break  // ctx.onOutput streams it
                             case .toolFinished(let id, let output, let status):
-                                if doc.isCoding { self?.refreshGitSoon(doc) }
+                                if doc.isCoding {
+                                    self?.refreshGitSoon(doc)
+                                    self?.codeGraphToolFinished(doc, callID: id)
+                                }
                                 if let t = doc.transcript.turns.last(where: { $0.toolCallID == id }) {
                                     doc.transcript.update(t.id) {
                                         $0.text = output.text

@@ -11,6 +11,10 @@ struct AgentSettingsSection: View {
     @AppStorage("notifySessions") private var notifySessions = true
     @AppStorage("worktreeBranchPrefix") private var branchPrefix = "aistudio/"
     @AppStorage("gitCoAuthor") private var gitCoAuthor = true
+    @AppStorage("codeGraph") private var codeGraph = true
+    @State private var graphifyPath: String?
+    @State private var installing = false
+    @State private var installError: String?
 
     var body: some View {
         MGSection("Coding Agent") {
@@ -37,6 +41,29 @@ struct AgentSettingsSection: View {
                 Toggle("Add a co-author line to commits", isOn: $gitCoAuthor)
                 Text("Co-Authored-By: AIStudio (<model>) <noreply@aistudio.local> — used by the Commit button and asked of the agent.")
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Toggle("Project map for the agent (graphify)", isOn: $codeGraph)
+                Text("The agent asks a graph of the project where code lives and how it connects, then reads only those lines — fewer tokens than searching and reading whole files. Built locally, kept in the app's cache.")
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                HStack(spacing: 8) {
+                    if let graphifyPath {
+                        Label("Installed", systemImage: "checkmark.circle.fill").foregroundStyle(MG.success)
+                            .mgHelp(graphifyPath)
+                    } else {
+                        Label("graphify isn't installed", systemImage: "exclamationmark.circle").foregroundStyle(MG.warning)
+                        if CodeGraphInstall.uvPath != nil {
+                            Button(installing ? "Installing…" : "Install") { confirmInstall() }
+                                .buttonStyle(.mg(.bordered)).disabled(installing)
+                        } else {
+                            Text("Install with: uv tool install graphifyy").textSelection(.enabled)
+                        }
+                    }
+                }
+                .font(.mgFootnote)
+                if let installError {
+                    Text(installError).font(.mgFootnote).foregroundStyle(MG.destructive).textSelection(.enabled).lineLimit(4)
+                }
             }
             Toggle("Notify when a background session finishes or needs you", isOn: $notifySessions)
             VStack(alignment: .leading, spacing: 6) {
@@ -66,8 +93,25 @@ struct AgentSettingsSection: View {
         }
         .onAppear {
             keySaved = model.searchAPIKey != nil
+            graphifyPath = ProjectGraphs.findBinary()
             reload()
         }
+    }
+
+    func confirmInstall() {
+        model.presenter.alert("Install graphify?", message: "Runs “uv tool install graphifyy”, which downloads graphify from PyPI into ~/.local.",
+                              actions: [
+            MGAlertAction(label: "Install") {
+                installing = true
+                installError = nil
+                Task {
+                    installError = await CodeGraphInstall.install()
+                    graphifyPath = ProjectGraphs.findBinary()
+                    installing = false
+                }
+            },
+            .cancel(),
+        ])
     }
 
     func reload() {

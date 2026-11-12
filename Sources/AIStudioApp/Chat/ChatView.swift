@@ -61,9 +61,13 @@ struct ChatView: View {
             return !providers.isEmpty
         }
         .task { await model.llm.refreshAll() }
-        .task(id: doc.id) { model.refreshGitSoon(doc) }
+        .task(id: doc.id) {
+            model.refreshGitSoon(doc)
+            model.refreshCodeGraph(doc)
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             model.refreshGitSoon(doc)
+            model.refreshCodeGraph(doc)  // picks up edits made in other apps
         }
         .task(id: doc.git?.pr.map { "\($0.number)-\($0.pending)" }) {
             // Checks are running: look again every 30 seconds.

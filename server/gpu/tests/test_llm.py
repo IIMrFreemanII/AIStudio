@@ -562,6 +562,33 @@ def test_fake_graph_helper_script(client):
     assert text == "Done: line 1"
 
 
+def test_fake_code_graph_script(client):
+    mid = install(client)
+    tools = [{"type": "function", "function": {"name": "code_graph", "parameters": {"type": "object"}}},
+             {"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+    msgs = [{"role": "user", "content": "Map the project"}]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+    assert call["function"]["name"] == "code_graph"
+    assert json.loads(call["function"]["arguments"]) == {"action": "query", "target": "greet"}
+    msgs += [{"role": "assistant", "content": "", "tool_calls": [call]},
+             {"role": "tool", "tool_call_id": call["id"],
+              "content": "Start: greet() (5 nodes)\ngreet()  Sources/Greeter.swift:1\n.main()  Sources/Main.swift:2"}]
+    events = chat(client, mid, "", messages=msgs, tools=tools)
+    chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+    call = next(c["choices"][0]["delta"]["tool_calls"][0] for c in chunks
+                if c["choices"] and c["choices"][0]["delta"].get("tool_calls"))
+    assert call["function"]["name"] == "read_file"
+    assert json.loads(call["function"]["arguments"]) == {"path": "Sources/Greeter.swift", "offset": 1, "limit": 20}
+    # without code_graph offered, the same message gets no code_graph call
+    events = chat(client, mid, "", messages=[{"role": "user", "content": "Map the project"}],
+                  tools=[{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}])
+    _, calls = reply_text(events)
+    assert not any(c["function"]["name"] == "code_graph" for c in calls)
+
+
 # MARK: cold starts (M28)
 
 def test_cold_start_clock_splits_phases():

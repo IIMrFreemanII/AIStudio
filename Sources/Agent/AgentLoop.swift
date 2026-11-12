@@ -268,7 +268,7 @@ public enum AgentLoop {
 /// The system prompt for a coding chat: what the agent is, where it works, the project's instructions.
 public enum ProjectContext {
     public static func systemPrompt(root: URL, mode: PermissionMode, date: Date = Date(),
-                                     coAuthor: String? = nil) async -> String {
+                                     coAuthor: String? = nil, projectMap: String? = nil) async -> String {
         let git = await ShellRunner().run("git status --short --branch 2>/dev/null | head -40", cwd: root, timeout: 10)
         let isRepo = git.status == 0 && !git.output.isEmpty
         var gitInfo = "Not a git repository."
@@ -287,6 +287,11 @@ public enum ProjectContext {
                 instructions = "\n\n# Project instructions (\(name))\n\n" + String(text.prefix(20_000))
                 break
             }
+        }
+        var mapInfo = ""
+        if let projectMap {
+            mapInfo = "\n\nProject map: a code_graph tool answers \"where is X / what calls Y / what breaks if I change Z\" from a prebuilt graph of this project, with file:line. Call it first to find your way around, then read_file only the lines it points to (offset/limit). Don't grep or read whole files just to orient. Use code_graph instead of running graphify in run_command."
+            if !projectMap.isEmpty { mapInfo += "\n" + projectMap }
         }
         let modeLine: String
         switch mode {
@@ -309,7 +314,7 @@ public enum ProjectContext {
         \(gitRules)Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)
-        \(gitInfo)\(instructions)
+        \(gitInfo)\(instructions)\(mapInfo)
         """
     }
 }
