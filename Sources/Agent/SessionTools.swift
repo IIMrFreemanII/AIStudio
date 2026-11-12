@@ -8,8 +8,11 @@ public struct SessionSpec: Equatable, Sendable {
     public var prompt: String
     public var context: Context
     public var worktree: Bool
+    /// Thinking effort for the session (nil: the parent's).
+    public var effort: String?
 
-    public init(title: String, prompt: String, context: Context = .fresh, worktree: Bool = true) {
+    public init(title: String, prompt: String, context: Context = .fresh, worktree: Bool = true, effort: String? = nil) {
+        self.effort = effort
         self.title = title
         self.prompt = prompt
         self.context = context
@@ -62,7 +65,8 @@ private func sessionSpec(_ args: ToolArgs) throws -> SessionSpec {
     if prompt.isEmpty { throw ToolError("missing \"prompt\"") }
     let context = args.string("context").flatMap(SessionSpec.Context.init(rawValue:)) ?? .fresh
     let worktree = args.raw["worktree"] == nil ? true : args.bool("worktree")
-    return SessionSpec(title: title, prompt: prompt, context: context, worktree: worktree)
+    let effort = args.string("effort").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+    return SessionSpec(title: title, prompt: prompt, context: context, worktree: worktree, effort: effort)
 }
 
 private func sessionParameters() -> JSONValue {
@@ -70,6 +74,7 @@ private func sessionParameters() -> JSONValue {
         "title": ("string", "Under 60 characters"),
         "prompt": ("string", "The complete brief: it doesn't see this conversation unless context is fork"),
         "worktree": ("boolean", "Work in its own git worktree and branch (when the project is a git repository)"),
+        "effort": ("string", "Thinking effort for the session: 'low' for quick lookups, 'high' for hard analysis; models with on/off thinking take 'off'/'on'. Default: this session's."),
     ], required: ["title", "prompt"], extra: [
         "context": .object(["type": .string("string"), "enum": .array([.string("fresh"), .string("fork")]),
                             "description": .string("fresh (default): a new conversation; fork: a copy of this one")]),

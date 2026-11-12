@@ -287,13 +287,14 @@ extension AppModel {
             let graphTools: [any AgentTool] = codeGraph ? [CodeGraphTool()] : []
             let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + graphTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
-            var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), ExitPlanTool(), task] + SessionTools.all
+            var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), ExitPlanTool(), task, FlowTool()] + SessionTools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
             var setup = AgentSetup(tools: tools, root: root) {
                 let map = codeGraph ? await ProjectGraphs.shared.hubs(root: root) : nil
-                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor, projectMap: map)
+                let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor, projectMap: map,
+                                                                flows: FlowStore.promptSection(FlowStore.list(root: root)))
                 let section = SkillStore.promptSection(skills)
                 return section.isEmpty ? base : base + "\n\n" + section
             }
@@ -436,6 +437,8 @@ extension AppModel {
             ctx.turnID = sent.turns.last { $0.role == .user && $0.summary != true }?.id
             ctx.jobs = doc.jobs
             ctx.sessions = AppSessionHost(model: self, parent: doc.id, depth: doc.transcript.depth ?? 0)
+            ctx.flows = AppFlowHost(model: self, chatID: doc.id)
+            ctx.flowLimits = flowLimits(for: doc)
             if !doc.jobsObserved {
                 doc.jobsObserved = true
                 doc.jobs.onChange = { [weak self, weak doc] in
@@ -479,7 +482,8 @@ extension AppModel {
         doc.engine = nil
         llm.lastActivity = Date()
         // The first assistant message takes the reply's place (a retry's sibling); the rest follow it.
-        let start = ChatTurn(role: .assistant, text: "", model: key.modelID)
+        var start = ChatTurn(role: .assistant, text: "", model: key.modelID)
+        start.effort = doc.transcript.reasoningEffort
         add(start)
         doc.liveTurnID = start.id
         let st = AgentRunState(turn: start.id, inline: config.inlineThinking)
@@ -536,7 +540,8 @@ extension AppModel {
                             switch event {
                             case .assistantStarted:
                                 if !st.first {
-                                    let t = ChatTurn(role: .assistant, text: "", model: key.modelID)
+                                    var t = ChatTurn(role: .assistant, text: "", model: key.modelID)
+                                    t.effort = doc.transcript.reasoningEffort
                                     doc.transcript.append(t)
                                     st.turn = t.id
                                     doc.liveTurnID = t.id

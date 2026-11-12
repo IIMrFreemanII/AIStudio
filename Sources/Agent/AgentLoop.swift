@@ -268,7 +268,8 @@ public enum AgentLoop {
 /// The system prompt for a coding chat: what the agent is, where it works, the project's instructions.
 public enum ProjectContext {
     public static func systemPrompt(root: URL, mode: PermissionMode, date: Date = Date(),
-                                     coAuthor: String? = nil, projectMap: String? = nil) async -> String {
+                                     coAuthor: String? = nil, projectMap: String? = nil,
+                                     flows: String? = nil) async -> String {
         let git = await ShellRunner().run("git status --short --branch 2>/dev/null | head -40", cwd: root, timeout: 10)
         let isRepo = git.status == 0 && !git.output.isEmpty
         var gitInfo = "Not a git repository."
@@ -293,6 +294,11 @@ public enum ProjectContext {
             mapInfo = "\n\nProject map: a code_graph tool answers \"where is X / what calls Y / what breaks if I change Z\" from a prebuilt graph of this project, with file:line. Call it first to find your way around, then read_file only the lines it points to (offset/limit). Don't grep or read whole files just to orient. Use code_graph instead of running graphify in run_command."
             if !projectMap.isEmpty { mapInfo += "\n" + projectMap }
         }
+        var flowInfo = ""
+        if let flows {
+            flowInfo = "\n\nFlows: for a big job with independent parts, the flow tool runs a JavaScript script that starts many agents. API: agent(prompt, {label, phase, schema, mode: 'read'|'edit', effort}) → text, or the parsed object with schema, or {text, branch} for edit; parallel([() => agent(…), …]); pipeline(items, stage1, stage2); phase(title); log(msg); args; verifyEach(findings, {phase}) adds {verdict: {real, reason}} to each; implementAndCheck(task, {check: 'swift test'}) → {branch, passed, report}. Read agents only read; edit agents work in their own git worktree and branch. The script starts with export const meta = {name, description, phases: [{title}]} and ends with return <result>. Prompts must be complete: agents don't see this chat. effort sets an agent's thinking (e.g. 'low' for quick scouts, 'high' for verifiers and implementers; models with only on/off thinking take 'off'/'on'). Use plain tools for small jobs; the user approves each flow."
+            if !flows.isEmpty { flowInfo += "\n" + flows }
+        }
         let modeLine: String
         switch mode {
         case .plan: modeLine = "You are in plan mode: only read and search (web_fetch is allowed). Don't edit files or run commands. When the plan is ready, call exit_plan with it: the user approves it, or asks for changes."
@@ -314,7 +320,7 @@ public enum ProjectContext {
         \(gitRules)Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)
-        \(gitInfo)\(instructions)\(mapInfo)
+        \(gitInfo)\(instructions)\(mapInfo)\(flowInfo)
         """
     }
 }

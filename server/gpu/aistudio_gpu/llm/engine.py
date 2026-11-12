@@ -51,6 +51,10 @@ GRAPH_SIZES = [int(s) for s in os.environ.get("AISTUDIO_VLLM_GRAPH_SIZES", "1,2,
 # vLLM's advice after measuring free memory: "Replace gpu_memory_utilization config with `--kv-cache-memory=N`
 # (… GiB) to fit into requested memory". Passing it on later starts skips the measuring.
 KV_ADVICE = re.compile(r"--kv-cache-memory=(\d+)`? \([\d.]+ GiB\) to fit into requested memory")
+# vLLM's startup lines on what the KV cache holds: "GPU KV cache size: 1,234,560 tokens" and "Maximum concurrency for
+# 131,072 tokens per request: 9.42x" (wording and commas vary by version; the "x" is optional).
+KV_TOKENS = re.compile(r"KV cache size:\s*([\d,_]+)\s*tokens", re.I)
+KV_CONCURRENCY = re.compile(r"Maximum concurrency for [\d,_]+ tokens per request:\s*([\d,]*\.?\d+)\s*x?", re.I)
 REMEMBER_KV = os.environ.get("AISTUDIO_VLLM_REMEMBER_KV", "1") != "0"
 # Multi-token prediction: models that ship MTP layers (Qwen3-Next and later, DeepSeek V3, GLM-4.5…) draft this many
 # tokens per step with them, which the model then checks in one pass (same output, fewer steps). Qwen3.8-Flash-Next on
@@ -75,6 +79,16 @@ def _has(extra: list[str], *flags: str) -> bool:
 def kv_setup(manifest: dict) -> str:
     """The key the measured KV cache size is remembered under (store.kv_setup, plus this server's defaults)."""
     return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES, MTP_TOKENS if mtp_on(manifest) else 0)
+
+
+def parse_kv_capacity(line: str) -> dict:
+    """What a vLLM log line says about the KV cache: ``kv_tokens`` (int) and/or ``max_concurrency`` (float)."""
+    out: dict = {}
+    if m := KV_TOKENS.search(line):
+        out["kv_tokens"] = int(re.sub(r"[,_]", "", m.group(1)))
+    if m := KV_CONCURRENCY.search(line):
+        out["max_concurrency"] = float(m.group(1).replace(",", ""))
+    return out
 
 
 def phase_of(line: str) -> tuple[str, float | None] | None:
@@ -170,6 +184,8 @@ class EngineProcess:
         self.proc: subprocess.Popen | None = None
         self.log: deque[str] = deque(maxlen=200)
         self.url = f"http://127.0.0.1:{port}"
+        self.kv_tokens = 0  # requests' worth of KV cache vLLM reported at startup (0: not known; never for llama.cpp)
+        self.max_concurrency = 0.0
 
     def start(self) -> None:
         weights = store.weights_dir(self.models_root, self.manifest["id"])
@@ -189,6 +205,9 @@ class EngineProcess:
             print(line, flush=True)  # stays in the container's / service's log
             if (m := KV_ADVICE.search(line)) and not getattr(self, "kv_bytes", None):
                 self._remember_kv(int(m.group(1)))
+            if getattr(self, "manifest", {}).get("engine") != "llamacpp":
+                for k, v in parse_kv_capacity(line).items():
+                    setattr(self, k, v)
             if (p := phase_of(line)) is not None:
                 if p[0] == "Starting engine" and later:
                     continue
@@ -298,6 +317,56 @@ FAKE_COMMIT = "Add hello.txt\n\nCreates hello.txt with a greeting from the agent
 FAKE_PR = "Add hello.txt\n\n## Summary\n- Adds hello.txt with a greeting\n\n## Test plan\n- cat hello.txt"
 
 
+# Scripts for "run a flow" / "run a slow flow" (the flow tool's JS), see FakeEngine.
+FAKE_FLOW = """export const meta = { name: 'smoke-flow', description: 'Two reviewers, verify each finding, one edit', phases: [{ title: 'Review' }, { title: 'Verify' }, { title: 'Edit' }] }
+const FINDINGS = { type: 'object', properties: { findings: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] } } }, required: ['findings'] }
+const found = await parallel(['bugs', 'style'].map(d => () => agent(`Review the project for ${d}. sleep 1`, { label: `review:${d}`, phase: 'Review', schema: FINDINGS })))
+const checked = await verifyEach(found.flatMap(r => r.findings), { phase: 'Verify' })
+const made = await agent('write flow.txt', { label: 'edit', phase: 'Edit', mode: 'edit' })
+return { findings: checked.length, real: checked.filter(f => f.verdict.real).length, branch: made.branch }"""
+
+FAKE_SLOW_FLOW = """export const meta = { name: 'slow-flow', description: 'Three slow agents', phases: [{ title: 'Wait' }] }
+await parallel([1, 2, 3].map(i => () => agent(`Wait a while. sleep 20`, { label: `slow:${i}`, phase: 'Wait' })))
+return 'finished'"""
+
+SCHEMA_MARKER = "Reply with only JSON matching this schema"
+SCHEMA_RETRY = "That reply wasn't valid JSON for the schema"
+SLEEP = re.compile(r"\bsleep (\d+(?:\.\d+)?)", re.I)
+
+
+def schema_instance(schema) -> object:
+    """A value that fits a JSON schema: objects get every property, arrays one item, "x", 1, true, the first enum."""
+    if not isinstance(schema, dict):
+        return "x"
+    if schema.get("enum"):
+        return schema["enum"][0]
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), None)
+    if kind == "object" or "properties" in schema:
+        return {k: schema_instance(v) for k, v in (schema.get("properties") or {}).items()}
+    if kind == "array":
+        return [schema_instance(schema.get("items") or {})]
+    if kind in ("number", "integer"):
+        return 1
+    if kind == "boolean":
+        return True
+    return "x"
+
+
+def schema_reply(text: str) -> str | None:
+    """The JSON instance for a message that holds the schema marker (everything after the first newline after it)."""
+    i = text.find(SCHEMA_MARKER)
+    if i < 0:
+        return None
+    rest = text[i:].partition("\n")[2]
+    try:
+        schema = json.JSONDecoder().raw_decode(rest.lstrip())[0]
+    except ValueError:
+        return None
+    return json.dumps(schema_instance(schema))
+
+
 class FakeEngine:
     """Answers like vLLM with a scripted reply: thinking, then text that repeats the last user message; a tool call
     (split over two chunks) when that message says "use a tool"; an error partway when it says "fail".
@@ -319,6 +388,7 @@ class FakeEngine:
         self.manifest, self.on_status = manifest, on_status
         self.boot = float(os.environ.get("AISTUDIO_FAKE_LLM_BOOT", "0.3")) if boot_seconds is None else boot_seconds
         self.running = False
+        self.kv_tokens, self.max_concurrency = 262144, 2.0
 
     def start(self) -> None:
         self.running = True
@@ -349,6 +419,12 @@ class FakeEngine:
         last = ""
         messages = body.get("messages") or []
         tool_results = []
+        user_texts = []  # every user message, latest first (the schema retry looks back for the marker)
+        for m in messages:
+            if m.get("role") == "user":
+                c = m.get("content")
+                user_texts.insert(0, c if isinstance(c, str) else " ".join(
+                    p.get("text", "") for p in c or [] if isinstance(p, dict) and p.get("type") == "text"))
         for m in reversed(messages):
             if m.get("role") == "tool":
                 tool_results.insert(0, str(m.get("content") or ""))
@@ -370,9 +446,14 @@ class FakeEngine:
                  "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
             return f"data: {json.dumps(d)}\n\n".encode()
 
+        schema_json = schema_reply(last)
+        if schema_json is None and SCHEMA_RETRY in last:
+            schema_json = next((r for t in user_texts if (r := schema_reply(t)) is not None), None)
+        if (m := SLEEP.search(last)) is not None:
+            await asyncio.sleep(float(m.group(1)))  # cancelled with the request when the client goes away
         if not body.get("stream"):
             reply = {"id": "chatcmpl-fake", "object": "chat.completion", "created": created, "model": mid,
-                     "choices": [{"index": 0, "message": {"role": "assistant", "content": f"You said: {last}"},
+                     "choices": [{"index": 0, "message": {"role": "assistant", "content": schema_json or f"You said: {last}"},
                                   "finish_reason": "stop"}],
                      "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}
             yield json.dumps(reply).encode()
@@ -389,6 +470,12 @@ class FakeEngine:
         if "start a session" in last.lower() and "start_session" in tool_names:
             script = [("start_session", {"title": "Hello file", "prompt": "create hello.txt and show it",
                                          "worktree": True})]
+        elif "run a slow flow" in last.lower() and "flow" in tool_names:
+            script = [("flow", {"script": FAKE_SLOW_FLOW})]
+        elif "run a flow" in last.lower() and "flow" in tool_names:
+            script = [("flow", {"script": FAKE_FLOW})]
+        elif "write flow.txt" in last.lower() and "write_file" in tool_names:
+            script = [("write_file", {"path": "flow.txt", "content": "made by a flow\n"})]
         elif "create hello.txt with a todo list" in last.lower():
             script = [("todo_write", {"todos": [
                           {"content": "Write hello.txt", "status": "in_progress", "activeForm": "Writing hello.txt"},
@@ -431,6 +518,8 @@ class FakeEngine:
             last_result = (tool_results[-1].strip().splitlines() or [""])[0] if "upscale" in last.lower() \
                 else tool_results[-1].strip().replace("\n", " ")
             words = f"Done: {last_result}".split(" ")
+        elif schema_json is not None:
+            words = schema_json.split(" ")
         elif "write the commit message now." in last.lower():
             words = FAKE_COMMIT.split(" ")
         elif "write the pull request now." in last.lower():
@@ -440,11 +529,11 @@ class FakeEngine:
         for i, w in enumerate(words):
             await asyncio.sleep(0.005)
             yield chunk({"content": w if i == 0 else " " + w})
-        if "suggest" in last.lower():
+        if "suggest" in last.lower() and schema_json is None:
             yield chunk({"content": "\n\n<followups>\n- Tell me more\n- Show an example\n</follow"})
             yield chunk({"content": "ups>"})
         finish = "stop"
-        if "use a tool" in last.lower():
+        if "use a tool" in last.lower() and schema_json is None:
             yield chunk({"tool_calls": [{"index": 0, "id": "call_1", "type": "function",
                                          "function": {"name": "read_file", "arguments": "{\"path\": "}}]})
             yield chunk({"tool_calls": [{"index": 0, "function": {"arguments": "\"README.md\"}"}}]})

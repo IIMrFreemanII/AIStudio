@@ -16,7 +16,7 @@ from aistudio_gpu.jobs import JobManager
 from aistudio_gpu.llm import proxy, sizing
 from aistudio_gpu.llm.engine import FAKE_COMMIT, FAKE_PR, FakeEngine, phase_of, vllm_command
 from aistudio_gpu.llm.facts import LinkError, ModelRef, facts_from_config, parse_link
-from aistudio_gpu.llm.profiles import guess
+from aistudio_gpu.llm.profiles import apply_effort, efforts, guess
 from aistudio_gpu.llm.service import LocalLLMService, local_media
 from aistudio_gpu.local import LocalRunner
 
@@ -909,3 +909,170 @@ def test_listing_fills_in_mtp_layers_once(client, llm, tmp_path):
     _checkpoint(store.weights_dir(root, mid), {"mtp_num_hidden_layers": 1}, ["mtp.x"])
     listed = {x["id"]: x for x in store.listing(root)}[mid]
     assert listed["mtpLayers"] == 1 and store.read(root, mid)["mtpLayers"] == 1
+
+
+# MARK: flows: KV capacity, context cap, fake flow scripts
+
+KV_LINES = [
+    "(EngineCore pid=1) INFO [kv_cache_utils.py:1087] GPU KV cache size: 1,234,560 tokens",
+    "(EngineCore pid=1) INFO [kv_cache_utils.py:1091] Maximum concurrency for 131,072 tokens per request: 9.42x",
+]
+
+
+def test_kv_capacity_parsed_from_vllm_lines(tmp_path):
+    from aistudio_gpu.llm.engine import EngineProcess, parse_kv_capacity
+    assert parse_kv_capacity(KV_LINES[0]) == {"kv_tokens": 1234560}
+    assert parse_kv_capacity(KV_LINES[1]) == {"max_concurrency": 9.42}
+    assert parse_kv_capacity("GPU KV cache size: 1234560 tokens") == {"kv_tokens": 1234560}
+    assert parse_kv_capacity("Maximum concurrency for 131072 tokens per request: 9.42") == {"max_concurrency": 9.42}
+    assert parse_kv_capacity("Loading weights 41%") == {}
+    m = {"id": "q", "gpu": "B200", "count": 1, "context": 131072, "engineArgs": []}
+    p = EngineProcess(m, tmp_path, lambda *a: None)
+    p.proc = type("P", (), {"stdout": iter(l + "\n" for l in KV_LINES), "poll": lambda self: None})()
+    p._read()
+    assert (p.kv_tokens, p.max_concurrency) == (1234560, 9.42)
+    gguf = EngineProcess({**m, "engine": "llamacpp"}, tmp_path, lambda *a: None)
+    gguf.proc = type("P", (), {"stdout": iter(l + "\n" for l in KV_LINES), "poll": lambda self: None})()
+    gguf._read()
+    assert (gguf.kv_tokens, gguf.max_concurrency) == (0, 0.0)
+
+
+def test_fake_engine_status_reports_kv_capacity(client):
+    mid = install(client)
+    assert "kvTokens" not in client.get(f"/v1/llm/models/{mid}/status", headers=AUTH).json()
+    chat(client, mid, "hi")
+    s = client.get(f"/v1/llm/models/{mid}/status", headers=AUTH).json()
+    assert s["kvTokens"] == 262144 and s["maxConcurrency"] == 2.0
+
+
+def test_context_is_capped_at_1m_and_the_models_window():
+    big = facts({**LLAMA8B, "max_position_embeddings": 2_000_000}, 16 * GIB)
+    assert big.native_context == 2_000_000
+    p = sizing.plan(big, 2_000_000)
+    assert p["context"] == sizing.MAX_CONTEXT == 1_048_576 and p["nativeContext"] == 1_048_576
+    assert all(o["maxContext"] <= sizing.MAX_CONTEXT for o in p["options"])
+    assert all("kvTokens" in o for o in p["options"])
+    small = facts({**LLAMA8B, "max_position_embeddings": 32768}, 16 * GIB)
+    p = sizing.plan(small, 65536)
+    assert p["context"] == 32768 and p["nativeContext"] == 32768
+    o = next(o for o in p["options"] if o["fits"])
+    assert o["kvTokens"] > 0 and o["maxContext"] == 32768
+    assert not any(o["kvTokens"] for o in p["options"] if not o["fits"] and o["maxContext"] == 0)
+
+
+def test_bigger_context_recommends_more_memory():
+    f = facts({**LLAMA8B, "max_position_embeddings": 1_048_576}, 16 * GIB)
+
+    def memory(ctx):
+        rec = sizing.plan(f, ctx)["recommended"]
+        return sizing.GPUS[rec["gpu"]] * rec["count"]
+    assert memory(8192) < memory(1_048_576)
+
+
+def test_too_large_a_context_is_refused(client):
+    r = client.post("/v1/llm/install", json={"url": "o/qwen38", "context": 300000}, headers=AUTH)
+    assert r.status_code == 400 and "more than this model's window" in r.text
+    mid = install(client)
+    r = client.patch(f"/v1/llm/models/{mid}", json={"context": 300000}, headers=AUTH)
+    assert r.status_code == 400
+    assert "more than this model's window" in r.text
+    plan = client.get(f"/v1/llm/models/{mid}/plan?context=65536", headers=AUTH).json()
+    assert plan["nativeContext"] == 262144 and "kvTokens" in plan["options"][0]
+
+
+def tool_defs(*names):
+    return [{"type": "function", "function": {"name": n, "parameters": {"type": "object"}}} for n in names]
+
+
+def first_call(events):
+    _, calls = reply_text(events)
+    return calls[0]["function"] if calls else None
+
+
+def test_fake_flow_scripts(client):
+    from aistudio_gpu.llm.engine import FAKE_FLOW, FAKE_SLOW_FLOW
+    mid = install(client)
+    call = first_call(chat(client, mid, "", messages=[{"role": "user", "content": "Run a flow"}],
+                           tools=tool_defs("flow")))
+    assert call["name"] == "flow" and json.loads(call["arguments"]) == {"script": FAKE_FLOW}
+    call = first_call(chat(client, mid, "", messages=[{"role": "user", "content": "Run a slow flow"}],
+                           tools=tool_defs("flow")))
+    assert json.loads(call["arguments"]) == {"script": FAKE_SLOW_FLOW}
+    assert first_call(chat(client, mid, "Run a flow")) is None  # not offered: plain reply
+    call = first_call(chat(client, mid, "", messages=[{"role": "user", "content": "write flow.txt"}],
+                           tools=tool_defs("write_file", "run_command")))
+    assert call["name"] == "write_file" and json.loads(call["arguments"])["path"] == "flow.txt"
+
+
+def test_fake_schema_reply_and_sleep(client):
+    mid = install(client)
+    schema = {"type": "object", "properties": {"findings": {"type": "array", "items": {
+        "type": "object", "properties": {"title": {"type": "string"}, "n": {"type": "integer"},
+                                         "ok": {"type": "boolean"}, "k": {"enum": ["a", "b"]}},
+        "required": ["title"]}}}, "required": ["findings"]}
+    prompt = f"Review the project for bugs. sleep 0.2\n\nReply with only JSON matching this schema:\n{json.dumps(schema)}"
+    t = time.monotonic()
+    text, calls = reply_text(chat(client, mid, "", messages=[{"role": "user", "content": prompt}],
+                                  tools=tool_defs("read_file")))
+    assert time.monotonic() - t >= 0.2 and not calls
+    got = json.loads(text)
+    assert got["findings"][0] == {"title": "x", "n": 1, "ok": True, "k": "a"}
+    msgs = [{"role": "user", "content": prompt}, {"role": "assistant", "content": "oops"},
+            {"role": "user", "content": "That reply wasn't valid JSON for the schema. Reply again."}]
+    text, _ = reply_text(chat(client, mid, "", messages=msgs))
+    assert json.loads(text)["findings"][0]["title"] == "x"
+    t = time.monotonic()
+    text, _ = reply_text(chat(client, mid, "sleep 0.2 then hi"))
+    assert time.monotonic() - t >= 0.2 and text.startswith("You said")
+
+
+# MARK: thinking effort
+
+GPTOSS = {"reasoningParser": "openai_gptoss"}
+QWEN = {"reasoningParser": "qwen3"}
+V31 = {"reasoningParser": "deepseek_r1", "facts": {"model_type": "deepseek_v3", "chat_template": "{% if thinking %}"}}
+R1 = {"reasoningParser": "deepseek_r1", "facts": {"model_type": "deepseek_v3", "chat_template": "<think>"}}
+
+
+def test_efforts_per_family():
+    assert efforts(GPTOSS) == ["low", "medium", "high"]
+    for m in (QWEN, {"reasoningParser": "glm45"}, {"reasoningParser": "llama.cpp"}, V31):
+        assert efforts(m) == ["off", "on"]
+    assert efforts(R1) == [] and efforts({"reasoningParser": None}) == [] and efforts({"reasoningParser": "x"}) == []
+
+
+def test_apply_effort_mapping():
+    assert apply_effort({"reasoning_effort": "high"}, GPTOSS) == {"reasoning_effort": "high"}
+    assert apply_effort({"reasoning_effort": "off"}, GPTOSS) == {"reasoning_effort": "low"}
+    assert apply_effort({"reasoning_effort": "on"}, GPTOSS) == {"reasoning_effort": "medium"}
+    assert apply_effort({"reasoning_effort": "off"}, QWEN) == {"chat_template_kwargs": {"enable_thinking": False}}
+    body = apply_effort({"reasoning_effort": "high", "chat_template_kwargs": {"x": 1}}, QWEN)
+    assert body == {"chat_template_kwargs": {"x": 1, "enable_thinking": True}}
+    assert apply_effort({"reasoning_effort": "low"}, V31) == {"chat_template_kwargs": {"thinking": False}}
+    assert apply_effort({"reasoning_effort": "on"}, V31) == {"chat_template_kwargs": {"thinking": True}}
+    assert apply_effort({"reasoning_effort": "high", "a": 1}, R1) == {"a": 1}
+    assert apply_effort({"reasoning_effort": "high"}, {}) == {}
+    for m in (GPTOSS, QWEN, R1, {}):
+        assert apply_effort({"a": 1}, m) == {"a": 1}
+        assert apply_effort({"reasoning_effort": None}, m) == {"reasoning_effort": None}
+
+
+def test_listing_and_relay_carry_efforts(client, monkeypatch):
+    seen = []
+    real = FakeEngine.chat
+
+    def recording(self, body):
+        seen.append(body)
+        return real(self, body)
+
+    monkeypatch.setattr(FakeEngine, "chat", recording)
+    mid = install(client)
+    m = next(m for m in client.get("/v1/llm/models", headers=AUTH).json()["models"] if m["id"] == mid)
+    assert m["efforts"] == efforts(m) and "efforts" in m
+    assert client.patch(f"/v1/llm/models/{mid}", json={"reasoningParser": "qwen3"}, headers=AUTH).json()["efforts"] \
+        == ["off", "on"]
+    chat(client, mid, "hi", reasoning_effort="low")
+    assert seen[-1]["chat_template_kwargs"] == {"enable_thinking": False} and "reasoning_effort" not in seen[-1]
+    assert client.patch(f"/v1/llm/models/{mid}", json={"reasoningParser": "openai_gptoss"}, headers=AUTH).status_code == 200
+    chat(client, mid, "hi", reasoning_effort="off")
+    assert seen[-1]["reasoning_effort"] == "low"

@@ -21,9 +21,14 @@ public struct ShellRunner: Sendable {
         p.standardOutput = pipe
         p.standardError = FileHandle.nullDevice
         p.standardInput = FileHandle.nullDevice
+        // Not waitUntilExit(): it spins the run loop, and on the main thread (a SwiftUI body reading this) that can
+        // re-enter the body and this initializer, which traps. Reading to EOF and a semaphore block without it.
+        let done = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in done.signal() }
         do { try p.run() } catch { return ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin" }
-        p.waitUntilExit()
-        let s = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        done.wait()
+        let s = String(decoding: data, as: UTF8.self)
         return s.isEmpty ? (ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin") : s
     }()
 

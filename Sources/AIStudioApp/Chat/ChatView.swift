@@ -10,6 +10,7 @@ struct ChatView: View {
     /// Docked next to the graph (the graph helper): a narrower, two-row header.
     var compact = false
     @AppStorage("changesWidth") private var changesWidth = 440.0
+    @AppStorage("flowPanelWidth") private var flowWidth = 460.0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -34,7 +35,12 @@ struct ChatView: View {
                 ChatComposer(doc: doc)
             }
             .frame(maxWidth: .infinity)
-            if doc.isCoding && doc.changesOpen && !compact {
+            if doc.isCoding && !compact, let runID = doc.flowPanelRunID, let run = model.flowController(runID) {
+                MGDivider(vertical: true, gap: true)
+                FlowPanel(doc: doc, run: run)
+                    .frame(width: flowWidth)
+                    .overlay(alignment: .leading) { MGResizeHandle(width: $flowWidth, range: 380...720).offset(x: -3) }
+            } else if doc.isCoding && doc.changesOpen && !compact {
                 MGDivider(vertical: true, gap: true)
                 GitChangesPane(doc: doc)
                     .frame(width: changesWidth)
@@ -42,6 +48,7 @@ struct ChatView: View {
             }
         }
         .background(MG.windowBackground)
+        .onChange(of: doc.changesOpen) { _, open in if open { doc.flowPanelRunID = nil } }
         .onAppear { ChatQuoting.visibleChats += 1 }
         .onDisappear { ChatQuoting.visibleChats -= 1 }
         .onReceive(NotificationCenter.default.publisher(for: ChatQuoting.notification)) { note in
@@ -186,17 +193,14 @@ struct ChatHeader: View {
     }
 
     @ViewBuilder var effortMenu: some View {
+        if let levels = EffortLevels.levels(model, doc) {
             MGMenuButton(kind: .icon) {
-                MGMenuItem.header("Thinking effort")
-                for (value, title) in [(nil, "Model's default"), ("low", "Low"), ("medium", "Medium"), ("high", "High")] as [(String?, String)] {
-                    MGMenuItem.button(title, checked: doc.transcript.reasoningEffort == value) {
-                        doc.transcript.reasoningEffort = value
-                    }
-                }
+                EffortLevels.items(levels, doc: doc)
             } label: {
                 Image(systemName: "brain")
             }
-            .mgHelp("How hard thinking models think before answering")
+            .mgHelp(EffortLevels.help)
+        }
     }
 
     @ViewBuilder var cost: some View {
@@ -409,6 +413,8 @@ struct ChatTurnView: View {
 
     var body: some View {
         switch turn.role {
+        case .user where turn.flowEvent != nil:
+            FlowEventCard(doc: doc, event: turn.flowEvent!)
         case .user where turn.sessionEvent != nil:
             SessionEventCard(event: turn.sessionEvent!)
         case .user where turn.summary == true:
@@ -532,7 +538,7 @@ struct ChatTurnView: View {
                                 .mgHelp("Reply to this message (or select a passage, then right-click › Reply with Selection)")
                             }
                         }
-                        if let s = turn.stats { StatsLine(stats: s, model: turn.model) }
+                        if let s = turn.stats { StatsLine(stats: s, model: turn.model, effort: turn.effort) }
                     }
                 }
             }
@@ -724,9 +730,73 @@ struct WaitingLine: View {
     }
 }
 
+/// The thinking-effort levels of a chat's model and the menu items for them (the header's menu and the composer's).
+enum EffortLevels {
+    static let help = "How hard the model thinks before answering. On/Off models switch thinking; gpt-oss has three levels."
+
+    static func label(_ value: String?) -> String {
+        guard let v = value else { return "Model's default" }
+        switch v {
+        case "off": return "Off"
+        case "on": return "On"
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        default: return v.prefix(1).uppercased() + v.dropFirst()
+        }
+    }
+
+    /// The model's levels: its own, today's three for an older server, nil (hide the control) when it can't be controlled.
+    @MainActor static func levels(_ model: AppModel, _ doc: ChatDocument) -> [String]? {
+        let l = doc.modelKey.flatMap { model.llm.model($0) }?.efforts ?? ["low", "medium", "high"]
+        return l.isEmpty ? nil : l
+    }
+
+    @MainActor @MGMenuBuilder static func items(_ levels: [String], doc: ChatDocument) -> [MGMenuItem] {
+        MGMenuItem.header("Thinking effort")
+        for value in [nil] + levels.map({ Optional($0) }) {
+            MGMenuItem.button(label(value), checked: doc.transcript.reasoningEffort == value) {
+                doc.transcript.reasoningEffort = value
+            }
+        }
+        if let cur = doc.transcript.reasoningEffort, !levels.contains(cur) {
+            MGMenuItem.button("\(label(cur)) (not supported by this model)", checked: true, enabled: false) {}
+        }
+    }
+}
+
+/// The composer's effort control: the brain and the level, the icon alone when the row is narrow.
+struct ComposerEffortMenu: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    var body: some View {
+        if let levels = EffortLevels.levels(model, doc) {
+            let cur = doc.transcript.reasoningEffort
+            let menu = { (text: Bool) in
+                MGMenuButton(kind: .plain) {
+                    EffortLevels.items(levels, doc: doc)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "brain")
+                        if text { Text(cur == nil ? "Default" : EffortLevels.label(cur)).lineLimit(1) }
+                    }
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
+                .mgHelp(EffortLevels.help)
+            }
+            ViewThatFits(in: .horizontal) {
+                menu(true).fixedSize()
+                menu(false).fixedSize()
+            }
+        }
+    }
+}
+
 struct StatsLine: View {
     let stats: RequestStats
     let model: String?
+    var effort: String? = nil
 
     var body: some View {
         var parts: [String] = []
@@ -736,6 +806,7 @@ struct StatsLine: View {
         if let ttft = stats.ttftMs { parts.append(String(format: "first token %.1f s", ttft / 1000)) }
         if let w = stats.waitSeconds, w > 5 { parts.append(String(format: "waited %.0f s", w)) }
         if let c = stats.costUSD, c > 0 { parts.append(String(format: "$%.4f", c)) }
+        if let e = effort { parts.append("effort \(EffortLevels.label(e).lowercased())") }
         return Text(parts.joined(separator: " · ")).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
     }
 }
@@ -856,7 +927,10 @@ struct ChatComposer: View {
                         .mgHelp("Send (↩)")
                 }
             }
-            ContextMeter(doc: doc)
+            HStack(spacing: 8) {
+                ComposerEffortMenu(doc: doc)
+                ContextMeter(doc: doc)
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)

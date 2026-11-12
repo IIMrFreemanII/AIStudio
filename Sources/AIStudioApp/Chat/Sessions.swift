@@ -45,7 +45,7 @@ extension AppModel {
         let pt = parent.transcript
         var t: ChatTranscript
         if spec.context == .fork,
-           let last = pt.turns.last(where: { $0.role == .user && $0.sessionEvent == nil && $0.summary != true }),
+           let last = pt.turns.last(where: { $0.role == .user && $0.sessionEvent == nil && $0.flowEvent == nil && $0.summary != true }),
            let forked = pt.fork(upTo: last.id) {
             t = forked
         } else {
@@ -57,6 +57,7 @@ extension AppModel {
             t.allowDomains = pt.allowDomains
             t.reasoningEffort = pt.reasoningEffort
         }
+        if let e = spec.effort { t.reasoningEffort = e }
         t.title = spec.title
         t.brief = spec.prompt
         t.parentID = parent.id
@@ -152,6 +153,12 @@ extension AppModel {
             doc.pendingEvents = []
             deliver(events, to: doc)
         }
+        // Flow results wait for the reply a session report may have just started.
+        if !doc.pendingFlowEvents.isEmpty, !doc.isStreaming, !doc.compacting {
+            let events = doc.pendingFlowEvents
+            doc.pendingFlowEvents = []
+            deliverFlow(events, to: doc)
+        }
         guard (doc.transcript.depth ?? 0) > 0, let parentID = doc.transcript.parentID else { return }
         let last = doc.transcript.turns.last
         let status: String
@@ -230,7 +237,7 @@ extension AppModel {
     /// Stops the reply and carries on with the task in a new session (a fork of this one).
     func moveTaskToNewSession(_ doc: ChatDocument) {
         stopReply(doc)
-        guard let text = doc.transcript.turns.last(where: { $0.role == .user && $0.sessionEvent == nil && $0.summary != true })?.text
+        guard let text = doc.transcript.turns.last(where: { $0.role == .user && $0.sessionEvent == nil && $0.flowEvent == nil && $0.summary != true })?.text
         else { return }
         let spec = SessionSpec(title: doc.title + " (continued)", prompt: "Continue this task: " + text, context: .fork,
                                worktree: doc.transcript.worktree != nil)

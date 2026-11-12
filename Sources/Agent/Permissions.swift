@@ -10,6 +10,9 @@ public enum ToolEffect: String, Codable, Sendable {
     /// Reads from the internet (`web_fetch`, `web_search`): asks in Ask mode unless the domain is always-allowed;
     /// free in the other modes (plan mode included: it only reads).
     case network
+    /// Starts a flow (many agents, GPU time): asks every time (no "always allow"), refused in plan mode, free only
+    /// in Bypass.
+    case orchestrate
 }
 
 /// How much the agent may do without asking, as in Claude Code.
@@ -117,6 +120,9 @@ public enum PermissionEngine {
         case .run:
             if mode == .plan { return .deny("Plan mode is read only: workflows aren't run.") }
             return rules.runs ? .allow : .ask
+        case .orchestrate:
+            if mode == .plan { return .deny("Plan mode is read only: flows don't run.") }
+            return .ask
         case .network:
             if mode != .ask { return .allow }
             if let domain, rules.allows(domain: domain) { return .allow }

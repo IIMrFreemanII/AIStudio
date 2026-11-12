@@ -35,6 +35,7 @@ OVERHEAD = 4 * GIB
 VISION_OVERHEAD = 2 * GIB
 MIN_CONTEXT = 8192
 DEFAULT_CONTEXT = 131072
+MAX_CONTEXT = 1_048_576  # 1M tokens: the most the app offers, whatever the model's native window
 ADA_OR_NEWER = {"L40S", "H100", "H200", "B200"}
 HOPPER_OR_NEWER = {"H100", "H200", "B200"}
 
@@ -53,12 +54,13 @@ class Option:
     weights_per_gpu_gb: float
     kv_per_token_kb: float
     note: str = ""
+    kv_tokens: int = 0  # tokens of KV cache the memory left holds (not capped at the context window); 0: no fit
 
     def public(self) -> dict:
         d = asdict(self)
         return {"gpu": d["gpu"], "count": d["count"], "fits": d["fits"], "usdPerHour": round(d["usd_per_hour"], 2),
                 "maxContext": d["max_context"], "weightsPerGPUGB": round(d["weights_per_gpu_gb"], 1),
-                "kvPerTokenKB": round(d["kv_per_token_kb"], 1), "note": d["note"]}
+                "kvPerTokenKB": round(d["kv_per_token_kb"], 1), "note": d["note"], "kvTokens": d["kv_tokens"]}
 
 
 def kv_bytes_per_token(f: Facts, count: int, kv_dtype_bytes: int = 2) -> float:
@@ -97,12 +99,13 @@ def options(f: Facts, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> lis
             weights = on_gpus / n + replicated_bytes
             budget = mib * (1 << 20) * UTILIZATION - weights - OVERHEAD - (VISION_OVERHEAD if f.vision else 0)
             per_token = kv_bytes_per_token(f, n, kv_dtype_bytes) or 1
-            context = int(min(f.native_context, max(0.0, budget) / per_token)) if budget > 0 else 0
+            kv_tokens = int(budget / per_token) if budget > 0 else 0
+            context = min(f.native_context, MAX_CONTEXT, kv_tokens)
             note = why or ""
             if not note and f.quant.get("method") == "fp8" and gpu not in ADA_OR_NEWER:
                 note = "FP8 runs slower on A100"
             out.append(Option(gpu, n, why is None and context >= min(MIN_CONTEXT, f.native_context),
-                              price * n * 3600, context, weights / 1e9, per_token / 1024, note))
+                              price * n * 3600, context, weights / 1e9, per_token / 1024, note, kv_tokens))
     return out
 
 
@@ -124,9 +127,9 @@ def default_context(f: Facts) -> int:
 
 def plan(f: Facts, context: int | None = None, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> dict:
     """The options (cheapest first, those that fit first) and the recommended one, as the API returns them."""
-    want = min(context or default_context(f), f.native_context)
+    want = min(context or default_context(f), f.native_context, MAX_CONTEXT)
     opts = options(f, kv_dtype_bytes, replicated_bytes)
     best = recommend(opts, want)
     ranked = sorted(opts, key=lambda o: (not o.fits, o.usd_per_hour, o.count))
-    return {"context": want, "recommended": best.public() if best else None,
+    return {"context": want, "nativeContext": min(f.native_context, MAX_CONTEXT), "recommended": best.public() if best else None,
             "options": [o.public() for o in ranked]}

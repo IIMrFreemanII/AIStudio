@@ -91,7 +91,7 @@ struct LLMModelRow: View {
             Image(systemName: "text.bubble").foregroundStyle(MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.name).font(.mgCallout.weight(.medium)).lineLimit(1)
-                Text([server, model.gpuLabel, "\(model.context / 1024)k context", model.engine == "llamacpp" ? "GGUF" : nil,
+                Text([server, model.gpuLabel, "\(contextLabel(model.context)) context", model.engine == "llamacpp" ? "GGUF" : nil,
                       model.source == "civitai" ? "Civitai" : nil, model.vision == true ? "vision" : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
@@ -194,7 +194,7 @@ struct LLMAddSheet: View {
                                  options: f.plan.options.filter(\.fits).map { ($0, optionTitle($0, recommended: $0 == f.plan.recommended)) })
                     }
                     MGFormRow("Context") {
-                        MGPicker(selection: $context, options: contextChoices(f).map { ($0, "\($0 / 1024)k tokens") })
+                        MGPicker(selection: $context, options: contextChoices(f).map { ($0, "\(contextLabel($0)) tokens") })
                     }
                     MGFormRow("Name") { TextField("Name", text: $name).frame(width: 300) }
                     MGFormRow("ID") { TextField("ID", text: $modelID).frame(width: 300) }
@@ -226,7 +226,7 @@ struct LLMAddSheet: View {
             : f.facts.quant?["method"]?.string.map { $0.uppercased() } ?? "full precision"
         VStack(alignment: .leading, spacing: 4) {
             Text(f.facts.repo).font(.mgCallout.weight(.semibold))
-            Text("\(f.facts.modelType) · \(String(format: "%.0f GB", gb)) · \(quant) · \(f.facts.nativeContext / 1024)k context"
+            Text("\(f.facts.modelType) · \(String(format: "%.0f GB", gb)) · \(quant) · \(contextLabel(f.facts.nativeContext)) context"
                  + (f.facts.vision ? " · vision" : "") + ((f.facts.experts ?? 0) > 0 ? " · MoE" : ""))
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
             Text("Tool calls: \(f.profile.toolParser ?? "none") · thinking: \(f.profile.reasoningParser ?? "none")")
@@ -315,6 +315,11 @@ struct LLMSettingsSheet: View {
     @State private var mtp = true
     @State private var error: String?
     @State private var busy = false
+    /// A re-plan for a new context is on its way (and the task that fetches it, to cancel on the next change).
+    @State private var replanning = false
+    @State private var replanTask: Task<Void, Never>?
+    /// The context the model had saved when the sheet opened: always a choice, even if it isn't a standard step.
+    @State private var savedContext = 0
 
     /// Fast start needs one GPU: on several it shows (and saves) Standard.
     var fastStartAllowed: Bool { (option?.count ?? model.llm.model(request.key)?.count ?? 1) == 1 }
@@ -350,15 +355,24 @@ struct LLMSettingsSheet: View {
             Text("\(m?.name ?? request.key.modelID): GPUs, Context and Start-up").font(.mgHeadline)
             if let plan {
                 MGSection {
-                    MGFormRow("GPUs") {
-                        MGPicker(selection: Binding(get: { option ?? plan.options[0] }, set: { option = $0; clamp() }),
-                                 options: plan.options.filter(\.fits).map {
-                                     ($0, String(format: "%@ · $%.2f/h · up to %dk", $0.label, $0.usdPerHour, $0.maxContext / 1024))
-                                 })
-                    }
                     MGFormRow("Context") {
-                        MGPicker(selection: $context, options: choices.map { ($0, "\($0 / 1024)k tokens") })
+                        MGPicker(selection: Binding(get: { context }, set: { setContext($0) }),
+                                 options: choices.map { ($0, "\(contextLabel($0)) tokens") })
                     }
+                    MGFormRow("GPUs") {
+                        HStack(spacing: 8) {
+                            MGPicker(selection: Binding(get: { option ?? plan.options[0] }, set: { option = $0 }),
+                                     options: gpuChoices(plan).map { ($0, gpuTitle($0)) })
+                            if replanning { MGSpinner().controlSize(.small) }
+                        }
+                    }
+                }
+                if hiddenSmaller(plan) {
+                    Text("Smaller GPUs can't hold \(contextLabel(context)) of context.")
+                        .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
+                if let agents = agentsLine {
+                    Text(agents).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 }
                 MGSection("Start-up") {
                     MGFormRow("Weight loading") {
@@ -419,18 +433,73 @@ struct LLMSettingsSheet: View {
         }
         .padding(20)
         .frame(width: 520)
-        .task { await load() }
+        .task(id: request.id) { await load() }
     }
 
+    static let contextSteps = [8192, 16384, 32768, 65536, 131072, 262144, 524288, 1_048_576]
+
+    /// The model's window: what the server says, else the model's own, else the biggest context any option holds (all
+    /// capped at the server's 1M limit).
+    var nativeWindow: Int {
+        let native = plan?.nativeContext ?? model.llm.model(request.key)?.nativeContext
+            ?? plan?.options.map(\.maxContext).max() ?? 0
+        return min(native, 1_048_576)
+    }
+
+    /// Every context up to the window (not tied to a GPU: the GPU follows the context), plus the saved one.
     var choices: [Int] {
-        guard let o = option ?? plan?.options.first else { return [] }
-        var out = [8192, 16384, 32768, 65536, 131072, 262144, 524288].filter { $0 < o.maxContext }
-        out.append(o.maxContext)
-        return out
+        let native = nativeWindow
+        var out = Self.contextSteps.filter { $0 <= native }
+        if native > 0, !out.contains(native) { out.append(native) }
+        if savedContext > 0, !out.contains(savedContext) { out.append(savedContext) }
+        return out.sorted()
     }
 
-    func clamp() {
-        if !choices.contains(context) { context = choices.last { $0 <= max(context, choices.first ?? 0) } ?? choices.first ?? 0 }
+    /// The GPU options that fit the model and hold the context (the selected one too, if it doesn't, so the picker isn't blank).
+    func gpuChoices(_ plan: LLMPlan) -> [GPUOption] {
+        plan.options.filter { $0.fits && ($0.maxContext >= context || $0 == option) }
+    }
+
+    func gpuTitle(_ o: GPUOption) -> String {
+        o.maxContext >= context ? String(format: "%@ · $%.2f/h", o.label, o.usdPerHour)
+            : "\(o.label) · too small for \(contextLabel(context))"
+    }
+
+    /// Options that fit the model but can't hold the context (left out of the picker, which can't disable items).
+    func hiddenSmaller(_ plan: LLMPlan) -> Bool {
+        plan.options.contains { $0.fits && $0.maxContext < context && $0 != option }
+    }
+
+    var agentsLine: String? {
+        guard let kv = option?.kvTokens else { return nil }
+        let k = max(1, kv / max(context, 24_000))
+        return k == 1 ? "≈ 1 agent at once at this context" : "≈ \(k) agents at once at this context"
+    }
+
+    /// A new context: ask the server for the cheapest GPUs that fit it and select its recommendation. A change while a
+    /// fetch is in flight cancels that fetch.
+    func setContext(_ value: Int) {
+        context = value
+        replanTask?.cancel()
+        if let preview {  // snapshots: no server, pick the cheapest fitting option here
+            option = preview.options.filter { $0.fits && $0.maxContext >= value }.min { $0.usdPerHour < $1.usdPerHour } ?? option
+            return
+        }
+        guard let client = model.llm.client(request.key.serverID) else { return }
+        replanning = true
+        replanTask = Task {
+            do {
+                let p = try await client.plan(request.key.modelID, context: value)
+                guard !Task.isCancelled else { return }
+                plan = p
+                if let r = p.recommended { option = r }
+                replanning = false
+            } catch {
+                guard !Task.isCancelled else { return }
+                replanning = false
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     func load() async {
@@ -442,10 +511,10 @@ struct LLMSettingsSheet: View {
             plan = p
             option = p.options.first { $0.gpu == p.current.gpu && $0.count == p.current.count && $0.fits } ?? p.recommended
             context = p.current.context
+            savedContext = p.current.context
             loadFormat = model.llm.model(request.key)?.loadFormat ?? "auto"
             snapshot = model.llm.model(request.key)?.snapshot == true
             mtp = model.llm.model(request.key)?.mtp != false
-            if !choices.contains(context) { context = choices.last { $0 <= context } ?? choices.first ?? context }
         } catch {
             self.error = error.localizedDescription
         }
@@ -468,4 +537,13 @@ struct LLMSettingsSheet: View {
             self.error = error.localizedDescription
         }
     }
+}
+
+/// "128k", "1M", "1.5M": a context size in tokens, as the pickers show it.
+func contextLabel(_ tokens: Int) -> String {
+    if tokens >= 1_048_576 {
+        let m = Double(tokens) / 1_048_576
+        return m == m.rounded() ? "\(Int(m))M" : String(format: "%.1fM", m)
+    }
+    return "\(tokens / 1024)k"
 }

@@ -44,7 +44,11 @@ struct ToolCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if expanded {
+            if call.name == "flow", status != "running", let id = doc.flowRunID(for: call, result: result),
+               let run = model.flowController(id) {
+                MGDivider()
+                FlowRunCard(run: run)
+            } else if expanded {
                 MGDivider()
                 details.padding(10)
             }
@@ -211,6 +215,7 @@ struct PermissionCard: View {
             default: return "Run the workflow?"
             }
         case .network: return "Read \(request.preview.domain ?? "this web page")?"
+        case .orchestrate: return "Run this flow?"
         }
     }
 
@@ -416,6 +421,15 @@ struct CodingHeaderItems: View {
             MGMenuButton(kind: .icon) {
                 MGMenuItem.button("Move Task to New Session", icon: "arrow.up.forward.square", enabled: doc.isStreaming) {
                     model.moveTaskToNewSession(doc)
+                }
+                MGMenuItem.menu("Run Flow", icon: "square.stack.3d.up") {
+                    let saved = FlowStore.list(root: doc.projectURL)
+                    if saved.isEmpty {
+                        MGMenuItem.header("No saved flows (.aistudio/flows)")
+                    }
+                    for f in saved {
+                        MGMenuItem.button(f.name) { model.runSavedFlow(f, in: doc) }
+                    }
                 }
                 if let url = doc.projectURL {
                     MGMenuItem.button("Show Project in Finder", icon: "folder") {

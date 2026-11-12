@@ -64,6 +64,33 @@ public struct SessionEvent: Codable, Equatable, Sendable, Hashable {
     }
 }
 
+/// A finished flow run's result, posted into the chat that started it.
+public struct FlowEvent: Codable, Equatable, Sendable, Hashable {
+    public var runID: String
+    public var name: String
+    public var status: String
+    /// The script's result JSON, or the error, clipped.
+    public var summary: String
+    public var agents: Int
+    public var failed: Int
+    /// Branches of edit agents that changed something.
+    public var branches: [String]
+    public init(runID: String, name: String, status: String, summary: String, agents: Int, failed: Int, branches: [String] = []) {
+        self.runID = runID
+        self.name = name
+        self.status = status
+        self.summary = summary
+        self.agents = agents
+        self.failed = failed
+        self.branches = branches
+    }
+
+    /// What the model gets for the result.
+    public var textForModel: String {
+        "[Flow \u{201C}\(name)\u{201D} \(status) (run \(runID)): \(String(summary.prefix(4000))). Agents: \(agents) (\(failed) failed). Branches with changes: \(branches.isEmpty ? "none" : branches.joined(separator: ", ")).]"
+    }
+}
+
 /// One message of a saved chat, with what the app shows around it (thinking, stats, errors).
 public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable { case user, assistant, tool }
@@ -91,6 +118,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     /// The model that wrote it (assistant turns).
     public var model: String?
     public var stats: RequestStats?
+    /// The thinking effort the reply was asked for (assistant turns; nil: the model's default).
+    public var effort: String?
     /// Why the reply stopped early (a failed request, a cancel). The turn isn't sent back to the model.
     public var error: String?
     public var date: Date
@@ -105,6 +134,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var summary: Bool?
     /// A user turn: a child session's report (the model gets it as a bracketed note).
     public var sessionEvent: SessionEvent?
+    /// A user turn: a finished flow run's result (the model gets it as a bracketed note).
+    public var flowEvent: FlowEvent?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,
@@ -309,7 +340,11 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         // Everything before the latest summary is in it.
         let shown = turns
         let from = shown.lastIndex { $0.summary == true } ?? shown.startIndex
-        for t in shown[from...] where t.error == nil || !t.text.isEmpty || t.sessionEvent != nil {
+        for t in shown[from...] where t.error == nil || !t.text.isEmpty || t.sessionEvent != nil || t.flowEvent != nil {
+            if let e = t.flowEvent {
+                out.append(ChatMessage(role: .user, parts: [.text(e.textForModel)]))
+                continue
+            }
             if let e = t.sessionEvent {
                 out.append(ChatMessage(role: .user, parts: [.text(e.textForModel)]))
                 continue
