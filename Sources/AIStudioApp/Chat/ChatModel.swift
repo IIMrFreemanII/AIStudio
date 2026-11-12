@@ -383,7 +383,9 @@ final class LLMCatalog {
         let busy = working()
         for key in busy.union(focused.map { [$0] } ?? []) {
             let st = status(key)
-            if st?.isActive == true || st == nil { await refreshStatus(key) }
+            // One that's off is checked every 30 s too: it may have been started from another chat, a session or
+            // the Servers list, and its chip and menu would otherwise say Cold while it loads.
+            if st?.isActive == true || st == nil || ticks % 3 == 0 { await refreshStatus(key) }
             let current = status(key)
             // Keepalive once a minute: for the chat in front while the user is around, for working sessions always.
             let wanted = busy.contains(key) || (key == focused && NSApp.isActive && Date().timeIntervalSince(lastActivity) < 600)

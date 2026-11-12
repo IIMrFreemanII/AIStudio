@@ -370,6 +370,13 @@ struct LLMClientTests {
         #expect(l.installs["tiny"]?.total == 100)
     }
 
+    @Test func startingCoversTheWaitAndTheLoad() {
+        // The menus offer "Cancel the Start" for these, and "Shut the GPU Down Now" once ready.
+        #expect(LLMStatus(state: "starting").isStarting && LLMStatus(state: "loading").isStarting)
+        #expect(!LLMStatus(state: "ready").isStarting && LLMStatus(state: "ready").isActive)
+        #expect(!LLMStatus(state: "cold").isStarting && !LLMStatus(state: "failed").isStarting)
+    }
+
     @Test func statusDecodesTheColdStartSummary() throws {
         let json = """
         {"id":"m","state":"loading","phase":"Loading weights","progress":0.4,"bootSeconds":75.2,

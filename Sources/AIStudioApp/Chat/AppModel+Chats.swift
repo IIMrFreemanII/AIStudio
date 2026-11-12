@@ -20,6 +20,16 @@ extension AppModel {
         return doc
     }
 
+    /// A chat with this model, in front: the newest empty plain chat already using it, else a new one (a click on a
+    /// model in Servers › Language Models).
+    func chat(with key: LLMKey) {
+        if let doc = chats.last(where: { $0.modelKey == key && $0.transcript.turns.isEmpty && $0.transcript.projectPath == nil }) {
+            openChat(doc.id)
+        } else {
+            newChat(model: key)
+        }
+    }
+
     /// A coding chat in a project folder: the agent's tools work there, with the permission mode chosen in the chat.
     @discardableResult
     func newCodingChat(project: URL, model key: LLMKey? = nil) -> ChatDocument {
@@ -406,6 +416,23 @@ extension AppModel {
     }
 
     func stopReply(_ doc: ChatDocument) {
+        // Stopped while the model was still starting for this reply (waiting for a GPU, or loading): cancel the
+        // start too, unless another chat is waiting on the same model. Otherwise the GPU starts anyway and runs,
+        // billed, until it goes idle.
+        if doc.isStreaming, let key = doc.modelKey,
+           !chats.contains(where: { $0.id != doc.id && $0.isStreaming && $0.modelKey == key }) {
+            let streamSaysStarting = doc.engine.map { $0.state == "starting" || $0.state == "loading" } ?? false
+            let unknown = doc.engine == nil  // no status line yet (the first comes after a few seconds), or generating
+            if streamSaysStarting || unknown {
+                Task {
+                    if !streamSaysStarting {  // ask the server: only a model still starting is stopped
+                        await llm.refreshStatus(key)
+                        guard llm.status(key)?.isStarting == true else { return }
+                    }
+                    await llm.stop(key)
+                }
+            }
+        }
         doc.task?.cancel()
         if doc.permission != nil { doc.answer(.deny) }
         if doc.question != nil { doc.answerQuestion(nil) }
