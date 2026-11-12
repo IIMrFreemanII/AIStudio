@@ -451,6 +451,7 @@ def _llm_boot(self, snapshot: bool = False):
         _llm_publish(self, state="failed", error=self.error)
         if snapshot:
             _llm_abandon(self, 1)
+        _llm_release_floor(self)
         return
     self.proc = EngineProcess(m, LLM_ROOT, on_status, env={MEDIA_ENV: str(UPLOADS)})
     try:
@@ -470,7 +471,7 @@ def _llm_boot(self, snapshot: bool = False):
         self.proc.stop()
         if snapshot:  # no snapshot of a stopped or broken engine
             _llm_abandon(self, 0 if getattr(self, "stopping", False) else 1)
-        _llm_cancel_call(self)
+        _llm_release_floor(self)
         modal.experimental.stop_fetching_inputs()
         return
     try:
@@ -488,8 +489,9 @@ def _llm_boot(self, snapshot: bool = False):
         self.boot_clock = self.clock  # if this same container wakes next, its start is timed from here
         return
     _llm_record(self, "cold")
+    _llm_release_floor(self)
     if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
-        modal.experimental.stop_fetching_inputs()
+        _llm_stop(self)
 
 
 def _llm_wake(self):
@@ -523,9 +525,11 @@ def _llm_wake(self):
         self.error = f"waking the engine after the snapshot failed: {str(e)[:3000]}. Turn GPU snapshots off for it."
         _llm_publish(self, state="failed", error=self.error)
         self.proc.stop()
+        _llm_release_floor(self)
         modal.experimental.stop_fetching_inputs()
         return
     _llm_record(self, "snapshot" if restored else "cold")
+    _llm_release_floor(self)
 
 
 def _llm_clock(self, clock_cls, how: str = "cold"):
@@ -548,9 +552,12 @@ def _llm_publish(self, **kw):
 
 
 def _llm_heartbeat(self):
-    """Publishes the state every 15 s until ``_llm_heartbeat_stop`` (or the container stops), and ends a start
-    that Stop was pressed for."""
+    """Publishes the state every 15 s until ``_llm_heartbeat_stop`` (or the container stops), and acts on a Stop
+    pressed for this container: while starting it ends the engine; once ready it stops the container, so Stop
+    works even when the stop request can't reach it (the container takes no new requests after a first Stop)."""
     import threading
+
+    from aistudio_gpu.llm.service import stop_pressed
 
     self.beat_stop = threading.Event()
 
@@ -558,21 +565,54 @@ def _llm_heartbeat(self):
         while self.alive and not self.beat_stop.wait(15):
             if not self.alive:
                 break
-            # Stop pressed while the engine is still starting: end the engine now (the boot then returns and the
-            # container stops), instead of paying for the rest of the start.
-            if self.current.get("state") == "loading" and getattr(self, "proc", None) is not None:
+            state = self.current.get("state")
+            if state in ("loading", "ready") and getattr(self, "proc", None) is not None:
                 try:
-                    stop = llm_state.get(self.model + ":stop") or 0
+                    stop = llm_state.get(self.model + ":stop")
                 except Exception:  # noqa: BLE001
-                    stop = 0
-                if stop > (self.current.get("started") or 0):
-                    self.stopping = True
-                    self.proc.stop()
-                    break
+                    stop = None
+                if stop_pressed(self.current, stop):
+                    if state == "loading":
+                        # Still starting: end the engine now (the boot then returns and the container stops),
+                        # instead of paying for the rest of the start.
+                        self.stopping = True
+                        self.proc.stop()
+                        break
+                    _llm_stop(self)
             _llm_publish(self)
 
     self.beat_thread = threading.Thread(target=beat, daemon=True)
     self.beat_thread.start()
+
+
+def _llm_stop(self):
+    """Stop: no new requests, and exit once the ones in progress finish, or after ``STOP_GRACE`` seconds whatever
+    is still open (Modal's graceful stop alone waits for every open request, and a chat stream the client stopped
+    reading never finishes: the container then ran on, billed, until stopped by hand). Safe to call again."""
+    import threading
+    import time
+
+    from aistudio_gpu.llm.service import STOP_GRACE
+
+    if getattr(self, "stop_requested", False):
+        return
+    self.stop_requested = True
+    _llm_release_floor(self)
+    try:
+        modal.experimental.stop_fetching_inputs()
+    except Exception as e:  # noqa: BLE001
+        print(f"[aistudio] {self.model}: stop_fetching_inputs failed: {e}", flush=True)
+
+    def force():
+        time.sleep(STOP_GRACE)
+        # Still here: either requests are still open, or the shutdown hook already ran and the container didn't
+        # end anyway (seen on B200: engine stopped, container kept its GPU for minutes). Either way, exit.
+        print(f"[aistudio] {self.model}: still running {STOP_GRACE:.0f} s after Stop; exiting now", flush=True)
+        if getattr(self, "alive", False):
+            _llm_shutdown(self)
+        os._exit(0)
+
+    threading.Thread(target=force, daemon=True).start()
 
 
 def _llm_heartbeat_stop(self):
@@ -582,21 +622,34 @@ def _llm_heartbeat_stop(self):
         self.beat_thread.join(timeout=30)
 
 
-def _llm_cancel_call(self):
-    """Cancels the request that started this container (the front desk's ``ping``), so that after a Stop or a failed
-    start Modal doesn't hand it to a new container that boots all over again."""
+def _llm_obj(m: dict):
+    """The container class instance that serves the model ``m``: its engine, GPUs and snapshot setting."""
+    n = int(m.get("count") or 1)
+    gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
+    if m.get("engine") == "llamacpp":
+        return LLMLlamaCpp.with_options(gpu=gpu)(model=m["id"])
+    if m.get("snapshot") and n == 1:
+        return LLMSnap.with_options(gpu=gpu)(model=m["id"], rev=str(m.get("updated") or ""))
+    return LLM.with_options(gpu=gpu)(model=m["id"])
+
+
+def _llm_release_floor(self):
+    """Lets Modal scale this model down again. A start asks for one container with ``min_containers=1`` (no request:
+    a queued request can't be cancelled and is retried on a new container when its container ends), and that floor
+    stays until the engine is ready, failed or stopped: otherwise an idle container would stay up, billed, and a
+    stopped or failed one would be started again."""
     try:
-        call = llm_state.get(self.model + ":call")
-        if call:
-            modal.FunctionCall.from_id(call).cancel()
-    except Exception:  # noqa: BLE001
-        pass
+        if llm_state.get(self.model + ":floor"):
+            _llm_obj(self.manifest or {}).update_autoscaler(min_containers=0)
+            llm_state.pop(self.model + ":floor", None)
+    except Exception as e:  # noqa: BLE001 — the front desk releases it too when it sees the engine isn't starting
+        print(f"[aistudio] {self.model}: releasing the start's container floor failed: {e}", flush=True)
 
 
 def _llm_abandon(self, code: int = 0):
     """Ends a snapshot boot without a snapshot (Stop pressed, or the engine failed): Modal would otherwise snapshot a
     stopped engine and restore it from then on."""
-    _llm_cancel_call(self)
+    _llm_release_floor(self)
     os._exit(code)
 
 
@@ -646,9 +699,13 @@ def _llm_media_ready(body: dict) -> None:
 
 
 def _llm_shutdown(self):
+    """The container's exit hook (Stop, idle scale-down): ends the engine and publishes "cold". The process is then
+    made to end within 10 s: after this hook a container has been seen to keep running, and billing, its GPU."""
+    import threading
     import time
 
     self.alive = False
+    _llm_release_floor(self)
     if getattr(self, "proc", None) is not None:
         self.proc.stop()
     try:
@@ -656,6 +713,9 @@ def _llm_shutdown(self):
                                  "beat": time.time()}
     except Exception:  # noqa: BLE001
         pass
+    exit_timer = threading.Timer(10, lambda: os._exit(0))
+    exit_timer.daemon = True  # doesn't hold up a container that ends normally
+    exit_timer.start()
 
 
 LLM_CLS = dict(volumes={**LLM_VOLUMES, UPLOADS: uploads}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
@@ -685,7 +745,7 @@ class LLM:
 
     @modal.method()
     def stop(self) -> None:
-        modal.experimental.stop_fetching_inputs()
+        _llm_stop(self)
 
     @modal.exit()
     def shutdown(self):
@@ -722,7 +782,7 @@ class LLMSnap:
 
     @modal.method()
     def stop(self) -> None:
-        modal.experimental.stop_fetching_inputs()
+        _llm_stop(self)
 
     @modal.exit()
     def shutdown(self):
@@ -751,7 +811,7 @@ class LLMLlamaCpp:
 
     @modal.method()
     def stop(self) -> None:
-        modal.experimental.stop_fetching_inputs()
+        _llm_stop(self)
 
     @modal.exit()
     def shutdown(self):
@@ -807,13 +867,13 @@ def _llm_service():
             self._installs_cache: dict = {}
 
         def _obj(self, m: dict):
-            n = int(m.get("count") or 1)
-            gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
-            if m.get("engine") == "llamacpp":
-                return LLMLlamaCpp.with_options(gpu=gpu)(model=m["id"])
-            if m.get("snapshot") and n == 1:
-                return LLMSnap.with_options(gpu=gpu)(model=m["id"], rev=str(m.get("updated") or ""))
-            return LLM.with_options(gpu=gpu)(model=m["id"])
+            return _llm_obj(m)
+
+        async def _release_floor(self, mid, m):
+            """Back to no minimum container (see ``_llm_release_floor``, the container's own release)."""
+            if await llm_state.get.aio(mid + ":floor"):
+                await self._obj(m).update_autoscaler.aio(min_containers=0)
+                await llm_state.pop.aio(mid + ":floor", None)
 
         async def _coldstarts(self, mid):
             try:
@@ -849,6 +909,13 @@ def _llm_service():
                 s.update(state="cold", ended=s.get("beat"))
             if s.get("state") == "starting" and now - (s.get("requested") or 0) > 20 * 60:
                 s.update(state="cold")
+            # The start's minimum container outlives the start only if the container couldn't lift it (it lifts it
+            # itself when ready, failed or stopped): lift it here, so nothing is kept up or started again.
+            if m and s.get("state") not in ("starting", "loading"):
+                try:
+                    await self._release_floor(mid, m)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[aistudio] {mid}: releasing the start's container floor failed: {e}", flush=True)
             return s
 
         async def _engine_warm(self, mid, m):
@@ -857,24 +924,26 @@ def _llm_service():
                 return
             await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU", "requested": time.time(),
                                           "gpu": m.get("gpu"), "count": m.get("count")})
-            call = await self._obj(m).ping.spawn.aio()
-            await llm_state.put.aio(mid + ":call", call.object_id)  # so Stop can cancel the start (see below)
+            # One container without a request (see _llm_release_floor): Stop cancels it by lowering the minimum
+            # again, and nothing is left queued to start another one.
+            await llm_state.put.aio(mid + ":floor", True)
+            await self._obj(m).update_autoscaler.aio(min_containers=1)
 
         async def _engine_ping(self, mid, m):
+            # Only to a ready container. While it waits for a GPU or loads, a ping waits in Modal's queue, and when
+            # that start is stopped the queued pings start a new container (each ping is a request it must answer).
+            if (await self._engine_state(mid, m)).get("state") != "ready":
+                return
             await self._obj(m).ping.spawn.aio()
 
         async def _engine_stop(self, mid, m):
             s = await self._engine_state(mid, m)
             await llm_state.put.aio(mid + ":stop", time.time())
+            # First: with the start's minimum still set, Modal would start a new container for the stopped one.
+            await self._release_floor(mid, m)
             if s.get("state") == "ready":
                 await self._obj(m).stop.spawn.aio()
-            elif s.get("state") == "starting":  # still waiting for a GPU: cancel the request, so none is started
-                try:
-                    call = await llm_state.get.aio(mid + ":call")
-                    if call:
-                        await modal.FunctionCall.from_id(call).cancel.aio()
-                except Exception:  # noqa: BLE001
-                    pass
+            elif s.get("state") == "starting":  # still waiting for a GPU: with no minimum, none is started
                 await llm_state.put.aio(mid, {**s, "state": "cold", "phase": None, "ended": time.time()})
             # While loading, the container's heartbeat sees the stop and ends the engine.
 
@@ -884,9 +953,12 @@ def _llm_service():
                     time.time() - (s.get("beat") or 0) < 30 * 60:
                 raise EngineError(f"the model failed to start: {s.get('error')}. Change its settings or press "
                                   "Start again.")
-            if s.get("state") not in ACTIVE:
-                await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU",
-                                              "requested": time.time(), "gpu": m.get("gpu"), "count": m.get("count")})
+            if s.get("state") != "ready":
+                # Start with the cancellable ping and send the chat only once a container is ready: a chat call
+                # queued while no container runs can't be cancelled (Modal can't cancel a generator call), outlives
+                # a client that left or pressed Stop, and starts a GPU again each time a container ends without
+                # answering it.
+                await self._until_ready(mid, m)
             async for chunk in self._obj(m).chat.remote_gen.aio(body):
                 yield chunk
 

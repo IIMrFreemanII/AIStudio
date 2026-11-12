@@ -33,6 +33,16 @@ ACTIVE = ("starting", "loading", "ready")
 # "video_url": {"url": "upload:<sha256>.mp4"}}. Videos go this way so they aren't sent again with every message.
 UPLOAD = "upload:"
 MEDIA_PARTS = ("image_url", "video_url")
+# After Stop, a container gets this long to finish the requests in progress, then exits whatever is still open (a
+# chat stream nobody reads any more would otherwise keep the GPU, and its bill, running).
+STOP_GRACE = float(os.environ.get("AISTUDIO_LLM_STOP_GRACE", "20"))
+
+
+def stop_pressed(current: dict, stop_at: float | None) -> bool:
+    """Whether Stop was pressed for this container: the front desk's ``<id>:stop`` time is after the container's
+    start (an older Stop was for an earlier container). ``current`` is the container's published state."""
+    started = current.get("started")
+    return bool(stop_at) and started is not None and stop_at > started
 
 
 def check_window(context, native: int | None) -> None:
@@ -73,6 +83,22 @@ class LLMService:
 
     def _engine_chat(self, mid: str, m: dict, body: dict) -> AsyncIterator[bytes]:
         raise NotImplementedError
+
+    async def _until_ready(self, mid: str, m: dict, poll: float = 1.0) -> None:
+        """Starts the engine if it isn't running and waits until it's ready. Raises ``EngineError`` when the start
+        fails or is stopped. A deployment sends a chat only after this: a chat sent while no engine runs would wait
+        in a queue that a client who leaves (or Stop) can't empty. Cancelling the caller just ends the wait."""
+        await self._engine_warm(mid, m)
+        while True:
+            s = await self._engine_state(mid, m)
+            state = s.get("state")
+            if state == "ready":
+                return
+            if state == "failed":
+                raise EngineError(f"the model failed to start: {s.get('error')}")
+            if state not in ACTIVE:
+                raise EngineError("the model was stopped before it was ready")
+            await asyncio.sleep(poll)
 
     async def _start_install(self, manifest: dict, files: list[dict], tokens: dict) -> dict:
         raise NotImplementedError

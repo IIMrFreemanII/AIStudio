@@ -12,7 +12,12 @@ struct ServersPanel: View {
         let store = model.connections
         VStack(spacing: 0) {
             PanelHeader(title: "Servers") {
-                Button { Task { await store.refreshAll() } } label: { Image(systemName: "arrow.clockwise") }
+                Button {
+                    Task {
+                        await store.refreshAll()
+                        await model.llm.refreshAll()  // and the language models (new installs, removals)
+                    }
+                } label: { Image(systemName: "arrow.clockwise") }
                     .mgHelp("Check every server").accessibilityLabel("Check every server")
                 Button { editing = ServerConnection(name: "", baseURL: "http://") } label: { Image(systemName: "plus") }
                     .mgHelp("Add a server").accessibilityLabel("Add a server")

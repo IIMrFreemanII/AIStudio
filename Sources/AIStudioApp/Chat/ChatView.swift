@@ -160,7 +160,12 @@ struct ChatHeader: View {
                 }
                 if let key {
                     MGMenuItem.divider
-                    if llm.status(key)?.isActive == true {
+                    // The live status (as the chip shows it): the polled one can still say cold while a reply waits
+                    // for a GPU, and then the menu offered only Start.
+                    let live = engineStatus(key)
+                    if live?.isStarting == true {
+                        MGMenuItem.button("Cancel the Start", icon: "xmark.circle") { Task { await llm.stop(key) } }
+                    } else if live?.isActive == true {
                         MGMenuItem.button("Shut the GPU Down Now", icon: "power") { Task { await llm.stop(key) } }
                     } else {
                         MGMenuItem.button("Start the Model Now", icon: "play") { Task { await llm.warm(key) } }

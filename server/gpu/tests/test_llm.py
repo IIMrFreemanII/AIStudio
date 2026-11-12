@@ -17,7 +17,7 @@ from aistudio_gpu.llm import proxy, sizing
 from aistudio_gpu.llm.engine import FAKE_COMMIT, FAKE_PR, FakeEngine, phase_of, vllm_command
 from aistudio_gpu.llm.facts import LinkError, ModelRef, facts_from_config, parse_link
 from aistudio_gpu.llm.profiles import apply_effort, efforts, guess
-from aistudio_gpu.llm.service import LocalLLMService, local_media
+from aistudio_gpu.llm.service import LLMService, LocalLLMService, local_media, stop_pressed
 from aistudio_gpu.local import LocalRunner
 
 TOKEN = "t" * 40
@@ -1076,3 +1076,64 @@ def test_listing_and_relay_carry_efforts(client, monkeypatch):
     assert client.patch(f"/v1/llm/models/{mid}", json={"reasoningParser": "openai_gptoss"}, headers=AUTH).status_code == 200
     chat(client, mid, "hi", reasoning_effort="off")
     assert seen[-1]["reasoning_effort"] == "low"
+
+
+def test_stop_pressed_only_for_this_container():
+    # The Modal containers' heartbeat stops a ready (or starting) engine when the front desk's Stop is newer than
+    # the container's start; a Stop from before it started was for an earlier container.
+    assert stop_pressed({"started": 100.0}, 150.0)
+    assert not stop_pressed({"started": 100.0}, 90.0)
+    assert not stop_pressed({"started": 100.0}, None) and not stop_pressed({"started": 100.0}, 0)
+    assert not stop_pressed({}, 150.0)
+
+
+class _StartingEngine(LLMService):
+    """A deployment whose engine goes through the given states, one per poll, after warm()."""
+
+    def __init__(self, tmp_path, states):
+        super().__init__(tmp_path)
+        self.states, self.warmed_calls = list(states), 0
+
+    async def _engine_warm(self, mid, m):
+        self.warmed_calls += 1
+
+    async def _engine_state(self, mid, m):
+        return self.states.pop(0) if len(self.states) > 1 else self.states[0]
+
+
+def test_until_ready_waits_then_returns(tmp_path):
+    import asyncio
+
+    svc = _StartingEngine(tmp_path, [{"state": "starting"}, {"state": "loading"}, {"state": "ready"}])
+    asyncio.run(svc._until_ready("m", {}, poll=0))
+    assert svc.warmed_calls == 1 and svc.states == [{"state": "ready"}]
+
+
+def test_until_ready_raises_when_stopped_or_failed(tmp_path):
+    import asyncio
+
+    from aistudio_gpu.llm.engine import EngineError
+
+    stopped = _StartingEngine(tmp_path, [{"state": "starting"}, {"state": "cold"}])
+    with pytest.raises(EngineError, match="stopped before it was ready"):
+        asyncio.run(stopped._until_ready("m", {}, poll=0))
+    failed = _StartingEngine(tmp_path, [{"state": "loading"}, {"state": "failed", "error": "out of memory"}])
+    with pytest.raises(EngineError, match="out of memory"):
+        asyncio.run(failed._until_ready("m", {}, poll=0))
+
+
+def test_until_ready_ends_quietly_when_the_client_leaves(tmp_path):
+    # The chat isn't sent until the engine is ready: cancelling the wait (the app closed the stream) sends nothing.
+    import asyncio
+
+    svc = _StartingEngine(tmp_path, [{"state": "starting"}])
+
+    async def leave():
+        task = asyncio.create_task(svc._until_ready("m", {}, poll=0.01))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(leave())
+    assert svc.warmed_calls == 1

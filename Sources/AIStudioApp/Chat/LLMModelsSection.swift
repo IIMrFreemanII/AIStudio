@@ -49,10 +49,13 @@ struct LLMModelsSection: View {
                     let key = LLMKey(serverID: s.id, modelID: m.id)
                     LLMModelRow(model: m, status: llm.status(key), server: llm.servers.count > 1 ? s.name : nil)
                         .contentShape(Rectangle())
-                        .onTapGesture(count: 2) { model.newChat(model: key) }
+                        .onTapGesture { model.chat(with: key) }
+                        .mgHelp("Chat with \(m.name)")
                         .mgContextMenu {
                             MGMenuItem.button("New Chat", icon: "square.and.pencil") { model.newChat(model: key) }
-                            if llm.status(key)?.isActive == true {
+                            if llm.status(key)?.isStarting == true {
+                                MGMenuItem.button("Cancel the Start", icon: "xmark.circle") { Task { await llm.stop(key) } }
+                            } else if llm.status(key)?.isActive == true {
                                 MGMenuItem.button("Shut Down GPU", icon: "power") { Task { await llm.stop(key) } }
                             } else {
                                 MGMenuItem.button("Start", icon: "play") { Task { await llm.warm(key) } }
