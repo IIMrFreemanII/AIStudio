@@ -34,8 +34,11 @@ public struct PermissionRequest: Sendable {
     public var preview: ToolPreview
     public var effect: ToolEffect
     public var inProject: Bool
+    /// Why the command needs an answer every time (git safety), nil for an ordinary one.
+    public var risk: String?
 
-    public init(call: ToolCall, preview: ToolPreview, effect: ToolEffect, inProject: Bool) {
+    public init(call: ToolCall, preview: ToolPreview, effect: ToolEffect, inProject: Bool, risk: String? = nil) {
+        self.risk = risk
         self.call = call
         self.preview = preview
         self.effect = effect
@@ -225,7 +228,9 @@ public enum AgentLoop {
         case .deny(let why):
             return (ToolOutput(why, isError: true), .denied)
         case .ask:
-            let answer = await ask(PermissionRequest(call: call, preview: preview, effect: tool.effect, inProject: inProject))
+            let risk = tool.effect == .execute ? preview.command.flatMap(GitSafety.risk) : nil
+            let answer = await ask(PermissionRequest(call: call, preview: preview, effect: tool.effect, inProject: inProject,
+                                                     risk: risk))
             if Task.isCancelled { return (ToolOutput("Stopped.", isError: true), .denied) }
             switch answer {
             case .deny:
@@ -237,7 +242,7 @@ public enum AgentLoop {
                 if tool.effect == .network, let d = preview.domain?.lowercased(), !d.isEmpty, !rules.domains.contains(d) {
                     rules.domains.append(d)
                 }
-                if tool.effect == .execute, let cmd = preview.command {
+                if tool.effect == .execute, risk == nil, let cmd = preview.command {
                     let prefix = AllowRules.prefix(of: cmd)
                     if !prefix.isEmpty, !rules.commandPrefixes.contains(prefix) { rules.commandPrefixes.append(prefix) }
                 }
@@ -262,8 +267,20 @@ public enum AgentLoop {
 
 /// The system prompt for a coding chat: what the agent is, where it works, the project's instructions.
 public enum ProjectContext {
-    public static func systemPrompt(root: URL, mode: PermissionMode, date: Date = Date()) async -> String {
+    public static func systemPrompt(root: URL, mode: PermissionMode, date: Date = Date(),
+                                     coAuthor: String? = nil) async -> String {
         let git = await ShellRunner().run("git status --short --branch 2>/dev/null | head -40", cwd: root, timeout: 10)
+        let isRepo = git.status == 0 && !git.output.isEmpty
+        var gitInfo = "Not a git repository."
+        var gitRules = ""
+        if isRepo {
+            gitInfo = "Git status:\n" + git.output.trimmingCharacters(in: .newlines)
+            gitInfo += "\nDefault branch: \(await Git.defaultBranch(root))"
+            let log = await Git.recentLog(root, count: 5)
+            if !log.isEmpty { gitInfo += "\nRecent commits:\n" + log.joined(separator: "\n") }
+            let trailer = coAuthor.map { "End each commit message with a blank line and this line: \($0). " } ?? ""
+            gitRules = "Git: commit only when the user asks. Before committing, look at git status, git diff and git log, and write a message in the repository's style: a short summary line, then why. Don't commit secrets or unrelated files. If you're on the default branch and the user hasn't said otherwise, create a branch first. \(trailer)Never force-push, skip hooks (--no-verify), amend commits that were pushed, or change git config. Push or open a pull request only when asked; for a pull request use gh pr create with a short title and a body with a summary and a test plan.\n\n"
+        }
         var instructions = ""
         for name in ["AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md"] {
             if let text = try? String(contentsOf: root.appendingPathComponent(name), encoding: .utf8) {
@@ -289,10 +306,10 @@ public enum ProjectContext {
         (its own worktree by default) that reports back here; propose_session only suggests one. Pieces of your \
         current task stay here.
 
-        Project folder: \(root.path)
+        \(gitRules)Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)
-        \(git.status == 0 && !git.output.isEmpty ? "Git status:\n\(git.output)" : "Not a git repository.")\(instructions)
+        \(gitInfo)\(instructions)
         """
     }
 }

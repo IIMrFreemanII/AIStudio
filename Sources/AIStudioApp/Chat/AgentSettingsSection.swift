@@ -10,6 +10,7 @@ struct AgentSettingsSection: View {
     @State private var disabled: Set<String> = []
     @AppStorage("notifySessions") private var notifySessions = true
     @AppStorage("worktreeBranchPrefix") private var branchPrefix = "aistudio/"
+    @AppStorage("gitCoAuthor") private var gitCoAuthor = true
 
     var body: some View {
         MGSection("Coding Agent") {
@@ -31,6 +32,11 @@ struct AgentSettingsSection: View {
             }
             MGFormRow("Worktree branch prefix") {
                 TextField("aistudio/", text: $branchPrefix).frame(maxWidth: 260)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Toggle("Add a co-author line to commits", isOn: $gitCoAuthor)
+                Text("Co-Authored-By: AIStudio (<model>) <noreply@aistudio.local> — used by the Commit button and asked of the agent.")
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
             }
             Toggle("Notify when a background session finishes or needs you", isOn: $notifySessions)
             VStack(alignment: .leading, spacing: 6) {

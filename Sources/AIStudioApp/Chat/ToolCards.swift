@@ -126,6 +126,7 @@ struct ToolCard: View {
 /// A unified diff: line numbers, a +/− column, added lines green and removed ones red, ⋯ between hunks.
 struct DiffView: View {
     let diff: String
+    var maxHeight: CGFloat? = 320
 
     var body: some View {
         let rows = DiffNumbers.rows(diff)
@@ -160,7 +161,7 @@ struct DiffView: View {
             }
             .textSelection(.enabled)
         }
-        .frame(maxHeight: 320)
+        .frame(maxHeight: maxHeight ?? .infinity)
         .mgScrollIndicators()
     }
 }
@@ -175,6 +176,10 @@ struct PermissionCard: View {
             Text(question).font(.mgCallout.weight(.medium))
             if !request.inProject {
                 Label("This is outside the project folder.", systemImage: "exclamationmark.triangle")
+                    .font(.mgFootnote).foregroundStyle(MG.warning)
+            }
+            if let risk = request.risk {
+                Label(risk, systemImage: "exclamationmark.triangle")
                     .font(.mgFootnote).foregroundStyle(MG.warning)
             }
             HStack(spacing: 8) {
@@ -210,6 +215,7 @@ struct PermissionCard: View {
     }
 
     var alwaysTitle: String? {
+        if request.risk != nil { return nil }
         switch request.effect {
         case .edit where request.inProject: return "Allow All Edits in This Chat"
         case .execute:
@@ -346,29 +352,22 @@ struct CodingHeaderItems: View {
             .buttonStyle(.mg(.bordered))
             .mgHelp(url.path + " — the agent works in this folder (click to show it in Finder)")
         }
-        if let w = doc.transcript.worktree {
-            MGMenuButton(kind: .bordered) {
-                MGMenuItem.button("Merge into \(w.base)…", icon: "arrow.triangle.merge") { model.mergeWorktree(doc) }
-                if doc.canCreatePR {
-                    MGMenuItem.button("Create Pull Request…", icon: "arrow.up.right.square") { model.createPullRequest(doc) }
+        if let git = doc.git {
+            GitBranchMenu(doc: doc)
+            // The pane's footer shows the PR while it's open.
+            if let pr = git.pr, !doc.changesOpen { PRPill(pr: pr) }
+        }
+        if doc.isCoding {
+            let n = doc.git?.status.files.count ?? 0
+            Button { model.toggleChanges(doc) } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.badge.ellipsis")
+                    if n > 0 { Text("\(n)").monospacedDigit() }
                 }
-                MGMenuItem.button("Show Worktree in Finder", icon: "folder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: w.path)])
-                }
-                MGMenuItem.divider
-                MGMenuItem.button("Remove Worktree…", icon: "trash") { model.removeWorktree(doc) }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.branch").foregroundStyle(MG.secondaryLabel)
-                    Text(w.branch).lineLimit(1).truncationMode(.middle)
-                    if let s = doc.worktreeStatus {
-                        if s.ahead > 0 { Text("+\(s.ahead)").foregroundStyle(MG.success) }
-                        if s.dirty > 0 { Text("•\(s.dirty)").foregroundStyle(MG.warning) }
-                    }
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
-                }
+                .foregroundStyle(doc.changesOpen ? MG.accent : MG.label)
             }
-            .mgHelp("Its own git worktree on \(w.branch), cut from \(w.base)")
+            .buttonStyle(.mg(.bordered))
+            .mgHelp("Show the changes (⇧⌘D)")
         }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {

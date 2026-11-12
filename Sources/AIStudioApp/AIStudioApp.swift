@@ -53,6 +53,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-git") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runGit(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-chat") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -400,6 +407,11 @@ struct AppCommands: Commands {
             Button("Open Result in Viewer") { model.openViewer() }
                 .keyboardShortcut("y")
                 .disabled(model.displayedResult == nil)
+            Button(model.activeChat?.changesOpen == true ? "Hide Changes" : "Show Changes") {
+                if let chat = model.activeChat { model.toggleChanges(chat) }
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(model.activeChat?.isCoding != true)
             Divider()
             Picker("Appearance", selection: $appearance) {
                 ForEach(MGAppearance.allCases) { Text($0.title).tag($0.rawValue) }

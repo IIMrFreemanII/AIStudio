@@ -85,9 +85,26 @@ final class ChatDocument: Identifiable {
     /// `propose_session` cards by call id, and what was decided (the started session's id; nil: dismissed).
     var proposals: [String: SessionProposal] = [:]
     var proposalDecisions: [String: UUID?] = [:]
-    /// Where its worktree stands against its base branch, and whether a pull request can be made.
-    var worktreeStatus: WorktreeStatus?
-    var canCreatePR = false
+
+    // MARK: git
+
+    /// The chat's repository at a glance (nil: not a repository, or not looked at yet).
+    var git: GitState?
+    var gitRefreshing = false
+    @ObservationIgnored var gitRefreshAgain = false
+    var gitError: String?
+    var changesScope: ChangesScope = .uncommitted
+    /// The path of the file whose diff is shown.
+    var selectedChange: String?
+    /// Diff text by "\(scope)|\(path)"; cleared on every refresh.
+    var diffCache: [String: String] = [:]
+    var commitDraft = ""
+    var drafting = false
+    var prSheet: PRDraft?
+    var changesOpen: Bool {
+        get { transcript.changesOpen ?? false }
+        set { transcript.changesOpen = newValue ? true : nil }
+    }
 
     var isCoding: Bool { transcript.projectPath != nil }
     /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).

@@ -220,7 +220,7 @@ struct SessionsPanel: View {
                 }
             })
             items.append(.button("Merge Branch…") { withDoc(i.id) { model.mergeWorktree($0) } })
-            items.append(.button("Create Pull Request…") { withDoc(i.id) { model.createPullRequest($0) } })
+            items.append(.button("Create Pull Request…") { withDoc(i.id) { model.openPRSheet($0) } })
             items.append(.button("Remove Worktree…") { withDoc(i.id) { model.removeWorktree($0) } })
         }
         items.append(.divider)
