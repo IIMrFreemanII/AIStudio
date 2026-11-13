@@ -72,6 +72,8 @@ public struct LLMStatus: Codable, Equatable, Sendable {
     public var isActive: Bool { ["starting", "loading", "ready"].contains(state) }
     /// Asked to start but not ready yet (waiting for a GPU, or loading): Stop cancels the start.
     public var isStarting: Bool { state == "starting" || state == "loading" }
+    /// Stop was pressed and the GPU is shutting down (it finishes the replies in progress first, ~15–25 s).
+    public var isStopping: Bool { state == "stopping" }
 }
 
 /// How long a model takes to start: the last start (split into phases) and the typical one.

@@ -165,7 +165,7 @@ struct HistoryActions: ViewModifier {
                                   enabled: model.displayedImage != nil && model.displayedURL != item.url) {
                     model.compare(with: item.url)
                 }
-                MGMenuItem.button("Restore Graph in New Tab") { model.open(item.url) }
+                MGMenuItem.button("Restore Graph as New Workflow") { model.open(item.url) }
                 MGMenuItem.button("Copy to Assets › Input") { model.importAssets([item.url]) }
                 MGMenuItem.button(item.isFavorite ? "Remove from Favorites" : "Add to Favorites") { model.toggleFavorite(item) }
                 MGMenuItem.divider

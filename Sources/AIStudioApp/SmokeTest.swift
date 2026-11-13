@@ -1042,13 +1042,38 @@ extension SmokeTest {
         check(rFirst?.fileURL == first.fileURL && rFirst?.isDirty == first.isDirty && rFirst?.graph == first.graph,
               "a saved tab comes back with its file")
 
+        // No tab strip: ⌃Tab goes back to what was used before, ⌘W on a chat brings it back, and only the most
+        // recent chats stay loaded.
+        let wa = model.newTab(), wb = model.newTab()
+        model.switchToPrevious()
+        check(model.activeTabID == wa.id && model.activeChat == nil, "⌃Tab goes back to the workflow used before")
+        let firstChat = model.newChat()
+        model.switchToPrevious()
+        check(model.activeChat == nil && model.activeTabID == wa.id, "⌃Tab from a chat goes back to the workflow")
+        model.switchToPrevious()
+        check(model.activeChatID == firstChat.id, "⌃Tab again brings the chat back")
+        model.closeChat(firstChat.id)
+        check(model.activeChat == nil && model.activeTabID == wa.id && !model.chats.contains { $0.id == firstChat.id },
+              "closing a chat shows what was used before it and unloads it")
+        model.activate(wb.id)
+        model.closeTab(wb.id)
+        check(model.activeTabID == wa.id, "closing a workflow shows the workflow used before it")
+        let many = (0..<(AppModel.recentChatLimit + 2)).map { _ in model.newChat() }
+        await settle()
+        check(model.chats.filter(\.isRecent).count == AppModel.recentChatLimit && model.activeChatID == many.last?.id
+              && !model.chats.contains { $0.id == many[0].id },
+              "only the \(AppModel.recentChatLimit) most recent chats stay loaded (\(model.chats.filter(\.isRecent).count))")
+        check(model.openItems.count == model.tabs.count + AppModel.recentChatLimit, "the Window menu lists open workflows and recent chats")
+        for d in model.chats { model.closeChat(d.id) }
+        model.activate(wa.id)
+
         // Closing the last tab leaves a fresh one.
         for d in model.tabs { model.closeTab(d.id) }
         check(model.tabs.count == 1 && model.active.name == "Untitled", "closing every tab leaves a new one")
 
-        // The File menu's ⌘W closes a tab, not the window (exactly one ⌘W item).
+        // The File menu's ⌘W closes the workflow in front, not the window (exactly one ⌘W item).
         let cmdW = Self.menuItems(NSApp.mainMenu).filter { $0.keyEquivalent == "w" && $0.keyEquivalentModifierMask == .command }
-        check(cmdW.map(\.title) == ["Close Tab"], "⌘W is Close Tab (found: \(cmdW.map(\.title)))")
+        check(cmdW.map(\.title) == ["Close Workflow"], "⌘W is Close Workflow (found: \(cmdW.map(\.title)))")
 
         say(failures.isEmpty ? "all workflow checks passed" : "\(failures.count) failed: \(failures.joined(separator: "; "))")
         return failures.isEmpty

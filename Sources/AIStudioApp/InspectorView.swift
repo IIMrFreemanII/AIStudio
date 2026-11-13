@@ -338,7 +338,7 @@ struct SettingsView: View {
                     }
                 }
             } footer: {
-                Text("Saved workflows live in its workflows folder, your presets in presets. Open tabs and their unsaved changes are kept separately and come back on the next launch.")
+                Text("Saved workflows live in its workflows folder, your presets in presets. Open workflows and their unsaved changes are kept separately and come back on the next launch.")
             }
             MGSection("Folders") {
             LabeledContent("Qwen-Image folder") {

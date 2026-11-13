@@ -91,6 +91,19 @@ struct PermissionTests {
         #expect(AllowRules.prefix(of: "swift build -c release") == "swift build")
         #expect(AllowRules.prefix(of: "ls -la") == "ls")
         #expect(AllowRules.prefix(of: "npm --version") == "npm")
+        #expect(AllowRules.prefix(of: "python3 -m unittest discover -s tests") == "python3 -m unittest")
+        // A chain remembers every part, so the same command runs without asking next time.
+        // (`2>&1` and `>/dev/null` can't write a file, so they don't make it ask.)
+        let cmd = "cd /tmp/proj && python3 -m unittest discover -s tests 2>&1 | tail -20"
+        let ps = AllowRules.prefixes(of: cmd)
+        #expect(ps == ["cd", "python3 -m unittest", "tail"])
+        #expect(AllowRules(commandPrefixes: ps).allows(command: cmd))
+        #expect(AllowRules(commandPrefixes: ps).allows(command: "cd /tmp/proj && python3 -m unittest -v >/dev/null"))
+        #expect(!AllowRules(commandPrefixes: ps).allows(command: "cd /tmp/proj && python3 -c 'import os'"))
+        // Writing a file or substituting a command always asks, so "Always" has nothing to remember.
+        #expect(AllowRules.prefixes(of: "cd x && python3 -m unittest > out.txt").isEmpty)
+        #expect(AllowRules.prefixes(of: "cd x && tail $(cat list)").isEmpty)
+        #expect(!AllowRules(commandPrefixes: ["tail"]).allows(command: "tail x 2>&1 > log"))
     }
 }
 
@@ -126,6 +139,31 @@ struct ToolTests {
         try "someone else\n".write(to: root.appendingPathComponent("Sources/a.txt"), atomically: true, encoding: .utf8)
         await #expect(throws: ToolError.self) {
             _ = try await edit.run(ToolArgs(["path": "Sources/a.txt", "old_string": "someone", "new_string": "x"]), ctx)
+        }
+    }
+
+    @Test func readsCarryToTheNextRunAndUnreadEditsArentAsked() async throws {
+        let root = try tempProject()
+        let first = ToolContext(root: root)
+        _ = try await ReadFileTool().run(ToolArgs(["path": "Sources/a.txt"]), first)
+        // The chat's next reply: a new context seeded with the first one's reads may edit without reading again.
+        let next = ToolContext(root: root)
+        next.seedReads(first.reads)
+        let args = ToolArgs(["path": "Sources/a.txt", "old_string": "line two", "new_string": "line 2"])
+        _ = try EditFileTool().preview(args, next)
+        _ = try await EditFileTool().run(args, next)
+        // An unread file (or an old_string that isn't there) fails before the user is asked to allow it.
+        let model = ScriptedModel([
+            [call("edit_file", ["path": "README.md", "old_string": "Readme", "new_string": "Read me"]), .finish(reason: "tool_calls")],
+            [.content("OK"), .finish(reason: "stop")],
+        ])
+        let rec = Recorder()
+        _ = try await AgentLoop.run(client: model, messages: [.user("x")], config: AgentConfig(model: "m"),
+                                    context: next, ask: { r in rec.ask(r); return .allow }, events: { rec.add($0) })
+        #expect(rec.asks.isEmpty && rec.events.contains("end failed"))
+        #expect(model.requests[1].messages.last?.text.contains("read README.md first") == true)
+        await #expect(throws: ToolError.self) {
+            _ = try EditFileTool().preview(ToolArgs(["path": "Sources/a.txt", "old_string": "nope", "new_string": "x"]), next)
         }
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The main window: icon rail and panel on the left, workflow tabs over the graph and the results pane in the middle,
+/// The main window: icon rail and panel on the left, the graph (or a chat) and the results pane in the middle,
 /// the inspector on the right, and the full-window viewer on top when it's open.
 struct ContentView: View {
     @Environment(AppModel.self) private var model
@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showPlot = false
     @AppStorage("sidebarPanel") private var panelRaw = SidebarPanel.workflows.rawValue
     @AppStorage("sidebarOpen") private var panelOpen = true
+    @AppStorage("sidebarWidth") private var sidebarWidth = 300.0
 
     var graphEditor: some View {
         GraphEditorView(doc: model.active)
@@ -25,24 +26,43 @@ struct ContentView: View {
         VStack(spacing: 0) {
             MGTitleBar(bar: .unified, title: model.activeChat?.title ?? model.active.name,
                        subtitle: model.activeChat == nil && model.active.isDirty ? "Edited" : nil) {
-                EmptyView()
+                Button { withAnimation(.easeOut(duration: 0.18)) { panelOpen.toggle() } } label: {
+                    Image(systemName: "sidebar.left")
+                }
+                .buttonStyle(.mg(.icon))
+                .mgHelp(panelOpen ? "Hide the sidebar (⌃⌘S)" : "Show the sidebar (⌃⌘S)")
             } trailing: {
                 if model.activeChat == nil { toolbarContent }
             }
             HStack(spacing: 0) {
-                SidebarRail(selection: Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows },
-                                               set: { panelRaw = $0.rawValue }),
-                            open: $panelOpen)
+                let panel = Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows }, set: { panelRaw = $0.rawValue })
                 if panelOpen {
-                    SidebarPanelView(panel: SidebarPanel(rawValue: panelRaw) ?? .workflows)
-                        .frame(width: 290)
+                    AppSidebar(selection: panel, open: $panelOpen)
+                        .frame(width: sidebarWidth)
                         .mgChrome(MG.sidebarTint)
+                        .overlay(alignment: .trailing) {
+                            MGResizeHandle(width: $sidebarWidth, range: 270...460, trailingColumn: false).offset(x: 3)
+                        }
+                } else {
+                    SidebarRail(selection: panel, open: $panelOpen)
                 }
                 MGDivider(vertical: true, gap: true)
                 VStack(spacing: 0) {
-                    TabStrip()
-                    if let chat = model.activeChat {
-                        ChatView(doc: chat).id(chat.id)
+                    if model.activeChat != nil {
+                        // The chat in front and the last few used stay built, hidden: going back to one shows it
+                        // at once instead of building its transcript again. Hidden ones take no clicks, keys
+                        // (a permission card's Return) or focus.
+                        ZStack {
+                            ForEach(model.keptChats) { chat in
+                                let on = chat.id == model.activeChatID
+                                ChatView(doc: chat, inFront: on)
+                                    .opacity(on ? 1 : 0)
+                                    .allowsHitTesting(on)
+                                    .disabled(!on)
+                                    .accessibilityHidden(!on)
+                                    .zIndex(on ? 1 : 0)
+                            }
+                        }
                     } else if model.showResultsPane && ResultsPane.hasContent(model.active, model: model) {
                         VSplitView {
                             graphEditor
@@ -89,6 +109,7 @@ struct ContentView: View {
         .ignoresSafeArea(.container, edges: .top)
         .overlay {
             if model.viewerResult != nil { ResultViewer().transition(.opacity) }
+            if model.chatViewer != nil { ChatMediaViewer().transition(.opacity) }
         }
         .onChange(of: model.showServersPanel) { _, show in
             guard show else { return }

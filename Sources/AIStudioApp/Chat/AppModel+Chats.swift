@@ -1,6 +1,7 @@
 import Agent
 import AppKit
 import Foundation
+import PDFKit
 import ImageIO
 import LLMClient
 
@@ -57,7 +58,14 @@ extension AppModel {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let wanted = box.state == .on
         if persistSettings { UserDefaults.standard.set(wanted, forKey: "newChatWorktree") }
-        guard wanted else { newCodingChat(project: url); return }
+        startCodingSession(in: url, worktree: wanted)
+    }
+
+    /// A new coding session in `url`, in a git worktree of its own when `worktree` (default: the choice last made in
+    /// the folder panel).
+    func startCodingSession(in url: URL, worktree: Bool? = nil) {
+        let wanted = worktree ?? (UserDefaults.standard.object(forKey: "newChatWorktree") as? Bool ?? true)
+        guard wanted, !Self.isAutomatedRun || worktree == true else { newCodingChat(project: url); return }
         Task { @MainActor in
             guard let repo = await GitWorktree.repoRoot(url) else { newCodingChat(project: url); return }
             let f = DateFormatter()
@@ -78,10 +86,10 @@ extension AppModel {
         }
     }
 
-    /// Opens a saved chat (or brings its tab to the front).
+    /// Opens a saved chat (or brings it to the front if it's loaded).
     func openChat(_ id: UUID) {
         if let doc = chats.first(where: { $0.id == id }) {
-            doc.tabOpen = true
+            doc.isRecent = true
             activeChatID = id
             return
         }
@@ -100,34 +108,27 @@ extension AppModel {
 
     func activateChat(_ id: UUID) {
         guard let doc = chats.first(where: { $0.id == id }) else { return }
-        doc.tabOpen = true
+        doc.isRecent = true
         activeChatID = id
     }
 
+    /// ⌘W on a chat: it leaves the recent list and the front (what was used before it comes back). A working session
+    /// goes on in the background, nothing stops; anything else is saved and unloaded.
     func closeChat(_ id: UUID) {
-        guard let i = chats.firstIndex(where: { $0.id == id }) else { return }
-        let doc = chats[i]
-        let tabs = chats.filter(\.tabOpen)
-        let position = tabs.firstIndex { $0 === doc } ?? 0
-        if doc.isBusy {
-            // A working session goes on in the background: its tab closes, nothing stops.
-            doc.tabOpen = false
-            saveChat(doc)
-        } else {
+        guard let doc = chats.first(where: { $0.id == id }) else { return }
+        doc.isRecent = false
+        leaveFront(.chat(id))
+        saveChat(doc)
+        if !doc.isBusy {
             doc.task?.cancel()
             doc.jobs.stopAll()
-            saveChat(doc)
-            chats.remove(at: i)
-        }
-        if activeChatID == id {
-            let rest = chats.filter(\.tabOpen)
-            activeChatID = rest.isEmpty ? nil : rest[min(position, rest.count - 1)].id
+            chats.removeAll { $0 === doc }
         }
     }
 
     /// Saves and unloads a hidden session that has nothing left going on.
     func unloadIfHidden(_ doc: ChatDocument) {
-        guard !doc.tabOpen, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id else { return }
+        guard !doc.isRecent, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id else { return }
         saveChat(doc)
         chats.removeAll { $0 === doc }
     }
@@ -136,8 +137,9 @@ extension AppModel {
         if let doc = chats.first(where: { $0.id == id }) {
             stopReply(doc)
             doc.jobs.stopAll()
+            doc.isRecent = false
+            leaveFront(.chat(id))
             chats.removeAll { $0.id == id }
-            if activeChatID == id { activeChatID = chats.last { $0.tabOpen }?.id }
         }
         chatStore.delete(id, useTrash: !Self.isAutomatedRun)
         reloadChats()
@@ -184,6 +186,12 @@ extension AppModel {
             compact(doc)
             return
         }
+        // A reply is running: the message waits for it (several are joined), see `sendQueued`.
+        if doc.isStreaming, !text.isEmpty {
+            doc.queued = [doc.queued, text].compactMap { $0 }.joined(separator: "\n\n")
+            doc.draft = ""
+            return
+        }
         guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming, !doc.compacting, doc.preparingVideos == 0 else { return }
         doc.draft = ""
         if doc.transcript.turns.isEmpty {
@@ -214,6 +222,27 @@ extension AppModel {
         doc.draft = t
         send(doc)
         doc.draft = draft  // what was being written stays
+    }
+
+    /// After a reply: the message queued meanwhile goes out if the reply ended well. After Stop or an error it goes
+    /// back into the composer instead, so nothing is sent that the user may no longer mean. True when it was sent.
+    @discardableResult
+    func sendQueued(_ doc: ChatDocument) -> Bool {
+        guard let q = doc.queued, !doc.isStreaming else { return false }
+        doc.queued = nil
+        if doc.transcript.turns.last?.error != nil || doc.compacting {
+            unqueue(doc, q)
+            return false
+        }
+        sendText(doc, q)
+        return doc.isStreaming
+    }
+
+    /// Puts queued text back in the composer, before what's being written.
+    func unqueue(_ doc: ChatDocument, _ text: String? = nil) {
+        guard let q = text ?? doc.queued else { return }
+        doc.queued = nil
+        doc.draft = doc.draft.isEmpty ? q : q + "\n\n" + doc.draft
     }
 
     /// Starts a reply to a passage: the quote bar above the composer.
@@ -297,7 +326,8 @@ extension AppModel {
             let graphTools: [any AgentTool] = codeGraph ? [CodeGraphTool()] : []
             let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + graphTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
-            var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), ExitPlanTool(), task, FlowTool()] + SessionTools.all
+            var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), OpenPageTool(), ExitPlanTool(), task, FlowTool()]
+                + SessionTools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
@@ -361,15 +391,35 @@ extension AppModel {
             } else if ["png", "jpg", "jpeg", "heic", "webp", "gif", "tiff", "bmp"].contains(ext) {
                 guard let name = Self.saveImage(url, into: folder) else { skipped.append(url.lastPathComponent); continue }
                 doc.pending.append(.image(name))
-            } else if let data = try? Data(contentsOf: url), data.count <= 256 * 1024,
+            } else if let data = try? Data(contentsOf: url), data.count <= 256 * 1024, !data.contains(0),
                       let text = String(data: data, encoding: .utf8) {
                 doc.pending.append(.file(ChatFile(name: url.lastPathComponent, text: text)))
+            } else if let file = Self.saveOriginal(url, into: folder) {
+                doc.pending.append(.file(file))
             } else {
                 skipped.append(url.lastPathComponent)
             }
         }
         return skipped.isEmpty ? nil
-            : "Left out \(skipped.joined(separator: ", ")): only images, videos and text files up to 256 KB can be attached."
+            : "Left out \(skipped.joined(separator: ", ")): files up to 50 MB can be attached (text files up to 256 KB)."
+    }
+
+    /// A file kept as it is (a PDF, a document, an archive, a large text file), up to 50 MB: copied into the chat's
+    /// folder for previews. The model gets a PDF's text (up to 256 KB), else a line naming the file.
+    static func saveOriginal(_ url: URL, into folder: URL) -> ChatFile? {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size <= 50 << 20,
+              (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true else { return nil }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let ext = url.pathExtension.lowercased()
+        let name = UUID().uuidString + (ext.isEmpty ? "" : "." + ext)
+        guard (try? FileManager.default.copyItem(at: url, to: folder.appendingPathComponent(name))) != nil else { return nil }
+        var text = ""
+        if ext == "pdf", let pdf = PDFDocument(url: url), let s = pdf.string {
+            let limit = 256 * 1024
+            text = s.utf8.count > limit ? String(decoding: s.utf8.prefix(limit), as: UTF8.self)
+                + "\n\n[The PDF's text was cut off here: it is longer than 256 KB.]" : s
+        }
+        return ChatFile(name: url.lastPathComponent, text: text, stored: name, size: size)
     }
 
     static func saveImage(_ url: URL, into folder: URL) -> String? {
@@ -487,8 +537,13 @@ extension AppModel {
                     doc.plan = PendingPlan(callID: callID, plan: plan)
                     doc.planAnswer = cont
                     self?.sessionChanged(doc)
+                    self?.planProposed(doc)
                 }
             }
+        }
+        ctx.openPage = { [weak self, weak doc] _, url, screenshot in
+            guard let self, let doc else { return PageView(url: url.absoluteString, error: "the chat was closed") }
+            return await self.agentOpenPage(doc, url, screenshot: screenshot)
         }
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }
@@ -504,6 +559,7 @@ extension AppModel {
             }
         }
         ctx.seedTodos(doc.todos)
+        ctx.seedReads(doc.readStamps)
         doc.todoStepStarted = nil
         doc.requestStarted = Date()
         doc.engine = nil
@@ -604,6 +660,7 @@ extension AppModel {
                             case .toolOutput:
                                 break  // ctx.onOutput streams it
                             case .toolFinished(let id, let output, let status):
+                                doc.readStamps = ctx.reads
                                 if doc.isCoding {
                                     self?.refreshGitSoon(doc)
                                     self?.codeGraphToolFinished(doc, callID: id)
@@ -639,7 +696,17 @@ extension AppModel {
                 st.acc.finish()
                 publish()
                 let message = (error is CancellationError || Task.isCancelled) ? "Stopped" : error.localizedDescription
-                doc.transcript.update(st.turn) { $0.error = message }
+                // The server sends a request's stats when it ends; a stopped one still used the GPU until now.
+                // (Only once the GPU was running: a reply stopped while waiting for one cost nothing.)
+                let engine = self?.llm.status(key)
+                let price = ["ready", "stopping"].contains(engine?.state ?? "") ? engine?.usdPerSecond ?? 0 : 0
+                let seconds = Date().timeIntervalSince(st.requestStart)
+                doc.transcript.update(st.turn) {
+                    $0.error = message
+                    if $0.stats == nil, price > 0 {
+                        $0.stats = RequestStats(seconds: seconds, usdPerSecond: price, costUSD: seconds * price)
+                    }
+                }
                 // Tool cards still running: stopped.
                 for t in doc.transcript.turns where t.role == .tool && t.toolStatus == "running" {
                     doc.transcript.update(t.id) { $0.toolStatus = "failed"; $0.text = "Stopped." }
@@ -665,10 +732,10 @@ extension AppModel {
 
     // MARK: session
 
-    /// The open chat tabs and the one in front, for the next launch (transcripts are saved after each reply).
+    /// The recent chats and the one in front, for the next launch (transcripts are saved after each reply).
     func saveOpenChats() {
         guard persistSettings, !Self.isAutomatedRun else { return }
-        let ids = chats.filter { $0.tabOpen && !$0.transcript.turns.isEmpty }.map(\.id.uuidString)
+        let ids = chats.filter { $0.isRecent && !$0.transcript.turns.isEmpty }.map(\.id.uuidString)
         UserDefaults.standard.set(ids, forKey: "openChats")
         UserDefaults.standard.set(activeChatID?.uuidString, forKey: "activeChat")
     }
@@ -724,8 +791,12 @@ final class AgentRunState: @unchecked Sendable {
         acc = ReplyAccumulator(inlineThinking: inline)
     }
 
+    /// When this request went out (a stopped reply gets no stats from the server: its cost is estimated from this).
+    var requestStart = Date()
+
     func reset() {
         acc = ReplyAccumulator(inlineThinking: inline)
+        requestStart = Date()
         thinkStart = nil
         thinkEnd = nil
     }

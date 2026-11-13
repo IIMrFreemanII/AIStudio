@@ -39,7 +39,7 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
     }
 }
 
-/// The narrow column of panel icons; clicking the open panel's icon hides the panel.
+/// The collapsed sidebar: a narrow column of panel icons; clicking one opens the sidebar on that panel.
 struct SidebarRail: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: SidebarPanel
@@ -81,6 +81,69 @@ struct SidebarRail: View {
         .frame(width: 60)
         .mgChrome(MG.sidebarTint)
         .overlay(alignment: .trailing) { MGDivider(vertical: true) }
+    }
+}
+
+/// The sidebar, as in Claude: the panels' icons along the top (the shown one highlighted) and the panel under them.
+/// The title bar's sidebar button (⌃⌘S) collapses it to the icon rail.
+struct AppSidebar: View {
+    @Environment(AppModel.self) private var model
+    @Binding var selection: SidebarPanel
+    @Binding var open: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 2) {
+                ForEach(SidebarPanel.allCases) { p in
+                    SidebarIconTab(panel: p, selected: p == selection,
+                                   badge: p == .queue ? model.pendingCount + (model.isRunning ? 1 : 0) : 0) {
+                        selection = p
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 40)
+            MGDivider()
+            SidebarPanelView(panel: selection)
+        }
+        .mgTestAnchor("app-sidebar")
+    }
+}
+
+/// One panel's icon in the sidebar's top row.
+private struct SidebarIconTab: View {
+    let panel: SidebarPanel
+    let selected: Bool
+    let badge: Int
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: panel.symbol)
+                .font(.system(size: 13.5, weight: selected ? .semibold : .regular))
+                .foregroundStyle(selected ? MG.accent : hover ? MG.label : MG.secondaryLabel)
+                .frame(width: 30, height: 28)
+                .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
+                    .fill(selected ? MG.selection : hover ? MG.hover : .clear))
+                .overlay(alignment: .topTrailing) {
+                    if badge > 0 {
+                        Text("\(badge)")
+                            .font(.mg(size: 8.5, weight: .bold)).foregroundStyle(MG.accentForeground)
+                            .padding(.horizontal, 3.5).frame(minHeight: 12)
+                            .background(Capsule().fill(MG.warning))
+                            .offset(x: 3, y: -2)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .mgHelp(panel.title)
+        .accessibilityLabel(panel.title)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .mgTestAnchor("sidebar-tab:\(panel.rawValue)")
     }
 }
 
@@ -139,6 +202,7 @@ struct WorkflowsPanel: View {
                 .padding(.bottom, 8)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    OpenWorkflowsSection()
                     let q = query.trimmingCharacters(in: .whitespaces).lowercased()
                     if q.isEmpty {
                         folderContents(model.workflowTree, depth: 0)
@@ -148,7 +212,7 @@ struct WorkflowsPanel: View {
                         }
                     }
                     if model.workflowTree.allWorkflows.isEmpty {
-                        Text("Saved workflows appear here. Press ⌘S to save the current tab.")
+                        Text("Saved workflows appear here. Press ⌘S to save the current workflow.")
                             .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
                             .padding(.horizontal, 16).padding(.vertical, 6)
                     }
@@ -209,7 +273,7 @@ struct WorkflowsPanel: View {
             Spacer()
             if let open {
                 Circle().fill(open.id == model.activeTabID ? MG.accent : MG.tertiaryLabel)
-                    .frame(width: 6, height: 6).mgHelp("Open in a tab")
+                    .frame(width: 6, height: 6).mgHelp("Open")
             }
         }
         .mgRow(selected: active, indent: CGFloat(depth) * 14 + 16)
@@ -291,7 +355,7 @@ struct PresetsPanel: View {
                                 .onTapGesture { if ok { model.openPreset(p) } else { NSSound.beep() } }
                                 .mgHelp(p.summary)
                                 .mgContextMenu {
-                                    MGMenuItem.button("Open in New Tab", enabled: ok) { model.openPreset(p) }
+                                    MGMenuItem.button("Open", enabled: ok) { model.openPreset(p) }
                                     if !p.isBuiltIn {
                                         MGMenuItem.divider
                                         MGMenuItem.button("Delete Preset", destructive: true) { model.deletePreset(p) }

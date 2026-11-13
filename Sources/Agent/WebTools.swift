@@ -204,6 +204,95 @@ public struct WebFetchTool: AgentTool {
     }
 }
 
+// MARK: open_page
+
+/// A page the Browser tab loaded for `open_page`.
+public struct PageView: Equatable, Sendable {
+    public var url: String
+    public var title: String
+    /// The page's visible text (nil when it didn't load).
+    public var text: String?
+    /// Why it didn't load.
+    public var error: String?
+    /// A screenshot of what the tab shows (a JPEG `data:` URL), when asked for.
+    public var image: String?
+    public init(url: String, title: String = "", text: String? = nil, error: String? = nil, image: String? = nil) {
+        self.url = url
+        self.title = title
+        self.text = text
+        self.error = error
+        self.image = image
+    }
+}
+
+public struct OpenPageTool: AgentTool {
+    public init() {}
+    public let name = "open_page"
+    public let description = """
+        Open a web page in the Browser tab of the chat's side panel, where the user sees it, and get back its title \
+        and visible text once it has loaded. Use it to show the user a page (documentation, a pull request, a \
+        preview) or to check a dev server you started (http://localhost:3000). `url` is an http(s) address, or the \
+        path of an HTML file in the project. The tab keeps the user's sign-ins: to just read a public page, \
+        web_fetch is enough.
+        """
+    public var parameters: JSONValue {
+        schema(["url": ("string", "An http(s) address, or an HTML file's path in the project"),
+                "read": ("boolean", "Return the page's text (default true); false only opens it for the user"),
+                "screenshot": ("boolean", "Also return a screenshot of the page as the user sees it (vision models)")],
+               required: ["url"])
+    }
+    public let effect = ToolEffect.network
+
+    /// The address: http(s) as given, `localhost:3000` over http, else a file in the project.
+    static func parse(_ args: ToolArgs, _ ctx: ToolContext) throws -> URL {
+        let raw = try args.required("url").trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            guard url.host?.isEmpty == false else { throw ToolError("\(raw) has no host") }
+            return url
+        }
+        if raw.lowercased().hasPrefix("localhost:") || raw.hasPrefix("127.0.0.1:"), let url = URL(string: "http://" + raw) {
+            return url
+        }
+        if raw.contains("://") && !raw.lowercased().hasPrefix("file://") {
+            throw ToolError("open_page opens http(s) addresses and the project's HTML files")
+        }
+        let file = raw.lowercased().hasPrefix("file://") ? URL(string: raw).map { $0.standardizedFileURL } : ctx.resolve(raw)
+        guard let file, FileManager.default.fileExists(atPath: file.path) else { throw ToolError("no such file: \(raw)") }
+        return file
+    }
+
+    public func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview {
+        let url = try Self.parse(args, ctx)
+        if url.isFileURL {
+            let rel = url.path.hasPrefix(ctx.root.path + "/") ? String(url.path.dropFirst(ctx.root.path.count + 1)) : url.path
+            return ToolPreview(kind: .read, title: "Open \(rel) in the browser", detail: url.absoluteString, paths: [url])
+        }
+        let host = url.host ?? ""
+        let port = url.port.map { ":\($0)" } ?? ""
+        var p = ToolPreview(kind: .read, title: "Open \(host)\(port)\(String(url.path.prefix(60))) in the browser",
+                            detail: url.absoluteString)
+        p.domain = host.lowercased()
+        return p
+    }
+
+    public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
+        let url = try Self.parse(args, ctx)
+        guard let open = ctx.openPage else {
+            return ToolOutput("There's no browser in this chat: use web_fetch to read the page.", isError: true)
+        }
+        let page = await open(ctx.callID, url, args.bool("screenshot"))
+        try Task.checkCancellation()
+        if let e = page.error {
+            return ToolOutput("Couldn't load \(page.url): \(e)", isError: true, detail: e)
+        }
+        var out = "Opened in the Browser tab.\nURL: \(page.url)\nTitle: \(page.title.isEmpty ? "(none)" : page.title)"
+        if args.raw["read"] == nil || args.bool("read"), let text = page.text {
+            out += "\n\n" + (text.isEmpty ? "(the page shows no text)" : clip(text, max: 20_000))
+        }
+        return ToolOutput(out, images: page.image.map { [$0] } ?? [], detail: page.url)
+    }
+}
+
 // MARK: web_search
 
 public struct WebSearchTool: AgentTool {

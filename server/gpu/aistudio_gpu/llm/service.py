@@ -38,6 +38,34 @@ MEDIA_PARTS = ("image_url", "video_url")
 STOP_GRACE = float(os.environ.get("AISTUDIO_LLM_STOP_GRACE", "20"))
 
 
+# The settings that name a model's Modal container (its class, GPUs and snapshot revision). Saving any setting gives the
+# model a new ``updated``, so a request built from the saved settings while an older container is up names another
+# container, and Modal starts a second one for it (a keepalive, a chat, even the Stop meant for the running one).
+VARIANT_KEYS = ("gpu", "count", "updated", "snapshot", "engine")
+
+
+def variant(m: dict) -> dict:
+    """The container-naming settings of manifest ``m`` (kept with a start and in the container's state)."""
+    return {k: m.get(k) for k in VARIANT_KEYS}
+
+
+def live_manifest(m: dict, running: object) -> dict:
+    """``m`` with the container-naming settings of the container that is up, from its state or its start's floor
+    record; ``m`` itself when the record doesn't say (one from before these were kept). A recorded ``None`` counts:
+    a model saved without an ``updated`` runs as revision "" until it's restarted with the new one."""
+    if not isinstance(running, dict) or "updated" not in running:
+        return m
+    return {**m, **{k: running[k] for k in VARIANT_KEYS if k in running}}
+
+
+def stopping(s: dict, stop_at: float | None) -> dict:
+    """The state as the app should see it once Stop is pressed: "stopping" until the container is gone (it finishes
+    the requests in progress first, up to ``STOP_GRACE`` seconds, then exits), not "ready" right up to "cold"."""
+    if s.get("state") in ("loading", "ready") and stop_pressed(s, stop_at):
+        return {**s, "state": "stopping", "phase": "Shutting down the GPU", "progress": None}
+    return s
+
+
 def stop_pressed(current: dict, stop_at: float | None) -> bool:
     """Whether Stop was pressed for this container: the front desk's ``<id>:stop`` time is after the container's
     start (an older Stop was for an earlier container). ``current`` is the container's published state."""

@@ -158,6 +158,23 @@ struct GitTests {
         #expect(DiffNumbers.starts("@@") == (nil, nil))
     }
 
+    @Test func commitOnlyThePathsGiven() async throws {
+        let repo = try await makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        try "changed\n".write(to: repo.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "new\n".write(to: repo.appendingPathComponent("keep me.txt"), atomically: true, encoding: .utf8)
+        try "staged\n".write(to: repo.appendingPathComponent("staged.txt"), atomically: true, encoding: .utf8)
+        _ = await sh("git add staged.txt", repo)  // staged earlier: still left out
+        _ = try await Git.commit(repo, message: "Only the new file", paths: ["keep me.txt"])
+        #expect(await sh("git show --name-only --format= HEAD", repo).trimmingCharacters(in: .whitespacesAndNewlines) == "keep me.txt")
+        let left = try #require(await Git.status(repo)).files.map(\.path).sorted()
+        #expect(left == ["a.txt", "staged.txt"])
+        do {
+            _ = try await Git.commit(repo, message: "Nothing", paths: ["keep me.txt"])
+            Issue.record("expected Nothing to commit")
+        } catch { #expect((error as? ToolError)?.message == "Nothing to commit.") }
+    }
+
     @Test func realRepoRoundTrip() async throws {
         let repo = try await makeRepo()
         defer { try? FileManager.default.removeItem(at: repo) }

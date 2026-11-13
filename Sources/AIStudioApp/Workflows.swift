@@ -10,8 +10,8 @@ extension AppModel {
     // MARK: launch
 
     /// Smoke tests, snapshots and preset export run against a throwaway library and never restore or save tabs.
-    static var isAutomatedRun: Bool {
-        CommandLine.arguments.contains { $0.hasPrefix("--smoke") || $0 == "--snapshot" || $0 == "--export-presets" }
+    nonisolated static var isAutomatedRun: Bool {
+        CommandLine.arguments.contains { $0.hasPrefix("--smoke") || $0.hasPrefix("--perf") || $0 == "--snapshot" || $0 == "--export-presets" }
     }
 
     /// `--library-root <dir>`, a temporary library for automated runs, else the user's.
@@ -39,8 +39,9 @@ extension AppModel {
 
     func activate(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
-        activeChatID = nil
+        // The workflow first, so the history doesn't record the one it replaces as just used.
         activeTabID = id
+        activeChatID = nil
     }
 
     /// A tab name not used by another open tab: "Untitled", "Untitled 2"…
@@ -54,11 +55,11 @@ extension AppModel {
 
     @discardableResult
     func openTab(_ graph: Graph, name: String, fileURL: URL? = nil, presetID: String? = nil) -> WorkflowDocument {
-        activeChatID = nil
         let doc = WorkflowDocument(name: fileURL == nil ? uniqueTabName(name) : name, graph: graph, fileURL: fileURL,
                                    presetID: presetID)
         if let i = tabs.firstIndex(where: { $0.id == activeTabID }) { tabs.insert(doc, at: i + 1) } else { tabs.append(doc) }
         activeTabID = doc.id
+        activeChatID = nil
         return doc
     }
 
@@ -68,25 +69,21 @@ extension AppModel {
         openTab(GraphTemplates.textToImage(modelPath: modelPath, outputDirectory: outputDirectory), name: "Untitled")
     }
 
-    /// Closes a tab without asking (the caller confirms unsaved changes). The last tab is replaced by a new one.
+    /// Closes an open workflow without asking (the caller confirms unsaved changes). The last one is replaced by a
+    /// new one; closing the active one brings back the workflow used before it.
     func closeTab(_ id: UUID) {
         guard let i = tabs.firstIndex(where: { $0.id == id }) else { return }
         let wasActive = id == activeTabID
         closeHelper(of: tabs[i])
         tabs.remove(at: i)
+        frontHistory.removeAll { $0 == .workflow(id) }
         if tabs.isEmpty { newTab(); return }
-        if wasActive { activeTabID = tabs[min(i, tabs.count - 1)].id }
-    }
-
-    func moveTab(_ id: UUID, before target: UUID?) {
-        guard let from = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let doc = tabs.remove(at: from)
-        if let target, let to = tabs.firstIndex(where: { $0.id == target }) { tabs.insert(doc, at: to) } else { tabs.append(doc) }
-    }
-
-    func selectTab(offset: Int) {
-        guard let i = tabs.firstIndex(where: { $0.id == activeTabID }), tabs.count > 1 else { return }
-        activeTabID = tabs[(i + offset + tabs.count) % tabs.count].id
+        guard wasActive else { return }
+        let before = frontHistory.lazy.compactMap { item -> UUID? in
+            if case .workflow(let w) = item, self.tabs.contains(where: { $0.id == w }) { return w }
+            return nil
+        }.first
+        activeTabID = before ?? tabs[min(i, tabs.count - 1)].id
     }
 
     // MARK: open & save

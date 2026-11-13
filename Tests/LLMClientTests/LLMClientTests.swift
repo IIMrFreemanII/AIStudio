@@ -377,6 +377,13 @@ struct LLMClientTests {
         #expect(!LLMStatus(state: "cold").isStarting && !LLMStatus(state: "failed").isStarting)
     }
 
+    @Test func stoppingIsNeitherActiveNorStarting() {
+        // While shutting down: no keepalive, no Stop or Cancel offered again, and the chip says so.
+        let s = LLMStatus(state: "stopping")
+        #expect(s.isStopping && !s.isActive && !s.isStarting)
+        #expect(!LLMStatus(state: "ready").isStopping)
+    }
+
     @Test func statusDecodesTheColdStartSummary() throws {
         let json = """
         {"id":"m","state":"loading","phase":"Loading weights","progress":0.4,"bootSeconds":75.2,
@@ -398,5 +405,63 @@ struct LLMClientTests {
         #expect(old.coldStart == nil && old.bootSeconds == nil)
         let model = try JSONDecoder().decode(LLMModel.self, from: Data(#"{"id":"m","name":"M","repo":"o/m","gpu":"H100","count":1,"context":8192,"loadFormat":"runai","snapshot":true}"#.utf8))
         #expect(model.loadFormat == "runai" && model.snapshot == true)
+    }
+
+    @Test func theSidePanelReadsOlderChangesOpen() throws {
+        let old = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","title":"T","created":0,"updated":0,"changesOpen":true,"nodes":[],"choices":[]}"#
+        let t = try JSONDecoder().decode(ChatTranscript.self, from: Data(old.utf8))
+        #expect(t.sidePanel == "changes")
+        var u = t
+        u.sidePanel = "files"
+        let json = String(data: try JSONEncoder().encode(u), encoding: .utf8) ?? ""
+        #expect(json.contains(#""sidePanel":"files""#) && !json.contains("changesOpen"))
+        #expect(try JSONDecoder().decode(ChatTranscript.self, from: Data(json.utf8)).sidePanel == "files")
+        #expect(t.sidePanelClosed == nil && !json.contains("sidePanelClosed"))
+        u.sidePanelClosed = true
+        let closed = try JSONDecoder().decode(ChatTranscript.self, from: JSONEncoder().encode(u))
+        #expect(closed.sidePanelClosed == true && closed.sidePanel == "files")
+        u.browserURL = "http://localhost:3000/"
+        #expect(try JSONDecoder().decode(ChatTranscript.self, from: JSONEncoder().encode(u)).browserURL == "http://localhost:3000/")
+    }
+
+    @Test func attachedFilesForTheModel() throws {
+        let old = try JSONDecoder().decode(ChatFile.self, from: Data(#"{"name":"a.txt","text":"hi"}"#.utf8))
+        #expect(old == ChatFile(name: "a.txt", text: "hi") && old.stored == nil)
+        var turn = ChatTurn(role: .user, text: "Look", files: [
+            ChatFile(name: "a.txt", text: "hi"),
+            ChatFile(name: "doc.pdf", text: "Page one", stored: "1.pdf", size: 2048),
+            ChatFile(name: "data.zip", text: "", stored: "2.zip", size: 4096),
+        ])
+        turn.date = Date(timeIntervalSince1970: 0)
+        let s = turn.textWithFiles
+        #expect(s.contains("`a.txt`:\n```txt\nhi\n```"))
+        #expect(s.contains("`doc.pdf`:\n```pdf\nPage one\n```"))
+        #expect(s.contains("`data.zip` (ZIP file, ") && s.contains("contents not readable as text"))
+    }
+
+    @Test func plansAndTheirFileNames() {
+        var t = ChatTranscript(title: "T")
+        let d = Date(timeIntervalSince1970: 1_800_000_000)  // 2027-01-15 08:00 UTC
+        var a = ChatTurn(role: .assistant, text: "", toolCalls: [
+            ToolCall(id: "c1", name: "exit_plan", arguments: ##"{"plan":"# Plan: Add a **file** explorer\n\nSteps"}"##)])
+        a.date = d
+        t.append(ChatTurn(role: .user, text: "plan it"))
+        t.append(a)
+        var r = ChatTurn(role: .tool, text: "ok", toolCallID: "c1")
+        r.toolStatus = "done"
+        r.toolDetail = "Approved — Ask"
+        t.append(r)
+        var b = ChatTurn(role: .assistant, text: "", toolCalls: [
+            ToolCall(id: "c2", name: "exit_plan", arguments: #"{"plan":"Add a file explorer"}"#)])
+        b.date = d
+        t.append(b)
+        let plans = t.plans
+        #expect(plans.map(\.callID) == ["c1", "c2"])
+        #expect(plans[0].title == "Add a file explorer" && plans[0].detail == "Approved — Ask")
+        #expect(plans[1].status == "running")
+        let utc = TimeZone(identifier: "UTC")!
+        #expect(PlanFiles.name(date: d, plan: "## Fix a/b: c?", timeZone: utc) == "2027-01-15 0800 Fix a b c.md")
+        #expect(PlanFiles.names(plans, timeZone: utc) == ["c1": "2027-01-15 0800 Add a file explorer.md",
+                                                          "c2": "2027-01-15 0800 Add a file explorer 2.md"])
     }
 }

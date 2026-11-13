@@ -1,12 +1,30 @@
 import Foundation
 
-/// A text file attached to a message (its contents go to the model inside the message).
+/// A file attached to a message. Its text goes to the model inside the message: a text file's contents, a PDF's
+/// text; other files only by name, kind and size.
 public struct ChatFile: Codable, Equatable, Sendable, Hashable {
     public var name: String
     public var text: String
-    public init(name: String, text: String) {
+    /// The original, kept for previews: its file name in the chat's files folder (nil: a text file, only `text`).
+    public var stored: String?
+    /// The original's size in bytes (files the model can't read as text).
+    public var size: Int?
+    public init(name: String, text: String, stored: String? = nil, size: Int? = nil) {
         self.name = name
         self.text = text
+        self.stored = stored
+        self.size = size
+    }
+
+    /// What the model gets for it: the text in a fence, or (nothing readable) a line naming the file.
+    public var markdownForModel: String {
+        let ext = (name as NSString).pathExtension
+        if text.isEmpty, stored != nil {
+            let kind = ext.isEmpty ? "file" : ext.uppercased() + " file"
+            let bytes = size.map { ", " + ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? ""
+            return "`\(name)` (\(kind)\(bytes)): attached file, contents not readable as text."
+        }
+        return "`\(name)`:\n```\(ext)\n\(text)\n```"
     }
 }
 
@@ -171,11 +189,7 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     /// The text the model gets: the message, then each attached file in a fenced block.
     public var textWithFiles: String {
         guard let files, !files.isEmpty else { return text }
-        let blocks = files.map { f -> String in
-            let ext = (f.name as NSString).pathExtension
-            return "`\(f.name)`:\n```\(ext)\n\(f.text)\n```"
-        }
-        return ([text] + blocks).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return ([text] + files.map(\.markdownForModel)).filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
 
@@ -213,8 +227,13 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var parentID: UUID?
     /// Its own git worktree, if it has one.
     public var worktree: SessionWorktree?
-    /// The Changes pane is open (coding chats).
-    public var changesOpen: Bool?
+    /// The side panel's tab (coding chats): "files", "changes" or "plans"; nil: Files. Older files saved only whether
+    /// Changes was open (`changesOpen`), read as "changes".
+    public var sidePanel: String?
+    /// The user closed the side panel (it is shown unless they did).
+    public var sidePanelClosed: Bool?
+    /// The page the side panel's Browser tab last showed.
+    public var browserURL: String?
     /// The task it was started with.
     public var brief: String?
     /// 0 or nil for a top-level session, the parent's depth + 1 for children.
@@ -417,7 +436,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
         case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
-        case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen
+        case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen, sidePanel, sidePanelClosed, browserURL
     }
 
     public init(from decoder: Decoder) throws {
@@ -442,7 +461,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         lastViewed = try c.decodeIfPresent(Date.self, forKey: .lastViewed)
         parentID = try c.decodeIfPresent(UUID.self, forKey: .parentID)
         worktree = try c.decodeIfPresent(SessionWorktree.self, forKey: .worktree)
-        changesOpen = try c.decodeIfPresent(Bool.self, forKey: .changesOpen)
+        sidePanel = try c.decodeIfPresent(String.self, forKey: .sidePanel)
+            ?? (try c.decodeIfPresent(Bool.self, forKey: .changesOpen) == true ? "changes" : nil)
+        sidePanelClosed = try c.decodeIfPresent(Bool.self, forKey: .sidePanelClosed)
+        browserURL = try c.decodeIfPresent(String.self, forKey: .browserURL)
         brief = try c.decodeIfPresent(String.self, forKey: .brief)
         depth = try c.decodeIfPresent(Int.self, forKey: .depth)
         if let nodes = try c.decodeIfPresent([ChatTurn].self, forKey: .nodes) {
@@ -478,7 +500,9 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(lastViewed, forKey: .lastViewed)
         try c.encodeIfPresent(parentID, forKey: .parentID)
         try c.encodeIfPresent(worktree, forKey: .worktree)
-        try c.encodeIfPresent(changesOpen, forKey: .changesOpen)
+        try c.encodeIfPresent(sidePanel, forKey: .sidePanel)
+        try c.encodeIfPresent(sidePanelClosed, forKey: .sidePanelClosed)
+        try c.encodeIfPresent(browserURL, forKey: .browserURL)
         try c.encodeIfPresent(brief, forKey: .brief)
         try c.encodeIfPresent(depth, forKey: .depth)
         try c.encode(nodes, forKey: .nodes)

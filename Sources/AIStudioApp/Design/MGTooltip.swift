@@ -110,17 +110,24 @@ struct MGTooltipView: View {
 private struct MGHelpModifier: ViewModifier {
     let text: String
     @State private var id = UUID()
-    @State private var anchor = MGScreenAnchor()
 
+    // No anchor view: the tooltip shows at the pointer, and its window is the one under the pointer. An AppKit anchor
+    // view under every button with a tooltip made long chats (three per message) slow to open and scroll.
     func body(content: Content) -> some View {
         content
-            .mgAnchor(anchor)
             .onHover { inside in
-                if inside { MGFloating.shared.tooltip.enter(id, text: text, window: anchor.window) }
+                if inside { MGFloating.shared.tooltip.enter(id, text: text, window: Self.windowUnderPointer()) }
                 else { MGFloating.shared.tooltip.exit(id) }
             }
             .onDisappear { MGFloating.shared.tooltip.exit(id) }
             .accessibilityHint(text)
+    }
+}
+
+extension MGHelpModifier {
+    @MainActor static func windowUnderPointer() -> NSWindow? {
+        let n = NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0)
+        return NSApp.window(withWindowNumber: n) ?? NSApp.keyWindow
     }
 }
 

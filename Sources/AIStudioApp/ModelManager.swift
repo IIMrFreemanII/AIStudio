@@ -5,72 +5,40 @@ import Observation
 import Security
 import SwiftUI
 
-/// A site's API token kept in the login Keychain: the Hugging Face token (gated repos) and the Civitai API key (LoRA
-/// links). The user enters it; the app never fills it.
-///
-/// Reading the secret makes macOS ask for permission whenever the app's signature changed (every ad-hoc rebuild), so
-/// it is read only when a download needs it, at most once per launch. Showing whether a token is saved only looks at
-/// the item's attributes, which never asks. Thread-safe: LoRA downloads ask for it off the main thread.
-final class KeychainToken: @unchecked Sendable {
-    static let huggingFace = KeychainToken(service: "AIStudio.huggingface")
-    static let civitai = KeychainToken(service: "AIStudio.civitai")
+/// A site's API token: the Hugging Face token (gated repos) and the Civitai API key (LoRA links), kept in
+/// `TokenFile`. The user enters it; the app never fills it. Thread-safe: LoRA downloads ask for it off the main thread.
+final class SavedToken: @unchecked Sendable {
+    static let huggingFace = SavedToken(key: "huggingface", keychain: "AIStudio.huggingface")
+    static let civitai = SavedToken(key: "civitai", keychain: "AIStudio.civitai")
 
-    let service: String
-    private let lock = NSLock()
-    private var cached: String?
+    let key: String
+    /// Where it was kept before (moved over when first read).
+    let keychain: KeychainItem
 
-    init(service: String) { self.service = service }
-
-    func read() -> String? {
-        lock.withLock {
-            if let cached { return cached }
-            let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                    kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-            var out: AnyObject?
-            if SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data {
-                cached = String(data: d, encoding: .utf8)
-                return cached
-            }
-            // Saved before the rename: move it to the new service name.
-            guard let old = LegacyKeychain.take(service) else { return nil }
-            cached = old
-            SecItemAdd([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                        kSecValueData as String: Data(old.utf8)] as CFDictionary, nil)
-            return cached
-        }
+    init(key: String, keychain service: String) {
+        self.key = key
+        keychain = KeychainItem(service: service)
     }
 
-    /// Whether a token is saved, without reading it (no Keychain prompt).
-    var isSaved: Bool {
-        if lock.withLock({ cached != nil }) { return true }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecReturnAttributes as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: AnyObject?
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess || LegacyKeychain.exists(service)
-    }
+    func read() -> String? { TokenFile.get(key, keychain: keychain, persist: !AppModel.isAutomatedRun) }
+
+    /// Whether a token is saved (here, or still in the Keychain: that check never asks).
+    var isSaved: Bool { TokenFile.get(key) != nil || keychain.exists }
 
     func save(_ token: String) {
-        delete()
-        guard !token.isEmpty else { return }
-        lock.withLock { cached = token }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecValueData as String: Data(token.utf8)]
-        SecItemAdd(q as CFDictionary, nil)
+        if !AppModel.isAutomatedRun { keychain.delete() }
+        TokenFile.set(key, token, persist: !AppModel.isAutomatedRun)
     }
 
-    func delete() {
-        lock.withLock { cached = nil }
-        SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
-        LegacyKeychain.delete(service)
-    }
+    func delete() { save("") }
 }
 
 /// The Hugging Face token (the name the rest of the app uses).
 enum HFToken {
-    static func read() -> String? { KeychainToken.huggingFace.read() }
-    static var isSaved: Bool { KeychainToken.huggingFace.isSaved }
-    static func save(_ token: String) { KeychainToken.huggingFace.save(token) }
-    static func delete() { KeychainToken.huggingFace.delete() }
+    static func read() -> String? { SavedToken.huggingFace.read() }
+    static var isSaved: Bool { SavedToken.huggingFace.isSaved }
+    static func save(_ token: String) { SavedToken.huggingFace.save(token) }
+    static func delete() { SavedToken.huggingFace.delete() }
 }
 
 /// Installed models: catalog downloads in the models folder, plus folders the user added.
@@ -310,7 +278,7 @@ struct ModelManagerView: View {
     @State private var token = ""
     @State private var tokenSaved = HFToken.isSaved
     @State private var civitaiKey = ""
-    @State private var civitaiSaved = KeychainToken.civitai.isSaved
+    @State private var civitaiSaved = SavedToken.civitai.isSaved
 
     var body: some View {
         MGForm(maxWidth: 760) {
@@ -366,11 +334,11 @@ struct ModelManagerView: View {
 
             MGSection {
                 MGFormRow("Token") {
-                SecureField("Token", text: $token, prompt: Text(tokenSaved ? "Saved in the Keychain — type to replace" : "hf_…"))
+                SecureField("Token", text: $token, prompt: Text(tokenSaved ? "Saved — type to replace" : "hf_…"))
                     .frame(maxWidth: 320)
                 }
                 HStack {
-                    Button("Save to Keychain") { HFToken.save(token); token = ""; tokenSaved = true }
+                    Button("Save") { HFToken.save(token); token = ""; tokenSaved = true }
                         .disabled(token.isEmpty)
                     Button("Remove") { HFToken.delete(); token = ""; tokenSaved = false }
                         .disabled(!tokenSaved && token.isEmpty)
@@ -386,13 +354,13 @@ struct ModelManagerView: View {
             MGSection {
                 MGFormRow("API key") {
                     SecureField("API key", text: $civitaiKey,
-                                prompt: Text(civitaiSaved ? "Saved in the Keychain — type to replace" : "Civitai API key"))
+                                prompt: Text(civitaiSaved ? "Saved — type to replace" : "Civitai API key"))
                         .frame(maxWidth: 320)
                 }
                 HStack {
-                    Button("Save to Keychain") { KeychainToken.civitai.save(civitaiKey); civitaiKey = ""; civitaiSaved = true }
+                    Button("Save") { SavedToken.civitai.save(civitaiKey); civitaiKey = ""; civitaiSaved = true }
                         .disabled(civitaiKey.isEmpty)
-                    Button("Remove") { KeychainToken.civitai.delete(); civitaiKey = ""; civitaiSaved = false }
+                    Button("Remove") { SavedToken.civitai.delete(); civitaiKey = ""; civitaiSaved = false }
                         .disabled(!civitaiSaved && civitaiKey.isEmpty)
                     if civitaiSaved { Label("Saved", systemImage: "checkmark.circle.fill").font(.mgSubheadline).foregroundStyle(MG.success) }
                 }

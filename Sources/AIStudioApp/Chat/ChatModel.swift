@@ -1,3 +1,4 @@
+import AIStudioLibrary
 import AIStudioProtocol
 import Agent
 import AppKit
@@ -7,11 +8,36 @@ import LLMClient
 import Observation
 
 /// An open chat tab: the saved transcript plus what only exists while it's open (the draft, the reply streaming in).
+/// A coding chat's right-hand panel.
+enum SidePanel: String, CaseIterable, Identifiable {
+    case files, changes, plans, web
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .files: "Files"
+        case .changes: "Changes"
+        case .plans: "Plans"
+        case .web: "Browser"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .files: "folder"
+        case .changes: "plusminus"
+        case .plans: "list.bullet.clipboard"
+        case .web: "globe"
+        }
+    }
+}
+
 @MainActor @Observable
 final class ChatDocument: Identifiable {
     let id: UUID
     var transcript: ChatTranscript
     var draft = ""
+    /// A message typed while a reply streamed: sent when that reply ends well, else put back in the draft.
+    var queued: String?
     /// The assistant turn being written, while a reply streams.
     var liveTurnID: UUID?
     /// The engine's state reported during the request (cold start phases).
@@ -25,8 +51,9 @@ final class ChatDocument: Identifiable {
     var attachNote: String?
     /// The user message being edited in place.
     var editingTurnID: UUID?
-    /// Shown as a tab (a session that is still working when its tab is closed stays loaded, hidden).
-    var tabOpen = true
+    /// One of the chats the user opened lately, kept loaded and listed in the Window menu. Only the most recent few
+    /// stay so (`AppModel.recentChatLimit`); a session that is still working when it drops out stays loaded, hidden.
+    var isRecent = true
     /// Called after a permission, question or plan card is answered (the dock badge).
     @ObservationIgnored var onPendingChange: (@MainActor () -> Void)?
     @ObservationIgnored var task: Task<Void, Never>?
@@ -62,6 +89,9 @@ final class ChatDocument: Identifiable {
     /// Background commands (dev servers…) the agent started, and the ids of those still running.
     @ObservationIgnored lazy var jobs = BackgroundJobs()
     @ObservationIgnored var jobsObserved = false
+    /// Files the agent read or wrote in this chat (path → modification date then), carried from one reply to the next
+    /// so an edit doesn't need a fresh read every turn. In memory only: after a restart the agent reads once more.
+    @ObservationIgnored var readStamps: [String: Date] = [:]
     var runningJobs: [String] = []
     /// Where the files the agent changed are saved, for "Rewind to Here".
     @ObservationIgnored var checkpointStore: CheckpointStore?
@@ -108,12 +138,49 @@ final class ChatDocument: Identifiable {
     /// Diff text by "\(scope)|\(path)"; cleared on every refresh.
     var diffCache: [String: String] = [:]
     var commitDraft = ""
+    /// Changed files left out of the next commit (unticked in Changes); every other file goes in.
+    var commitExcluded: Set<String> = []
     var drafting = false
     var prSheet: PRDraft?
-    var changesOpen: Bool {
-        get { transcript.changesOpen ?? false }
-        set { transcript.changesOpen = newValue ? true : nil }
+    /// The side panel's tab, kept while the panel is closed (Files until another is picked).
+    var sideTab: SidePanel {
+        get { transcript.sidePanel.flatMap(SidePanel.init(rawValue:)) ?? .files }
+        set { transcript.sidePanel = newValue.rawValue }
     }
+    /// The right-hand panel of a coding chat: shown (on its tab) unless the user closed it; nil: closed. Saved with
+    /// the chat.
+    var sidePanel: SidePanel? {
+        get { transcript.sidePanelClosed == true ? nil : sideTab }
+        set {
+            if let newValue { sideTab = newValue; transcript.sidePanelClosed = nil } else { transcript.sidePanelClosed = true }
+        }
+    }
+    /// The panel shows Changes. Setting false closes the panel only when it shows Changes.
+    var changesOpen: Bool {
+        get { sidePanel == .changes }
+        set { if newValue { sidePanel = .changes } else if sidePanel == .changes { sidePanel = nil } }
+    }
+
+    /// The Browser tab's page (made when the tab is first shown; the address is saved as `transcript.browserURL`).
+    var webPage: ChatWebPage?
+
+    // MARK: files (the side panel's Files tab)
+
+    /// The project's files (nil: not listed yet), while a listing runs, and a listing asked for meanwhile.
+    var fileTree: FileTree?
+    /// The same files for finding paths in replies (links to them).
+    var fileIndex: ProjectFileIndex?
+    var filesRefreshing = false
+    @ObservationIgnored var filesRefreshAgain = false
+    var expandedFolders: Set<String> = []
+    var fileFilter = ""
+    /// The file previewed under the tree (relative to the project) and a line to show.
+    var previewPath: String?
+    var previewLine: Int?
+    /// Bumped when the agent may have changed files: an open preview reads its file again.
+    var filesRevision = 0
+    /// The plan selected in the Plans tab (its call id; nil: the newest).
+    var selectedPlan: String?
 
     var isCoding: Bool { transcript.projectPath != nil }
     /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).
@@ -213,6 +280,8 @@ struct ChatSummary: Identifiable, Hashable {
     var parentID: UUID?
     var branch: String?
     var projectName: String?
+    /// The project folder (a worktree session's repository), for "new session in this project".
+    var projectPath: String?
     var todoDone: Int?
     var todoTotal: Int?
 }
@@ -257,6 +326,7 @@ struct ChatStore {
                                helper: t.graphHelper == true, status: t.savedStatus, pinned: t.pinned == true,
                                archived: t.archived == true, parentID: t.parentID, branch: t.worktree?.branch,
                                projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
+                               projectPath: t.worktree?.repo ?? t.projectPath,
                                todoDone: progress?.done, todoTotal: progress?.total)
         }.sorted { $0.updated > $1.updated }
     }
@@ -285,7 +355,22 @@ struct LLMKey: Hashable, Codable {
 final class LLMCatalog {
     var listings: [String: LLMListing] = [:]
     var errors: [String: String] = [:]
-    var statuses: [LLMKey: LLMStatus] = [:]
+    var statuses: [LLMKey: LLMStatus] = [:] {
+        didSet {
+            // "$x so far" never goes down within one warm period: the server's figure can step back (Stop sets the end
+            // time, a snapshot restore its own start), and the money was spent anyway.
+            for (key, s) in statuses {
+                switch s.state {
+                case "ready", "stopping", "loading":
+                    if let c = s.costUSD, c > (peakCost[key] ?? 0) { peakCost[key] = c }
+                default:
+                    if peakCost[key] != nil { peakCost[key] = nil }
+                }
+            }
+        }
+    }
+    /// The highest "so far" cost seen in the model's current warm period.
+    @ObservationIgnored private var peakCost: [LLMKey: Double] = [:]
     var refreshing: Set<String> = []
     @ObservationIgnored let connections: ConnectionStore
     @ObservationIgnored private var timer: Timer?
@@ -315,7 +400,11 @@ final class LLMCatalog {
         listings[key.serverID]?.models.first { $0.id == key.modelID }
     }
 
-    func status(_ key: LLMKey) -> LLMStatus? { statuses[key] ?? model(key)?.status }
+    func status(_ key: LLMKey) -> LLMStatus? {
+        guard var s = statuses[key] ?? model(key)?.status else { return nil }
+        if let peak = peakCost[key], s.costUSD.map({ $0 < peak }) ?? false { s.costUSD = peak }
+        return s
+    }
 
     func refresh(_ serverID: String) async {
         guard let client = client(serverID) else { return }
@@ -345,9 +434,26 @@ final class LLMCatalog {
         do { statuses[key] = try await client.warm(key.modelID) } catch { errors[key.serverID] = error.localizedDescription }
     }
 
+    /// Stop: "stopping" at once (the GPU takes ~15–25 s to go), then the server's word every 2 s until it's gone.
     func stop(_ key: LLMKey) async {
         guard let client = client(key.serverID) else { return }
-        if let s = try? await client.stop(key.modelID) { statuses[key] = s }
+        let before = status(key)
+        if var s = before, s.isActive {
+            // Still waiting for a GPU: the server cancels that at once. Loading or ready: the container shuts down.
+            s.state = s.state == "starting" ? "cold" : "stopping"
+            s.phase = s.isStopping ? "Shutting down the GPU" : nil
+            s.progress = nil
+            statuses[key] = s
+        }
+        guard let s = try? await client.stop(key.modelID) else {
+            if let before { statuses[key] = before }  // the request failed: nothing is stopping
+            return
+        }
+        statuses[key] = s
+        for _ in 0..<45 where status(key)?.isStopping == true {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await refreshStatus(key)
+        }
     }
 
     func remove(_ key: LLMKey) async {
@@ -385,7 +491,7 @@ final class LLMCatalog {
             let st = status(key)
             // One that's off is checked every 30 s too: it may have been started from another chat, a session or
             // the Servers list, and its chip and menu would otherwise say Cold while it loads.
-            if st?.isActive == true || st == nil || ticks % 3 == 0 { await refreshStatus(key) }
+            if st?.isActive == true || st?.isStopping == true || st == nil || ticks % 3 == 0 { await refreshStatus(key) }
             let current = status(key)
             // Keepalive once a minute: for the chat in front while the user is around, for working sessions always.
             let wanted = busy.contains(key) || (key == focused && NSApp.isActive && Date().timeIntervalSince(lastActivity) < 600)

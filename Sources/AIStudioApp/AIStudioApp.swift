@@ -8,6 +8,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the App so launch-argument hooks can drive the same model the window uses.
     @MainActor static weak var model: AppModel?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Messages, prompts and commands are typed for models and shells: "--name" must stay "--name", not "—name",
+        // and quotes straight. Off by default in this app (before any text view exists); Edit › Substitutions still
+        // turns them back on, and that choice is kept.
+        let d = UserDefaults.standard
+        let own = Bundle.main.bundleIdentifier.flatMap { d.persistentDomain(forName: $0) } ?? [:]
+        for key in ["NSAutomaticDashSubstitutionEnabled", "NSAutomaticQuoteSubstitutionEnabled"] where own[key] == nil {
+            d.set(false, forKey: key)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Running as a bare SwiftPM executable: become a regular foreground app with a Dock icon and menu bar.
         NSApp.setActivationPolicy(.regular)
@@ -16,12 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { MGTextMenu.install() }
         // Preview files only live for one session.
         try? FileManager.default.removeItem(at: previewDirectory)
-        // LoRA links: the keys from the Keychain (Models window), read only when a site asks for one.
+        // LoRA links: the saved keys (Models window), read only when a site asks for one.
         LoRASources.tokenProvider = { host in
             let env = ProcessInfo.processInfo.environment
             switch host {
-            case .civitai: return KeychainToken.civitai.read() ?? env["CIVITAI_TOKEN"]
-            case .huggingface: return KeychainToken.huggingFace.read() ?? env["HF_TOKEN"]
+            case .civitai: return SavedToken.civitai.read() ?? env["CIVITAI_TOKEN"]
+            case .huggingface: return SavedToken.huggingFace.read() ?? env["HF_TOKEN"]
             case .direct: return nil
             }
         }
@@ -71,6 +82,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
                 let ok = await SmokeTest.runGit(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if CommandLine.arguments.contains("--smoke-tokens") { exit(SmokeTest.runTokens() ? 0 : 1) }
+        if CommandLine.arguments.contains("--smoke-explorer") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runExplorer(AppDelegate.model!)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if CommandLine.arguments.contains("--perf-chats") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runPerfChats(AppDelegate.model!)
                 exit(ok ? 0 : 1)
             }
         }
@@ -301,12 +327,13 @@ struct AppCommands: Commands {
     @AppStorage("showMinimap") private var showMinimap = true
     @AppStorage("snapToGrid") private var snapToGrid = true
     @AppStorage("appearance") private var appearance = MGAppearance.system.rawValue
+    @AppStorage("sidebarOpen") private var sidebarOpen = true
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Workflow from Preset…") { model.showPresetGallery = true }
                 .keyboardShortcut("n")
-            Button("New Tab") { model.newTab() }
+            Button("New Blank Workflow") { model.newTab() }
                 .keyboardShortcut("t")
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
@@ -315,7 +342,7 @@ struct AppCommands: Commands {
             Button("Open…") { Self.openPanel(model: model) }
                 .keyboardShortcut("o")
             Divider()
-            Button("Close Tab") {
+            Button(model.activeChat == nil ? "Close Workflow" : "Close Chat") {
                 if let chat = model.activeChat { model.closeChat(chat.id) } else { TabCommands.close(model.active, model: model) }
             }
             .keyboardShortcut("w")
@@ -352,9 +379,13 @@ struct AppCommands: Commands {
         CommandMenu("Generate") {
             Button("Queue Workflow") { model.enqueue(undoManager: model.activeUndoManager) }
                 .keyboardShortcut(.return, modifiers: .command)
-            Button("Cancel Current") { model.cancelCurrent() }
+            // With a chat in front that's replying, ⌘. stops the reply (like esc in its field); else the workflow run.
+            let reply = model.activeChat.flatMap { $0.isStreaming ? $0 : nil }
+            Button(reply != nil ? "Stop Reply" : "Cancel Current") {
+                if let reply { model.stopReply(reply) } else { model.cancelCurrent() }
+            }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(!model.isRunning)
+                .disabled(reply == nil && !model.isRunning)
             Button("Cancel All") { model.cancelAll() }
                 .keyboardShortcut(".", modifiers: [.command, .shift])
             Divider()
@@ -414,6 +445,8 @@ struct AppCommands: Commands {
                 .disabled(model.editingPath.isEmpty)
         }
         CommandGroup(after: .toolbar) {
+            Button(sidebarOpen ? "Hide Sidebar" : "Show Sidebar") { sidebarOpen.toggle() }
+                .keyboardShortcut("s", modifiers: [.command, .control])
             Button(model.showResultsPane ? "Hide Results Pane" : "Show Results Pane") { model.showResultsPane.toggle() }
                 .keyboardShortcut("r", modifiers: [.command, .option])
             Button(model.showHelper ? "Hide Graph Helper" : "Show Graph Helper") { model.showHelper.toggle() }
@@ -421,10 +454,30 @@ struct AppCommands: Commands {
             Button("Open Result in Viewer") { model.openViewer() }
                 .keyboardShortcut("y")
                 .disabled(model.displayedResult == nil)
+            Button(model.activeChat.map(model.sidePanelShown) == true ? "Hide Side Panel" : "Show Side Panel") {
+                if let chat = model.activeChat { model.toggleSidePanel(chat) }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(model.activeChat?.isCoding != true)
+            Button(model.activeChat?.sidePanel == .files ? "Hide Files" : "Show Files") {
+                if let chat = model.activeChat { model.toggleSidePanel(chat, .files) }
+            }
+            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .disabled(model.activeChat?.isCoding != true)
             Button(model.activeChat?.changesOpen == true ? "Hide Changes" : "Show Changes") {
                 if let chat = model.activeChat { model.toggleChanges(chat) }
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(model.activeChat?.isCoding != true)
+            Button(model.activeChat?.sidePanel == .plans ? "Hide Plans" : "Show Plans") {
+                if let chat = model.activeChat { model.toggleSidePanel(chat, .plans) }
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(model.activeChat?.isCoding != true)
+            Button(model.activeChat?.sidePanel == .web ? "Hide Browser" : "Show Browser") {
+                if let chat = model.activeChat { model.toggleSidePanel(chat, .web) }
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
             .disabled(model.activeChat?.isCoding != true)
             Divider()
             Picker("Appearance", selection: $appearance) {
@@ -437,11 +490,22 @@ struct AppCommands: Commands {
                 .keyboardShortcut("m", modifiers: [.command, .option])
             Toggle("Show Minimap", isOn: $showMinimap)
             Divider()
-            Button("Show Next Tab") { model.selectTab(offset: 1) }
+            Button("Switch to Last Used") { model.switchToPrevious() }
+                .keyboardShortcut(.tab, modifiers: .control)
+            Button("Show Next Open Item") { model.selectOpenItem(offset: 1) }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-            Button("Show Previous Tab") { model.selectTab(offset: -1) }
+            Button("Show Previous Open Item") { model.selectOpenItem(offset: -1) }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
             Divider()
+        }
+        // The open workflows and recent chats, ⌘1–⌘9, as the sidebar has no tabs.
+        CommandGroup(before: .windowList) {
+            let items = model.openItems
+            ForEach(Array(items.prefix(9).enumerated()), id: \.offset) { i, item in
+                Toggle(model.title(of: item), isOn: Binding(get: { item == model.frontItem }, set: { _ in model.show(item) }))
+                    .keyboardShortcut(KeyEquivalent(Character(String(i + 1))), modifiers: .command)
+            }
+            if !items.isEmpty { Divider() }
         }
     }
 

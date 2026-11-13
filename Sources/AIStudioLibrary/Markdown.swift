@@ -13,6 +13,8 @@ public enum MarkdownBlock: Equatable, Sendable {
     case quote(String)
     case table(header: [String], rows: [[String]])
     case rule
+    /// A line that is only an image: `![alt](src)` (src a URL or a path; an image or a video).
+    case media(alt: String, src: String)
 }
 
 public struct MarkdownListItem: Equatable, Sendable {
@@ -58,6 +60,8 @@ public enum Markdown {
             if let h = heading(trimmed) { flushPara(); out.append(h); i += 1; continue }
             // Rule.
             if isRule(trimmed) { flushPara(); out.append(.rule); i += 1; continue }
+            // An image on a line of its own.
+            if let m = media(trimmed) { flushPara(); out.append(m); i += 1; continue }
             // Table: a row, then a separator row.
             if trimmed.contains("|"), i + 1 < lines.count, isTableSeparator(lines[i + 1]) {
                 flushPara()
@@ -133,6 +137,18 @@ public enum Markdown {
         var text = String(t.dropFirst(hashes)).trimmingCharacters(in: .whitespaces)
         while text.hasSuffix("#") { text.removeLast() }
         return .heading(level: hashes, text: text.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// `![alt](src)` or `![alt](src "title")` filling the whole line.
+    static func media(_ t: String) -> MarkdownBlock? {
+        guard t.hasPrefix("!["), t.hasSuffix(")"), let close = t.range(of: "](") else { return nil }
+        let alt = String(t[t.index(t.startIndex, offsetBy: 2)..<close.lowerBound])
+        guard !alt.contains("]") else { return nil }
+        var src = String(t[close.upperBound..<t.index(before: t.endIndex)]).trimmingCharacters(in: .whitespaces)
+        if let q = src.range(of: " \"") { src = String(src[..<q.lowerBound]) }
+        if src.hasPrefix("<"), src.hasSuffix(">") { src = String(src.dropFirst().dropLast()) }
+        guard !src.isEmpty, !src.contains(" ") || src.hasPrefix("/") else { return nil }
+        return .media(alt: alt, src: src)
     }
 
     static func isRule(_ t: String) -> Bool {

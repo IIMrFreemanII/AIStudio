@@ -24,6 +24,7 @@ extension AppModel {
         let name = doc.transcript.turns.lazy.flatMap(\.toolCalls).first { $0.id == callID }?.name
         guard let name, ["edit_file", "write_file", "run_command"].contains(name) else { return }
         Task { await ProjectGraphs.shared.markStale(root: root) }
+        projectFilesChanged(doc)
     }
 }
 

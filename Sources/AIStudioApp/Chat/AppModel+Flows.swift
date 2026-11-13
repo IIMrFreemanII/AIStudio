@@ -392,9 +392,8 @@ extension AppModel {
         ])
     }
 
-    /// Shows a run in the right-hand pane (the changes pane gives way).
+    /// Shows a run in the right-hand pane (the side panel gives way until the run's pane is closed).
     func openFlowPanel(_ runID: String, in doc: ChatDocument) {
-        doc.changesOpen = false
         doc.flowPanelRunID = runID
     }
 

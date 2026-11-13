@@ -86,6 +86,9 @@ public final class ToolContext: @unchecked Sendable {
     public var askUser: (@Sendable (String, [UserQuestion]) async -> [UserAnswer]?)?
     /// Shows an `exit_plan` plan for approval (call id, plan markdown) and waits for the answer (nil: no UI).
     public var approvePlan: (@Sendable (String, String) async -> PlanAnswer)?
+    /// Opens a page in the chat's Browser tab (call id, address, take a screenshot) and waits for it to load (nil: no
+    /// browser here).
+    public var openPage: (@Sendable (String, URL, Bool) async -> PageView)?
     /// Saves files before the agent changes them, so the user can rewind (nil: no checkpoints).
     public var checkpoints: CheckpointStore?
     /// The user message the current reply answers: what checkpoints are filed under.
@@ -158,6 +161,13 @@ public final class ToolContext: @unchecked Sendable {
     }
 
     func markRead(_ url: URL) { lock.withLock { stamps[url.path] = Self.modified(url) } }
+
+    /// The files read or written so far (path → modification date at the time), to carry into the chat's next run.
+    public var reads: [String: Date] { lock.withLock { stamps } }
+
+    /// Reads from the chat's earlier runs, so the model needn't read a file again before every edit. A file that
+    /// changed on disk since still needs a fresh read (`checkFresh`).
+    public func seedReads(_ r: [String: Date]) { lock.withLock { stamps.merge(r) { now, _ in now } } }
 
     /// Edits need a fresh read: the file was read in this chat and hasn't changed on disk since.
     func checkFresh(_ url: URL) throws {
@@ -287,9 +297,15 @@ public struct ListFilesTool: AgentTool {
         return ToolOutput(files.isEmpty ? "(no files match)" : shown + (files.count > 500 ? "\n… \(files.count - 500) more" : ""))
     }
 
-    /// Paths relative to `dir`: git's view when it's a repository, else a walk skipping build and dependency folders.
-    static func files(in dir: URL) async -> [String] {
-        let git = await ShellRunner().run("git ls-files --cached --others --exclude-standard 2>/dev/null", cwd: dir, timeout: 20)
+    static func files(in dir: URL) async -> [String] { await ProjectFiles.list(in: dir) }
+}
+
+/// A project's files, as the agent's `list_files` and the coding chat's file explorer see them.
+public enum ProjectFiles {
+    /// Paths relative to `dir`: git's view when it's a repository (tracked and untracked, without ignored files),
+    /// else a walk skipping hidden, build and dependency folders (at most 20 000 files).
+    public static func list(in dir: URL) async -> [String] {
+        let git = await ShellRunner().run("git -c core.quotepath=off ls-files --cached --others --exclude-standard 2>/dev/null", cwd: dir, timeout: 20)
         if git.status == 0, !git.output.isEmpty {
             return git.output.split(separator: "\n").map(String.init)
         }
@@ -387,11 +403,12 @@ public struct EditFileTool: AgentTool {
 
     public func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview {
         let url = ctx.resolve(try args.required("path"))
+        // Checked before the user is asked: an edit that can't apply would only fail after they allowed it.
+        try ctx.checkFresh(url)
+        let r = try apply(args, ctx)
         var p = ToolPreview(kind: .diff, title: "Edit \(ctx.display(url))", paths: [url])
-        if let r = try? apply(args, ctx) {
-            p.detail = UnifiedDiff.text(r.1, r.2)
-            (p.added, p.removed) = UnifiedDiff.counts(r.1, r.2)
-        }
+        p.detail = UnifiedDiff.text(r.1, r.2)
+        (p.added, p.removed) = UnifiedDiff.counts(r.1, r.2)
         return p
     }
 
@@ -421,6 +438,7 @@ public struct WriteFileTool: AgentTool {
         let new = try args.required("content")
         let old = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         let exists = FileManager.default.fileExists(atPath: url.path)
+        if exists { try ctx.checkFresh(url) }  // before the user is asked, as for edit_file
         var p = ToolPreview(kind: .diff, title: "\(exists ? "Write" : "Create") \(ctx.display(url))", paths: [url])
         p.detail = UnifiedDiff.text(old, new)
         (p.added, p.removed) = UnifiedDiff.counts(old, new)

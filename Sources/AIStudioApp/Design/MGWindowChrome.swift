@@ -183,3 +183,26 @@ struct MGResizeHandle: View {
                 .onEnded { _ in start = nil })
     }
 }
+
+/// A horizontal divider that resizes the pane above it (a list over a preview): a hairline with a 7 pt grab area.
+struct MGRowResizeHandle: View {
+    @Binding var height: Double
+    let range: ClosedRange<Double>
+    @State private var start: Double?
+
+    var body: some View {
+        Rectangle().fill(MG.separator).frame(height: 1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { v in
+                    if start == nil { start = min(max(height, range.lowerBound), range.upperBound) }
+                    height = min(max(start! + Double(v.translation.height), range.lowerBound), range.upperBound)
+                }
+                .onEnded { _ in start = nil })
+    }
+}

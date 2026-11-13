@@ -23,7 +23,7 @@ struct AgentSettingsSection: View {
             MGFormRow("Web search") {
                 HStack(spacing: 8) {
                     SecureField("Brave Search API key", text: $key,
-                                prompt: Text(keySaved ? "Saved in the Keychain — type to replace" : "Brave Search API key"))
+                                prompt: Text(keySaved ? "Saved — type to replace" : "Brave Search API key"))
                         .frame(maxWidth: 260)
                     Button("Save") {
                         model.setSearchAPIKey(key)
@@ -32,7 +32,7 @@ struct AgentSettingsSection: View {
                     }
                     .buttonStyle(.mg(.bordered))
                     .disabled(key.isEmpty && !keySaved)
-                    .mgHelp(key.isEmpty ? "Remove the saved key" : "Save the key in the Keychain")
+                    .mgHelp(key.isEmpty ? "Remove the saved key" : "Save the key")
                     if keySaved { Text("Key saved").font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
                 }
             }

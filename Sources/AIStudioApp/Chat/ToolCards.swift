@@ -17,19 +17,53 @@ struct ToolCard: View {
     var asking: Bool { doc.permission?.call.id == call.id }
     var isCommand: Bool { call.name == "run_command" }
     var isDiff: Bool { call.name == "edit_file" || call.name == "write_file" }
+    /// A subagent: while it works, the card lists its steps.
+    var isTask: Bool { call.name == "task" }
+    /// A string argument of the call.
+    func arg(_ key: String) -> String? {
+        (try? ToolArgs(json: call.arguments))?.string(key).flatMap { $0.isEmpty ? nil : $0 }
+    }
     /// A graph helper change: its list of changes is shown.
     var isGraphEdit: Bool { call.name == "edit_graph" || call.name == "set_prompt" }
+    /// The file a call read or wrote, to show it in the Files tab (coding chats, files inside the project).
+    var fileTarget: (path: String, line: Int?)? {
+        guard doc.isCoding, ["read_file", "edit_file", "write_file"].contains(call.name),
+              let args = try? ToolArgs(json: call.arguments), let path = args.string("path"),
+              model.relativeProjectPath(doc, path) != nil else { return nil }
+        return (path, call.name == "read_file" ? args.int("offset") : nil)
+    }
+
+    /// `open_page`'s address as the agent gave it.
+    var pageArg: String? { (try? ToolArgs(json: call.arguments))?.string("url") }
+    /// The page an `open_page` call showed (what it loaded, else its address; a project path as a file).
+    var pageURL: URL? {
+        if let d = result?.toolDetail, let u = URL(string: d), u.scheme != nil { return u }
+        // The same rules as the tool: an address with a scheme, localhost:port, else a file in the project.
+        guard let s = pageArg?.trimmingCharacters(in: .whitespaces), !s.isEmpty else { return nil }
+        if s.contains("://") { return URL(string: s) }
+        if s.lowercased().hasPrefix("localhost:") || s.hasPrefix("127.0.0.1:") { return URL(string: "http://" + s) }
+        return doc.projectURL.map { s.hasPrefix("/") ? URL(fileURLWithPath: s) : $0.appendingPathComponent(s) }
+    }
+
+    /// Tools that only look (read, list, search, fetch): finished well, they're a plain line instead of a card, so the
+    /// steps that need you (a question, a diff, a command, a failure) stand out.
+    static let lookTools: Set<String> = ["read_file", "list_files", "search", "web_fetch", "web_search", "open_page",
+                                         "use_skill", "code_graph", "command_output", "list_sessions"]
+    var quiet: Bool { status == "done" && !asking && Self.lookTools.contains(call.name) }
 
     var body: some View {
-        let expanded = open ?? (asking || (isCommand && status == "running") || (isDiff && status != "denied")
+        let expanded = open ?? (asking || ((isCommand || isTask) && status == "running") || (isDiff && status != "denied")
                                 || (isGraphEdit && status == "done"))
+        let plain = quiet && !expanded
         VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { open = !expanded }
             } label: {
                 HStack(spacing: 8) {
-                    statusIcon
+                    statusIcon.font(plain ? .system(size: 10) : nil).opacity(plain ? 0.8 : 1)
                     Text(result?.toolTitle ?? call.name).font(.mgCallout).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(plain ? MG.secondaryLabel : MG.label)
                     if isDiff, let d = result?.toolDetail {
                         let (a, r) = counts(d)
                         if a > 0 { Text("+\(a)").font(.mgFootnote).foregroundStyle(MG.success) }
@@ -39,11 +73,32 @@ struct ToolCard: View {
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
                         .foregroundStyle(MG.tertiaryLabel).rotationEffect(.degrees(expanded ? 90 : 0))
                 }
-                .padding(.horizontal, 10)
-                .frame(height: 32)
+                .padding(.horizontal, plain ? 2 : 10)
+                .frame(height: plain ? 24 : 32)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+                if call.name == "open_page", doc.isCoding, let url = pageURL {
+                    Button { model.openWebPage(doc, url) } label: {
+                        Image(systemName: "globe")
+                    }
+                    .buttonStyle(.mg(.icon))
+                    .controlSize(.small)
+                    .padding(.trailing, 6)
+                    .mgHelp("Show the page in the side panel")
+                    .accessibilityLabel("Show Page")
+                }
+                if let target = fileTarget {
+                    Button { model.showProjectFile(doc, path: target.path, line: target.line) } label: {
+                        Image(systemName: "eye")
+                    }
+                    .buttonStyle(.mg(.icon))
+                    .controlSize(.small)
+                    .padding(.trailing, 6)
+                    .mgHelp("Show the file in the side panel")
+                    .accessibilityLabel("Show File")
+                }
+            }
             if call.name == "flow", status != "running", let id = doc.flowRunID(for: call, result: result),
                let run = model.flowController(id) {
                 MGDivider()
@@ -57,9 +112,10 @@ struct ToolCard: View {
                 PermissionCard(doc: doc, request: request).padding(10)
             }
         }
-        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
+        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(plain ? .clear : MG.controlBackground))
         .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous),
-                    color: asking ? MG.accent : MG.border)
+                    color: plain ? .clear : asking ? MG.accent : MG.border)
+        .mgTestAnchor(plain ? "tool-line:\(call.id)" : "tool-card:\(call.id)")
     }
 
     @ViewBuilder
@@ -104,6 +160,38 @@ struct ToolCard: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        } else if isTask {
+            VStack(alignment: .leading, spacing: 6) {
+                if let p = arg("prompt") {
+                    Text(String(p.prefix(600))).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                let text = status == "running" ? (doc.toolOutputs[call.id] ?? "") : (result?.text ?? "")
+                if !text.isEmpty {
+                    ScrollView {
+                        Text(String(text.suffix(20_000))).font(.mgMono).foregroundStyle(MG.secondaryLabel)
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 220)
+                    .mgScrollIndicators()
+                } else if status == "running" {
+                    Text("Thinking…").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                }
+            }
+            .mgTestAnchor("task-steps:\(call.id)")
+        } else if call.name == "flow", status == "running" {
+            // Asking to run (or running): what will run.
+            if let script = arg("script") {
+                ScrollView {
+                    Text(script).font(.mgMono).foregroundStyle(MG.secondaryLabel).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 260)
+                .mgScrollIndicators()
+                .mgTestAnchor("flow-script:\(call.id)")
+            } else if let name = arg("name") {
+                Text("The saved flow “\(name)”").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
         } else if call.name == "todo_write", let d = result?.toolDetail {
             Text(d).font(.mgFootnote).textSelection(.enabled)
         } else {
@@ -225,8 +313,8 @@ struct PermissionCard: View {
         case .edit where request.inProject: return "Allow All Edits in This Chat"
         case .execute:
             guard let cmd = request.preview.command else { return nil }
-            let p = AllowRules.prefix(of: cmd)
-            return p.isEmpty ? nil : "Always Allow “\(p)”"
+            let ps = AllowRules.prefixes(of: cmd)
+            return ps.isEmpty ? nil : "Always Allow " + ps.map { "“\($0)”" }.joined(separator: ", ")
         case .run: return "Allow Runs in This Chat"
         case .network: return request.preview.domain.map { "Always Allow \($0)" }
         default: return nil
@@ -339,18 +427,15 @@ struct TodoUpdateRow: View {
     }
 }
 
-/// A coding chat's project folder and permission mode, in the chat header.
+/// A coding chat's project folder, branch, side panel and more, in the chat header (the mode is in the composer).
 struct CodingHeaderItems: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
 
-    var allowed: String {
-        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []) + doc.rules.domains)
-            .joined(separator: ", ")
-    }
-
     var body: some View {
-        if let url = doc.projectURL {
+        // The project is named in the sidebar, the field and the window title; the folder button stays only where
+        // there's no branch chip (not a git repository). "Show Project in Finder" is in the ⋯ menu.
+        if doc.git == nil, let url = doc.projectURL {
             Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: {
                 Label(url.lastPathComponent, systemImage: "folder").lineLimit(1)
             }
@@ -360,19 +445,17 @@ struct CodingHeaderItems: View {
         if let git = doc.git {
             GitBranchMenu(doc: doc)
             // The pane's footer shows the PR while it's open.
-            if let pr = git.pr, !doc.changesOpen { PRPill(pr: pr) }
+            if let pr = git.pr, !(model.sidePanelShown(doc) && doc.sidePanel == .changes) { PRPill(pr: pr) }
         }
         if doc.isCoding {
-            let n = doc.git?.status.files.count ?? 0
-            Button { model.toggleChanges(doc) } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "doc.badge.ellipsis")
-                    if n > 0 { Text("\(n)").monospacedDigit() }
-                }
-                .foregroundStyle(doc.changesOpen ? MG.accent : MG.label)
+            let shown = model.sidePanelShown(doc)
+            Button { model.toggleSidePanel(doc) } label: {
+                Image(systemName: "sidebar.right").foregroundStyle(shown ? MG.accent : MG.label)
             }
             .buttonStyle(.mg(.bordered))
-            .mgHelp("Show the changes (⇧⌘D)")
+            .mgHelp(shown ? "Hide the side panel" : "Show the side panel: files, changes and plans (⌥⌘S)")
+            .accessibilityLabel(shown ? "Hide the Side Panel" : "Show the Side Panel")
+            .mgTestAnchor("side-panel-toggle")
         }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {
@@ -392,34 +475,12 @@ struct CodingHeaderItems: View {
             }
             .mgHelp("Commands the agent left running (click one to stop it)")
         }
-        if doc.isAgent {
-            MGMenuButton(kind: .bordered) {
-                for m in PermissionMode.allCases {
-                    MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
-                }
-                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty {
-                    MGMenuItem.divider
-                    MGMenuItem.header("Always allowed: " + allowed)
-                    MGMenuItem.button("Forget Always-Allow Answers") {
-                        doc.transcript.allowEdits = nil
-                        doc.transcript.allowCommands = nil
-                        doc.transcript.allowRuns = nil
-                        doc.transcript.allowDomains = nil
-                    }
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: doc.mode == .bypass ? "exclamationmark.shield" : doc.mode == .plan ? "doc.text.magnifyingglass" : "lock.shield")
-                        .foregroundStyle(doc.mode == .bypass ? MG.warning : MG.secondaryLabel)
-                    Text(doc.mode.title)
-                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
-                }
-            }
-            .mgHelp(doc.isGraphHelper ? helperDetail : doc.mode.detail)
-        }
         if doc.isCoding {
             MGMenuButton(kind: .icon) {
-                MGMenuItem.button("Move Task to New Session", icon: "arrow.up.forward.square", enabled: doc.isStreaming) {
+                // Stops a running reply first; without one, the last task carries on in a new session.
+                let task = doc.transcript.turns.contains { $0.role == .user && $0.sessionEvent == nil && $0.flowEvent == nil && $0.summary != true }
+                MGMenuItem.button(doc.isStreaming ? "Move Task to New Session" : "Continue Task in New Session",
+                                  icon: "arrow.up.forward.square", enabled: task) {
                     model.moveTaskToNewSession(doc)
                 }
                 MGMenuItem.menu("Run Flow", icon: "square.stack.3d.up") {
@@ -439,7 +500,49 @@ struct CodingHeaderItems: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
-            .mgHelp("More: move the running task to its own session, show the project")
+            .mgHelp("More: carry the task on in its own session, run a flow, show the project")
+            .accessibilityLabel("More")
+        }
+    }
+}
+
+/// The permission mode (Ask / Auto-accept Edits / Plan / Bypass) under the composer's field, as in Claude Code;
+/// ⇧⇥ in the field cycles the first three.
+struct PermissionModeMenu: View {
+    let doc: ChatDocument
+
+    var allowed: String {
+        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []) + doc.rules.domains)
+            .joined(separator: ", ")
+    }
+
+    var body: some View {
+        if doc.isAgent {
+            MGMenuButton(kind: .plain) {
+                for m in PermissionMode.allCases {
+                    MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
+                }
+                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty {
+                    MGMenuItem.divider
+                    MGMenuItem.header("Always allowed: " + allowed)
+                    MGMenuItem.button("Forget Always-Allow Answers") {
+                        doc.transcript.allowEdits = nil
+                        doc.transcript.allowCommands = nil
+                        doc.transcript.allowRuns = nil
+                        doc.transcript.allowDomains = nil
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: doc.mode == .bypass ? "exclamationmark.shield" : doc.mode == .plan ? "doc.text.magnifyingglass" : "lock.shield")
+                    Text(doc.mode.title).lineLimit(1)
+                }
+                .font(.mgFootnote)
+                .foregroundStyle(doc.mode == .bypass ? MG.warning : doc.mode == .ask ? MG.secondaryLabel : MG.accent)
+            }
+            .fixedSize()
+            .mgHelp((doc.isGraphHelper ? helperDetail : doc.mode.detail) + " (⇧⇥ to switch)")
+            .mgTestAnchor("permission-mode")
         }
     }
 
@@ -448,6 +551,17 @@ struct CodingHeaderItems: View {
         case .ask, .acceptEdits: return "Changes the workflow without asking (one undo step per reply); asks before each run."
         case .plan: return "Only looks at the workflow and explains; edits and runs are refused."
         case .bypass: return "Changes and runs the workflow without asking."
+        }
+    }
+}
+
+extension PermissionMode {
+    /// The next mode for ⇧⇥: Ask → Auto-accept Edits → Plan → Ask (Bypass only from the menu; from it, back to Ask).
+    var cycled: PermissionMode {
+        switch self {
+        case .ask: return .acceptEdits
+        case .acceptEdits: return .plan
+        case .plan, .bypass: return .ask
         }
     }
 }
@@ -652,34 +766,83 @@ struct QuestionCard: View {
 /// An `exit_plan` call: the plan, and while it waits for approval, the buttons that start it (in a mode) or keep
 /// planning (with a note).
 struct PlanCard: View {
+    @Environment(AppModel.self) private var model
     let doc: ChatDocument
     let call: ToolCall
     let result: ChatTurn?
-    @State private var note = ""
+
+    @State private var expanded = false
 
     var plan: String { (try? ToolArgs(json: call.arguments).string("plan")) ?? "" }
     var asking: Bool { doc.plan?.callID == call.id }
     var status: String { result?.toolStatus ?? "running" }
 
+    /// A long plan's first lines, shown collapsed (nil: short enough to show whole). Only these are laid out, so a
+    /// long plan doesn't slow the chat down.
+    static func collapsed(_ plan: String) -> (text: String, hidden: Int)? {
+        let lines = plan.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > 24 || plan.count > 2400 else { return nil }
+        var shown: [Substring] = []
+        var chars = 0
+        for l in lines.prefix(14) {
+            if chars + l.count > 1400 {
+                // A very long line (one huge paragraph): its start, cut at a word.
+                let room = max(0, 1400 - chars)
+                let head = l.prefix(room)
+                let cut = head.lastIndex(of: " ").map { head[..<$0] } ?? head
+                if !cut.isEmpty { shown.append(Substring(cut + "…")) }
+                break
+            }
+            shown.append(l)
+            chars += l.count + 1
+        }
+        // Not cut right after a heading: it would end the preview with a title and nothing under it.
+        while let last = shown.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("#") || last.trimmingCharacters(in: .whitespaces).isEmpty,
+              shown.count > 1 { shown.removeLast() }
+        return (shown.joined(separator: "\n"), lines.count - shown.count)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Plan", systemImage: "doc.text.magnifyingglass")
-                .font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.accent)
-            MarkdownView(text: plan)
+            HStack {
+                Label("Plan", systemImage: "doc.text.magnifyingglass")
+                    .font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.accent)
+                Spacer(minLength: 0)
+                if doc.isCoding {
+                    Button { model.showPlan(doc, call.id) } label: {
+                        Label("Open in Plans", systemImage: "sidebar.right").font(.mgFootnote)
+                    }
+                    .buttonStyle(.mg(.borderless))
+                    .mgHelp("Show the plan in the side panel (it's saved with the chat)")
+                }
+            }
+            let short = Self.collapsed(plan)
+            if let short, !expanded {
+                MarkdownView(text: short.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(colors: [MG.controlBackground.opacity(0), MG.controlBackground],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: 44)
+                            .allowsHitTesting(false)
+                    }
+            } else {
+                MarkdownView(text: plan)
+            }
+            if let short {
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    Label(expanded ? "Show less" : "Show full plan (\(short.hidden) more lines)",
+                          systemImage: expanded ? "chevron.up" : "chevron.down")
+                        .font(.mgFootnote)
+                }
+                .buttonStyle(.mg(.borderless))
+                .mgTestAnchor("plan-expand:\(call.id)")
+            }
             MGDivider()
             if asking {
-                HStack(spacing: 8) {
-                    Button("Approve, Auto-accept Edits") { doc.answerPlan(.approve(.acceptEdits)) }
-                        .buttonStyle(.mg(.prominent)).keyboardShortcut(.defaultAction)
-                    Button("Approve, Ask Each Time") { doc.answerPlan(.approve(.ask)) }.buttonStyle(.mg(.bordered))
-                    Spacer(minLength: 0)
-                }
-                HStack(spacing: 8) {
-                    TextField("Note for the agent (optional)", text: $note)
-                        .textFieldStyle(.roundedBorder).font(.mgBody)
-                        .onSubmit { keepPlanning() }
-                    Button("Keep Planning") { keepPlanning() }.buttonStyle(.mg(.bordered))
-                }
+                PlanAnswerControls(doc: doc)
             } else {
                 HStack(spacing: 6) {
                     if status == "running" { MGSpinner().controlSize(.mini) }
@@ -696,11 +859,6 @@ struct PlanCard: View {
     var statusLine: String {
         if status == "running" { return "Waiting…" }
         return result?.toolDetail ?? result?.text ?? "Not answered"
-    }
-
-    func keepPlanning() {
-        let n = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        doc.answerPlan(.keepPlanning(n.isEmpty ? nil : n))
     }
 }
 
