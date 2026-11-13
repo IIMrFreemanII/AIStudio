@@ -184,6 +184,8 @@ extension EnvironmentValues {
         get { self[ChatFilesKey.self] }
         set { self[ChatFilesKey.self] = newValue }
     }
+    /// Runs shell commands in the chat's terminal: set by coding chats, so their ```bash blocks get a Run button.
+    @Entry var chatRunCommand: (@MainActor (String) -> Void)? = nil
 }
 
 struct MarkdownBlockView: View {
@@ -198,8 +200,8 @@ struct MarkdownBlockView: View {
                 .padding(.top, level <= 2 ? 4 : 0)
         case .paragraph(let text):
             Text(inlineMarkdown(text, files: files.index)).font(.mgBody).fixedSize(horizontal: false, vertical: true)
-        case .code(let language, let text, _):
-            CodeBlockView(language: language, code: text)
+        case .code(let language, let text, let closed):
+            CodeBlockView(language: language, code: text, closed: closed)
         case .list(let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
@@ -261,13 +263,29 @@ struct MarkdownBlockView: View {
 struct CodeBlockView: View {
     let language: String
     let code: String
+    /// False while the reply is still streaming the block: no Run for a half-written command.
+    var closed = true
+    @Environment(\.chatRunCommand) private var runCommand
     @State private var copied = false
+    @State private var sent = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language.isEmpty ? "code" : language).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 Spacer()
+                if closed, let runCommand, let commands = ShellBlock.commands(language: language, code: code) {
+                    Button {
+                        runCommand(commands)
+                        sent = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { sent = false }
+                    } label: {
+                        Label(sent ? "Sent" : "Run", systemImage: sent ? "checkmark" : "play").font(.mgFootnote)
+                    }
+                    .buttonStyle(.mg(.borderless))
+                    .mgHelp("Run in this chat's terminal")
+                    .mgTestAnchor("code-run:" + (commands.components(separatedBy: "\n").first ?? ""))
+                }
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)

@@ -354,6 +354,50 @@ extension SmokeTest {
             }
         }
 
+        // Commands the AI suggests: a closed ```bash block has Run (not a Python one, not one still streaming); Run
+        // types it into the terminal, or into a new one when a command is running in the shown one.
+        do {
+            let ask = ChatTurn(role: .user, text: "How do I check it?")
+            doc.transcript.append(ask)
+            doc.transcript.append(ChatTurn(role: .assistant, text: """
+                Run this:
+
+                ```bash
+                echo run-me-$((40+2))
+                ```
+
+                ```python
+                print(1)
+                ```
+
+                ```bash
+                echo half-writ
+                """))
+            await settle(0.8)
+            let anchors = MGTestAnchors.anchors
+            check(MGTestAnchors.frame("code-run:echo run-me-$((40+2))") != nil, "a suggested ```bash command has Run")
+            check(!anchors.keys.contains { $0.hasPrefix("code-run:print") }, "a Python block has no Run")
+            check(anchors["code-run:echo half-writ"] == nil, "a block still being written has no Run")
+            model.runInTerminal(doc, "echo run-me-$((40+2))")
+            let first = doc.activeTerminal
+            let ran = await wait(10) { first?.text(lastLines: 20).contains("\nrun-me-42") == true }
+            check(ran && doc.sidePanel == .terminal && doc.terminals.count == 1,
+                  "Run opens the Terminal tab and runs it (\(first?.text(lastLines: 3) ?? "no terminal"))")
+            first?.send("sleep 30\r")
+            let busy = await wait(5) { first?.isIdle == false }
+            model.runInTerminal(doc, "echo two-a\necho two-b")
+            let second = doc.activeTerminal
+            let both = await wait(10) {
+                let t = second?.text(lastLines: 20) ?? ""
+                return t.contains("\ntwo-a") && t.contains("\ntwo-b")
+            }
+            check(busy && second !== first && doc.terminals.count == 2 && both,
+                  "with a command running, Run uses a new terminal, and runs every line (\(second?.text(lastLines: 4) ?? "-"))")
+            model.closeTerminals(doc)
+            doc.transcript.remove(ask.id)  // and the reply after it
+            await settle(0.3)
+        }
+
         // Attachments: a PDF (its text for the model) and an archive (only named).
         let pdfURL = repo.appendingPathComponent("notes.pdf")
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))
@@ -476,7 +520,13 @@ extension SmokeTest {
                 $0.toolStatus = "done"
                 $0.text = "Test Suite 'All tests' passed"
             }
-            doc.transcript.append(ChatTurn(role: .assistant, text: "The test passes now: `line3` was 3 where the test expects 30."))
+            doc.transcript.append(ChatTurn(role: .assistant, text: """
+                The test passes now: `line3` was 3 where the test expects 30. To see what changed, run:
+
+                ```bash
+                git status --short && git log --oneline -1
+                ```
+                """))
             try? await Task.sleep(nanoseconds: 35_000_000_000)
             if let keptPanel { UserDefaults.standard.set(keptPanel, forKey: "sidebarPanel") }
         }

@@ -107,6 +107,26 @@ final class TerminalSession: Identifiable {
     /// The shell's process ID (0 before it starts).
     var pid: pid_t { view.process.shellPid }
 
+    /// Waiting at its prompt: the shell runs, nothing it started is in front (no command running, no vim).
+    var isIdle: Bool {
+        guard running, pid > 0, !view.getTerminal().isCurrentBufferAlternate else { return false }
+        let fd = view.process.childfd
+        guard fd >= 0 else { return false }
+        return tcgetpgrp(fd) == pid
+    }
+
+    /// Runs commands as if typed and Return pressed. Several lines go as one paste when the shell takes bracketed
+    /// paste (zsh, bash): it gets the block as one edit, so a multi-line command (a loop, a heredoc) stays whole.
+    func runCommand(_ text: String) {
+        if !text.contains("\n") {
+            view.send(txt: text + "\r")
+        } else if view.getTerminal().bracketedPasteMode {
+            view.send(txt: "\u{1B}[200~" + text + "\u{1B}[201~\r")
+        } else {
+            view.send(txt: text.replacingOccurrences(of: "\n", with: "\r") + "\r")
+        }
+    }
+
     /// Types text into the terminal as if from the keyboard (`\r` for Return).
     func send(_ text: String) { view.send(txt: text) }
 

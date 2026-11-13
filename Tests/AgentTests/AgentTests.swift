@@ -336,6 +336,8 @@ struct LoopTests {
         try "Use tabs.".write(to: root.appendingPathComponent("AGENTS.md"), atomically: true, encoding: .utf8)
         let p = await ProjectContext.systemPrompt(root: root, mode: .plan)
         #expect(p.contains(root.path) && p.contains("Use tabs.") && p.contains("plan mode"))
+        // Commands it can't run go to the user in a ```bash block, which gets a Run button.
+        #expect(p.contains("```bash") && p.contains("Run button"))
     }
 
     /// A run-type tool that returns an image, like the graph helper's queue_run / get_last_outputs.
