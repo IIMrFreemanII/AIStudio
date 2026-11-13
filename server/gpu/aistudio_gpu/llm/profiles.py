@@ -27,6 +27,10 @@ BY_TYPE: list[tuple[str, str | None, str | None, list[str]]] = [
 ]
 
 
+# Reasoning parsers that split on <think>…</think> (gpt-oss marks its reasoning by channels instead).
+THINK_TAG_PARSERS = ("qwen3", "deepseek_r1")
+
+
 def guess(f: Facts) -> dict:
     """{"toolParser", "reasoningParser", "engineArgs"} for a model."""
     if f.engine == "llamacpp":
@@ -48,6 +52,10 @@ def guess(f: Facts) -> dict:
             tool = "hermes"
         if "<think>" in tpl and reasoning is None:
             reasoning = "deepseek_r1" if "deepseek" in mt else "qwen3"
+        elif "<think>" not in tpl and reasoning in THINK_TAG_PARSERS:
+            # A model of a thinking family that never thinks (Qwen3-…-Instruct-2507, DeepSeek-V3-0324): these
+            # parsers count everything before a </think> that never comes as thinking, hiding the whole answer.
+            reasoning = None
     if tool is None:
         tool = "hermes"
     return {"toolParser": tool, "reasoningParser": reasoning, "engineArgs": args}

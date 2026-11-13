@@ -396,7 +396,8 @@ public enum Git {
         }
     }
 
-    /// Stages `paths` (nil: everything) and commits what is staged with `message`; returns the short hash.
+    /// Commits `paths` (nil: everything, with what was staged before) with `message`; returns the short hash. With
+    /// paths, only those go in, whatever else is staged.
     public static func commit(_ root: URL, message: String, paths: [String]? = nil) async throws -> String {
         let dir = await top(root)
         let add: String
@@ -407,11 +408,14 @@ public enum Git {
         }
         let a = await run(add, in: dir)
         guard a.status == 0 else { throw ToolError("git add failed: \(tail(a.output))") }
-        if await run("diff --cached --quiet", in: dir, timeout: 30).status == 0 { throw ToolError("Nothing to commit.") }
+        // With paths, only those go in, even when other files were staged before.
+        let only = paths.map { $0.isEmpty ? "" : " -- " + $0.map(shellQuote).joined(separator: " ") } ?? ""
+        let pathspec = only.isEmpty ? "" : "--literal-pathspecs "
+        if await run(pathspec + "diff --cached --quiet" + only, in: dir, timeout: 30).status == 0 { throw ToolError("Nothing to commit.") }
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("aistudio-commit-\(UUID().uuidString).txt")
         try message.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
-        let c = await run("commit -F \(shellQuote(file.path))", in: dir, timeout: 180)
+        let c = await run(pathspec + "commit -F \(shellQuote(file.path))" + only, in: dir, timeout: 180)
         guard c.status == 0 else { throw ToolError("git commit failed: \(tail(c.output))") }
         let h = await run("rev-parse --short HEAD", in: dir, timeout: 20)
         return h.output.trimmingCharacters(in: .whitespacesAndNewlines)

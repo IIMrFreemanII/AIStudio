@@ -323,7 +323,7 @@ final class LinkLibrary {
                 if let repo = Self.huggingFaceRepo(source) {
                     let parts = repo.split(separator: "@", maxSplits: 1).map(String.init)
                     let src = HTTPByteSource(repo: parts[0], revision: parts.count > 1 ? parts[1] : "main",
-                                             token: KeychainToken.huggingFace.read())
+                                             token: SavedToken.huggingFace.read())
                     let wan = family.hasPrefix("wan-2.2")
                     let files = HFAPI.select(try await src.list(), include: wan ? ["transformer/*", "transformer_2/*"]
                                              : ["transformer/*"], exclude: [])

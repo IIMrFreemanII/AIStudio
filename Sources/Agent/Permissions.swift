@@ -79,16 +79,43 @@ public struct AllowRules: Codable, Equatable, Sendable {
         guard let first = words.first else { return "" }
         let twoWord: Set<String> = ["git", "swift", "npm", "pnpm", "yarn", "cargo", "go", "make", "xcodebuild", "python",
                                     "python3", "uv", "pip", "docker", "kubectl", "brew", "gh"]
+        // `python3 -m unittest`: the module, not every python3 command.
+        if ["python", "python3", "uv"].contains(first), words.count > 2, words[1] == "-m" { return "\(first) -m \(words[2])" }
         if twoWord.contains(first), words.count > 1, !words[1].hasPrefix("-") { return "\(first) \(words[1])" }
         return first
     }
 
+    /// The command without redirections that can't write a file (`2>&1`, `>/dev/null`…).
+    static func withoutHarmlessRedirects(_ command: String) -> String {
+        command.replacingOccurrences(of: #"\s*(&>|\d?>>?)\s*/dev/null\b|\s*\d?>&\d\b"#, with: "", options: .regularExpression)
+    }
+
+    /// The parts of a command chained with ;, &&, || or |.
+    static func parts(of command: String) -> [String] {
+        withoutHarmlessRedirects(command).components(separatedBy: CharacterSet(charactersIn: ";|&\n"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// Substitutions and redirections into files can do anything: such a command always asks, whatever the rules.
+    static func alwaysAsks(_ command: String) -> Bool {
+        let c = withoutHarmlessRedirects(command)
+        return c.contains("$(") || c.contains("`") || c.contains(">") || c.contains("<(")
+    }
+
+    /// What "Always allow" remembers for a command: the prefix of each chained part (`cd x && python3 -m unittest`
+    /// → `cd`, `python3 -m unittest`), so the same command runs without asking next time. Empty when it would ask
+    /// anyway.
+    public static func prefixes(of command: String) -> [String] {
+        guard !alwaysAsks(command) else { return [] }
+        var out: [String] = []
+        for p in parts(of: command).map(prefix(of:)) where !p.isEmpty && !out.contains(p) { out.append(p) }
+        return out
+    }
+
     func allows(command: String) -> Bool {
         // A command chained with ;, &&, | or $(…) is only allowed when every part is.
-        let parts = command.components(separatedBy: CharacterSet(charactersIn: ";|&\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        // Substitutions and redirections can do anything: they always ask.
-        guard !parts.isEmpty, !command.contains("$("), !command.contains("`"), !command.contains(">") else { return false }
+        let parts = Self.parts(of: command)
+        guard !parts.isEmpty, !Self.alwaysAsks(command) else { return false }
         return parts.allSatisfy { part in
             commandPrefixes.contains { part == $0 || part.hasPrefix($0 + " ") }
         }
@@ -125,6 +152,8 @@ public enum PermissionEngine {
             return .ask
         case .network:
             if mode != .ask { return .allow }
+            // No host, only project files (open_page on the project's own HTML): a read like read_file.
+            if domain == nil, inProject { return .allow }
             if let domain, rules.allows(domain: domain) { return .allow }
             return .ask
         }

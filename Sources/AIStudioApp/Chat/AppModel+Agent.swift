@@ -16,7 +16,7 @@ extension AppModel {
         }
     }
 
-    /// The Brave Search API key (in the Keychain), which `web_search` needs.
+    /// The Brave Search API key (saved in `TokenFile`), which `web_search` needs.
     var searchAPIKey: String? {
         guard let k = ConnectionToken.read("brave-search"), !k.isEmpty else { return nil }
         return k
@@ -24,7 +24,7 @@ extension AppModel {
 
     func setSearchAPIKey(_ key: String) {
         ConnectionToken.save(key.trimmingCharacters(in: .whitespacesAndNewlines), for: "brave-search",
-                             keychain: !Self.isAutomatedRun)
+                             persist: !Self.isAutomatedRun)
     }
 
     /// The skills a coding chat in `root` can use: personal, the project's, minus the turned-off ones.
@@ -92,6 +92,8 @@ extension AppModel {
                 } catch {
                     doc.attachNote = "Couldn't restore the files: \(error.localizedDescription)"
                 }
+                // The Changes pane and branch chip show the restored files now, not at the next refresh.
+                self.refreshGitSoon(doc)
             }
             if chat {
                 doc.draft = target.text

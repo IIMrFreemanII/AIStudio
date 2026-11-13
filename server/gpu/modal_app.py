@@ -428,6 +428,7 @@ def _llm_boot(self, snapshot: bool = False):
     from aistudio_gpu.llm import store
     from aistudio_gpu.llm.coldstart import ColdStartClock
     from aistudio_gpu.llm.engine import MEDIA_ENV, EngineProcess
+    from aistudio_gpu.llm.service import variant
 
     self.error = None
     self.alive = True
@@ -436,8 +437,9 @@ def _llm_boot(self, snapshot: bool = False):
     self.manifest = m
     _llm_clock(self, ColdStartClock)
     # "requested" stays, so the app's "starting for N s" still counts the wait for a GPU.
-    base = {"requested": self.clock.requested, "started": self.clock.started, "gpu": m.get("gpu"),
-            "count": m.get("count"), "updated": m.get("updated"), "container": os.environ.get("MODAL_TASK_ID")}
+    # gpu, count, updated, snapshot, engine: which container this is, so requests reach it after the settings change.
+    base = {"requested": self.clock.requested, "started": self.clock.started, **variant(m),
+            "container": os.environ.get("MODAL_TASK_ID")}
     self.current = {**base, "state": "loading", "phase": "Starting engine", "progress": None}
 
     def on_status(phase, progress):
@@ -638,9 +640,13 @@ def _llm_release_floor(self):
     a queued request can't be cancelled and is retried on a new container when its container ends), and that floor
     stays until the engine is ready, failed or stopped: otherwise an idle container would stay up, billed, and a
     stopped or failed one would be started again."""
+    from aistudio_gpu.llm.service import live_manifest
+
     try:
-        if llm_state.get(self.model + ":floor"):
-            _llm_obj(self.manifest or {}).update_autoscaler(min_containers=0)
+        floor = llm_state.get(self.model + ":floor")
+        if floor:
+            # On the container the start asked for (the floor records it), even if the settings changed since.
+            _llm_obj(live_manifest(self.manifest or {}, floor)).update_autoscaler(min_containers=0)
             llm_state.pop(self.model + ":floor", None)
     except Exception as e:  # noqa: BLE001 — the front desk releases it too when it sees the engine isn't starting
         print(f"[aistudio] {self.model}: releasing the start's container floor failed: {e}", flush=True)
@@ -856,7 +862,13 @@ def _llm_service():
     import time
 
     from aistudio_gpu.llm.engine import EngineError
-    from aistudio_gpu.llm.service import ACTIVE, LLMService
+    from aistudio_gpu.llm.service import (
+        ACTIVE,
+        LLMService,
+        live_manifest,
+        stopping,
+        variant,
+    )
 
     class ModalLLMService(LLMService):
         """Each model in its own ``LLM`` container; installs as ``import_llm`` calls; state in Dicts."""
@@ -869,10 +881,17 @@ def _llm_service():
         def _obj(self, m: dict):
             return _llm_obj(m)
 
+        def _live(self, m: dict, s: dict):
+            """The instance of the container that is up (``s``, its state): with settings saved since it started,
+            ``_obj(m)`` names another container, and a request to it would start a second GPU."""
+            return _llm_obj(live_manifest(m, s))
+
         async def _release_floor(self, mid, m):
-            """Back to no minimum container (see ``_llm_release_floor``, the container's own release)."""
-            if await llm_state.get.aio(mid + ":floor"):
-                await self._obj(m).update_autoscaler.aio(min_containers=0)
+            """Back to no minimum container (see ``_llm_release_floor``, the container's own release), on the
+            container the start asked for."""
+            floor = await llm_state.get.aio(mid + ":floor")
+            if floor:
+                await _llm_obj(live_manifest(m, floor)).update_autoscaler.aio(min_containers=0)
                 await llm_state.pop.aio(mid + ":floor", None)
 
         async def _coldstarts(self, mid):
@@ -909,6 +928,9 @@ def _llm_service():
                 s.update(state="cold", ended=s.get("beat"))
             if s.get("state") == "starting" and now - (s.get("requested") or 0) > 20 * 60:
                 s.update(state="cold")
+            # Stop pressed for this container: "stopping" until it's gone (it finishes open requests first).
+            if s.get("state") in ("loading", "ready"):
+                s = stopping(s, await llm_state.get.aio(mid + ":stop"))
             # The start's minimum container outlives the start only if the container couldn't lift it (it lifts it
             # itself when ready, failed or stopped): lift it here, so nothing is kept up or started again.
             if m and s.get("state") not in ("starting", "loading"):
@@ -923,18 +945,19 @@ def _llm_service():
             if s.get("state") in ACTIVE:
                 return
             await llm_state.put.aio(mid, {"state": "starting", "phase": "Waiting for a GPU", "requested": time.time(),
-                                          "gpu": m.get("gpu"), "count": m.get("count")})
+                                          **variant(m)})
             # One container without a request (see _llm_release_floor): Stop cancels it by lowering the minimum
-            # again, and nothing is left queued to start another one.
-            await llm_state.put.aio(mid + ":floor", True)
+            # again, and nothing is left queued to start another one. The floor records which container it's on.
+            await llm_state.put.aio(mid + ":floor", variant(m))
             await self._obj(m).update_autoscaler.aio(min_containers=1)
 
         async def _engine_ping(self, mid, m):
             # Only to a ready container. While it waits for a GPU or loads, a ping waits in Modal's queue, and when
             # that start is stopped the queued pings start a new container (each ping is a request it must answer).
-            if (await self._engine_state(mid, m)).get("state") != "ready":
+            s = await self._engine_state(mid, m)
+            if s.get("state") != "ready":
                 return
-            await self._obj(m).ping.spawn.aio()
+            await self._live(m, s).ping.spawn.aio()
 
         async def _engine_stop(self, mid, m):
             s = await self._engine_state(mid, m)
@@ -942,7 +965,7 @@ def _llm_service():
             # First: with the start's minimum still set, Modal would start a new container for the stopped one.
             await self._release_floor(mid, m)
             if s.get("state") == "ready":
-                await self._obj(m).stop.spawn.aio()
+                await self._live(m, s).stop.spawn.aio()
             elif s.get("state") == "starting":  # still waiting for a GPU: with no minimum, none is started
                 await llm_state.put.aio(mid, {**s, "state": "cold", "phase": None, "ended": time.time()})
             # While loading, the container's heartbeat sees the stop and ends the engine.
@@ -959,7 +982,9 @@ def _llm_service():
                 # a client that left or pressed Stop, and starts a GPU again each time a container ends without
                 # answering it.
                 await self._until_ready(mid, m)
-            async for chunk in self._obj(m).chat.remote_gen.aio(body):
+                s = await self._engine_state(mid, m)
+            # The running container, even with settings saved since it started (they apply from the next start).
+            async for chunk in self._live(m, s).chat.remote_gen.aio(body):
                 yield chunk
 
         async def warm(self, mid):

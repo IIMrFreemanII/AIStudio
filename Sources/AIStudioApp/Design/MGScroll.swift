@@ -85,14 +85,17 @@ private struct MGThumbOverlay: View {
 /// For SwiftUI's ScrollView: its geometry drives the thumbs.
 private struct MGScrollIndicators: ViewModifier {
     let axes: Axis.Set
+    /// The scroll view's position when its owner moves it too (else the thumbs keep their own).
+    var external: Binding<ScrollPosition>?
     @State private var metrics: MGScrollMetrics?
     @State private var flash = 0
-    @State private var position = ScrollPosition()
+    @State private var own = ScrollPosition()
 
     func body(content: Content) -> some View {
+        let position = external ?? $own
         content
             .scrollIndicators(.never)
-            .scrollPosition($position)
+            .scrollPosition(position)
             .onScrollGeometryChange(for: MGScrollMetrics.self) { g in
                 MGScrollMetrics(
                     content: g.contentSize,
@@ -103,7 +106,7 @@ private struct MGScrollIndicators: ViewModifier {
                 metrics = new
                 if old.offset != new.offset { flash += 1 }
             }
-            .overlay { MGThumbOverlay(metrics: metrics, axes: axes, flash: flash) { position.scrollTo(point: $0) } }
+            .overlay { MGThumbOverlay(metrics: metrics, axes: axes, flash: flash) { position.wrappedValue.scrollTo(point: $0) } }
             .onHover { if $0 { flash += 1 } }
     }
 }
@@ -217,8 +220,8 @@ private struct MGAppKitScrollIndicators: ViewModifier {
 
 extension View {
     /// The design system's scroll indicators on a SwiftUI ScrollView.
-    func mgScrollIndicators(_ axes: Axis.Set = .vertical) -> some View {
-        modifier(MGScrollIndicators(axes: axes))
+    func mgScrollIndicators(_ axes: Axis.Set = .vertical, position: Binding<ScrollPosition>? = nil) -> some View {
+        modifier(MGScrollIndicators(axes: axes, external: position))
     }
 
     /// The design system's scroll indicators on a view AppKit scrolls (List, TextEditor).

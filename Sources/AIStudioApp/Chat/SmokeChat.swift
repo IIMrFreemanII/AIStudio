@@ -195,6 +195,32 @@ extension SmokeTest {
                 say("couldn't write a test video"); ok = false
             }
         }
+        // A message sent while a reply streams waits for it, then goes out; after Stop it's back in the field instead.
+        if fake {
+            let before = doc.transcript.turns.count
+            doc.draft = "first one"
+            model.send(doc)
+            doc.draft = "queued one"
+            model.send(doc)
+            if doc.queued != "queued one" || !doc.draft.isEmpty { say("not queued: \(doc.queued ?? "nil")"); ok = false }
+            let after = await waitReply()
+            let users = doc.transcript.turns.filter { $0.role == .user }.suffix(2).map(\.text)
+            if after?.text != "You said: queued one" || users != ["first one", "queued one"] || doc.queued != nil
+                || doc.transcript.turns.count != before + 4 {
+                say("the queued message: \(users), reply \(after?.text ?? after?.error ?? "none")"); ok = false
+            }
+            doc.draft = "stop me"
+            model.send(doc)
+            doc.draft = "after the stop"
+            model.send(doc)
+            model.stopReply(doc)
+            let stopped = await waitReply()
+            if stopped?.error != "Stopped" || doc.queued != nil || doc.draft != "after the stop" {
+                say("after Stop: error \(stopped?.error ?? "none"), draft \"\(doc.draft)\", queued \(doc.queued ?? "nil")"); ok = false
+            }
+            doc.draft = ""
+            say("queue: \(ok ? "sent after the reply, back in the field after Stop" : "failed")")
+        }
         if fake { ok = await runInteractive(model, doc: doc, waitReply: waitReply, say: say) && ok }
         else if CommandLine.arguments.contains("--interactive") { ok = await runLive(model, doc: doc, waitReply: waitReply, say: say) && ok }
         let shown = doc.transcript.turns.count
@@ -308,12 +334,29 @@ extension SmokeTest {
         if FileManager.default.fileExists(atPath: repo.appendingPathComponent("hello.txt").path) { say("plan mode wrote"); ok = false }
         if planTools.map(\.toolStatus) != ["denied", "denied"] { say("plan tools: \(planTools.map(\.toolStatus))"); ok = false }
         say("plan mode reply: \(planned?.text.prefix(80) ?? "none")")
-        answerer.cancel()
 
         // Saved with its folder, mode and answers.
         if let saved = model.chatStore.load(doc.id) {
             if saved.projectPath != repo.standardizedFileURL.path || saved.permissionMode != "plan" { say("not saved as a coding chat"); ok = false }
         } else { say("not saved"); ok = false }
+
+        // A plan written as text (no exit_plan): taken as the plan, approved, and the agent goes on.
+        if let last = doc.transcript.turns.last, model.canAdoptPlan(doc, last) {
+            let before = doc.transcript.turns.count
+            model.adoptPlan(doc, last.id, mode: .acceptEdits)
+            let start = Date()
+            while doc.isStreaming, Date().timeIntervalSince(start) < 60 { try? await Task.sleep(nanoseconds: 100_000_000) }
+            let plan = doc.transcript.plans.last
+            if plan?.plan != last.text || plan?.detail != "Approved — Auto-accept Edits" { say("adopted plan: \(plan.map { "\($0.detail ?? "?")" } ?? "none")"); ok = false }
+            if doc.mode != .acceptEdits { say("the mode didn't switch: \(doc.mode)"); ok = false }
+            if let p = plan, let file = model.planFile(doc, p.callID), !FileManager.default.fileExists(atPath: file.path) { say("no plan file"); ok = false }
+            if doc.transcript.turns.count <= before + 1 || doc.transcript.turns.last?.error != nil {
+                say("no reply after adopting: \(doc.transcript.turns.last?.error ?? "no new turn")"); ok = false
+            }
+            if model.canAdoptPlan(doc, doc.transcript.turns.last!) { say("still offered outside plan mode"); ok = false }
+            say("adopt plan: \(ok ? "approved, saved, carried on" : "failed")")
+        } else { say("a plan-mode text reply isn't offered as the plan"); ok = false }
+        answerer.cancel()
 
         // A to-do list: shown from the transcript, so it's still there after closing and reopening the chat.
         doc.mode = .bypass

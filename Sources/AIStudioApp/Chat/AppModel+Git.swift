@@ -100,6 +100,8 @@ extension AppModel {
         let state = GitState(root: root, status: status, base: base, baseChanges: baseChanges, aheadOfBase: ahead,
                              ghReady: ready, pr: pr)
         if doc.git != state { doc.git = state }
+        let paths = Set(state.status.files.map(\.path))
+        if !doc.commitExcluded.isSubset(of: paths) { doc.commitExcluded.formIntersection(paths) }
         doc.diffCache = [:]
         let list = doc.changesScope == .uncommitted ? state.status.files : state.baseChanges
         if let sel = doc.selectedChange, !list.contains(where: { $0.path == sel }) { doc.selectedChange = nil }
@@ -123,7 +125,7 @@ extension AppModel {
         doc.drafting = true
         defer { doc.drafting = false }
         llm.lastActivity = Date()
-        let diff = await diffText(git.root, git.status.files)
+        let diff = await diffText(git.root, git.status.files.filter { !doc.commitExcluded.contains($0.path) })
         let log = await Git.recentLog(git.root, count: 10)
         do {
             doc.commitDraft = try await GitDrafts.commitMessage(client: client.chat, model: key.modelID, diff: diff, log: log)
@@ -134,7 +136,8 @@ extension AppModel {
 
     // MARK: changing
 
-    /// Commits everything (with the co-author line when it's on), and pushes when asked.
+    /// Commits the ticked files, everything when none is unticked (with the co-author line when it's on), and pushes
+    /// when asked.
     func commit(_ doc: ChatDocument, push: Bool) async -> Bool {
         doc.gitError = nil
         guard let git = doc.git else { return false }
@@ -143,9 +146,17 @@ extension AppModel {
             doc.gitError = "Write a commit message first."
             return false
         }
+        let files = git.status.files
+        let included = files.filter { !doc.commitExcluded.contains($0.path) }
+        guard !included.isEmpty else {
+            doc.gitError = "Tick at least one file to commit."
+            return false
+        }
+        // A renamed file's old path goes too, so the commit has the rename and not only the new copy.
+        let paths = included.count == files.count ? nil : included.flatMap { [$0.path] + ($0.oldPath.map { [$0] } ?? []) }
         var ok = false
         do {
-            _ = try await Git.commit(git.root, message: Git.withTrailer(draft, trailer: gitCoAuthorLine(for: doc)))
+            _ = try await Git.commit(git.root, message: Git.withTrailer(draft, trailer: gitCoAuthorLine(for: doc)), paths: paths)
             if push, let branch = git.status.branch { try await Git.push(git.root, branch: branch) }
             doc.commitDraft = ""
             ok = true
@@ -256,9 +267,32 @@ extension AppModel {
 
 extension AppModel {
     /// Shows or hides the Changes pane (refreshing when it opens) and remembers it with the chat.
-    func toggleChanges(_ doc: ChatDocument) {
-        doc.changesOpen.toggle()
-        if doc.changesOpen { refreshGitSoon(doc) }
+    func toggleChanges(_ doc: ChatDocument) { toggleSidePanel(doc, .changes) }
+
+    /// Shows a tab of the side panel, or closes the panel when it already shows that tab; remembered with the chat.
+    func toggleSidePanel(_ doc: ChatDocument, _ panel: SidePanel) {
+        showSidePanel(doc, doc.sidePanel == panel && doc.flowPanelRunID == nil ? nil : panel)
+    }
+
+    /// Shows or hides the side panel (on the tab it last showed).
+    func toggleSidePanel(_ doc: ChatDocument) {
+        showSidePanel(doc, doc.sidePanel != nil && doc.flowPanelRunID == nil ? nil : doc.sideTab)
+    }
+
+    /// The side panel is on screen (a flow's run, when shown, takes its place).
+    func sidePanelShown(_ doc: ChatDocument) -> Bool { doc.isCoding && doc.sidePanel != nil && doc.flowPanelRunID == nil }
+
+    func showSidePanel(_ doc: ChatDocument, _ panel: SidePanel?) {
+        guard doc.isCoding else { return }
+        doc.sidePanel = panel
+        if panel != nil { doc.flowPanelRunID = nil }
+        switch panel {
+        case .changes: refreshGitSoon(doc)
+        case .files: refreshProjectFiles(doc)
+        case .plans: savePlanFiles(doc)
+        case .web: _ = webPage(doc)
+        case nil: break
+        }
         saveChat(doc)
     }
 }

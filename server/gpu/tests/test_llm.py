@@ -14,10 +14,24 @@ from aistudio_gpu.api import create_app
 from aistudio_gpu.files import FileStore
 from aistudio_gpu.jobs import JobManager
 from aistudio_gpu.llm import proxy, sizing
-from aistudio_gpu.llm.engine import FAKE_COMMIT, FAKE_PR, FakeEngine, phase_of, vllm_command
+from aistudio_gpu.llm.engine import (
+    FAKE_COMMIT,
+    FAKE_PR,
+    FakeEngine,
+    phase_of,
+    vllm_command,
+)
 from aistudio_gpu.llm.facts import LinkError, ModelRef, facts_from_config, parse_link
 from aistudio_gpu.llm.profiles import apply_effort, efforts, guess
-from aistudio_gpu.llm.service import LLMService, LocalLLMService, local_media, stop_pressed
+from aistudio_gpu.llm.service import (
+    LLMService,
+    LocalLLMService,
+    live_manifest,
+    local_media,
+    stop_pressed,
+    stopping,
+    variant,
+)
 from aistudio_gpu.local import LocalRunner
 
 TOKEN = "t" * 40
@@ -175,6 +189,18 @@ def test_dense_8b_fits_one_l40s():
     rec = sizing.plan(f)["recommended"]
     assert (rec["gpu"], rec["count"]) == ("L40S", 1) and rec["maxContext"] == 131072
     assert guess(f)["toolParser"] == "llama3_json"
+
+
+def test_a_thinking_family_model_that_never_thinks_gets_no_reasoning_parser():
+    # Qwen3-4B-Instruct-2507: model type qwen3, but its template has no <think> (its answers were hidden as thinking).
+    qwen3 = {**QWEN38, "model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]}
+    instruct = "{% for m in messages %}<|im_start|>{{ m.role }}<tool_call>{% endfor %}"
+    assert guess(facts(qwen3, 8 * GIB, instruct))["reasoningParser"] is None
+    assert guess(facts(qwen3, 8 * GIB, "{% if enable_thinking %}<think>{% endif %}<tool_call>"))["reasoningParser"] == "qwen3"
+    assert guess(facts(qwen3, 8 * GIB))["reasoningParser"] == "qwen3"  # no template known: the family's default
+    # gpt-oss marks reasoning by channels, not <think>: its parser stays.
+    gptoss = {**qwen3, "model_type": "gpt_oss", "architectures": ["GptOssForCausalLM"]}
+    assert guess(facts(gptoss, 8 * GIB, "<|channel|>analysis"))["reasoningParser"] == "openai_gptoss"
 
 
 def test_mla_model_needs_eight_h200():
@@ -1137,3 +1163,38 @@ def test_until_ready_ends_quietly_when_the_client_leaves(tmp_path):
 
     asyncio.run(leave())
     assert svc.warmed_calls == 1
+
+
+def test_requests_reach_the_running_container_after_a_settings_change():
+    # Started as one L40S snapshot container; the user then saved 2× H100 (and so a new `updated`).
+    started = {"id": "m", "gpu": "L40S", "count": 1, "updated": 100.0, "snapshot": True, "engine": "vllm"}
+    saved = {**started, "gpu": "H100", "count": 2, "updated": 200.0, "snapshot": False, "name": "Renamed"}
+    state = {"state": "ready", "started": 5.0, **variant(started)}
+    live = live_manifest(saved, state)
+    assert variant(live) == variant(started)
+    assert live["name"] == "Renamed"  # everything else stays as saved
+    # The start's floor record names the same container.
+    assert variant(live_manifest(saved, variant(started))) == variant(started)
+
+
+def test_live_manifest_keeps_the_saved_settings_when_the_record_doesnt_say():
+    m = {"id": "m", "gpu": "H100", "count": 1, "updated": 200.0, "snapshot": True}
+    assert live_manifest(m, None) == m
+    assert live_manifest(m, True) == m  # a floor recorded before it named its container
+    assert live_manifest(m, {"state": "ready", "gpu": "L40S"}) == m  # no `updated`: an older state record
+    # A model installed without `updated` runs as revision "": a later save mustn't name another container.
+    unversioned = live_manifest(m, {"state": "ready", "gpu": "H100", "count": 1, "updated": None, "snapshot": True})
+    assert unversioned["updated"] is None
+    # A state from before snapshot/engine were kept: those come from the saved settings.
+    old = live_manifest(m, {"state": "ready", "gpu": "L40S", "count": 1, "updated": 100.0})
+    assert (old["gpu"], old["updated"], old["snapshot"]) == ("L40S", 100.0, True)
+
+
+def test_stopping_shows_from_stop_until_the_container_is_gone():
+    ready = {"state": "ready", "started": 100.0, "phase": "Ready"}
+    s = stopping(ready, 150.0)
+    assert (s["state"], s["phase"]) == ("stopping", "Shutting down the GPU")
+    assert stopping({**ready, "state": "loading", "progress": 0.4}, 150.0)["state"] == "stopping"
+    assert stopping(ready, 50.0) == ready  # a Stop from before this container started
+    assert stopping(ready, None) == ready
+    assert stopping({"state": "cold", "started": 100.0}, 150.0)["state"] == "cold"

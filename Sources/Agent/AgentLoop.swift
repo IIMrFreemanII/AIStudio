@@ -110,6 +110,8 @@ public enum AgentLoop {
                 acc.add(e)
                 await events(.delta(e))
             }
+            // Stopped: the stream may just end (not throw), which would read as a finished reply.
+            try Task.checkCancellation()
             acc.finish()
             let calls = acc.tools.calls
             await events(.assistantFinished(content: acc.content, reasoning: acc.reasoning, toolCalls: calls))
@@ -243,8 +245,9 @@ public enum AgentLoop {
                     rules.domains.append(d)
                 }
                 if tool.effect == .execute, risk == nil, let cmd = preview.command {
-                    let prefix = AllowRules.prefix(of: cmd)
-                    if !prefix.isEmpty, !rules.commandPrefixes.contains(prefix) { rules.commandPrefixes.append(prefix) }
+                    for prefix in AllowRules.prefixes(of: cmd) where !rules.commandPrefixes.contains(prefix) {
+                        rules.commandPrefixes.append(prefix)
+                    }
                 }
                 await rulesChanged(rules)
             case .allow:

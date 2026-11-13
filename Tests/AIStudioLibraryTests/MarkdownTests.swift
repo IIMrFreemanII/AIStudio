@@ -57,4 +57,13 @@ struct MarkdownTests {
             .paragraph("#hashtag\n-not a list\n3.5 is a number"),
         ])
     }
+
+    @Test func anImageOnItsOwnLineIsMedia() {
+        #expect(Markdown.blocks("Look:\n![the chart](out/chart.png)\n![clip](https://x.io/a.mp4 \"A clip\")\nDone") == [
+            .paragraph("Look:"), .media(alt: "the chart", src: "out/chart.png"),
+            .media(alt: "clip", src: "https://x.io/a.mp4"), .paragraph("Done"),
+        ])
+        // Inside a sentence it stays inline text.
+        #expect(Markdown.blocks("See ![x](a.png) here") == [.paragraph("See ![x](a.png) here")])
+    }
 }

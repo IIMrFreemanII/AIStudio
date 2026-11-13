@@ -181,6 +181,12 @@ struct WebPermissionTests {
 
     @Test func askModeAsks() { #expect(decide(.ask) == .ask) }
 
+    @Test func projectPagesDontAsk() {
+        // open_page on the project's own HTML file: no host, a path in the project.
+        #expect(PermissionEngine.decide(effect: .network, inProject: true, domain: nil, mode: .ask, rules: AllowRules()) == .allow)
+        #expect(PermissionEngine.decide(effect: .network, inProject: false, domain: nil, mode: .ask, rules: AllowRules()) == .ask)
+    }
+
     @Test func otherModesAllow() {
         #expect(decide(.acceptEdits) == .allow)
         #expect(decide(.plan) == .allow)
@@ -272,4 +278,59 @@ struct WebSearchTests {
         #expect(tool.effect == .network)
         #expect(tool.name == "web_search")
     }
+}
+
+struct OpenPageTests {
+    func args(_ d: [String: Any]) -> ToolArgs { ToolArgs(d) }
+
+    func project() throws -> ToolContext {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("open-page-\(UUID().uuidString.prefix(6))")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("site"), withIntermediateDirectories: true)
+        try "<title>T</title>".write(to: root.appendingPathComponent("site/index.html"), atomically: true, encoding: .utf8)
+        return ToolContext(root: root)
+    }
+
+    @Test func addressesAndTheirPermission() throws {
+        let ctx = try project()
+        let web = try OpenPageTool().preview(args(["url": "https://github.com/a/b/pull/3"]), ctx)
+        #expect(web.domain == "github.com" && web.title == "Open github.com/a/b/pull/3 in the browser")
+        let local = try OpenPageTool().preview(args(["url": "localhost:3000"]), ctx)
+        #expect(local.domain == "localhost" && local.detail == "http://localhost:3000")
+        let file = try OpenPageTool().preview(args(["url": "site/index.html"]), ctx)
+        #expect(file.domain == nil && file.paths.first?.path.hasSuffix("site/index.html") == true)
+        #expect(file.title == "Open site/index.html in the browser")
+        #expect(throws: ToolError.self) { try OpenPageTool().preview(self.args(["url": "ftp://example.com"]), ctx) }
+        #expect(throws: ToolError.self) { try OpenPageTool().preview(self.args(["url": "missing.html"]), ctx) }
+    }
+
+    @Test func returnsWhatTheTabLoaded() async throws {
+        let ctx = try project()
+        let asked = Asked()
+        ctx.openPage = { _, url, shot in
+            await asked.set(url, shot)
+            return PageView(url: url.absoluteString, title: "Docs", text: "Hello page", image: shot ? "data:image/jpeg;base64,AA==" : nil)
+        }
+        let out = try await OpenPageTool().run(args(["url": "https://example.com/docs", "screenshot": true]), ctx)
+        #expect(out.text == "Opened in the Browser tab.\nURL: https://example.com/docs\nTitle: Docs\n\nHello page")
+        #expect(out.images == ["data:image/jpeg;base64,AA=="] && out.detail == "https://example.com/docs" && !out.isError)
+        let (askedURL, askedShot) = (await asked.url, await asked.shot)
+        #expect(askedURL?.absoluteString == "https://example.com/docs" && askedShot == true)
+        let quiet = try await OpenPageTool().run(args(["url": "https://example.com", "read": false]), ctx)
+        #expect(!quiet.text.contains("Hello page") && quiet.images.isEmpty)
+    }
+
+    @Test func failuresAndNoBrowser() async throws {
+        let ctx = try project()
+        let none = try await OpenPageTool().run(args(["url": "https://example.com"]), ctx)
+        #expect(none.isError && none.text.contains("web_fetch"))
+        ctx.openPage = { _, url, _ in PageView(url: url.absoluteString, error: "Could not connect to the server.") }
+        let down = try await OpenPageTool().run(args(["url": "localhost:5173"]), ctx)
+        #expect(down.isError && down.text == "Couldn't load http://localhost:5173: Could not connect to the server.")
+    }
+}
+
+private actor Asked {
+    var url: URL?
+    var shot: Bool?
+    func set(_ u: URL, _ s: Bool) { url = u; shot = s }
 }

@@ -67,7 +67,7 @@ enum SmokeChrome {
 
         // MARK: context menu on a sidebar row
 
-        guard let row = MGTestAnchors.frame("workflow-row:Chrome Test") else { say("no workflow row"); return false }
+        guard var row = MGTestAnchors.frame("workflow-row:Chrome Test") else { say("no workflow row"); return false }
         await rightClick(center(row))
         check(MGFloating.shared.isMenuOpen && menuTitles.contains("Rename…") && menuTitles.contains("Move to Trash"),
               "right-click on a workflow opens its design-system menu (\(menuTitles.filter { !$0.isEmpty }.joined(separator: ", ")))")
@@ -82,6 +82,10 @@ enum SmokeChrome {
         // Left-clicks go through the catcher: opening the workflow from its row.
         let blank = model.newTab()
         check(model.activeTabID == blank.id, "a new tab is active")
+        // The new workflow joins the Open list above the saved ones, so the row moved down.
+        await settle()
+        row = MGTestAnchors.frame("workflow-row:Chrome Test") ?? row
+        check(MGTestAnchors.frame("open-workflow:\(blank.name)") != nil, "the new workflow is listed under Open")
         await click(center(row))
         check(model.active.fileURL?.lastPathComponent == "Chrome Test.json", "a left-click on the row still opens the workflow")
 

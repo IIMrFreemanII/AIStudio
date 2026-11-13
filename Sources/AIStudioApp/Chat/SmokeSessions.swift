@@ -65,6 +65,24 @@ extension SmokeTest {
             return result
         }
 
+        // Switching between chats on a stopped model leaves it stopped: no start, and no keepalive that could wake it.
+        await llm.stop(key)
+        let other = model.newChat(model: key)
+        for _ in 0..<7 {
+            model.switchToPrevious()
+            await llm.tick()
+        }
+        model.openChat(parent.id)
+        await llm.refreshAll()
+        await llm.refreshStatus(key)
+        if llm.status(key)?.isActive == true {
+            fail("switching chats started the model (\(llm.status(key)?.state ?? "?"))")
+        } else {
+            say("switching between chats leaves a stopped model stopped (\(llm.status(key)?.state ?? "?"))")
+        }
+        model.deleteChat(other.id)
+        model.activateChat(parent.id)
+
         parent.draft = "start a session to create hello.txt"
         model.send(parent)
 
@@ -75,7 +93,7 @@ extension SmokeTest {
             return childID != nil
         }
         guard let cid = childID else { fail("no child session started"); return finish(false) }
-        if let live = model.chats.first(where: { $0.id == cid }), live.tabOpen { fail("the child has a tab") }
+        if let live = model.chats.first(where: { $0.id == cid }), live.isRecent { fail("the child is in the recent list") }
 
         // Its report reaches the parent, which carries on by itself.
         let reported = await wait(90) {
@@ -123,6 +141,26 @@ extension SmokeTest {
                 }
                 model.deleteChat(f.id)
             } else { fail("no fork opened") }
+        }
+        // A forked session keeps the history but not the message that started it (its brief takes its place, or it
+        // would read "hand this off" and hand off again), and says it shares the folder and its branch.
+        if let first = parent.transcript.turns.first(where: { $0.role == .user }) {
+            let ask = "Hand the cleanup off to a new session."
+            parent.transcript.append(ChatTurn(role: .user, text: ask))
+            do {
+                let info = try await model.startChild(SessionSpec(title: "Smoke fork", prompt: "Say hi.", context: .fork, worktree: false),
+                                                      parent: parent)
+                if let c = model.chats.first(where: { $0.id == info.id }) {
+                    let texts = c.transcript.turns.filter { $0.role == .user }.map(\.text)
+                    if !texts.contains(first.text) { fail("the forked session lost the parent's history") }
+                    if texts.contains(ask) { fail("the forked session still has the message that started it") }
+                    if texts.last?.contains("You share this folder") != true || texts.last?.contains("git branch") != true {
+                        fail("the shared-folder note: \(texts.last ?? "none")")
+                    }
+                    _ = await wait(30) { !c.isStreaming }
+                    model.deleteChat(c.id)
+                } else { fail("no forked session") }
+            } catch { fail("forked session: \(error.localizedDescription)") }
         }
         say("child branch \(wt.branch)")
         return finish(ok)

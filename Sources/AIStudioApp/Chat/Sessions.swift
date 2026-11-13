@@ -44,9 +44,13 @@ extension AppModel {
         guard let parentProject = parent.projectURL else { throw ToolError("Sessions start from coding chats only.") }
         let pt = parent.transcript
         var t: ChatTranscript
+        // A fork stops before the user's message that led to this session: the brief takes its place (with it, the
+        // child would read "hand this off" and hand off again).
+        let shown = pt.turns
         if spec.context == .fork,
-           let last = pt.turns.last(where: { $0.role == .user && $0.sessionEvent == nil && $0.flowEvent == nil && $0.summary != true }),
-           let forked = pt.fork(upTo: last.id) {
+           let last = shown.lastIndex(where: { $0.role == .user && $0.sessionEvent == nil && $0.flowEvent == nil && $0.summary != true }),
+           last > shown.startIndex,
+           let forked = pt.fork(upTo: shown[last - 1].id) {
             t = forked
         } else {
             t = ChatTranscript(serverID: pt.serverID, modelID: pt.modelID)
@@ -63,7 +67,14 @@ extension AppModel {
         t.parentID = parent.id
         t.depth = (pt.depth ?? 0) + 1
 
-        var note = "\n\n(This folder isn't a git repository: you share it with the session that started you.)"
+        var note = "\n\n(You share this folder with the session that started you"
+        if let branch = pt.worktree?.branch {
+            note += ", on its branch \(branch). Don't make a worktree or switch branches.)"
+        } else if await GitWorktree.repoRoot(parentProject) != nil {
+            note += ", including its git branch. Don't make a worktree or switch branches.)"
+        } else {
+            note += ". It isn't a git repository.)"
+        }
         if spec.worktree {
             let repo: URL?
             if let w = pt.worktree { repo = URL(fileURLWithPath: w.repo) } else { repo = await GitWorktree.repoRoot(parentProject) }
@@ -80,7 +91,7 @@ extension AppModel {
         }
         t.updated = Date()
         let child = ChatDocument(transcript: t)
-        child.tabOpen = show
+        child.isRecent = show
         chats.append(child)
         child.transcript.append(ChatTurn(role: .user, text: spec.prompt + note))
         saveChat(child)
@@ -126,7 +137,7 @@ extension AppModel {
         guard var t = chatStore.load(id) else { return nil }
         t.stopRunningTools()
         let d = ChatDocument(transcript: t)
-        d.tabOpen = false
+        d.isRecent = false
         chats.append(d)
         return d
     }
@@ -148,13 +159,17 @@ extension AppModel {
     /// result to the one that started it.
     func sessionRunEnded(_ doc: ChatDocument) {
         refreshGitSoon(doc)
-        if !doc.pendingEvents.isEmpty {
+        // The user's queued message goes first (after this chat's own report to its parent, below); session reports
+        // and flow results wait for the reply it starts.
+        let queuedGoes = doc.queued != nil && doc.transcript.turns.last?.error == nil
+        defer { sendQueued(doc) }
+        if !queuedGoes, !doc.pendingEvents.isEmpty {
             let events = doc.pendingEvents
             doc.pendingEvents = []
             deliver(events, to: doc)
         }
         // Flow results wait for the reply a session report may have just started.
-        if !doc.pendingFlowEvents.isEmpty, !doc.isStreaming, !doc.compacting {
+        if !queuedGoes, !doc.pendingFlowEvents.isEmpty, !doc.isStreaming, !doc.compacting {
             let events = doc.pendingFlowEvents
             doc.pendingFlowEvents = []
             deliverFlow(events, to: doc)

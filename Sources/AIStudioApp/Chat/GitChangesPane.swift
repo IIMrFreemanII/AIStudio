@@ -161,7 +161,7 @@ struct GitChangesPane: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(e).font(.mgFootnote).foregroundStyle(MG.destructive).lineLimit(4).textSelection(.enabled)
                     Spacer(minLength: 0)
-                    Button { doc.gitError = nil } label: { Image(systemName: "xmark") }
+                    Button { doc.gitError = nil } label: { Image(systemName: "xmark") }.accessibilityLabel("Dismiss Error")
                         .buttonStyle(.mg(.icon)).controlSize(.small)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 6)
@@ -187,7 +187,6 @@ struct GitChangesPane: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Text("Changes").font(.mgHeadline)
             if let git = doc.git {
                 let showBase = !(git.onBase && git.aheadOfBase == 0)
                 MGSegmentedPicker(selection: Binding(get: { scope }, set: { doc.changesScope = $0 }),
@@ -200,12 +199,10 @@ struct GitChangesPane: View {
             }
             .buttonStyle(.mg(.icon))
             .mgHelp("Refresh")
-            Button { doc.changesOpen = false; model.saveChat(doc) } label: { Image(systemName: "xmark") }
-                .buttonStyle(.mg(.icon))
-                .mgHelp("Close")
+            .accessibilityLabel("Refresh")
         }
         .padding(.horizontal, 12)
-        .frame(height: 40)
+        .frame(height: 36)
     }
 
     // MARK: files and diff
@@ -260,9 +257,13 @@ struct GitChangesPane: View {
                 .disabled(doc.modelKey == nil || doc.drafting)
                 .mgHelp("Write the message with \(modelName)")
                 Spacer(minLength: 0)
-                Button("Commit") { Task { _ = await model.commit(doc, push: false) } }
+                let total = git.status.files.count
+                let picked = git.status.files.filter { !doc.commitExcluded.contains($0.path) }.count
+                Button(picked == total ? "Commit" : "Commit \(picked) of \(total)") { Task { _ = await model.commit(doc, push: false) } }
                     .buttonStyle(.mg(.prominent))
-                    .disabled(empty)
+                    .disabled(empty || picked == 0)
+                    .mgHelp(picked == total ? "Commit all the changed files" : "Commit the ticked files; the others stay uncommitted")
+                    .mgTestAnchor("commit-button")
                 MGMenuButton(kind: .icon) {
                     MGMenuItem.button("Commit and Push", icon: "arrow.up", enabled: !empty && git.status.branch != nil) {
                         guard let branch = git.status.branch else { return }
@@ -322,6 +323,14 @@ private struct ChangeRow: View {
         let name = (change.path as NSString).lastPathComponent
         let folder = (change.path as NSString).deletingLastPathComponent
         HStack(spacing: 6) {
+            if scope == .uncommitted {
+                Toggle("", isOn: Binding(get: { !doc.commitExcluded.contains(change.path) },
+                                         set: { on in if on { doc.commitExcluded.remove(change.path) } else { doc.commitExcluded.insert(change.path) } }))
+                    .toggleStyle(MGCheckboxStyle())
+                    .labelsHidden()
+                    .accessibilityLabel("Include \(name) in the commit")
+                    .mgHelp("Include it in the next commit")
+            }
             Text(letter).font(.mgMono.weight(.semibold)).foregroundStyle(tint).frame(width: 16)
             Text(name).font(.mgCallout.weight(.medium)).lineLimit(1)
             if !folder.isEmpty {
@@ -348,6 +357,11 @@ private struct ChangeRow: View {
                 NSPasteboard.general.setString(change.path, forType: .string)
             }
             if scope == .uncommitted {
+                MGMenuItem.divider
+                MGMenuItem.button("Commit Only This File") {
+                    doc.commitExcluded = Set(git.status.files.map(\.path)).subtracting([change.path])
+                }
+                MGMenuItem.button("Include All Files", enabled: !doc.commitExcluded.isEmpty) { doc.commitExcluded = [] }
                 MGMenuItem.divider
                 MGMenuItem.button("Revert File…", destructive: true) {
                     let isNew = change.kind == .untracked || change.kind == .added

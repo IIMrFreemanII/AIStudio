@@ -15,11 +15,11 @@ struct LLMSettingsRequest: Identifiable {
     var preview: LLMPlan? = nil
 }
 
-/// The user's logins for model links, read from the Keychain only when they're saved.
+/// The user’s logins for model links, read only when they’re saved.
 @MainActor
 enum LinkLogins {
     static var hf: String? { HFToken.isSaved ? HFToken.read() : nil }
-    static var civitai: String? { KeychainToken.civitai.isSaved ? KeychainToken.civitai.read() : nil }
+    static var civitai: String? { SavedToken.civitai.isSaved ? SavedToken.civitai.read() : nil }
 }
 
 /// Servers panel section: the language models on the GPU servers, installs in progress, and Add from Link.
@@ -53,7 +53,9 @@ struct LLMModelsSection: View {
                         .mgHelp("Chat with \(m.name)")
                         .mgContextMenu {
                             MGMenuItem.button("New Chat", icon: "square.and.pencil") { model.newChat(model: key) }
-                            if llm.status(key)?.isStarting == true {
+                            if llm.status(key)?.isStopping == true {
+                                MGMenuItem.button("Shutting Down…", icon: "power", enabled: false) {}
+                            } else if llm.status(key)?.isStarting == true {
                                 MGMenuItem.button("Cancel the Start", icon: "xmark.circle") { Task { await llm.stop(key) } }
                             } else if llm.status(key)?.isActive == true {
                                 MGMenuItem.button("Shut Down GPU", icon: "power") { Task { await llm.stop(key) } }

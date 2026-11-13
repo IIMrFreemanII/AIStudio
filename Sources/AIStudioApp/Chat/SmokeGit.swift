@@ -104,6 +104,24 @@ extension SmokeTest {
         check(message.hasPrefix("Add hello.txt"), "the commit has the drafted message")
         check(message.contains("Co-Authored-By: AIStudio ("), "the commit has the co-author line")
         check(doc.git?.status.head.isEmpty == false, "HEAD moved to the new commit")
+
+        // Unticked files stay out of the commit.
+        try? "one\n".write(to: repo.appendingPathComponent("one.txt"), atomically: true, encoding: .utf8)
+        try? "two\n".write(to: repo.appendingPathComponent("two.txt"), atomically: true, encoding: .utf8)
+        await model.refreshGit(doc)
+        doc.commitExcluded = ["two.txt"]
+        doc.commitDraft = "Add one.txt"
+        check(await model.commit(doc, push: false), "commit with two.txt unticked")
+        let committed = await ShellRunner().run("git show --name-only --format= HEAD", cwd: repo).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        check(committed == "one.txt", "only the ticked file went in (\(committed))")
+        check(doc.git?.status.files.map(\.path) == ["two.txt"] && doc.commitExcluded == ["two.txt"],
+              "the unticked file is still uncommitted, and still unticked")
+        doc.commitExcluded = ["two.txt"]
+        doc.commitDraft = "Nothing"
+        check(await model.commit(doc, push: false) == false && doc.gitError == "Tick at least one file to commit.",
+              "with every file unticked there's nothing to commit")
+        doc.gitError = nil
         return finish(ok)
     }
 }

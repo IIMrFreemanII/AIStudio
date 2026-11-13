@@ -5,7 +5,9 @@ import LLMClient
 extension ChatTranscript {
     private var lastTodoCall: (call: ToolCall, index: Int)? {
         let shown = turns
-        for (i, t) in shown.enumerated().reversed() {
+        // A session forked from its parent starts with the parent's history: its own list comes after its brief.
+        let start = brief.flatMap { b in shown.firstIndex { $0.role == .user && $0.text.hasPrefix(b) } } ?? 0
+        for (i, t) in shown.enumerated().reversed() where i > start || start == 0 {
             if t.role == .assistant, let c = t.toolCalls.last(where: { $0.name == "todo_write" }) { return (c, i) }
         }
         return nil

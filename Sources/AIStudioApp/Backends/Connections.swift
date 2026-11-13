@@ -5,7 +5,7 @@ import NodesRemote
 import Observation
 import Security
 
-/// A server the app can send work to. The token lives in the Keychain, not in this record.
+/// A server the app can send work to. The token lives in `TokenFile`, not in this record.
 struct ServerConnection: Codable, Identifiable, Hashable {
     enum Kind: String, Codable, CaseIterable {
         /// `aistudio-cli serve` on another Mac: runs whole graphs (a tab's run target).
@@ -49,47 +49,23 @@ struct ServerConnection: Codable, Identifiable, Hashable {
     }
 }
 
-/// Tokens of server connections, kept in the login Keychain and read at most once per launch each.
+/// Tokens of server connections (and the search key), kept in `TokenFile` as `connection:<id>`.
 enum ConnectionToken {
+    /// Where they were kept before (moved over when first read).
     static let service = "AIStudio.connection"
-    private static var cache: [String: String] = [:]
-    private static let lock = NSLock()
 
     static func read(_ id: String) -> String? {
-        if let t = lock.withLock({ cache[id] }) { return t }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: id, kSecReturnData as String: true,
-                                kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: AnyObject?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? Data,
-              let t = String(data: d, encoding: .utf8) else {
-            // Saved before the rename: move it to the new service name.
-            guard let old = LegacyKeychain.take(service, account: id) else { return nil }
-            save(old, for: id)
-            return old
-        }
-        lock.withLock { cache[id] = t }
-        return t
+        TokenFile.get("connection:" + id, keychain: KeychainItem(service: service, account: id),
+                      persist: !AppModel.isAutomatedRun)
     }
 
-    /// `keychain` false keeps it in memory only (automated runs must not touch the user's Keychain).
-    static func save(_ token: String, for id: String, keychain: Bool = true) {
-        if keychain { delete(id) } else { _ = lock.withLock { cache.removeValue(forKey: id) } }
-        guard !token.isEmpty else { return }
-        lock.withLock { cache[id] = token }
-        guard keychain else { return }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: id, kSecValueData as String: Data(token.utf8)]
-        SecItemAdd(q as CFDictionary, nil)
+    /// `persist` false keeps it in memory only (automated runs must not touch the user's tokens).
+    static func save(_ token: String, for id: String, persist: Bool = true) {
+        if persist { KeychainItem(service: service, account: id).delete() }
+        TokenFile.set("connection:" + id, token, persist: persist)
     }
 
-    static func delete(_ id: String) {
-        _ = lock.withLock { cache.removeValue(forKey: id) }
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                kSecAttrAccount as String: id]
-        SecItemDelete(q as CFDictionary)
-        LegacyKeychain.delete(service, account: id)
-    }
+    static func delete(_ id: String) { save("", for: id) }
 }
 
 /// The saved connections, their live status, and the backends made from them.
@@ -137,7 +113,7 @@ final class ConnectionStore {
     /// GPU servers: where the Cloud GPU nodes send their jobs.
     var gpuServers: [ServerConnection] { connections.filter { $0.kind == .gpu } }
 
-    /// Tells the remote nodes which GPU servers exist (tokens are read from the Keychain when a node runs).
+    /// Tells the remote nodes which GPU servers exist (tokens are read when a node runs).
     private func publishEndpoints() {
         let servers = gpuServers.compactMap { c in c.url.map { (c.id, c.name, $0) } }
         RemoteEndpoints.install { id in
@@ -149,7 +125,7 @@ final class ConnectionStore {
 
     func save(_ c: ServerConnection, token: String?) {
         if let i = connections.firstIndex(where: { $0.id == c.id }) { connections[i] = c } else { connections.append(c) }
-        if let token { ConnectionToken.save(token, for: c.id, keychain: fileURL != nil) }
+        if let token { ConnectionToken.save(token, for: c.id, persist: fileURL != nil) }
         backends.removeValue(forKey: c.id)?.client.close()
         status[c.id] = .unknown
         persist()

@@ -70,16 +70,18 @@ final class AppModel {
     /// The open workflows, in tab order; there is always at least one.
     var tabs: [WorkflowDocument]
     /// The active workflow; choosing one brings it in front of a chat.
-    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil }; markFrontViewed() } }
+    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil }; markFrontViewed(); noteFront() } }
     var active: WorkflowDocument { tabs.first { $0.id == activeTabID } ?? tabs[0] }
     var activeUndoManager: UndoManager { active.undoManager }
 
     // MARK: chats
 
-    /// Open chat tabs, after the workflow tabs in the tab strip.
+    /// Loaded chats: the recent ones (`isRecent`) and hidden sessions that are still working.
     var chats: [ChatDocument] = []
     /// The chat in front of the graph (nil: the active workflow is in front).
-    var activeChatID: UUID? { didSet { markFrontViewed() } }
+    var activeChatID: UUID? { didSet { markFrontViewed(); noteFront() } }
+    /// What was in front, most recent first (⌃Tab goes back to the one before).
+    var frontHistory: [FrontItem] = []
     var activeChat: ChatDocument? { chats.first { $0.id == activeChatID } }
     /// The graph helpers of workflow tabs, while open (docked, not tabs).
     var helperChats: [ChatDocument] = []
@@ -246,6 +248,8 @@ final class AppModel {
     /// The results pane under the graph, and the full-window viewer.
     var showResultsPane = true
     var viewerResult: NodeResult?
+    /// A chat's attachment or media shown full-window (`ChatMediaViewer`).
+    var chatViewer: ChatViewerItem?
     /// The Node Library asked the editor to add a node; Assets asked for a Load node for a file.
     var nodeAddRequest: NodeAddRequest?
     var assetAddRequest: URL?
