@@ -337,6 +337,7 @@ extension AppModel {
         if let d = chats.first(where: { $0.id == id }) {
             stopReply(d)
             d.jobs.stopAll()
+            closeTerminals(d)  // a shell in the worktree would keep it busy
         }
         let repo = URL(fileURLWithPath: w.repo)
         let unmerged = await GitWorktree.unmergedCommits(branch: w.branch, base: w.base, repo: repo)

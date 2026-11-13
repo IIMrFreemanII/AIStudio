@@ -122,13 +122,15 @@ extension AppModel {
         if !doc.isBusy {
             doc.task?.cancel()
             doc.jobs.stopAll()
+            closeTerminals(doc)
             chats.removeAll { $0 === doc }
         }
     }
 
     /// Saves and unloads a hidden session that has nothing left going on.
     func unloadIfHidden(_ doc: ChatDocument) {
-        guard !doc.isRecent, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id else { return }
+        guard !doc.isRecent, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id,
+              doc.terminals.isEmpty else { return }  // a shell running in a terminal keeps its chat
         saveChat(doc)
         chats.removeAll { $0 === doc }
     }
@@ -137,6 +139,7 @@ extension AppModel {
         if let doc = chats.first(where: { $0.id == id }) {
             stopReply(doc)
             doc.jobs.stopAll()
+            closeTerminals(doc)
             doc.isRecent = false
             leaveFront(.chat(id))
             chats.removeAll { $0.id == id }
@@ -246,10 +249,10 @@ extension AppModel {
     }
 
     /// Starts a reply to a passage: the quote bar above the composer.
-    func quote(_ doc: ChatDocument, _ text: String, from turn: ChatTurn?) {
+    func quote(_ doc: ChatDocument, _ text: String, from turn: ChatTurn?, source: String? = nil) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        doc.replyTo = ChatQuote(turnID: turn?.id, role: turn?.role ?? .assistant, text: t)
+        doc.replyTo = ChatQuote(turnID: turn?.id, role: turn?.role ?? (source != nil ? .tool : .assistant), text: t, source: source)
     }
 
     /// A reply to a selection: the source is the newest shown message (or tool result) that contains it.
@@ -327,7 +330,7 @@ extension AppModel {
             let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + graphTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
             var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), OpenPageTool(), ExitPlanTool(), task, FlowTool()]
-                + SessionTools.all
+                + SessionTools.all + [ReadTerminalTool()]
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
@@ -544,6 +547,12 @@ extension AppModel {
         ctx.openPage = { [weak self, weak doc] _, url, screenshot in
             guard let self, let doc else { return PageView(url: url.absoluteString, error: "the chat was closed") }
             return await self.agentOpenPage(doc, url, screenshot: screenshot)
+        }
+        ctx.readTerminal = { [weak self, weak doc] which, lines in
+            await MainActor.run {
+                guard let self, let doc else { return nil }
+                return self.terminalReport(doc, which: which, lines: lines)
+            }
         }
         ctx.onOutput = { [weak doc] id, chunk in
             Task { @MainActor in doc?.toolOutputs[id, default: ""] += chunk }

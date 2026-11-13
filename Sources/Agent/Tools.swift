@@ -89,6 +89,9 @@ public final class ToolContext: @unchecked Sendable {
     /// Opens a page in the chat's Browser tab (call id, address, take a screenshot) and waits for it to load (nil: no
     /// browser here).
     public var openPage: (@Sendable (String, URL, Bool) async -> PageView)?
+    /// Reads one of the user's terminals in this chat (which: a number or part of a title, nil: the shown one; how many
+    /// lines): its name, folder and last lines; nil when none is open.
+    public var readTerminal: (@Sendable (String?, Int) async -> String?)?
     /// Saves files before the agent changes them, so the user can rewind (nil: no checkpoints).
     public var checkpoints: CheckpointStore?
     /// The user message the current reply answers: what checkpoints are filed under.

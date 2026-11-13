@@ -51,7 +51,7 @@ struct ToolCard: View {
     /// Tools that only look (read, list, search, fetch): finished well, they're a plain line instead of a card, so the
     /// steps that need you (a question, a diff, a command, a failure) stand out.
     static let lookTools: Set<String> = ["read_file", "list_files", "search", "web_fetch", "web_search", "open_page",
-                                         "use_skill", "code_graph", "command_output", "list_sessions"]
+                                         "use_skill", "code_graph", "command_output", "list_sessions", "read_terminal"]
     var quiet: Bool { status == "done" && !asking && Self.lookTools.contains(call.name) }
 
     var body: some View {
@@ -479,7 +479,7 @@ struct CodingHeaderItems: View {
                 Image(systemName: "sidebar.right").foregroundStyle(shown ? MG.accent : MG.label)
             }
             .buttonStyle(.mg(.bordered))
-            .mgHelp(shown ? "Hide the side panel" : "Show the side panel: files, changes and plans (⌥⌘S)")
+            .mgHelp(shown ? "Hide the side panel" : "Show the side panel: files, changes, plans, browser and terminal (⌥⌘S)")
             .accessibilityLabel(shown ? "Hide the Side Panel" : "Show the Side Panel")
             .mgTestAnchor("side-panel-toggle")
         }

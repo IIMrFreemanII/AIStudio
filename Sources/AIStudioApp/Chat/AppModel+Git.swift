@@ -291,6 +291,7 @@ extension AppModel {
         case .files: refreshProjectFiles(doc)
         case .plans: savePlanFiles(doc)
         case .web: _ = webPage(doc)
+        case .terminal: if doc.terminals.isEmpty { newTerminal(doc) }
         case nil: break
         }
         saveChat(doc)

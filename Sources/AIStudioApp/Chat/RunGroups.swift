@@ -83,7 +83,7 @@ struct RunSummary: Equatable {
                 actions += 1
                 switch call.name {
                 case "read_file": reads += 1
-                case "search", "list_files", "code_graph", "command_output": searches += 1
+                case "search", "list_files", "code_graph", "command_output", "read_terminal": searches += 1
                 case "edit_file", "write_file":
                     edited.insert((try? ToolArgs(json: call.arguments))?.string("path") ?? call.id)
                     if let d = result?.toolDetail {

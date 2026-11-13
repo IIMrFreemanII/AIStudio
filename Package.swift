@@ -44,6 +44,9 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.8.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.3.0"),
+        // The coding chat's terminal (a terminal emulator on a pseudo-terminal). 1.19 is the last release before the
+        // 2.0 I/O rework (the 1.99 previews).
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMinor(from: "1.19.0")),
     ],
     targets: [
         .target(
@@ -366,6 +369,7 @@ let package = Package(
                 "LLMClient",
                 "Agent",
                 .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
             // JetBrains Mono (OFL), the design system's typeface.
             resources: [.copy("Resources/Fonts")],

@@ -298,6 +298,46 @@ extension SmokeTest {
         check(refused?.isError == true && refused?.text.hasPrefix("Couldn't load http://127.0.0.1:9/") == true,
               "open_page reports a page that can't load (\(refused?.text ?? ""))")
 
+        // The terminal: a shell in the project folder; what's typed runs; read_terminal sees it; a second tab keeps
+        // the first one's shell; closing them ends the shells.
+        do {
+            model.showSidePanel(doc, .terminal)
+            await settle(0.6)
+            check(MGTestAnchors.frame("terminal-pane") != nil && doc.terminals.count == 1 && MGTestAnchors.frame("side-tab:terminal") != nil,
+                  "the Terminal tab opens a terminal")
+            if let t = doc.terminals.first {
+                t.send("echo hello-$((40+2)); pwd\r")
+                let ran = await wait(10) { t.text(lastLines: 50).contains("hello-42") }
+                check(ran && t.running && t.pid > 0, "a command typed in the terminal runs (\(t.text(lastLines: 4)))")
+                check(t.text(lastLines: 50).contains(repo.lastPathComponent), "the shell starts in the project folder")
+                tool.readTerminal = { which, lines in await MainActor.run { model.terminalReport(doc, which: which, lines: lines) } }
+                let read = try? await ReadTerminalTool().run(ToolArgs(["lines": 20]), tool)
+                check(read?.text.contains("hello-42") == true && read?.text.hasPrefix("Terminal 1 of 1") == true,
+                      "read_terminal shows the agent the terminal (\(read?.text.prefix(80) ?? "nothing"))")
+                model.newTerminal(doc)
+                await settle(0.4)
+                check(doc.terminals.count == 2 && doc.activeTerminal !== t && MGTestAnchors.frame("terminal-tab:2") != nil,
+                      "+ opens a second terminal")
+                doc.activeTerminalID = t.id
+                await settle(0.4)
+                check(t.running && t.text(lastLines: 50).contains("hello-42") && t.view.superview != nil,
+                      "switching back shows the first terminal, still running")
+                model.addTerminalToChat(doc, t)
+                check(doc.replyTo?.source == "terminal output" && doc.replyTo?.text.contains("hello-42") == true,
+                      "Add to Chat quotes the terminal's last lines")
+                doc.replyTo = nil
+                let pids = doc.terminals.map(\.pid)
+                model.closeTerminals(doc)
+                let ended = await wait(5) {
+                    pids.allSatisfy { pid in
+                        var status: Int32 = 0
+                        return kill(pid, 0) != 0 || waitpid(pid, &status, WNOHANG) == pid
+                    }
+                }
+                check(ended && doc.terminals.isEmpty, "closing the terminals ends their shells")
+            }
+        }
+
         // Attachments: a PDF (its text for the model) and an archive (only named).
         let pdfURL = repo.appendingPathComponent("notes.pdf")
         let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 200))

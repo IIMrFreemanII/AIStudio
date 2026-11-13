@@ -27,6 +27,7 @@ struct CodingSidePanel: View {
             case .files: FilesPane(doc: doc)
             case .changes: GitChangesPane(doc: doc)
             case .plans: PlansPane(doc: doc)
+            case .terminal: TerminalPane(doc: doc)
             case .web:
                 if let page = doc.webPage { WebPane(doc: doc, page: page) } else {
                     Color.clear.onAppear { _ = model.webPage(doc) }
@@ -80,6 +81,7 @@ private struct SidePanelTab: View {
         case .changes: "⇧⌘D"
         case .plans: "⇧⌘P"
         case .web: "⇧⌘B"
+        case .terminal: "⌃`"
         }
     }
 

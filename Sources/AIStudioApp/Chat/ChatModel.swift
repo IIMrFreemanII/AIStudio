@@ -10,7 +10,7 @@ import Observation
 /// An open chat tab: the saved transcript plus what only exists while it's open (the draft, the reply streaming in).
 /// A coding chat's right-hand panel.
 enum SidePanel: String, CaseIterable, Identifiable {
-    case files, changes, plans, web
+    case files, changes, plans, web, terminal
 
     var id: String { rawValue }
     var title: String {
@@ -19,6 +19,7 @@ enum SidePanel: String, CaseIterable, Identifiable {
         case .changes: "Changes"
         case .plans: "Plans"
         case .web: "Browser"
+        case .terminal: "Terminal"
         }
     }
     var symbol: String {
@@ -27,6 +28,7 @@ enum SidePanel: String, CaseIterable, Identifiable {
         case .changes: "plusminus"
         case .plans: "list.bullet.clipboard"
         case .web: "globe"
+        case .terminal: "terminal"
         }
     }
 }
@@ -93,6 +95,15 @@ final class ChatDocument: Identifiable {
     /// so an edit doesn't need a fresh read every turn. In memory only: after a restart the agent reads once more.
     @ObservationIgnored var readStamps: [String: Date] = [:]
     var runningJobs: [String] = []
+    /// The chat's terminals (the side panel's Terminal tab), in memory only: a shell can't be saved. A chat with
+    /// terminals stays loaded; they end when the chat or the app closes.
+    var terminals: [TerminalSession] = []
+    var activeTerminalID: UUID?
+    /// Bumped to put the cursor back in the composer (⌃` from the terminal).
+    var composerFocusRequest = 0
+    var activeTerminal: TerminalSession? {
+        terminals.first { $0.id == activeTerminalID } ?? terminals.last
+    }
     /// Where the files the agent changed are saved, for "Rewind to Here".
     @ObservationIgnored var checkpointStore: CheckpointStore?
     /// The plan `exit_plan` waits for approval of (its card), and the answer channel.
