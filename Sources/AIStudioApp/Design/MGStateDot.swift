@@ -8,7 +8,6 @@ struct MGStateDot: View {
 
     let kind: Kind
     var size: CGFloat = 7
-    @State private var dim = false
 
     var body: some View {
         Group {
@@ -16,9 +15,7 @@ struct MGStateDot: View {
             case .idle:
                 Circle().strokeBorder(MG.secondaryLabel, lineWidth: 1.2)
             case .busy:
-                Circle().fill(MG.warning)
-                    .opacity(dim ? 0.35 : 1)
-                    .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { dim = true } }
+                PulsingDot()
             case .ready:
                 Circle().fill(MG.success)
             case .failed:
@@ -46,5 +43,17 @@ struct MGStateDot: View {
         case "failed": .failed
         default: .idle
         }
+    }
+}
+
+/// The busy dot's pulse. Its own view so the pulse state is new each time the dot becomes busy: kept on MGStateDot,
+/// it stayed dimmed after the first busy spell and the next one had nothing to animate.
+private struct PulsingDot: View {
+    @State private var dim = false
+
+    var body: some View {
+        Circle().fill(MG.warning)
+            .opacity(dim ? 0.35 : 1)
+            .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { dim = true } }
     }
 }

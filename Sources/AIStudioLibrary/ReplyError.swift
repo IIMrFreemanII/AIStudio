@@ -19,14 +19,19 @@ public enum ReplyError {
         if let code = number(after: "http ", in: lower), (500...599).contains(code) {
             return "The model server failed (HTTP \(code))"
         }
-        if lower.contains("401") || lower.contains("403") || lower.contains("unauthorized") || lower.contains("forbidden") {
-            return "The model server refused the token"
-        }
+        if isAuthFailure(lower) { return "The model server refused the token" }
         // Short enough already: one sentence, one line.
         let firstLine = error.split(separator: "\n").first.map(String.init) ?? error
         if firstLine.count <= 90 && !error.contains("\n") { return nil }
         let sentence = firstLine.split(separator: ".", maxSplits: 1).first.map(String.init) ?? firstLine
         return sentence.count <= 90 ? sentence : String(sentence.prefix(88)) + "…"
+    }
+
+    /// A 401 or 403 only as a status ("HTTP 401", "status code 403"), so token counts such as "14030 tokens" don't count;
+    /// or the status's words.
+    static func isAuthFailure(_ lower: String) -> Bool {
+        if lower.contains("unauthorized") || lower.contains("forbidden") { return true }
+        return lower.range(of: #"\b(http|status|code)\W{0,3}40[13]\b"#, options: .regularExpression) != nil
     }
 
     /// "32768" → "32K", "131072" → "128K", "8000" → "8K".

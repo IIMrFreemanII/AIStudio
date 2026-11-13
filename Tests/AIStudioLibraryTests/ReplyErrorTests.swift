@@ -13,6 +13,15 @@ struct ReplyErrorTests {
         #expect(ReplyError.summary("The model server answered HTTP 503: upstream unavailable, try again later") == "The model server failed (HTTP 503)")
     }
 
+    @Test func authFailuresNeedAStatus() {
+        #expect(ReplyError.summary("The model server answered HTTP 401: invalid token") == "The model server refused the token")
+        #expect(ReplyError.summary("Request failed with status code 403") == "The model server refused the token")
+        #expect(ReplyError.summary("Unauthorized") == "The model server refused the token")
+        // A count that happens to contain 401 or 403 is not an auth failure.
+        #expect(ReplyError.summary("The prompt has 14030 tokens") == nil)
+        #expect(ReplyError.summary("Generation stopped at token 4017") == nil)
+    }
+
     @Test func aShortErrorStaysAsItIs() {
         #expect(ReplyError.summary("Couldn't compact: no model") == nil)
     }
