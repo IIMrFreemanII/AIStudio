@@ -491,7 +491,7 @@ def _llm_boot(self, snapshot: bool = False):
         self.boot_clock = self.clock  # if this same container wakes next, its start is timed from here
         return
     _llm_record(self, "cold")
-    _llm_release_floor(self)
+    _llm_touch(self)  # the floor stays while it's in use: lowering it makes Modal end an idle container at once
     if (llm_state.get(self.model + ":stop") or 0) > base["started"]:
         _llm_stop(self)
 
@@ -531,7 +531,7 @@ def _llm_wake(self):
         modal.experimental.stop_fetching_inputs()
         return
     _llm_record(self, "snapshot" if restored else "cold")
-    _llm_release_floor(self)
+    _llm_touch(self)  # the floor stays while it's in use (see _llm_heartbeat)
 
 
 def _llm_clock(self, clock_cls, how: str = "cold"):
@@ -551,6 +551,22 @@ def _llm_publish(self, **kw):
         llm_state[self.model] = self.current
     except Exception:  # noqa: BLE001
         pass
+
+
+def _llm_touch(self):
+    """A chat or a keepalive ping arrived (or the engine just got ready): the idle clock starts again."""
+    import time
+
+    self.last_input = time.time()
+
+
+def _llm_idle_for(self) -> float:
+    """Seconds with no chat in progress and nothing asked (0 while a chat streams)."""
+    import time
+
+    if getattr(self, "active", 0) > 0:
+        return 0.0
+    return time.time() - getattr(self, "last_input", time.time())
 
 
 def _llm_heartbeat(self):
@@ -581,6 +597,11 @@ def _llm_heartbeat(self):
                         self.proc.stop()
                         break
                     _llm_stop(self)
+            if state == "ready" and _llm_idle_for(self) >= LLM_IDLE:
+                # Nothing asked for LLM_IDLE seconds (no chat, no keepalive ping): let Modal scale it down. With the
+                # start's minimum of one lowered, Modal ends an idle container at once, without its scaledown
+                # window, so this is the idle timeout.
+                _llm_release_floor(self)
             _llm_publish(self)
 
     self.beat_thread = threading.Thread(target=beat, daemon=True)
@@ -638,8 +659,9 @@ def _llm_obj(m: dict):
 def _llm_release_floor(self):
     """Lets Modal scale this model down again. A start asks for one container with ``min_containers=1`` (no request:
     a queued request can't be cancelled and is retried on a new container when its container ends), and that floor
-    stays until the engine is ready, failed or stopped: otherwise an idle container would stay up, billed, and a
-    stopped or failed one would be started again."""
+    stays until the engine failed or was stopped, or has been idle for ``LLM_IDLE`` seconds (lowering it makes Modal
+    end an idle container at once, so it can't be lowered when the engine gets ready): otherwise an idle container
+    would stay up, billed, and a stopped or failed one would be started again."""
     from aistudio_gpu.llm.service import live_manifest
 
     try:
@@ -681,9 +703,15 @@ async def _llm_chat(self, body: dict):
         raise EngineError(self.error or "the engine isn't running")
     import asyncio
 
-    await asyncio.to_thread(_llm_media_ready, body)
-    async for chunk in self.proc.chat(body):
-        yield chunk
+    _llm_touch(self)
+    self.active = getattr(self, "active", 0) + 1
+    try:
+        await asyncio.to_thread(_llm_media_ready, body)
+        async for chunk in self.proc.chat(body):
+            yield chunk
+    finally:
+        self.active -= 1
+        _llm_touch(self)
 
 
 def _llm_media_ready(body: dict) -> None:
@@ -747,6 +775,7 @@ class LLM:
 
     @modal.method()
     def ping(self) -> dict:
+        _llm_touch(self)  # the app keeps a model warm while a chat with it is open
         return self.current
 
     @modal.method()
@@ -784,6 +813,7 @@ class LLMSnap:
 
     @modal.method()
     def ping(self) -> dict:
+        _llm_touch(self)  # the app keeps a model warm while a chat with it is open
         return self.current
 
     @modal.method()
@@ -813,6 +843,7 @@ class LLMLlamaCpp:
 
     @modal.method()
     def ping(self) -> dict:
+        _llm_touch(self)  # the app keeps a model warm while a chat with it is open
         return self.current
 
     @modal.method()
@@ -931,9 +962,11 @@ def _llm_service():
             # Stop pressed for this container: "stopping" until it's gone (it finishes open requests first).
             if s.get("state") in ("loading", "ready"):
                 s = stopping(s, await llm_state.get.aio(mid + ":stop"))
-            # The start's minimum container outlives the start only if the container couldn't lift it (it lifts it
-            # itself when ready, failed or stopped): lift it here, so nothing is kept up or started again.
-            if m and s.get("state") not in ("starting", "loading"):
+            # The start's minimum container outlives the container only if it couldn't lift it (it lifts it itself
+            # when idle, failed or stopped): lift it here, so nothing is kept up or started again.
+            # (Not while it's ready: lowering the minimum makes Modal end an idle container at once; the container
+            # lowers it itself once idle for LLM_IDLE seconds.)
+            if m and s.get("state") in ("cold", "failed"):
                 try:
                     await self._release_floor(mid, m)
                 except Exception as e:  # noqa: BLE001
