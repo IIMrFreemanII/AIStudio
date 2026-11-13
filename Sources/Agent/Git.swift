@@ -429,9 +429,11 @@ public enum Git {
 
     // MARK: GitHub CLI
 
-    /// Whether `gh` is installed and signed in, and the repo has an origin remote.
+    /// Whether `gh` is installed and signed in, and the repo has an origin remote. Only the active account counts:
+    /// plain `gh auth status` fails when any other signed-in account has a stale token (`--active` is gh ≥ 2.40;
+    /// older ones fall back to the plain check).
     public static func ghReady(_ root: URL) async -> Bool {
-        let r = await ShellRunner().run("command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 && git remote get-url origin >/dev/null 2>&1",
+        let r = await ShellRunner().run("command -v gh >/dev/null 2>&1 && { gh auth status --active >/dev/null 2>&1 || gh auth status >/dev/null 2>&1; } && git remote get-url origin >/dev/null 2>&1",
                                         cwd: root, timeout: 20)
         return r.status == 0
     }
