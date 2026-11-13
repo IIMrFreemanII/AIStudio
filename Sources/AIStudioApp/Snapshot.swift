@@ -328,6 +328,7 @@ enum Snapshot {
         FlowRegistry.controllers["snap0001"] = controller
         doc.flowRunByCall["f1"] = "snap0001"
         doc.flowPanelRunID = "snap0001"
+        doc.sidePanel = .flow
         controller.expandedAgent = "a5"
         await render(m, to: dir.appendingPathComponent("61-flow-panel.png"))
     }

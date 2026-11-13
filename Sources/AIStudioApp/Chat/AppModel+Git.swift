@@ -271,29 +271,41 @@ extension AppModel {
 
     /// Shows a tab of the side panel, or closes the panel when it already shows that tab; remembered with the chat.
     func toggleSidePanel(_ doc: ChatDocument, _ panel: SidePanel) {
-        showSidePanel(doc, doc.sidePanel == panel && doc.flowPanelRunID == nil ? nil : panel)
+        showSidePanel(doc, doc.sidePanel == panel ? nil : panel)
     }
 
     /// Shows or hides the side panel (on the tab it last showed).
     func toggleSidePanel(_ doc: ChatDocument) {
-        showSidePanel(doc, doc.sidePanel != nil && doc.flowPanelRunID == nil ? nil : doc.sideTab)
+        showSidePanel(doc, doc.sidePanel != nil ? nil : doc.sideTab)
     }
 
-    /// The side panel is on screen (a flow's run, when shown, takes its place).
-    func sidePanelShown(_ doc: ChatDocument) -> Bool { doc.isCoding && doc.sidePanel != nil && doc.flowPanelRunID == nil }
+    /// The side panel is on screen (on any pane, a flow's run included).
+    func sidePanelShown(_ doc: ChatDocument) -> Bool { doc.isCoding && doc.sidePanel != nil }
 
     func showSidePanel(_ doc: ChatDocument, _ panel: SidePanel?) {
         guard doc.isCoding else { return }
+        var panel = panel
+        if panel == .flow && doc.flowPanelRunID == nil { panel = .files }
+        if panel == .flow, doc.sideTab != .flow { doc.tabBeforeFlow = doc.sideTab }
         doc.sidePanel = panel
-        if panel != nil { doc.flowPanelRunID = nil }
         switch panel {
         case .changes: refreshGitSoon(doc)
         case .files: refreshProjectFiles(doc)
         case .plans: savePlanFiles(doc)
         case .web: _ = webPage(doc)
         case .terminal: if doc.terminals.isEmpty { newTerminal(doc) }
-        case nil: break
+        case .flow, nil: break
         }
         saveChat(doc)
+    }
+
+    /// Close Run: the Flow pane and its rail item go (the run itself goes on); the panel goes back to the pane shown
+    /// before the run's, or stays hidden.
+    func closeFlowPanel(_ doc: ChatDocument) {
+        let back = doc.tabBeforeFlow ?? .files
+        let shown = doc.sidePanel == .flow
+        doc.flowPanelRunID = nil
+        doc.tabBeforeFlow = nil
+        if shown { showSidePanel(doc, back) } else if doc.transcript.sidePanel == SidePanel.flow.rawValue { doc.sideTab = back }
     }
 }

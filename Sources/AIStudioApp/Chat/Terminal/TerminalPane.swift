@@ -46,7 +46,7 @@ struct TerminalPane: View {
                 }
             }
             .padding(.horizontal, 8)
-            .frame(height: 32)
+            .frame(height: 38)
             MGDivider()
             if let t = doc.activeTerminal {
                 VStack(spacing: 0) {

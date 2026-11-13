@@ -35,7 +35,7 @@ extension AppModel {
     /// ⌃`: shows the terminal and puts the cursor in it; from the terminal, back to the composer.
     func toggleTerminal(_ doc: ChatDocument) {
         guard doc.isCoding else { return }
-        if doc.sidePanel == .terminal, doc.flowPanelRunID == nil, let t = doc.activeTerminal,
+        if doc.sidePanel == .terminal, let t = doc.activeTerminal,
            t.view.window?.firstResponder === t.view {
             doc.composerFocusRequest += 1
             return

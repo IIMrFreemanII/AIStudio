@@ -392,9 +392,10 @@ extension AppModel {
         ])
     }
 
-    /// Shows a run in the right-hand pane (the side panel gives way until the run's pane is closed).
+    /// Shows a run in the side panel's Flow pane (it stays on the rail until Close Run).
     func openFlowPanel(_ runID: String, in doc: ChatDocument) {
         doc.flowPanelRunID = runID
+        showSidePanel(doc, .flow)
     }
 
     /// Starts the run again, reusing what the agents of `old` finished.

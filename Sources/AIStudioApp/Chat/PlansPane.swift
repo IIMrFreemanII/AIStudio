@@ -9,6 +9,13 @@ struct PlansPane: View {
 
     var body: some View {
         let all = Array(model.plans(doc).reversed())
+        VStack(spacing: 0) {
+            SidePaneHeader(title: "Plans", count: all.count)
+            list(all)
+        }
+    }
+
+    @ViewBuilder private func list(_ all: [ChatPlan]) -> some View {
         if all.isEmpty {
             MGEmptyState(symbol: "list.bullet.clipboard", title: "No plans yet",
                          message: "In Plan mode the agent explores the project and proposes a plan; it shows here and is saved with the chat.")

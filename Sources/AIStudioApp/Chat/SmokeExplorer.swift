@@ -3,6 +3,7 @@ import AppKit
 import Agent
 import Foundation
 import LLMClient
+import SwiftUI
 
 extension SmokeTest {
     /// `--smoke-explorer` (no server): a coding chat in a fresh git repository with a reply naming a file, an image
@@ -59,19 +60,68 @@ extension SmokeTest {
         model.openChat(doc.id)
         await settle(0.8)
 
-        // The side panel is open by default, on Files; the header's toggle hides it and shows it again on its tab.
+        // The side panel is open by default, on Files; the rail at the right edge switches panes, and its toggle hides
+        // the panel and shows it again on its pane.
         check(doc.sidePanel == .files && MGTestAnchors.frame("side-panel") != nil, "a new coding chat shows the side panel on Files")
-        check(MGTestAnchors.frame("side-tab:changes") != nil && MGTestAnchors.frame("side-panel-toggle") != nil,
-              "the panel has its tabs and the header its toggle")
+        check(MGTestAnchors.frame("side-tab:changes") != nil && MGTestAnchors.frame("side-panel-toggle") != nil
+              && MGTestAnchors.frame("side-tab:flow") == nil,
+              "the rail has the panes and the toggle (no Flow item without a run)")
+        if let rail = MGTestAnchors.frame("side-rail"), let panel = MGTestAnchors.frame("side-panel") {
+            check(rail.minX >= panel.maxX - 1 && rail.width <= 41, "the rail is a slim column right of the panel (\(rail))")
+        }
         model.showSidePanel(doc, .plans)
         model.toggleSidePanel(doc)
         await settle()
         check(doc.sidePanel == nil && doc.transcript.sidePanelClosed == true && !model.sidePanelShown(doc),
               "the toggle hides the panel")
+        check(MGTestAnchors.frame("side-panel") == nil && MGTestAnchors.frame("side-rail") != nil
+              && MGTestAnchors.frame("side-tab:terminal") != nil, "with the panel hidden, the rail stays")
         model.toggleSidePanel(doc)
         await settle()
         check(doc.sidePanel == .plans && model.sidePanelShown(doc) && MGTestAnchors.frame("side-tab:plans") != nil,
-              "showing it again keeps its tab")
+              "showing it again keeps its pane")
+        model.toggleSidePanel(doc, .plans)
+        check(doc.sidePanel == nil, "clicking the shown pane's item hides the panel")
+        model.toggleSidePanel(doc, .changes)
+        check(doc.sidePanel == .changes, "clicking another item shows that pane")
+
+        // A width each: resizing Changes leaves Plans' width alone.
+        let widths = UserDefaults.standard.string(forKey: "sidePanelWidths")
+        var json = ""
+        let changesWidth = SidePanelWidths.binding(Binding(get: { json }, set: { json = $0 }), .changes)
+        changesWidth.wrappedValue = 610
+        check(SidePanelWidths.width(json, .changes) == 610 && SidePanelWidths.width(json, .plans) == SidePanelWidths.defaultWidth(.plans)
+              && SidePanelWidths.width(json, .web) == 560, "each pane keeps its own width")
+        UserDefaults.standard.set("{\"terminal\":700}", forKey: "sidePanelWidths")
+        model.showSidePanel(doc, .terminal)
+        await settle()
+        let shownWidth = MGTestAnchors.frame("side-panel")?.width ?? 0
+        check(abs(shownWidth - 700) < 2, "the panel shows at the pane's width (\(shownWidth))")
+        UserDefaults.standard.set(widths, forKey: "sidePanelWidths")
+
+        // A flow run is a pane of its own: its rail item comes with the run, switching away keeps it, Close Run goes
+        // back to the pane shown before.
+        let run = FlowRun(id: "smokeflw", chatID: doc.id, meta: FlowMeta(name: "smoke-flow", description: "", phases: []),
+                          script: "export const meta = {}", maxAgents: 1, concurrency: 1)
+        FlowRegistry.controllers["smokeflw"] = FlowController(run: run, chatID: doc.id, readOnly: true)
+        model.showSidePanel(doc, .changes)
+        model.openFlowPanel("smokeflw", in: doc)
+        await settle()
+        check(doc.sidePanel == .flow && MGTestAnchors.frame("side-tab:flow") != nil && MGTestAnchors.frame("flow-close") != nil,
+              "opening a run shows it in the panel, with a Flow item on the rail")
+        model.showSidePanel(doc, .terminal)
+        await settle()
+        check(doc.sidePanel == .terminal && doc.flowPanelRunID == "smokeflw" && MGTestAnchors.frame("side-tab:flow") != nil,
+              "another pane keeps the run on the rail")
+        model.toggleSidePanel(doc, .flow)
+        model.closeFlowPanel(doc)
+        await settle()
+        check(doc.flowPanelRunID == nil && doc.sidePanel == .terminal && MGTestAnchors.frame("side-tab:flow") == nil,
+              "Close Run takes the item off and goes back to the pane before the run")
+        doc.transcript.sidePanel = SidePanel.flow.rawValue
+        check(doc.sideTab == .files, "a chat saved on a run's pane opens on Files (the run isn't saved)")
+        FlowRegistry.controllers["smokeflw"] = nil
+        model.showSidePanel(doc, .plans)
 
         // Files.
         model.showSidePanel(doc, .files)

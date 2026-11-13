@@ -12,8 +12,8 @@ struct ChatView: View {
     var compact = false
     /// False while kept built but hidden behind the chat in front (see `AppModel.keptChats`).
     var inFront = true
-    @AppStorage("changesWidth") private var changesWidth = 440.0  // the side panel's width
-    @AppStorage("flowPanelWidth") private var flowWidth = 460.0
+    /// Each side pane's width (`SidePanelWidths`), as JSON: a terminal or a page wants more room than Plans.
+    @AppStorage("sidePanelWidths") private var paneWidths = ""
 
     /// Coding chats: a suggested ```bash command's Run button runs it in the chat's terminal.
     private var runCommand: (@MainActor (String) -> Void)? {
@@ -45,16 +45,16 @@ struct ChatView: View {
                 ChatComposer(doc: doc, inFront: inFront)
             }
             .frame(maxWidth: .infinity)
-            if doc.isCoding && !compact, let runID = doc.flowPanelRunID, let run = model.flowController(runID) {
-                MGDivider(vertical: true, gap: true)
-                FlowPanel(doc: doc, run: run)
-                    .frame(width: flowWidth)
-                    .overlay(alignment: .leading) { MGResizeHandle(width: $flowWidth, range: 380...720).offset(x: -3) }
-            } else if doc.isCoding && doc.sidePanel != nil && !compact {
-                MGDivider(vertical: true, gap: true)
-                CodingSidePanel(doc: doc)
-                    .frame(width: changesWidth)
-                    .overlay(alignment: .leading) { MGResizeHandle(width: $changesWidth, range: 360...900).offset(x: -3) }
+            if doc.isCoding && !compact {
+                if let pane = doc.sidePanel {
+                    let width = SidePanelWidths.binding($paneWidths, pane)
+                    MGDivider(vertical: true, gap: true)
+                    CodingSidePanel(doc: doc)
+                        .frame(width: width.wrappedValue)
+                        .overlay(alignment: .leading) { MGResizeHandle(width: width, range: SidePanelWidths.range).offset(x: -3) }
+                }
+                MGDivider(vertical: true)
+                SidePanelRail(doc: doc)
             }
         }
         .background(MG.windowBackground)
