@@ -292,9 +292,16 @@ extension SmokeTest {
                "Start shows starting before the server answers")
         expect(await quick { await llm.warm(key) }, "a second Start while starting does nothing")
         await starting.value
+        let cancelCheck = llm.status(key)?.isStarting == true  // the fake server may already be ready
         expect(llm.pending[key] == nil && llm.status(key)?.isActive == true,
                "the Start ends with the server's state (\(llm.status(key)?.state ?? "?"))")
-        await llm.stop(key)
+        let stopAfterStart = Task { await llm.stop(key) }
+        await Task.yield()
+        if cancelCheck {
+            expect(llm.pending[key] == .cancelling && llm.status(key)?.phase == "Cancelling the start",
+                   "Cancel shows Cancelling the start until the server answers (\(llm.status(key)?.phase ?? "-"))")
+        }
+        await stopAfterStart.value
         expect(llm.pending[key] == nil && llm.status(key)?.state == "cold", "Stop after the Start ends cold")
 
         // A Stop the server never gets: the old state comes back, and the failure is shown.
