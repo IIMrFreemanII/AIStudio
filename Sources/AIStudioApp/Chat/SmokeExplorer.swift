@@ -144,6 +144,77 @@ extension SmokeTest {
             let edit = ToolCard(doc: doc, call: ToolCall(id: "w1", name: "edit_file", arguments: "{}"), result: w)
             check(read.quiet && !edit.quiet, "a finished read is a plain line, an edit stays a card")
         }
+        // Folding: a run with tool calls is one header row; opened, its steps follow on the rail. Questions, the call
+        // waiting for permission and the answer stay outside; a live run is a box; a plain chat reply doesn't fold.
+        do {
+            var t = ChatTranscript(title: "fold")
+            let u1 = ChatTurn(role: .user, text: "fix it")
+            var a1 = ChatTurn(role: .assistant, text: "Looking first.")
+            a1.reasoning = "Read, then edit."
+            a1.toolCalls = [ToolCall(id: "f1", name: "read_file", arguments: #"{"path":"README.md"}"#),
+                            ToolCall(id: "f2", name: "edit_file", arguments: #"{"path":"README.md"}"#)]
+            var r1 = ChatTurn(role: .tool, text: "# Smoke", toolCallID: "f1")
+            r1.toolStatus = "done"
+            var r2 = ChatTurn(role: .tool, text: "", toolCallID: "f2")
+            r2.toolStatus = "done"
+            r2.toolDetail = "@@ -1 +1,2 @@\n-a\n+b\n+c"
+            var a2 = ChatTurn(role: .assistant, text: "")
+            a2.toolCalls = [ToolCall(id: "f3", name: "ask_user", arguments: #"{"question":"ok?"}"#),
+                            ToolCall(id: "f4", name: "run_command", arguments: #"{"command":"ls"}"#)]
+            var r3 = ChatTurn(role: .tool, text: "yes", toolCallID: "f3")
+            r3.toolStatus = "done"
+            var r4 = ChatTurn(role: .tool, text: "boom", toolCallID: "f4")
+            r4.toolStatus = "failed"
+            let a3 = ChatTurn(role: .assistant, text: "All done.")
+            let u2 = ChatTurn(role: .user, text: "thanks")
+            var b1 = ChatTurn(role: .assistant, text: "Any time.")
+            b1.reasoning = "Be nice."
+            for x in [u1, a1, r1, r2, a2, r3, r4, a3, u2, b1] { t.append(x) }
+            let turns = t.turns
+            let shown = turns.filter { $0.role != .tool }
+            let results = Dictionary(turns.compactMap { x in x.toolCallID.map { ($0, x) } }, uniquingKeysWith: { _, l in l })
+            let runs = AgentRuns(shown, transcript: t)
+            let key = RunFolding.key([a1])
+            func rows(_ list: [ChatTurn], open: Set<String> = [], streaming: Bool = false, asking: String? = nil) -> [TranscriptRow] {
+                TranscriptRow.rows(list, live: nil, bare: runs.bare,
+                                   folding: RunFolding(open: open, results: results, streaming: streaming, asking: asking))
+            }
+            func has(_ r: [TranscriptRow], _ test: (TranscriptRow) -> Bool) -> Int { r.filter(test).count }
+            func isHeader(_ r: TranscriptRow) -> Bool { if case .runHeader = r.part { true } else { false } }
+            func isStep(_ r: TranscriptRow) -> Bool {
+                switch r.part { case .groupHead, .groupProse, .groupCalls: true; default: false }
+            }
+            func pinned(_ r: TranscriptRow, _ id: String) -> Bool { if case .pinned(let c) = r.part { c.id == id } else { false } }
+            let closed = rows(shown)
+            check(has(closed, isHeader) == 1 && has(closed, isStep) == 0, "a finished run is one header row")
+            check(has(closed) { pinned($0, "f3") } == 1 && has(closed) { pinned($0, "f4") } == 0,
+                  "a question stays outside the fold, a command doesn't")
+            check(has(closed) { $0.turn.id == a3.id && $0.part.isSegment } == 1
+                  && has(closed) { $0.turn.id == a3.id && { if case .foot = $0.part { true } else { false } }($0) } == 1,
+                  "the run's answer and buttons stay outside")
+            check(has(closed) { $0.turn.id == b1.id && { if case .head = $0.part { true } else { false } }($0) } == 1
+                  && has(closed) { $0.turn.id == b1.id && isHeader($0) } == 0, "a plain chat reply doesn't fold")
+            let opened = rows(shown, open: [key])
+            check(has(opened, isStep) == 4, "opened, the run's thinking, text and calls follow (\(has(opened, isStep)))")
+            check(Set(opened.map(\.id)).count == opened.count, "every row has its own ID")
+            let asking = rows(shown, open: [key], asking: "f4")
+            check(has(asking) { pinned($0, "f4") } == 1 && has(asking, isStep) == 3,
+                  "the call waiting for permission comes out of the fold")
+            let live = rows(Array(shown.prefix(4)), streaming: true)
+            check(has(live) { if case .liveBox = $0.part { true } else { false } } == 1
+                  && has(live) { if case .foot = $0.part { true } else { false } } == 0
+                  && has(live) { $0.turn.id == a3.id && $0.part.isSegment } == 1,
+                  "a live run is a box, its streaming text under it")
+            let s = RunSummary.of([a1, a2, a3], results: results, live: false)
+            check(s.status == .done && s.actions == 3 && s.kinds == ["read 1", "edited 1", "ran 1"]
+                  && s.added == 2 && s.removed == 1 && s.failed == 1,
+                  "the header counts what the run did (\(s.kinds), +\(s.added) −\(s.removed), \(s.failed) failed)")
+            let paste = "Count the words below. " + String(repeating: "alpha bravo charlie delta ", count: 10_000)
+            let p = CollapsedText.message(paste)
+            check(p != nil && p!.text.utf16.count <= 901 && CollapsedText.message("short") == nil
+                  && CollapsedText.message(String(repeating: "line\n", count: 20))?.hidden ?? 0 > 0,
+                  "a long message shows a short preview, a short one shows whole")
+        }
         var starting = LLMStatus(state: "starting", phase: nil, progress: nil)
         starting.coldStart = nil
         let chip = EngineChip(status: starting, model: nil, since: Date().addingTimeInterval(-80))
@@ -276,7 +347,17 @@ extension SmokeTest {
             doc.transcript.append(r)
             doc.toolOutputs["smoke-task"] = "• Read Sources/App/main.swift\n"
             await settle()
-            check(MGTestAnchors.frame("task-steps:smoke-task") != nil, "a running subagent's card shows its steps")
+            check(MGTestAnchors.frame("task-steps:smoke-task") != nil, "a running subagent's line shows its newest step")
+            check(MGTestAnchors.anchors.keys.contains { $0.hasPrefix("live-box:") && MGTestAnchors.frame($0) != nil },
+                  "a working run shows its live box")
+            // A long message: its preview and buttons; the run before it is no longer live, so it folds.
+            let long = ChatTurn(role: .user, text: String(repeating: "alpha bravo charlie delta\n", count: 400))
+            doc.transcript.append(long)
+            await settle()
+            check(MGTestAnchors.frame("message-more:\(long.id.uuidString)") != nil
+                  && MGTestAnchors.frame("message-open:\(long.id.uuidString)") != nil, "a long message shows Show more and Open")
+            check(MGTestAnchors.anchors.keys.contains { $0.hasPrefix("run-summary:") && MGTestAnchors.frame($0) != nil },
+                  "a finished run folds into its header")
         }
         // A session forked from its parent doesn't show the parent's to-do list, only its own.
         do {
@@ -305,8 +386,42 @@ extension SmokeTest {
             }
             let keptPanel = UserDefaults.standard.object(forKey: "sidebarPanel")
             UserDefaults.standard.set(SidebarPanel.chats.rawValue, forKey: "sidebarPanel")
-            say("holding for 60 s")
-            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            // A run to look at: 25 s live (its box: thinking, reads, an edit, a command running), then finished (folded
+            // into its header, the answer under it).
+            doc.transcript.append(ChatTurn(role: .user, text: "Fix the failing test"))
+            var d1 = ChatTurn(role: .assistant, text: "I'll look at the test and the code first.")
+            d1.reasoning = "The test says total_value is wrong. Read both files."
+            d1.thinkingSeconds = 3
+            d1.toolCalls = [ToolCall(id: "d-read", name: "read_file", arguments: #"{"path":"Sources/App/main.swift"}"#),
+                            ToolCall(id: "d-search", name: "search", arguments: #"{"pattern":"line3"}"#)]
+            var e1 = ChatTurn(role: .tool, text: "let line1 = 1", toolCallID: "d-read")
+            e1.toolStatus = "done"
+            e1.toolTitle = "Read Sources/App/main.swift"
+            var e2 = ChatTurn(role: .tool, text: "Sources/App/main.swift:3", toolCallID: "d-search")
+            e2.toolStatus = "done"
+            e2.toolTitle = "Search “line3”"
+            var d2 = ChatTurn(role: .assistant, text: "")
+            d2.toolCalls = [ToolCall(id: "d-edit", name: "edit_file", arguments: #"{"path":"Sources/App/main.swift"}"#)]
+            var e3 = ChatTurn(role: .tool, text: "", toolCallID: "d-edit")
+            e3.toolStatus = "done"
+            e3.toolTitle = "Edit Sources/App/main.swift"
+            e3.toolDetail = "@@ -3 +3,2 @@\n-let line3 = 3\n+let line3 = 30\n+let total = line3 * 2"
+            var d3 = ChatTurn(role: .assistant, text: "")
+            d3.toolCalls = [ToolCall(id: "d-run", name: "run_command", arguments: #"{"command":"swift test"}"#)]
+            var e4 = ChatTurn(role: .tool, text: "", toolCallID: "d-run")
+            e4.toolStatus = "running"
+            e4.toolTitle = "Run swift test"
+            e4.toolDetail = "swift test"
+            for x in [d1, e1, e2, d2, e3, d3, e4] { doc.transcript.append(x) }
+            doc.toolOutputs["d-run"] = "Building for debugging...\n"
+            say("holding for 60 s (live run for 25 s)")
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
+            doc.transcript.update(e4.id) {
+                $0.toolStatus = "done"
+                $0.text = "Test Suite 'All tests' passed"
+            }
+            doc.transcript.append(ChatTurn(role: .assistant, text: "The test passes now: `line3` was 3 where the test expects 30."))
+            try? await Task.sleep(nanoseconds: 35_000_000_000)
             if let keptPanel { UserDefaults.standard.set(keptPanel, forKey: "sidebarPanel") }
         }
         model.deleteChat(doc.id)

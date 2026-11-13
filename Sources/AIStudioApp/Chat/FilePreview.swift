@@ -180,6 +180,10 @@ struct TextPreview: View {
                 if let line {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     proxy.scrollTo(line, anchor: .center)
+                } else if let first = c.first?.id {
+                    // The start: a two-way scroll view whose content arrives late otherwise opened partway down.
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    proxy.scrollTo(first, anchor: .topLeading)
                 }
             }
         }

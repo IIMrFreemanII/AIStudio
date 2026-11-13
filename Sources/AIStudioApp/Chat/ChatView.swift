@@ -372,8 +372,10 @@ struct ChatTranscriptView: View {
                     let results = Dictionary(turns.compactMap { t in t.toolCallID.map { ($0, t) } },
                                              uniquingKeysWith: { _, last in last })
                     let runs = AgentRuns(shown, transcript: doc.transcript)
+                    let folding = RunFolding(open: doc.openRuns, results: results, streaming: doc.isStreaming,
+                                             asking: doc.permission?.call.id)
                     ForEach(TranscriptRow.rows(shown, live: doc.liveTurnID, files: doc.isCoding ? doc.fileIndex : nil,
-                                               bare: runs.bare)) { row in
+                                               bare: runs.bare, folding: folding)) { row in
                         ChatTurnView(doc: doc, turn: row.turn, results: results, part: row.part,
                                      run: runs.steps[row.turn.id], latest: runs.latest.contains(row.turn.id))
                             .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)
@@ -541,6 +543,16 @@ enum TurnPart {
     case segment(MarkdownSegment)
     /// A reply's tool calls, error and buttons.
     case tail
+    /// A folded run's last reply: its error and buttons (its calls are in the fold or pinned).
+    case foot
+    /// A run's folded work as one row ("✓ Worked 2 min · 12 actions"); opened, the timeline follows.
+    case runHeader(RunHeaderInfo)
+    /// A live run: its header and a small scrolling box of its steps.
+    case liveBox(LiveRunInfo)
+    /// A card that stays outside the fold (a question, a plan, a widget, a permission request).
+    case pinned(ToolCall)
+    /// An opened run's steps, on its timeline rail: a reply's thinking, its text, its tool calls.
+    case groupHead, groupProse, groupCalls
 }
 
 /// A row of the transcript's lazy list. A reply is several rows (its thinking, each run of its text, each code block
@@ -555,26 +567,78 @@ struct TranscriptRow: Identifiable {
     let gap: CGFloat
 
     /// `bare`: replies with nothing under them (mid-run, no tool calls, no error, no other versions): no tail row.
+    /// `folding`: runs with tool calls fold their work into one row (see `RunFolding`); nil: every piece is a row.
     @MainActor static func rows(_ turns: [ChatTurn], live: UUID?, files: ProjectFileIndex? = nil,
-                                bare: Set<UUID> = []) -> [TranscriptRow] {
+                                bare: Set<UUID> = [], folding: RunFolding? = nil) -> [TranscriptRow] {
         var out: [TranscriptRow] = []
-        for t in turns {
-            let first = out.isEmpty
-            var parts: [TurnPart] = []
-            if t.role == .assistant {
-                let isLive = live == t.id
-                if !(t.reasoning ?? "").isEmpty || (t.text.isEmpty && isLive) { parts.append(.head) }
-                if !t.text.isEmpty { parts += MarkdownSegments.of(t.text, files: files).map { .segment($0) } }
-                if !t.toolCalls.isEmpty || t.error != nil || (!isLive && !bare.contains(t.id)) { parts.append(.tail) }
-                if parts.isEmpty { parts = [.head] }
+        // A message's first row has the message's ID (what `scrollTo` and highlights use); its other rows a stable
+        // name (a position would change while a reply streams in and gains pieces, and the row would lose its state).
+        func emit(_ t: ChatTurn, _ p: TurnPart, _ name: String?, gap: CGFloat) {
+            let id = name.map { AnyHashable("\(t.id.uuidString)#\($0)") } ?? AnyHashable(t.id)
+            out.append(TranscriptRow(id: id, turn: t, part: p, gap: out.isEmpty ? 0 : gap))
+        }
+        func segments(_ t: ChatTurn) -> [(TurnPart, String)] {
+            MarkdownSegments.of(t.text, files: files).enumerated().map { (.segment($0.element), "s\($0.offset)") }
+        }
+        func reply(_ t: ChatTurn) {
+            let isLive = live == t.id
+            var parts: [(TurnPart, String)] = []
+            if !(t.reasoning ?? "").isEmpty || (t.text.isEmpty && isLive) { parts.append((.head, "head")) }
+            if !t.text.isEmpty { parts += segments(t) }
+            if !t.toolCalls.isEmpty || t.error != nil || (!isLive && !bare.contains(t.id)) { parts.append((.tail, "tail")) }
+            if parts.isEmpty { parts = [(.head, "head")] }
+            for (k, (p, name)) in parts.enumerated() {
+                emit(t, p, k == 0 ? nil : name, gap: k == 0 ? 18 : (p.isSegment && parts[k - 1].0.isSegment ? 10 : 8))
+            }
+        }
+        // A folded run: its header (or live box), its opened steps on the rail, the pinned cards, then its answer.
+        func folded(_ run: [ChatTurn], last: Bool, _ f: RunFolding) {
+            let key = RunFolding.key(run)
+            let isLive = f.isLive(run, last: last)
+            let open = f.open.contains(key)
+            let final = run[run.count - 1]
+            // The answer shows outside: a finished run's last reply; while live, the last reply while it's only text.
+            let finalOutside = !final.text.isEmpty && (!isLive || final.toolCalls.isEmpty)
+            let summary = RunSummary.of(run, results: f.results, live: isLive)
+            emit(run[0], isLive && !open
+                 ? .liveBox(LiveRunInfo(key: key, summary: summary, steps: run, lastTextOutside: finalOutside))
+                 : .runHeader(RunHeaderInfo(key: key, summary: summary, open: open)), nil, gap: 18)
+            if open {
+                for s in run {
+                    let waiting = isLive && s.id == final.id && s.text.isEmpty && s.toolCalls.isEmpty
+                    if !(s.reasoning ?? "").isEmpty || waiting { emit(s, .groupHead, "head", gap: 0) }
+                    if !s.text.isEmpty, !(s.id == final.id && finalOutside) { emit(s, .groupProse, "prose", gap: 0) }
+                    if s.toolCalls.contains(where: { !f.pinned($0) }) || (s.error != nil && s.id != final.id) {
+                        emit(s, .groupCalls, "calls", gap: 0)
+                    }
+                }
+            }
+            for s in run {
+                for call in s.toolCalls where f.pinned(call) { emit(s, .pinned(call), "pin:\(call.id)", gap: 10) }
+            }
+            if finalOutside {
+                let segs = segments(final)
+                for (k, (p, name)) in segs.enumerated() { emit(final, p, name, gap: k == 0 ? 12 : 10) }
+            }
+            if !isLive { emit(final, .foot, "tail", gap: 8) }
+        }
+
+        var i = 0
+        while i < turns.count {
+            guard turns[i].role == .assistant else {
+                emit(turns[i], .message, nil, gap: 18)
+                i += 1
+                continue
+            }
+            var j = i
+            while j < turns.count, turns[j].role == .assistant { j += 1 }
+            let run = Array(turns[i..<j])
+            if let folding, RunFolding.folds(run) {
+                folded(run, last: j == turns.count, folding)
             } else {
-                parts = [.message]
+                run.forEach(reply)
             }
-            for (k, p) in parts.enumerated() {
-                let gap: CGFloat = k == 0 ? (first ? 0 : 18) : (p.isSegment && parts[k - 1].isSegment ? 10 : 8)
-                out.append(TranscriptRow(id: k == 0 ? AnyHashable(t.id) : AnyHashable("\(t.id.uuidString)#\(k)"),
-                                         turn: t, part: p, gap: gap))
-            }
+            i = j
         }
         return out
     }
@@ -644,9 +708,7 @@ struct ChatTurnView: View {
                     }
                     HStack {
                         Spacer(minLength: 80)
-                        Text(turn.text)
-                            .font(.mgBody)
-                            .textSelection(.enabled)
+                        MessageBubbleText(doc: doc, turn: turn)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.selection))
@@ -687,13 +749,22 @@ struct ChatTurnView: View {
                 MGMenuItem.button("Fork from Here", enabled: !doc.isStreaming) { model.fork(doc, at: turn.id) }
             }
         case .assistant:
-            assistantPart
-                .mgContextMenu {
-                    MGMenuItem.button("Copy") { copy(turn.text) }
-                    MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
-                    MGMenuItem.button("Regenerate", enabled: !doc.isStreaming) { model.regenerate(doc, turn.id) }
-                    MGMenuItem.button("Fork from Here", enabled: !doc.isStreaming && !live) { model.fork(doc, at: turn.id) }
-                }
+            switch part {
+            case .runHeader(let info):
+                RunHeaderView(doc: doc, info: info)
+            case .liveBox(let info):
+                LiveRunBox(doc: doc, info: info, results: results)
+            case .pinned(let call):
+                card(call)
+            default:
+                assistantPart
+                    .mgContextMenu {
+                        MGMenuItem.button("Copy") { copy(turn.text) }
+                        MGMenuItem.button("Reply") { model.quote(doc, turn.text, from: turn) }
+                        MGMenuItem.button("Regenerate", enabled: !doc.isStreaming) { model.regenerate(doc, turn.id) }
+                        MGMenuItem.button("Fork from Here", enabled: !doc.isStreaming && !live) { model.fork(doc, at: turn.id) }
+                    }
+            }
         case .tool:
             EmptyView()  // never a row: a tool's result shows on its call's card in the reply
         }
@@ -706,7 +777,7 @@ struct ChatTurnView: View {
             VStack(alignment: .leading, spacing: 8) {
                 assistantHead
                 if !turn.text.isEmpty { MarkdownView(text: turn.text) }
-                assistantTail
+                assistantTail(calls: turn.toolCalls)
             }
         case .head:
             assistantHead
@@ -720,39 +791,83 @@ struct ChatTurnView: View {
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
         case .tail:
-            assistantTail
+            assistantTail(calls: turn.toolCalls)
+        case .foot:
+            assistantTail(calls: [])
+        case .groupHead:
+            Group {
+                if let r = turn.reasoning, !r.isEmpty {
+                    ThinkingDisclosure(doc: doc, turnID: turn.id, text: r, seconds: turn.thinkingSeconds,
+                                       live: live && turn.text.isEmpty)
+                } else {
+                    WaitingLine(doc: doc)
+                }
+            }
+            .runRail()
+        case .groupProse:
+            RunProse(doc: doc, turn: turn).runRail()
+        case .groupCalls:
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(turn.toolCalls.filter { !RunFolding.pinnedTools.contains($0.name) && $0.id != doc.permission?.call.id },
+                        id: \.id) { call in
+                    stepCard(call)
+                }
+                if let e = turn.error {
+                    Label(e, systemImage: "exclamationmark.triangle").font(.mgFootnote).foregroundStyle(MG.destructive)
+                }
+            }
+            .runRail()
+        case .runHeader, .liveBox, .pinned:
+            EmptyView()  // drawn in `body`
+        }
+    }
+
+    /// A call's card at full size (a reply's tail, a pinned card).
+    @ViewBuilder func card(_ call: ToolCall) -> some View {
+        let result = results[call.id]
+        Group {
+            switch call.name {
+            case "ask_user": QuestionCard(doc: doc, call: call, result: result)
+            case "exit_plan": PlanCard(doc: doc, call: call, result: result)
+            case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
+            case "todo_write": TodoUpdateRow(call: call)
+            case "propose_session": SessionProposalCard(doc: doc, call: call, result: result)
+            default: ToolCard(doc: doc, call: call, result: result)
+            }
+        }
+        .mgContextMenu {
+            MGMenuItem.button("Reply to This Result", enabled: result != nil) {
+                if let r = result { model.quote(doc, r.text.isEmpty ? (r.toolDetail ?? "") : r.text, from: r) }
+            }
+        }
+    }
+
+    /// A call as a step of a folded run: one line until opened.
+    @ViewBuilder func stepCard(_ call: ToolCall) -> some View {
+        let result = results[call.id]
+        Group {
+            if call.name == "todo_write" { TodoUpdateRow(call: call) }
+            else { ToolCard(doc: doc, call: call, result: result, compact: true) }
+        }
+        .mgContextMenu {
+            MGMenuItem.button("Reply to This Result", enabled: result != nil) {
+                if let r = result { model.quote(doc, r.text.isEmpty ? (r.toolDetail ?? "") : r.text, from: r) }
+            }
         }
     }
 
     @ViewBuilder var assistantHead: some View {
         if let r = turn.reasoning, !r.isEmpty {
-            ThinkingDisclosure(text: r, seconds: turn.thinkingSeconds, live: live && turn.text.isEmpty)
+            ThinkingDisclosure(doc: doc, turnID: turn.id, text: r, seconds: turn.thinkingSeconds, live: live && turn.text.isEmpty)
         } else if turn.text.isEmpty, turn.toolCalls.isEmpty, live {
             // (A message that is only tool calls isn't waiting for the model: its cards say what it waits for.)
             WaitingLine(doc: doc)
         }
     }
 
-    @ViewBuilder var assistantTail: some View {
+    @ViewBuilder func assistantTail(calls: [ToolCall]) -> some View {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(turn.toolCalls, id: \.id) { call in
-                    let result = results[call.id]
-                    Group {
-                        switch call.name {
-                        case "ask_user": QuestionCard(doc: doc, call: call, result: result)
-                        case "exit_plan": PlanCard(doc: doc, call: call, result: result)
-                        case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
-                        case "todo_write": TodoUpdateRow(call: call)
-                        case "propose_session": SessionProposalCard(doc: doc, call: call, result: result)
-                        default: ToolCard(doc: doc, call: call, result: result)
-                        }
-                    }
-                    .mgContextMenu {
-                        MGMenuItem.button("Reply to This Result", enabled: result != nil) {
-                            if let r = result { model.quote(doc, r.text.isEmpty ? (r.toolDetail ?? "") : r.text, from: r) }
-                        }
-                    }
-                }
+                ForEach(calls, id: \.id) { call in card(call) }
                 if let e = turn.error {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Label(e, systemImage: e == "Stopped" ? "stop.circle" : "exclamationmark.triangle")
@@ -948,26 +1063,36 @@ struct AttachmentStrip: View {
 
 /// "Thought for 12 s", collapsed once the answer starts; open while the model is still thinking.
 struct ThinkingDisclosure: View {
+    let doc: ChatDocument
+    /// The reply it belongs to (its open state is kept in the chat as `think:<id>`).
+    let turnID: UUID
     let text: String
     let seconds: Double?
     let live: Bool
-    @State private var open = false
+    /// In a live run's box: while thinking, the label only (the box is too small for the text).
+    var compact = false
+
+    var key: String { "think:\(turnID.uuidString)" }
 
     var body: some View {
+        let open = doc.openRuns.contains(key)
+        let showsLive = live && !compact
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeOut(duration: 0.15)) { open.toggle() }
+                withAnimation(.easeOut(duration: 0.15)) { doc.toggleOpen(key) }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
-                        .rotationEffect(.degrees(open || live ? 90 : 0))
-                    Image(systemName: "brain")
+                        .rotationEffect(.degrees(open || showsLive ? 90 : 0))
+                    if live && compact { MGSpinner().controlSize(.mini) } else { Image(systemName: "brain") }
                     Text(live ? "Thinking…" : seconds.map { "Thought for \(Self.duration($0))" } ?? "Thoughts")
                 }
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                .frame(height: 22)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if open || live {
+            if open || showsLive {
                 Text(live ? String(text.suffix(1200)) : text)
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                     .textSelection(.enabled)

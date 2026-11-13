@@ -173,6 +173,17 @@ final class ChatDocument: Identifiable {
     var filesRefreshing = false
     @ObservationIgnored var filesRefreshAgain = false
     var expandedFolders: Set<String> = []
+    /// What's opened in the transcript (in memory): a run's folded work (`run:<first reply>`), a long message
+    /// (`msg:<id>`), a step's text in a run (`prose:<id>`), a thinking block (`think:<id>`). Kept here, not in the
+    /// views, so lazily rebuilt rows don't forget it.
+    var openRuns: Set<String> = []
+    /// Tool cards opened or closed by hand, by call ID (absent: the card's default).
+    var toolOpen: [String: Bool] = [:]
+
+    /// Opens or closes an item of `openRuns`.
+    func toggleOpen(_ key: String) {
+        if openRuns.contains(key) { openRuns.remove(key) } else { openRuns.insert(key) }
+    }
     var fileFilter = ""
     /// The file previewed under the tree (relative to the project) and a line to show.
     var previewPath: String?
