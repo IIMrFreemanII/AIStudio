@@ -442,6 +442,8 @@ final class LLMCatalog {
             st.coldStart = known?.coldStart
             known = st
         }
+        // Cancel pressed: spinning "Cancelling the start" until the server confirms (not Cold before it has).
+        if pending[key] == .cancelling { known = LLMStatus(state: "starting", phase: "Cancelling the start") }
         guard var s = known else { return nil }
         if let peak = peakCost[key], s.costUSD.map({ $0 < peak }) ?? false { s.costUSD = peak }
         return s
