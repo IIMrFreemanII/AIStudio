@@ -105,6 +105,23 @@ struct PermissionTests {
         #expect(AllowRules.prefixes(of: "cd x && tail $(cat list)").isEmpty)
         #expect(!AllowRules(commandPrefixes: ["tail"]).allows(command: "tail x 2>&1 > log"))
     }
+
+    /// A project or skill under /tmp or /var (symlinks to /private/…) contains its own files, whichever spelling each
+    /// side uses, and whether or not the file exists yet.
+    @Test func containsUnderPrivateSymlinks() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("contains-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let real = dir.resolvingSymlinksInPath().path
+        let priv = real.hasPrefix("/private/") ? real : "/private" + real
+        let bare = String(priv.dropFirst("/private".count))
+        for folder in [priv, bare] {
+            for file in [priv + "/SKILL.md", bare + "/SKILL.md", priv + "/new/file.txt", priv, bare] {
+                #expect(ToolContext.contains(URL(fileURLWithPath: folder), URL(fileURLWithPath: file)), "\(folder) ∌ \(file)")
+            }
+            #expect(!ToolContext.contains(URL(fileURLWithPath: folder), URL(fileURLWithPath: priv + "-other/x")))
+        }
+    }
 }
 
 struct ToolTests {

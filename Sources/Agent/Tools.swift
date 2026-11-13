@@ -150,9 +150,20 @@ public final class ToolContext: @unchecked Sendable {
     public func canRead(_ url: URL) -> Bool { inProject(url) || readRoots.contains { Self.contains($0, url) } }
 
     static func contains(_ folder: URL, _ url: URL) -> Bool {
-        let f = folder.standardizedFileURL.resolvingSymlinksInPath().path
+        let f = canonicalPath(folder), p = canonicalPath(url)
         let r = f.hasSuffix("/") ? f : f + "/"
-        return url.path == f || url.path.hasPrefix(r)
+        return p == f || p.hasPrefix(r)
+    }
+
+    /// Both sides of a comparison in one form: symlinks resolved, and `/private/tmp`, `/private/var`, `/private/etc`
+    /// written as `/tmp`… (resolvingSymlinksInPath drops `/private` only for paths that exist, so a new file's path
+    /// would otherwise keep it while its folder's loses it).
+    static func canonicalPath(_ url: URL) -> String {
+        var p = url.standardizedFileURL.resolvingSymlinksInPath().path
+        for top in ["/tmp", "/var", "/etc"] where p == "/private" + top || p.hasPrefix("/private" + top + "/") {
+            p.removeFirst("/private".count)
+        }
+        return p
     }
 
     /// The path as shown: relative to the project when inside it.
