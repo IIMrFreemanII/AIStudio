@@ -509,6 +509,15 @@ struct QuoteBlock: View {
     var onTap: (() -> Void)? = nil
     var onRemove: (() -> Void)? = nil
 
+    /// The two lines shown: the start of a message, but the end of terminal output (where the prompt and the error are).
+    private var shown: String {
+        guard quote.source == "terminal output" else { return quote.text }
+        let lines = quote.text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let tail = Array(lines.reversed().drop { $0.isEmpty }.prefix(2).reversed())
+        return (lines.count > tail.count ? "…" : "") + tail.joined(separator: "\n")
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1).fill(MG.accent).frame(width: 2)
@@ -516,7 +525,7 @@ struct QuoteBlock: View {
                 Label("Replying to \(quote.source ?? (quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply"))",
                       systemImage: "arrowshape.turn.up.left")
                     .font(.mgFootnote.weight(.medium)).foregroundStyle(MG.secondaryLabel)
-                Text(quote.text).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(2).truncationMode(.tail)
+                Text(shown).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(2).truncationMode(.tail)
             }
             Spacer(minLength: 0)
             if let onRemove {

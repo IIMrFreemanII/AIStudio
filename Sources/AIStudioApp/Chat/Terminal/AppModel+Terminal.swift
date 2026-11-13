@@ -52,10 +52,10 @@ extension AppModel {
         }
     }
 
-    /// The selection, or else the last lines, as a quote above the composer ("Replying to terminal output"). A quote
+    /// The selection, or else the last lines (without the prompt waiting under them), as a quote above the composer ("Replying to terminal output"). A quote
     /// keeps about 2,000 characters, so a long piece keeps its end (where the error usually is).
     func addTerminalToChat(_ doc: ChatDocument, _ session: TerminalSession) {
-        var text = session.selection() ?? session.text(lastLines: 100)
+        var text = session.selection() ?? TerminalSession.withoutTrailingPrompt(session.text(lastLines: 100))
         let room = ChatQuote.maxLength - 2
         if text.count > room { text = "…" + String(text.suffix(room)) }
         quote(doc, text, from: nil, source: "terminal output")
