@@ -513,7 +513,7 @@ struct QuoteBlock: View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1).fill(MG.accent).frame(width: 2)
             VStack(alignment: .leading, spacing: 2) {
-                Label("Replying to \(quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply")",
+                Label("Replying to \(quote.source ?? (quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply"))",
                       systemImage: "arrowshape.turn.up.left")
                     .font(.mgFootnote.weight(.medium)).foregroundStyle(MG.secondaryLabel)
                 Text(quote.text).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(2).truncationMode(.tail)
@@ -1435,6 +1435,7 @@ struct ChatComposer: View {
         .frame(maxWidth: .infinity)
         .onAppear { if inFront { focused = true } }
         .onChange(of: inFront) { _, on in if on { focused = true } }
+        .onChange(of: doc.composerFocusRequest) { focused = true }
     }
 
     /// The skills for a "/" draft, or the project files for an "@word" being typed at the end (coding chats).

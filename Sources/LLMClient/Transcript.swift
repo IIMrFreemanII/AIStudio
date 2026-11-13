@@ -34,9 +34,12 @@ public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
     public var turnID: UUID?
     public var role: ChatTurn.Role
     public var text: String
-    public init(turnID: UUID?, role: ChatTurn.Role, text: String) {
+    /// Where it came from when it isn't a message ("terminal output"); nil: the turn's role says.
+    public var source: String?
+    public init(turnID: UUID?, role: ChatTurn.Role, text: String, source: String? = nil) {
         self.turnID = turnID
         self.role = role
+        self.source = source
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         self.text = t.count > Self.maxLength ? String(t.prefix(Self.maxLength - 1)) + "…" : t
     }

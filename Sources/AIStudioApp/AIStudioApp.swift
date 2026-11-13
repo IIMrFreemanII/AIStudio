@@ -256,7 +256,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         model.saveChat(doc)
                     }
                 }
-                model.chats.forEach { $0.jobs.stopAll() }
+                model.chats.forEach {
+                    $0.jobs.stopAll()
+                    model.closeTerminals($0)
+                }
             }
             AppDelegate.model?.saveSession()
         }
@@ -478,6 +481,11 @@ struct AppCommands: Commands {
                 if let chat = model.activeChat { model.toggleSidePanel(chat, .web) }
             }
             .keyboardShortcut("b", modifiers: [.command, .shift])
+            .disabled(model.activeChat?.isCoding != true)
+            Button("Terminal") {
+                if let chat = model.activeChat { model.toggleTerminal(chat) }
+            }
+            .keyboardShortcut("`", modifiers: .control)
             .disabled(model.activeChat?.isCoding != true)
             Divider()
             Picker("Appearance", selection: $appearance) {
