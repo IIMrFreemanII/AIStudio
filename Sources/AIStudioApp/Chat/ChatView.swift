@@ -1,3 +1,4 @@
+import AIStudioLibrary
 import Agent
 import AppKit
 import LLMClient
@@ -133,6 +134,7 @@ struct ChatHeader: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     modelMenu
+                    if doc.isCoding { Rectangle().fill(MG.separator).frame(width: 1, height: 16) }
                     CodingHeaderItems(doc: doc)
                     Spacer(minLength: 8)
                     cost
@@ -192,6 +194,8 @@ struct ChatHeader: View {
                     // The live status (as the chip shows it): the polled one can still say cold while a reply waits
                     // for a GPU, and then the menu offered only Start.
                     let live = engineStatus(key)
+                    // The state in the chip's words, so the menu reads as the header and the sidebar do.
+                    if let chip { MGMenuItem.header(chip.label(chip.status?.state ?? "cold")) }
                     if let failure = llm.actionErrors[key] { MGMenuItem.header(failure) }
                     if let busy = llm.busyLabel(key), llm.pending[key] != .starting {
                         MGMenuItem.button(busy, icon: "power", enabled: false) {}
@@ -277,16 +281,7 @@ struct EngineChip: View {
 
     func row(_ s: String, now: Date) -> some View {
         HStack(spacing: 6) {
-            switch s {
-            case "starting", "loading", "stopping":
-                MGSpinner().controlSize(.mini)
-            case "ready":
-                Circle().fill(MG.success).frame(width: 7, height: 7)
-            case "failed":
-                Circle().fill(MG.destructive).frame(width: 7, height: 7)
-            default:
-                Circle().fill(MG.tertiaryLabel).frame(width: 7, height: 7)
-            }
+            MGStateDot(kind: MGStateDot.engine(s))
             Text(label(s, now: now)).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1).monospacedDigit()
             if s == "loading", let p = status?.progress {
                 MGProgress(value: p).frame(width: 60, height: 4)
@@ -402,7 +397,7 @@ struct ChatTranscriptView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 18)
-                .frame(maxWidth: 860)
+                .frame(maxWidth: 808)
                 .frame(maxWidth: .infinity)
             }
             .mgScrollIndicators(position: $position)
@@ -804,7 +799,7 @@ struct ChatTurnView: View {
         case .segment(let segment):
             Group {
                 switch segment {
-                case .prose(let a): Text(a).font(.mgBody).fixedSize(horizontal: false, vertical: true)
+                case .prose(let a): Text(a).font(.mgBody).lineSpacing(MarkdownView.proseSpacing).fixedSize(horizontal: false, vertical: true)
                 case .block(let block): MarkdownBlockView(block: block)
                 }
             }
@@ -889,17 +884,12 @@ struct ChatTurnView: View {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(calls, id: \.id) { call in card(call) }
                 if let e = turn.error {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Label(e, systemImage: e == "Stopped" ? "stop.circle" : "exclamationmark.triangle")
-                            .font(.mgFootnote).foregroundStyle(e == "Stopped" ? MG.secondaryLabel : MG.destructive)
-                            .fixedSize(horizontal: false, vertical: true)
+                    if e == "Stopped" {
+                        Label(e, systemImage: "stop.circle").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                    } else {
                         // The last reply failed (a network or model error): the same request once more.
-                        if e != "Stopped", !live, !doc.isStreaming, doc.transcript.turns.last?.id == turn.id {
-                            Button("Try Again") { model.regenerate(doc, turn.id) }
-                                .buttonStyle(.mg(.bordered)).controlSize(.small)
-                                .mgHelp("Send the same request again (this reply stays as a branch)")
-                                .mgTestAnchor("try-again")
-                        }
+                        ReplyErrorCard(doc: doc, turn: turn, error: e,
+                                       retry: !live && !doc.isStreaming && doc.transcript.turns.last?.id == turn.id)
                     }
                 }
                 if !live, model.canAdoptPlan(doc, turn) { AdoptPlanBar(doc: doc, turn: turn) }
@@ -1227,7 +1217,7 @@ struct StatsLine: View {
         if !compact, let w = stats.waitSeconds, w > 5 { parts.append(String(format: "waited %.0f s", w)) }
         if let c = stats.costUSD, c > 0 { parts.append(String(format: "$%.4f", c)) }
         if let e = effort { parts.append("effort \(EffortLevels.label(e).lowercased())") }
-        return Text(parts.joined(separator: " · ")).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+        return Text(parts.joined(separator: " · ")).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
     }
 
     /// One request's figures in full, for a tooltip.
@@ -1282,7 +1272,7 @@ struct RunStatsLine: View {
             StatsLine(stats: s, model: steps.first(where: { $0.stats != nil })?.model, effort: effort, compact: true)
                 .mgHelp(StatsLine.detail(s))
         } else if !stats.isEmpty {
-            Text(summary(stats)).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+            Text(summary(stats)).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 .mgHelp(stats.enumerated().map { "\($0.offset + 1). " + StatsLine.detail($0.element) }.joined(separator: "\n"))
                 .mgTestAnchor("run-stats")
         }
@@ -1451,7 +1441,7 @@ struct ChatComposer: View {
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
-        .frame(maxWidth: 860)
+        .frame(maxWidth: 808)
         .frame(maxWidth: .infinity)
         .onAppear { if inFront { focused = true } }
         .onChange(of: inFront) { _, on in if on { focused = true } }
@@ -1581,7 +1571,7 @@ struct ColdModelHint: View {
             Label("GPU off: your message starts it" + (typical.map { " (usually ~\(ColdStartRecord.duration($0 >= 60 ? ($0 / 60).rounded() * 60 : $0)))" }
                                                        ?? " (a few minutes for big models)"),
                   systemImage: "moon.zzz")
-                .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel).lineLimit(1)
+                .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 .mgHelp("The model shuts its GPU down a few minutes after the last message, so nothing is billed while idle. "
                         + "Start it now from the model menu to have it ready.")
                 .mgTestAnchor("cold-hint")
@@ -1668,7 +1658,7 @@ struct ComposerSuggestionList: View {
                 .buttonStyle(.plain)
             }
             Text("↑↓ to move · ↩ or ⇥ to choose · esc to close")
-                .font(.mg(size: 10.5)).foregroundStyle(MG.tertiaryLabel)
+                .font(.mg(size: 10.5)).foregroundStyle(MG.secondaryLabel)
                 .padding(.horizontal, 10).padding(.vertical, 4)
         }
         .padding(3)
@@ -1776,5 +1766,61 @@ struct MGFlowLayout: Layout {
             rows[rows.count - 1] = r
         }
         return rows
+    }
+}
+
+/// A failed reply: what happened in one line, the server's words behind Details, and the ways out (Try Again; Compact
+/// when the chat outgrew the model's context).
+struct ReplyErrorCard: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+    let turn: ChatTurn
+    let error: String
+    let retry: Bool
+    @State private var details = false
+
+    var body: some View {
+        let summary = ReplyError.summary(error)
+        let context = error.lowercased().contains("context length")
+        VStack(alignment: .leading, spacing: 8) {
+            Label(summary ?? error, systemImage: "exclamationmark.triangle")
+                .font(.mgCallout.weight(.semibold)).foregroundStyle(MG.destructive)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if summary != nil {
+                Button { withAnimation(.easeOut(duration: 0.15)) { details.toggle() } } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                            .rotationEffect(.degrees(details ? 90 : 0))
+                        Text("Details")
+                    }
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .mgTestAnchor("error-details")
+                if details {
+                    Text(error).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+            }
+            if retry {
+                HStack(spacing: 8) {
+                    Button("Try Again") { model.regenerate(doc, turn.id) }
+                        .buttonStyle(.mg(context ? .bordered : .prominent)).controlSize(.small)
+                        .mgHelp("Send the same request again (this reply stays as a branch)")
+                        .mgTestAnchor("try-again")
+                    if context {
+                        Button("Compact") { model.compact(doc) }
+                            .buttonStyle(.mg(.bordered)).controlSize(.small)
+                            .disabled(doc.compacting)
+                            .mgHelp("Summarize the conversation so far to make room, then send your message again")
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.destructive.opacity(0.08)))
+        .mgTestAnchor("reply-error")
     }
 }

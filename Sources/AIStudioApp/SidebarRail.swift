@@ -39,80 +39,50 @@ enum SidebarPanel: String, CaseIterable, Identifiable {
     }
 }
 
-/// The collapsed sidebar: a narrow column of panel icons; clicking one opens the sidebar on that panel.
+/// The app's left edge: a slim column with an icon per panel (the queue's count on its own), the same look as a coding
+/// chat's right-edge rail. Clicking a panel opens the sidebar on it; clicking the one that's open hides the sidebar,
+/// and the rail stays, so every panel is a click away.
 struct SidebarRail: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: SidebarPanel
     @Binding var open: Bool
 
+    static let width: CGFloat = 44
+
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 2) {
             ForEach(SidebarPanel.allCases) { p in
-                Button {
+                SidebarRailItem(panel: p, selected: open && selection == p,
+                                badge: p == .queue ? model.pendingCount + (model.isRunning ? 1 : 0) : 0) {
                     if open && selection == p { open = false } else { selection = p; open = true }
-                } label: {
-                    // Icon with a small caption, so the rail reads without hovering.
-                    VStack(spacing: 2) {
-                        Image(systemName: p.symbol)
-                            .font(.system(size: 15))
-                            .frame(height: 20)
-                        Text(p.caption).font(.mg(size: 9)).lineLimit(1).fixedSize()
-                    }
-                        .frame(width: 54, height: 42)
-                        .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
-                            .fill(open && selection == p ? MG.selection : .clear))
-                        .foregroundStyle(open && selection == p ? MG.accent : MG.secondaryLabel)
-                        .contentShape(Rectangle())
-                        .overlay(alignment: .topTrailing) {
-                            if p == .queue, model.pendingCount + (model.isRunning ? 1 : 0) > 0 {
-                                Text("\(model.pendingCount + (model.isRunning ? 1 : 0))")
-                                    .font(.mg(size: 9, weight: .bold)).foregroundStyle(MG.accentForeground)
-                                    .padding(.horizontal, 4).background(Capsule().fill(MG.warning))
-                                    .offset(x: -8, y: 1)
-                            }
-                        }
                 }
-                .buttonStyle(.plain)
-                .mgHelp(p.title)
             }
-            Spacer()
+            Spacer(minLength: 8)
         }
-        .padding(.vertical, 10)
-        .frame(width: 60)
+        .padding(.vertical, 8)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity)
         .mgChrome(MG.sidebarTint)
-        .overlay(alignment: .trailing) { MGDivider(vertical: true) }
+        .mgTestAnchor("sidebar-rail")
     }
 }
 
-/// The sidebar, as in Claude: the panels' icons along the top (the shown one highlighted) and the panel under them.
-/// The title bar's sidebar button (⌃⌘S) collapses it to the icon rail.
+/// The open sidebar: the chosen panel (the rail beside it switches panels).
 struct AppSidebar: View {
-    @Environment(AppModel.self) private var model
-    @Binding var selection: SidebarPanel
-    @Binding var open: Bool
+    let selection: SidebarPanel
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 2) {
-                ForEach(SidebarPanel.allCases) { p in
-                    SidebarIconTab(panel: p, selected: p == selection,
-                                   badge: p == .queue ? model.pendingCount + (model.isRunning ? 1 : 0) : 0) {
-                        selection = p
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 40)
-            MGDivider()
+        VStack(spacing: 0) {  // the anchor on a stack, not on the panel's switch (it would leave with the old panel)
             SidebarPanelView(panel: selection)
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .mgTestAnchor("app-sidebar")
     }
 }
 
-/// One panel's icon in the sidebar's top row.
-private struct SidebarIconTab: View {
+/// One panel's icon on the rail: 30pt, the shown one in the accent on an accent tint with a 2pt bar on the edge
+/// facing the panel (as SidePanelRailItem).
+private struct SidebarRailItem: View {
     let panel: SidebarPanel
     let selected: Bool
     let badge: Int
@@ -122,19 +92,23 @@ private struct SidebarIconTab: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: panel.symbol)
-                .font(.system(size: 13.5, weight: selected ? .semibold : .regular))
+                .font(.system(size: 13.5, weight: .medium))
                 .foregroundStyle(selected ? MG.accent : hover ? MG.label : MG.secondaryLabel)
-                .frame(width: 30, height: 28)
-                .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
-                    .fill(selected ? MG.selection : hover ? MG.hover : .clear))
+                .frame(width: 30, height: 30)
+                .background(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
+                    .fill(selected ? MG.accent.opacity(0.15) : hover ? MG.hover : .clear))
                 .overlay(alignment: .topTrailing) {
                     if badge > 0 {
                         Text("\(badge)")
                             .font(.mg(size: 8.5, weight: .bold)).foregroundStyle(MG.accentForeground)
                             .padding(.horizontal, 3.5).frame(minHeight: 12)
                             .background(Capsule().fill(MG.warning))
-                            .offset(x: 3, y: -2)
+                            .offset(x: 4, y: -3)
                     }
+                }
+                .frame(width: SidebarRail.width, height: 34)
+                .overlay(alignment: .trailing) {
+                    if selected { Capsule().fill(MG.accent).frame(width: 2, height: 18) }
                 }
                 .contentShape(Rectangle())
         }

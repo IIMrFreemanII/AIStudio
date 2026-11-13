@@ -12,7 +12,7 @@ struct ContentView: View {
     @State private var showPlot = false
     @AppStorage("sidebarPanel") private var panelRaw = SidebarPanel.workflows.rawValue
     @AppStorage("sidebarOpen") private var panelOpen = true
-    @AppStorage("sidebarWidth") private var sidebarWidth = 300.0
+    @AppStorage("sidebarWidth") private var sidebarWidth = 270.0
 
     var graphEditor: some View {
         GraphEditorView(doc: model.active)
@@ -36,15 +36,15 @@ struct ContentView: View {
             }
             HStack(spacing: 0) {
                 let panel = Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows }, set: { panelRaw = $0.rawValue })
+                SidebarRail(selection: panel, open: $panelOpen)
                 if panelOpen {
-                    AppSidebar(selection: panel, open: $panelOpen)
+                    MGDivider(vertical: true)
+                    AppSidebar(selection: panel.wrappedValue)
                         .frame(width: sidebarWidth)
                         .mgChrome(MG.sidebarTint)
                         .overlay(alignment: .trailing) {
-                            MGResizeHandle(width: $sidebarWidth, range: 270...460, trailingColumn: false).offset(x: 3)
+                            MGResizeHandle(width: $sidebarWidth, range: 240...420, trailingColumn: false).offset(x: 3)
                         }
-                } else {
-                    SidebarRail(selection: panel, open: $panelOpen)
                 }
                 MGDivider(vertical: true, gap: true)
                 VStack(spacing: 0) {

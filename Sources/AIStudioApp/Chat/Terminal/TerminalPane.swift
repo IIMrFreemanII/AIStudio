@@ -70,16 +70,11 @@ struct TerminalPane: View {
                     }
                 }
             } else {
-                VStack(spacing: 12) {
-                    MGEmptyState(symbol: "terminal", title: "No terminal",
-                                 message: "A shell in this chat's project folder.")
-                    Button("New Terminal") {
-                        model.newTerminal(doc)
-                        model.focusTerminal(doc)
-                    }
-                    .buttonStyle(.mg(.bordered))
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                MGEmptyState(symbol: "terminal", title: "No terminal", message: "A shell in this chat's project folder.",
+                             action: ("New Terminal", {
+                                 model.newTerminal(doc)
+                                 model.focusTerminal(doc)
+                             }), actionAnchor: "terminal-empty-new")
             }
         }
         .onAppear { model.focusTerminal(doc) }

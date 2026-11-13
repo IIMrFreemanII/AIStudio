@@ -38,7 +38,7 @@ struct RunSummaryLabel: View {
                     title.font(.mgCallout).foregroundStyle(MG.label)
                     if summary.actions > 0 {
                         Text("· \(summary.actions) \(summary.actions == 1 ? "action" : "actions")")
-                            .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                            .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                     }
                 }
                 if !summary.kinds.isEmpty || summary.failed > 0 {

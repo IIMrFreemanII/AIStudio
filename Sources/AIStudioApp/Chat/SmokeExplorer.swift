@@ -470,14 +470,18 @@ extension SmokeTest {
         await settle()
         check(MGTestAnchors.frame("attachment:notes.pdf") != nil, "the composer shows the PDF chip")
 
-        // The sidebar: the panels' icons along the top, the Sessions panel with the project's group and a one-line row.
+        // The sidebar: the rail of panel icons at the left edge, the Sessions panel with the project's group and a
+        // one-line row.
         let defaults = UserDefaults.standard
         let keptPanel = defaults.object(forKey: "sidebarPanel"), keptOpen = defaults.object(forKey: "sidebarOpen")
         defaults.set(SidebarPanel.chats.rawValue, forKey: "sidebarPanel")
         defaults.set(true, forKey: "sidebarOpen")
         await settle(0.6)
-        check(MGTestAnchors.frame("app-sidebar") != nil && MGTestAnchors.frame("sidebar-tab:queue") != nil
-              && MGTestAnchors.frame("new-session") != nil, "the sidebar shows the panels' icons and New session")
+        let sidebarParts = ["app-sidebar", "sidebar-rail", "sidebar-tab:queue", "new-session"].filter { MGTestAnchors.frame($0) == nil }
+        check(sidebarParts.isEmpty, "the sidebar shows the rail of panel icons and New session (missing: \(sidebarParts))")
+        if let rail = MGTestAnchors.frame("sidebar-rail"), let panel = MGTestAnchors.frame("app-sidebar") {
+            check(rail.maxX <= panel.minX + 1 && rail.width <= 45, "the rail is a slim column left of the panel (\(rail), \(panel))")
+        }
         check(MGTestAnchors.frame("session-group:project:\(repo.path)") != nil, "the session's project is a group")
         check(MGTestAnchors.frame("session-row:\(doc.id.uuidString)") != nil, "the session has its row")
         let now = Date()

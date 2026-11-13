@@ -18,7 +18,11 @@ struct PlansPane: View {
     @ViewBuilder private func list(_ all: [ChatPlan]) -> some View {
         if all.isEmpty {
             MGEmptyState(symbol: "list.bullet.clipboard", title: "No plans yet",
-                         message: "In Plan mode the agent explores the project and proposes a plan; it shows here and is saved with the chat.")
+                         message: "In Plan mode the agent explores the project and proposes a plan; it shows here and is saved with the chat.",
+                         action: doc.mode == .plan ? nil : ("Switch to Plan Mode", {
+                             doc.mode = .plan
+                             doc.composerFocusRequest += 1
+                         }), actionAnchor: "plans-empty-plan-mode")
         } else {
             let selected = all.first { $0.callID == doc.selectedPlan } ?? all[0]
             VSplitView {

@@ -40,9 +40,9 @@ struct SessionsPanel: View {
     var body: some View {
         let items = allItems()
         VStack(spacing: 0) {
+            PanelHeader(title: "Sessions") { EmptyView() }
             newSessionButton(items)
                 .padding(.horizontal, 10)
-                .padding(.top, 10)
                 .padding(.bottom, 8)
             MGSearchField(prompt: "Search sessions", text: $query)
                 .padding(.horizontal, 10)
@@ -330,7 +330,7 @@ struct SessionGroupHeader: View {
             Image(systemName: icon).font(.system(size: 11)).foregroundStyle(MG.secondaryLabel).frame(width: 14)
             Text(title).font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.secondaryLabel).lineLimit(1)
             if !open {
-                Text("\(count)").font(.mgFootnote).monospacedDigit().foregroundStyle(MG.tertiaryLabel)
+                Text("\(count)").font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
                 if working { MGSpinner().controlSize(.mini) }
             }
             Spacer(minLength: 4)
@@ -431,7 +431,7 @@ struct SessionRow: View {
                 if let d = item.date { Text(Self.ago(d)).monospacedDigit() }
             }
             .font(.mgFootnote)
-            .foregroundStyle(MG.tertiaryLabel)
+            .foregroundStyle(MG.secondaryLabel)
             .lineLimit(1)
         }
     }

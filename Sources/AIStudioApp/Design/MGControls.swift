@@ -385,6 +385,9 @@ struct MGEmptyState: View {
     let symbol: String
     let title: String
     var message: String? = nil
+    /// The way out of the empty state ("New Terminal"), right under its message rather than somewhere else in the pane.
+    var action: (title: String, run: () -> Void)? = nil
+    var actionAnchor: String? = nil
 
     var body: some View {
         VStack(spacing: 8) {
@@ -393,6 +396,12 @@ struct MGEmptyState: View {
             if let message {
                 Text(message).font(.mgCallout).foregroundStyle(MG.secondaryLabel).multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
+            }
+            if let action {
+                Button(action.title, action: action.run)
+                    .buttonStyle(.mg(.bordered))
+                    .padding(.top, 6)
+                    .mgTestAnchor(actionAnchor ?? "empty-action")
             }
         }
         .padding(24)

@@ -131,10 +131,10 @@ struct ToolCard: View {
             let clock = RunSummary.clock(ctx.date.timeIntervalSince(since))
             if isTask, let step = (doc.toolOutputs[call.id] ?? "").split(separator: "\n").last(where: { $0.hasPrefix("•") }) {
                 Text("\(clock) · \(step.dropFirst().trimmingCharacters(in: .whitespaces))")
-                    .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel).lineLimit(1).truncationMode(.tail)
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1).truncationMode(.tail)
                     .mgTestAnchor("task-steps:\(call.id)")
             } else {
-                Text(isTask ? "\(clock) · Thinking…" : clock).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                Text(isTask ? "\(clock) · Thinking…" : clock).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                     .monospacedDigit()
                     .mgTestAnchor(isTask ? "task-steps:\(call.id)" : "running:\(call.id)")
             }
@@ -198,7 +198,7 @@ struct ToolCard: View {
                     .frame(maxHeight: 220)
                     .mgScrollIndicators()
                 } else if status == "running" {
-                    Text("Thinking…").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                    Text("Thinking…").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 }
             }
             .mgTestAnchor("task-steps:\(call.id)")
@@ -469,9 +469,18 @@ struct CodingHeaderItems: View {
             .mgHelp(url.path + " — the agent works in this folder (click to show it in Finder)")
         }
         if let git = doc.git {
-            GitBranchMenu(doc: doc)
-            // The pane's footer shows the PR while it's open.
-            if let pr = git.pr, !(model.sidePanelShown(doc) && doc.sidePanel == .changes) { PRPill(pr: pr) }
+            // The project in one group: branch / PR (the pane's footer shows the PR while Changes is open).
+            HStack(spacing: 2) {
+                GitBranchMenu(doc: doc, kind: .plain)
+                if let pr = git.pr, !(model.sidePanelShown(doc) && doc.sidePanel == .changes) {
+                    Text("/").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                    PRPill(pr: pr, kind: .plain)
+                }
+            }
+            .padding(.horizontal, 4)
+            .frame(height: 24)
+            .background(Capsule().fill(MG.fill))
+            .mgTestAnchor("header-project")
         }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {
@@ -662,7 +671,7 @@ struct QuestionCard: View {
                         if let h = q.header, !h.isEmpty {
                             Text(h.uppercased()).font(.mgFootnote.weight(.semibold)).foregroundStyle(MG.accent)
                         }
-                        if q.multiSelect { Text("Pick any").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel) }
+                        if q.multiSelect { Text("Pick any").font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
                     }
                     Text(q.question).font(.mgCallout.weight(.medium)).fixedSize(horizontal: false, vertical: true)
                     ForEach(q.options, id: \.self) { o in
@@ -891,7 +900,7 @@ struct RewindCard: View {
             } else {
                 Text("Loading…").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
             }
-            Text("Changes made by commands aren't undone.").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+            Text("Changes made by commands aren't undone.").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
             HStack(spacing: 8) {
                 Button("Rewind Files and Chat") { model.rewind(doc, files: true, chat: true) }
                     .buttonStyle(.mg(.prominent)).keyboardShortcut(.defaultAction)

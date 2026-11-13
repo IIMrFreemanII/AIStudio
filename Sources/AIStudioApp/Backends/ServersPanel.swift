@@ -156,36 +156,68 @@ struct StatusDot: View {
     let status: ConnectionStore.Status
     var body: some View {
         switch status {
-        case .checking: MGSpinner().controlSize(.mini)
-        case .online, .gpuOnline:
-            Circle().fill(MG.success).frame(width: 7, height: 7).mgHelp("Online").accessibilityLabel("Online")
-        case .offline: Circle().fill(MG.destructive).frame(width: 7, height: 7).mgHelp("Offline").accessibilityLabel("Offline")
-        case .unknown: Circle().fill(MG.tertiaryLabel).frame(width: 7, height: 7).mgHelp("Not checked")
-            .accessibilityLabel("Not checked")
+        case .checking: MGStateDot(kind: .busy).mgHelp("Checking…")
+        case .online, .gpuOnline: MGStateDot(kind: .ready).mgHelp("Online")
+        case .offline: MGStateDot(kind: .failed).mgHelp("Offline")
+        case .unknown: MGStateDot(kind: .idle).mgHelp("Not checked")
         }
     }
 }
 
-/// A GPU server's tasks: which models are installed, on which GPU, at what price.
+/// A GPU server's tasks: one line ("4 functions · L40S–H100 · from $1.95/h"); its disclosure lists which are installed,
+/// on which GPU, at what price, and how the server bills.
 struct GPUTasksSummary: View {
     let info: GPUServerInfo
+    @State private var open = false
+
+    var tasks: [GPUServerInfo.Task] { info.tasks.filter { $0.gpu != "CPU" } }
+
+    /// "4 functions · L40S–H100 · from $1.95/h"
+    var summary: String {
+        let gpus = Array(Set(tasks.map(\.gpu))).sorted { GPUTasksSummary.rank($0) < GPUTasksSummary.rank($1) }
+        var parts = ["\(tasks.count) function" + (tasks.count == 1 ? "" : "s")]
+        if let lo = gpus.first { parts.append(gpus.count > 1 ? "\(lo)–\(gpus.last!)" : lo) }
+        if let p = tasks.compactMap(\.pricePerSecond).min() { parts.append(String(format: "from $%.2f/h", p * 3600)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Cheaper GPUs first.
+    static func rank(_ gpu: String) -> Int {
+        ["T4", "L4", "A10G", "L40S", "A100", "H100", "H200", "B200"].firstIndex { gpu.contains($0) } ?? 50
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ForEach(info.tasks.filter { $0.gpu != "CPU" }) { t in
-                HStack(spacing: 4) {
-                    Image(systemName: t.installed ? "checkmark" : "arrow.down.circle")
-                        .foregroundStyle(t.installed ? MG.success : MG.secondaryLabel)
-                        .mgHelp(t.installed ? "Installed" : "Not downloaded on the server yet")
-                    Text(t.title).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(t.gpu + (t.pricePerSecond.map { String(format: " · $%.2f/h", $0 * 3600) } ?? ""))
-                        .foregroundStyle(MG.secondaryLabel)
+            Button { withAnimation(.easeOut(duration: 0.15)) { open.toggle() } } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(open ? 90 : 0))
+                    Text(summary).fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading)
                 }
+                .foregroundStyle(MG.secondaryLabel)
+                .contentShape(Rectangle())
             }
-            Text(info.runner == "modal" ? "Modal: billed per second, idle after \(info.idleSeconds ?? 120) s"
-                 : "GPU box (\(info.runner))")
-                .foregroundStyle(MG.tertiaryLabel)
+            .buttonStyle(.plain)
+            .mgHelp(open ? "Hide the functions" : "Show the functions, their GPUs and prices")
+            .mgTestAnchor("gpu-functions")
+            if open {
+                ForEach(tasks) { t in
+                    HStack(spacing: 4) {
+                        Image(systemName: t.installed ? "checkmark" : "arrow.down.circle")
+                            .foregroundStyle(t.installed ? MG.success : MG.secondaryLabel)
+                            .mgHelp(t.installed ? "Installed" : "Not downloaded on the server yet")
+                        Text(t.title).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(t.gpu + (t.pricePerSecond.map { String(format: " · $%.2f/h", $0 * 3600) } ?? ""))
+                            .foregroundStyle(MG.secondaryLabel)
+                    }
+                    .padding(.leading, 12)
+                }
+                Text(info.runner == "modal" ? "Modal: billed per second, idle after \(info.idleSeconds ?? 120) s"
+                     : "GPU box (\(info.runner))")
+                    .foregroundStyle(MG.secondaryLabel)
+                    .padding(.leading, 12)
+            }
         }
         .font(.mgFootnote)
     }
