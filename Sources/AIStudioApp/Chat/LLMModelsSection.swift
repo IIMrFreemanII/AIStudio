@@ -112,7 +112,7 @@ struct LLMModelRow: View {
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 if let busy {
                     HStack(spacing: 5) {
-                        MGSpinner().controlSize(.mini)
+                        MGStateDot(kind: .busy)
                         Text(busy).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                     }
                 } else {

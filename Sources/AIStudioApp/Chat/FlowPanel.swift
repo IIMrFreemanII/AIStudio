@@ -47,17 +47,16 @@ struct FlowPanel: View {
     }
 
     @ViewBuilder private func header(_ r: FlowRun) -> some View {
+        // One line at the panes' header height: name · status · time.
         HStack(spacing: 8) {
             FlowStatusGlyph(status: r.status)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(r.meta.name).font(.mgHeadline).lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(r.status == .running ? "Running" : r.status.rawValue.capitalized)
-                        .foregroundStyle(FlowFormat.tint(r.status))
-                    FlowClock(run: r).foregroundStyle(MG.secondaryLabel)
-                }
-                .font(.mgFootnote)
+            Text(r.meta.name).font(.mgHeadline).lineLimit(1).layoutPriority(1)
+            HStack(spacing: 6) {
+                Text(r.status == .running ? "Running" : r.status.rawValue.capitalized)
+                    .foregroundStyle(FlowFormat.tint(r.status))
+                FlowClock(run: r).foregroundStyle(MG.secondaryLabel)
             }
+            .font(.mgFootnote).lineLimit(1)
             Spacer(minLength: 0)
             if r.status == .running && !run.readOnly {
                 Button("Stop") { run.stop() }.buttonStyle(.mg(.bordered))
@@ -69,7 +68,7 @@ struct FlowPanel: View {
                 .mgTestAnchor("flow-close")
         }
         .padding(.horizontal, 12)
-        .frame(height: 48)
+        .frame(height: 38)
     }
 
     @ViewBuilder private func footer(_ r: FlowRun) -> some View {

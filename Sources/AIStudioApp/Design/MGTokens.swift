@@ -16,7 +16,7 @@ enum MGColor {
     /// Primary text, on every surface.
     static let label = MGColor.dynamic("mg-color-label", light: (0.0000, 0.0000, 0.0000, 0.8510), dark: (1.0000, 1.0000, 1.0000, 0.8784))
     /// Secondary text: details, values, captions, placeholders.
-    static let secondaryLabel = MGColor.dynamic("mg-color-secondary-label", light: (0.0000, 0.0000, 0.0000, 0.5216), dark: (1.0000, 1.0000, 1.0000, 0.5490))
+    static let secondaryLabel = MGColor.dynamic("mg-color-secondary-label", light: (0.0000, 0.0000, 0.0000, 0.5490), dark: (1.0000, 1.0000, 1.0000, 0.5490))
     /// Tertiary text: disabled labels, column captions.
     static let tertiaryLabel = MGColor.dynamic("mg-color-tertiary-label", light: (0.0000, 0.0000, 0.0000, 0.2784), dark: (1.0000, 1.0000, 1.0000, 0.2784))
     /// Empty-field placeholder text.

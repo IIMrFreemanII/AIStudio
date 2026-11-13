@@ -31,12 +31,14 @@ enum GitUI {
 struct GitBranchMenu: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
+    /// `.plain` inside the chat header's project group (the group draws the capsule).
+    var kind: MGButtonKind = .bordered
 
     var body: some View {
         if let git = doc.git {
             let s = git.status
             let ahead = s.upstream != nil ? s.ahead : git.aheadOfBase
-            MGMenuButton(kind: .bordered) {
+            MGMenuButton(kind: kind) {
                 MGMenuItem.button(doc.changesOpen ? "Hide Changes" : "Show Changes", icon: "doc.badge.ellipsis") {
                     model.toggleChanges(doc)
                 }
@@ -92,6 +94,8 @@ struct GitBranchMenu: View {
 /// A pull request's number and state (checks, merged, closed…); a click opens it.
 struct PRPill: View {
     let pr: PRInfo
+    /// `.plain` inside the chat header's project group.
+    var kind: MGButtonKind = .bordered
 
     var help: String {
         var s = pr.title
@@ -110,7 +114,7 @@ struct PRPill: View {
             }
             .font(.mgFootnote)
         }
-        .buttonStyle(.mg(.bordered))
+        .buttonStyle(.mg(kind))
         .mgHelp(help)
     }
 

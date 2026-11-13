@@ -9,6 +9,9 @@ import SwiftUI
 /// of views, each laid out, measured and given its own selection overlay, which made opening and
 /// scrolling a long chat slow. As one text, a selection also spans paragraphs. Parsed replies are cached by text.
 struct MarkdownView: View {
+    /// Extra space between a paragraph's lines: 13pt mono reads at about 1.5 line height.
+    static let proseSpacing: CGFloat = 3
+
     let text: String
     @Environment(\.chatFiles) private var files
 
@@ -18,7 +21,7 @@ struct MarkdownView: View {
             ForEach(segments.indices, id: \.self) { i in
                 switch segments[i] {
                 case .prose(let a):
-                    Text(a).font(.mgBody).fixedSize(horizontal: false, vertical: true)
+                    Text(a).font(.mgBody).lineSpacing(Self.proseSpacing).fixedSize(horizontal: false, vertical: true)
                 case .block(let block):
                     MarkdownBlockView(block: block)
                 }
@@ -271,37 +274,42 @@ struct CodeBlockView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 4) {
                 Text(language.isEmpty ? "code" : language).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 Spacer()
-                if closed, let runCommand, let commands = ShellBlock.commands(language: language, code: code) {
-                    Button {
-                        runCommand(commands)
-                        sent = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { sent = false }
-                    } label: {
-                        Label(sent ? "Sent" : "Run", systemImage: sent ? "checkmark" : "play").font(.mgFootnote)
-                    }
-                    .buttonStyle(.mg(.borderless))
-                    .mgHelp("Run in this chat's terminal")
-                    .mgTestAnchor("code-run:" + (commands.components(separatedBy: "\n").first ?? ""))
-                }
+                // Copy and Reply as icons with tooltips; a suggested command's Run is the one labelled action.
                 Button {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
                 } label: {
-                    Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
-                        .font(.mgFootnote)
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .foregroundStyle(copied ? MG.success : MG.secondaryLabel)
                 }
-                .buttonStyle(.mg(.borderless))
+                .buttonStyle(.mg(.icon)).controlSize(.small)
+                .mgHelp(copied ? "Copied" : "Copy")
+                .accessibilityLabel(copied ? "Copied" : "Copy")
                 if ChatQuoting.active {
                     Button { ChatQuoting.post(code) } label: {
-                        Label("Reply", systemImage: "arrowshape.turn.up.left").font(.mgFootnote)
+                        Image(systemName: "arrowshape.turn.up.left").foregroundStyle(MG.secondaryLabel)
                     }
-                    .buttonStyle(.mg(.borderless))
+                    .buttonStyle(.mg(.icon)).controlSize(.small)
                     .mgHelp("Reply to this code")
+                    .accessibilityLabel("Reply")
+                }
+                if closed, let runCommand, let commands = ShellBlock.commands(language: language, code: code) {
+                    Button {
+                        runCommand(commands)
+                        sent = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { sent = false }
+                    } label: {
+                        Label(sent ? "Sent" : "Run", systemImage: sent ? "checkmark" : "play.fill").font(.mgFootnote.weight(.semibold))
+                    }
+                    .buttonStyle(.mg(.prominent)).controlSize(.small)
+                    .padding(.leading, 4)
+                    .mgHelp("Run in this chat's terminal")
+                    .mgTestAnchor("code-run:" + (commands.components(separatedBy: "\n").first ?? ""))
                 }
             }
             .padding(.horizontal, 10)
