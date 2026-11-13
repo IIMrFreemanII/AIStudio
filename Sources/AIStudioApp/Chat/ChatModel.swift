@@ -10,7 +10,7 @@ import Observation
 /// An open chat tab: the saved transcript plus what only exists while it's open (the draft, the reply streaming in).
 /// A coding chat's right-hand panel.
 enum SidePanel: String, CaseIterable, Identifiable {
-    case files, changes, plans, web, terminal
+    case files, changes, plans, web, terminal, flow
 
     var id: String { rawValue }
     var title: String {
@@ -20,6 +20,7 @@ enum SidePanel: String, CaseIterable, Identifiable {
         case .plans: "Plans"
         case .web: "Browser"
         case .terminal: "Terminal"
+        case .flow: "Flow"
         }
     }
     var symbol: String {
@@ -29,6 +30,18 @@ enum SidePanel: String, CaseIterable, Identifiable {
         case .plans: "list.bullet.clipboard"
         case .web: "globe"
         case .terminal: "terminal"
+        case .flow: "point.3.connected.trianglepath.dotted"
+        }
+    }
+    /// The menu shortcut that shows it (none for a flow's run).
+    var shortcut: String? {
+        switch self {
+        case .files: "⇧⌘E"
+        case .changes: "⇧⌘D"
+        case .plans: "⇧⌘P"
+        case .web: "⇧⌘B"
+        case .terminal: "⌃`"
+        case .flow: nil
         }
     }
 }
@@ -133,8 +146,11 @@ final class ChatDocument: Identifiable {
     var pendingFlowEvents: [FlowEvent] = []
     /// The run a `flow` tool call started, by call id (in memory; the tool's result text names the run too).
     var flowRunByCall: [String: String] = [:]
-    /// The run shown in the flow panel (nil: closed).
+    /// The run open in the side panel's Flow pane (nil: none, and the rail has no Flow item). Whether it's on screen
+    /// is `sidePanel == .flow`: switching to another pane keeps the run, to come back to.
     var flowPanelRunID: String?
+    /// The pane shown before a run's Flow pane took over: where Close Run goes back to.
+    var tabBeforeFlow: SidePanel?
 
     // MARK: git
 
@@ -155,7 +171,10 @@ final class ChatDocument: Identifiable {
     var prSheet: PRDraft?
     /// The side panel's tab, kept while the panel is closed (Files until another is picked).
     var sideTab: SidePanel {
-        get { transcript.sidePanel.flatMap(SidePanel.init(rawValue:)) ?? .files }
+        get {
+            let tab = transcript.sidePanel.flatMap(SidePanel.init(rawValue:)) ?? .files
+            return tab == .flow && flowPanelRunID == nil ? .files : tab  // the run isn't kept with the chat
+        }
         set { transcript.sidePanel = newValue.rawValue }
     }
     /// The right-hand panel of a coding chat: shown (on its tab) unless the user closed it; nil: closed. Saved with

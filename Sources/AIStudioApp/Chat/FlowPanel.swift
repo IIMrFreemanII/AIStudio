@@ -62,9 +62,11 @@ struct FlowPanel: View {
             if r.status == .running && !run.readOnly {
                 Button("Stop") { run.stop() }.buttonStyle(.mg(.bordered))
             }
-            Button { doc.flowPanelRunID = nil } label: { Image(systemName: "xmark") }
+            Button { model.closeFlowPanel(doc) } label: { Image(systemName: "xmark") }
                 .buttonStyle(.mg(.icon))
-                .mgHelp("Close")
+                .mgHelp("Close Run: take it off the side panel (it goes on running)")
+                .accessibilityLabel("Close Run")
+                .mgTestAnchor("flow-close")
         }
         .padding(.horizontal, 12)
         .frame(height: 48)

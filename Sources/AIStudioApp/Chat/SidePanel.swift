@@ -4,25 +4,14 @@ import AppKit
 import LLMClient
 import SwiftUI
 
-/// A coding chat's right-hand panel: the project's files, the git changes, the agent's plans; a tab each.
+/// A coding chat's right-hand panel: the pane the rail picked (files, changes, plans, browser, terminal, or a flow's
+/// run). Each pane's own top row is its header; the rail (`SidePanelRail`) switches panes.
 struct CodingSidePanel: View {
     @Environment(AppModel.self) private var model
     @Bindable var doc: ChatDocument
 
     var body: some View {
-        let counts: [SidePanel: Int] = [.changes: doc.git?.status.files.count ?? 0, .plans: doc.transcript.plans.count]
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                SidePanelTabs(selection: doc.sidePanel ?? doc.sideTab, counts: counts) { model.showSidePanel(doc, $0) }
-                Spacer(minLength: 4)
-                Button { model.showSidePanel(doc, nil) } label: { Image(systemName: "sidebar.right") }.accessibilityLabel("Hide the Side Panel")
-                    .buttonStyle(.mg(.icon))
-                    .mgHelp("Hide the side panel (⌥⌘S)")
-                    .padding(.bottom, 4)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 38, alignment: .bottom)
-            MGDivider()
+        VStack(spacing: 0) {  // not a Group: its modifiers would go on each pane, and the anchor leave with the old one
             switch doc.sidePanel {
             case .files: FilesPane(doc: doc)
             case .changes: GitChangesPane(doc: doc)
@@ -32,102 +21,206 @@ struct CodingSidePanel: View {
                 if let page = doc.webPage { WebPane(doc: doc, page: page) } else {
                     Color.clear.onAppear { _ = model.webPage(doc) }
                 }
+            case .flow:
+                if let id = doc.flowPanelRunID, let run = model.flowController(id) { FlowPanel(doc: doc, run: run) } else {
+                    Color.clear
+                }
             case nil: Color.clear
             }
         }
+        .frame(maxHeight: .infinity)
         .background(MG.windowBackground)
         .mgTestAnchor("side-panel")
     }
 }
 
-/// The side panel's tabs: an icon, a name and a count each; the shown one in full colour over an accent underline
-/// that slides between tabs.
-struct SidePanelTabs: View {
-    let selection: SidePanel
-    let counts: [SidePanel: Int]
-    let select: (SidePanel) -> Void
-    @Namespace private var underline
+/// Each side pane's width, kept as JSON in one setting (`[pane: points]`). Until resized, a pane gets its default
+/// (Changes and Flow start from the widths the single panel and the flow panel had).
+enum SidePanelWidths {
+    static let range: ClosedRange<Double> = 300...1000
 
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            tabs(titles: true)
-            tabs(titles: false)
+    static func defaultWidth(_ pane: SidePanel) -> Double {
+        let d = UserDefaults.standard
+        switch pane {
+        case .files: return 340
+        case .changes: return d.object(forKey: "changesWidth") as? Double ?? 440
+        case .plans: return 420
+        case .web: return 560
+        case .terminal: return 520
+        case .flow: return d.object(forKey: "flowPanelWidth") as? Double ?? 460
         }
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: selection)
     }
 
-    func tabs(titles: Bool) -> some View {
-        HStack(alignment: .bottom, spacing: 2) {
-            ForEach(SidePanel.allCases) { tab in
-                SidePanelTab(tab: tab, count: counts[tab] ?? 0, selected: tab == selection, titles: titles,
-                             underline: underline) { select(tab) }
-            }
-        }
+    static func decode(_ json: String) -> [String: Double] {
+        (try? JSONDecoder().decode([String: Double].self, from: Data(json.utf8))) ?? [:]
+    }
+
+    static func width(_ json: String, _ pane: SidePanel) -> Double {
+        min(max(decode(json)[pane.rawValue] ?? defaultWidth(pane), range.lowerBound), range.upperBound)
+    }
+
+    /// The pane's width, read from and written to the setting.
+    static func binding(_ json: Binding<String>, _ pane: SidePanel) -> Binding<Double> {
+        Binding(get: { width(json.wrappedValue, pane) }, set: { w in
+            var all = decode(json.wrappedValue)
+            all[pane.rawValue] = w.rounded()
+            json.wrappedValue = (try? JSONEncoder().encode(all)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        })
     }
 }
 
-private struct SidePanelTab: View {
-    let tab: SidePanel
-    let count: Int
-    let selected: Bool
-    let titles: Bool
-    let underline: Namespace.ID
-    let action: () -> Void
-    @State private var hover = false
-
-    var shortcut: String {
-        switch tab {
-        case .files: "⇧⌘E"
-        case .changes: "⇧⌘D"
-        case .plans: "⇧⌘P"
-        case .web: "⇧⌘B"
-        case .terminal: "⌃`"
-        }
-    }
+/// A pane's header row when the pane has no toolbar of its own to be it: a title (and count), actions on the right.
+struct SidePaneHeader<Actions: View>: View {
+    let title: String
+    var count = 0
+    @ViewBuilder var actions: Actions
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: tab.symbol)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(selected ? MG.accent : MG.secondaryLabel)
-                if titles {
-                    Text(tab.title)
-                        .font(.mgCallout.weight(selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? MG.label : MG.secondaryLabel)
-                }
+                Text(title).font(.mgHeadline)
                 if count > 0 {
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                    Text("\(count)").font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+                }
+                Spacer(minLength: 4)
+                actions
+            }
+            .buttonStyle(.mg(.icon))
+            .padding(.leading, 12).padding(.trailing, 8)
+            .frame(height: 38)
+            MGDivider()
+        }
+    }
+}
+
+extension SidePaneHeader where Actions == EmptyView {
+    init(title: String, count: Int = 0) {
+        self.init(title: title, count: count) { EmptyView() }
+    }
+}
+
+/// A coding chat's right edge: an icon per pane (with its count or a dot), a flow run's item while one is open, and
+/// show/hide at the bottom. On screen with the panel hidden too, so every pane is one click away; clicking the pane
+/// that's shown hides the panel.
+struct SidePanelRail: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+
+    static let width: CGFloat = 40
+
+    var body: some View {
+        let shown = model.sidePanelShown(doc)
+        VStack(spacing: 2) {
+            ForEach(SidePanel.allCases.filter { $0 != .flow }) { tab in
+                item(tab, shown: shown)
+            }
+            if let id = doc.flowPanelRunID {
+                MGDivider().frame(width: 20).padding(.vertical, 4)
+                item(.flow, shown: shown, run: model.flowController(id)?.run)
+            }
+            Spacer(minLength: 8)
+            Button { model.toggleSidePanel(doc) } label: {
+                Image(systemName: "sidebar.right").foregroundStyle(shown ? MG.accent : MG.secondaryLabel)
+            }
+            .buttonStyle(.mg(.icon))
+            .mgHelp(shown ? "Hide the side panel (⌥⌘S)" : "Show the side panel (⌥⌘S)")
+            .accessibilityLabel(shown ? "Hide the Side Panel" : "Show the Side Panel")
+            .mgTestAnchor("side-panel-toggle")
+        }
+        .padding(.vertical, 8)
+        .frame(width: Self.width)
+        .frame(maxHeight: .infinity)
+        .background(MG.windowBackground)
+        .mgTestAnchor("side-rail")
+    }
+
+    private func item(_ tab: SidePanel, shown: Bool, run: FlowRun? = nil) -> some View {
+        SidePanelRailItem(tab: tab, badge: badge(tab), flowStatus: run?.status, runName: run?.meta.name,
+                          selected: shown && doc.sidePanel == tab) { model.toggleSidePanel(doc, tab) }
+    }
+
+    private func badge(_ tab: SidePanel) -> SidePanelRailItem.Badge {
+        switch tab {
+        case .changes: .count(doc.git?.status.files.count ?? 0)
+        case .plans: .count(doc.transcript.plans.count)
+        case .terminal: doc.terminals.count >= 2 ? .count(doc.terminals.count) : .none
+        case .web: doc.webPage?.loading == true ? .dot : .none
+        case .files, .flow: .none
+        }
+    }
+}
+
+private struct SidePanelRailItem: View {
+    enum Badge { case none, dot, count(Int) }
+
+    let tab: SidePanel
+    let badge: Badge
+    var flowStatus: FlowStatus?
+    var runName: String?
+    let selected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        // A button, not a tap gesture: it takes the click that brings the window forward, and the keyboard's press.
+        Button(action: action) { face }
+            .buttonStyle(.plain)
+            .onHover { hover = $0 }
+            .mgHelp(help)
+            .mgTestAnchor("side-tab:\(tab.rawValue)")
+            .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityLabel(label)
+    }
+
+    private var face: some View {
+        ZStack(alignment: .topTrailing) {
+            Group {
+                if let flowStatus {
+                    FlowStatusGlyph(status: flowStatus).font(.system(size: 13))
+                } else {
+                    Image(systemName: tab.symbol)
+                        .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(selected ? MG.accent : MG.secondaryLabel)
-                        .padding(.horizontal, 5)
-                        .frame(minWidth: 17, minHeight: 16)
-                        .background(Capsule().fill(selected ? MG.accent.opacity(0.15) : MG.fill))
                 }
             }
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 9)
-            .frame(height: 26)
+            .frame(width: 30, height: 30)
             .background(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
-                .fill(hover && !selected ? MG.hover : .clear))
-            .padding(.bottom, 4)
-            ZStack {
-                Rectangle().fill(.clear)
-                if selected {
-                    Capsule().fill(MG.accent).matchedGeometryEffect(id: "underline", in: underline)
-                }
-            }
-            .frame(height: 2)
-            .padding(.horizontal, 6)
+                .fill(selected ? MG.accent.opacity(0.15) : hover ? MG.hover : .clear))
+            badgeView.offset(x: 5, y: -2)
+        }
+        .frame(width: SidePanelRail.width, height: 34)
+        .overlay(alignment: .leading) {
+            if selected { Capsule().fill(MG.accent).frame(width: 2, height: 18) }  // the edge facing the panel
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: action)
-        .onHover { hover = $0 }
-        .mgHelp("\(tab.title) (\(shortcut))")
-        .mgTestAnchor("side-tab:\(tab.rawValue)")
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityLabel(count > 0 ? "\(tab.title), \(count)" : tab.title)
+    }
+
+    @ViewBuilder private var badgeView: some View {
+        switch badge {
+        case .none: EmptyView()
+        case .dot: Circle().fill(MG.accent).frame(width: 6, height: 6).offset(x: -4, y: 4)
+        case .count(let n):
+            if n > 0 {
+                Text(n > 99 ? "99+" : "\(n)")
+                    .font(.system(size: 9, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(selected ? MG.accent : MG.secondaryLabel)
+                    .padding(.horizontal, 4)
+                    .frame(minWidth: 15, minHeight: 14)
+                    .background(Capsule().fill(selected ? MG.accent.opacity(0.18) : MG.fill))
+                    .background(Capsule().fill(MG.windowBackground))
+                    .fixedSize()
+            }
+        }
+    }
+
+    private var help: String {
+        if tab == .flow { return "Flow" + (runName.map { ": \($0)" } ?? "") }
+        return tab.shortcut.map { "\(tab.title) (\($0))" } ?? tab.title
+    }
+
+    private var label: String {
+        if case .count(let n) = badge, n > 0 { return "\(tab.title), \(n)" }
+        return tab.title
     }
 }
 
@@ -145,6 +238,22 @@ struct FilesPane: View {
     @AppStorage("filesTreeHeight") private var treeHeight = 200.0
 
     var body: some View {
+        VStack(spacing: 0) {
+            SidePaneHeader(title: "Files") {
+                Button { model.refreshProjectFiles(doc) } label: {
+                    if doc.filesRefreshing { MGSpinner().controlSize(.mini) } else { Image(systemName: "arrow.clockwise") }
+                }
+                .mgHelp("List the files again")
+                .accessibilityLabel("Refresh")
+                Button { doc.expandedFolders = [] } label: { Image(systemName: "rectangle.compress.vertical") }.accessibilityLabel("Collapse All Folders")
+                    .mgHelp("Collapse all folders")
+            }
+            panes
+        }
+        .task(id: doc.id) { if doc.fileTree == nil { model.refreshProjectFiles(doc) } }
+    }
+
+    private var panes: some View {
         // Not a VSplitView: one whose second pane comes and goes keeps the first pane's height, so a preview opened
         // under a tall tree got a sliver.
         GeometryReader { geo in
@@ -161,7 +270,6 @@ struct FilesPane: View {
                 }
             }
         }
-        .task(id: doc.id) { if doc.fileTree == nil { model.refreshProjectFiles(doc) } }
     }
 
     private var previewURL: URL? {
@@ -171,18 +279,8 @@ struct FilesPane: View {
 
     @ViewBuilder var tree: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                MGSearchField(prompt: "Filter files", text: $doc.fileFilter)
-                Button { model.refreshProjectFiles(doc) } label: {
-                    if doc.filesRefreshing { MGSpinner().controlSize(.mini) } else { Image(systemName: "arrow.clockwise") }
-                }
-                .buttonStyle(.mg(.icon))
-                .mgHelp("List the files again")
-                Button { doc.expandedFolders = [] } label: { Image(systemName: "rectangle.compress.vertical") }.accessibilityLabel("Collapse All Folders")
-                    .buttonStyle(.mg(.icon))
-                    .mgHelp("Collapse all folders")
-            }
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            MGSearchField(prompt: "Filter files", text: $doc.fileFilter)
+                .padding(.horizontal, 10).padding(.vertical, 6)
             list
         }
     }

@@ -473,16 +473,6 @@ struct CodingHeaderItems: View {
             // The pane's footer shows the PR while it's open.
             if let pr = git.pr, !(model.sidePanelShown(doc) && doc.sidePanel == .changes) { PRPill(pr: pr) }
         }
-        if doc.isCoding {
-            let shown = model.sidePanelShown(doc)
-            Button { model.toggleSidePanel(doc) } label: {
-                Image(systemName: "sidebar.right").foregroundStyle(shown ? MG.accent : MG.label)
-            }
-            .buttonStyle(.mg(.bordered))
-            .mgHelp(shown ? "Hide the side panel" : "Show the side panel: files, changes, plans, browser and terminal (⌥⌘S)")
-            .accessibilityLabel(shown ? "Hide the Side Panel" : "Show the Side Panel")
-            .mgTestAnchor("side-panel-toggle")
-        }
         if !doc.runningJobs.isEmpty {
             MGMenuButton(kind: .bordered) {
                 MGMenuItem.header("Running in the background")

@@ -48,7 +48,7 @@ extension AppModel {
         guard doc.isCoding, let p = doc.plan else { return }
         savePlanFiles(doc)
         doc.selectedPlan = p.callID
-        if doc.flowPanelRunID == nil { showSidePanel(doc, .plans) }
+        if doc.sidePanel != .flow { showSidePanel(doc, .plans) }  // a run being watched keeps the panel
     }
 
     /// A Plan-mode reply that wrote its plan as text instead of calling `exit_plan` (small models do): whether it can be
@@ -82,7 +82,6 @@ extension AppModel {
 
     func showPlan(_ doc: ChatDocument, _ callID: String) {
         doc.selectedPlan = callID
-        doc.flowPanelRunID = nil
         showSidePanel(doc, .plans)
     }
 

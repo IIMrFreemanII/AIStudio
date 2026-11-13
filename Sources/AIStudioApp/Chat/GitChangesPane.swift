@@ -202,7 +202,7 @@ struct GitChangesPane: View {
             .accessibilityLabel("Refresh")
         }
         .padding(.horizontal, 12)
-        .frame(height: 36)
+        .frame(height: 38)
     }
 
     // MARK: files and diff
