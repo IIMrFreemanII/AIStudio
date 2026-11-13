@@ -233,6 +233,7 @@ extension SmokeTest {
         model.closeChat(doc.id)
 
         if fake {
+            ok = await checkActionGuards(model, key: key, say: say) && ok
             await llm.stop(key)
             if llm.status(key)?.state != "cold" { say("stop didn't stop it"); ok = false }
             model.deleteChat(doc.id)
@@ -247,6 +248,84 @@ extension SmokeTest {
 }
 
 extension SmokeTest {
+    /// Server actions run one at a time per model, show while they run, aren't undone by a poll asked before them, and
+    /// say when they fail. Leaves the model cold.
+    static func checkActionGuards(_ model: AppModel, key: LLMKey, say: (String) -> Void) async -> Bool {
+        let llm = model.llm
+        var ok = true
+        func expect(_ cond: Bool, _ what: String) {
+            say("\(cond ? "ok" : "FAILED"): \(what)")
+            if !cond { ok = false }
+        }
+        func quick(_ action: () async -> Void) async -> Bool {
+            let t0 = Date()
+            await action()
+            return Date().timeIntervalSince(t0) < 0.2
+        }
+        // Ready, from the replies. A poll asked now, answering after Stop, must not bring "ready" back.
+        await llm.refreshStatus(key)
+        if llm.status(key)?.state != "ready" {
+            await llm.warm(key)
+            for _ in 0..<100 where llm.status(key)?.state != "ready" {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                await llm.refreshStatus(key)
+            }
+        }
+        let asked = llm.askEpoch(key)
+        let stale = llm.status(key)
+        let stopping = Task { await llm.stop(key) }
+        await Task.yield()
+        expect(llm.pending[key] == .stopping && llm.busyLabel(key) == "Shutting Down…",
+               "Stop shows Shutting Down… while it runs (\(llm.pending[key].map { "\($0)" } ?? "none"))")
+        if let stale { llm.applyPolled(stale, for: key, epoch: asked) }
+        expect(llm.status(key)?.state != "ready", "a poll asked before Stop doesn't bring Ready back (\(llm.status(key)?.state ?? "?"))")
+        expect(await quick { await llm.stop(key) }, "a second Stop while stopping does nothing")
+        expect(await quick { await llm.warm(key) } && llm.pending[key] == .stopping, "Start while stopping does nothing")
+        await stopping.value
+        expect(llm.pending[key] == nil && llm.status(key)?.state == "cold",
+               "Stop ends cold and idle (\(llm.status(key)?.state ?? "?"))")
+
+        // Start: shows starting at once (before the server answers); a second Start does nothing; Stop cancels it.
+        let starting = Task { await llm.warm(key) }
+        await Task.yield()
+        expect(llm.pending[key] == .starting && llm.status(key)?.isStarting == true,
+               "Start shows starting before the server answers")
+        expect(await quick { await llm.warm(key) }, "a second Start while starting does nothing")
+        await starting.value
+        expect(llm.pending[key] == nil && llm.status(key)?.isActive == true,
+               "the Start ends with the server's state (\(llm.status(key)?.state ?? "?"))")
+        await llm.stop(key)
+        expect(llm.pending[key] == nil && llm.status(key)?.state == "cold", "Stop after the Start ends cold")
+
+        // A Stop the server never gets: the old state comes back, and the failure is shown.
+        let dead = ServerConnection(name: "Unreachable GPU", kind: .gpu, baseURL: "http://127.0.0.1:9")
+        model.connections.save(dead, token: "x")
+        let deadKey = LLMKey(serverID: dead.id, modelID: "m")
+        llm.statuses[deadKey] = LLMStatus(state: "ready")
+        await llm.stop(deadKey)
+        expect(llm.status(deadKey)?.state == "ready" && llm.actionErrors[deadKey]?.hasPrefix("Couldn't shut the GPU down") == true
+               && llm.pending[deadKey] == nil,
+               "a failed Stop puts the state back and says so (\(llm.actionErrors[deadKey] ?? "no message"))")
+
+        // Removing a server while it's being checked: its answer doesn't bring it back.
+        let check = Task { await model.connections.test(dead.id) }
+        await Task.yield()
+        model.connections.remove(dead.id)
+        llm.forget(server: dead.id)
+        await check.value
+        expect(model.connections.status[dead.id] == nil && llm.statuses[deadKey] == nil && llm.actionErrors[deadKey] == nil,
+               "a server removed while it's checked stays gone")
+
+        // Check every server: a second press while it runs does nothing.
+        let all = Task { await model.connections.refreshAll() }
+        await Task.yield()
+        expect(model.connections.refreshingAll, "Check every server shows it's running")
+        expect(await quick { await model.connections.refreshAll() }, "a second Check every server does nothing")
+        await all.value
+        expect(!model.connections.refreshingAll, "Check every server ends")
+        return ok
+    }
+
     /// `--smoke-agent <url>` (a server with `AISTUDIO_FAKE_LLM=1`): a coding chat in a fresh git repository. The fake
     /// model writes hello.txt, then runs `cat hello.txt`: the write is allowed once, the command "always"; the file and
     /// the reply are checked. Then plan mode: the same request is refused without asking, and nothing is written.
