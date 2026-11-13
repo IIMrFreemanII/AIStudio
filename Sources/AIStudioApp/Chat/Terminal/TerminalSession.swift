@@ -54,6 +54,7 @@ final class TerminalSession: Identifiable {
 
     /// Starts (or, after it exited, restarts) the shell as a login shell in the project folder.
     func start() {
+        resetModes()
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         env["COLORTERM"] = "truecolor"
@@ -66,6 +67,16 @@ final class TerminalSession: Identifiable {
         title = (shell as NSString).lastPathComponent
         running = true
         exitCode = nil
+    }
+
+    /// Before a (re)start: undo what a program that died mid-way may have left on (mouse reporting, which stops you
+    /// selecting text; the full-screen buffer; a hidden cursor; bracketed paste; app keypad), keeping the old text.
+    /// A soft reset (DECSTR) doesn't cover these.
+    private func resetModes() {
+        let terminal = view.getTerminal()
+        if terminal.isCurrentBufferAlternate { view.feed(text: "\u{1B}[?1049l") }
+        view.feed(text: "\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1005l\u{1B}[?1006l\u{1B}[?1015l"
+                      + "\u{1B}[?1004l\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1l\u{1B}>\u{1B}[0m")
     }
 
     /// Ends the shell and everything it started: SIGHUP to its process group (as closing a terminal window does),
@@ -106,6 +117,21 @@ final class TerminalSession: Identifiable {
         var lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
         while let l = lines.last, l.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
         return Self.withoutIcons(lines.suffix(max(1, n)).joined(separator: "\n"))
+    }
+
+    /// The text without the prompt waiting at its end, when that prompt can be told apart: the lines after the last
+    /// blank line (prompts such as Starship's and Powerlevel10k's start with one), at most 3, whose first line was
+    /// printed before (the same prompt, above the previous command, maybe with that command after it). Otherwise the text as it is.
+    nonisolated static func withoutTrailingPrompt(_ text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        while let l = lines.last, l.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        guard let blank = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }),
+              lines.count - blank - 1 <= 3, blank + 1 < lines.count else { return text }
+        let first = lines[blank + 1].trimmingCharacters(in: .whitespaces)
+        guard !first.isEmpty, lines[..<blank].contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix(first) }) else {
+            return text
+        }
+        return lines[..<blank].joined(separator: "\n")
     }
 
     /// The selected text, nil when nothing is selected.
@@ -154,8 +180,11 @@ final class TerminalSession: Identifiable {
             // SwiftTerm passes the raw wait status (130 << 8 for "exit 130"): the exit code, or 128 + the signal.
             let code = exitCode.map { s in (s & 0x7F) == 0 ? (s >> 8) & 0xFF : 128 + (s & 0x7F) }
             DispatchQueue.main.async { [weak self] in
-                self?.session?.running = false
-                self?.session?.exitCode = code
+                guard let session = self?.session else { return }
+                session.running = false
+                session.exitCode = code
+                // The title was the shell's last (often the "exit" it ran); name the tab after the shell again.
+                session.title = (TerminalSession.shell as NSString).lastPathComponent
             }
         }
     }

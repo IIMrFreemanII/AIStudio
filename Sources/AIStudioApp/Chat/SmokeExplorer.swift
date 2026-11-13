@@ -326,6 +326,22 @@ extension SmokeTest {
                 check(doc.replyTo?.source == "terminal output" && doc.replyTo?.text.contains("hello-42") == true,
                       "Add to Chat quotes the terminal's last lines")
                 doc.replyTo = nil
+                let prompt = "~/repo main\n❯"
+                let trimmed = TerminalSession.withoutTrailingPrompt("\n\(prompt) make\nerror: boom\n\n\(prompt)\n")
+                let kept = TerminalSession.withoutTrailingPrompt("$ make\nbuilding\n\nerror: boom\n$")
+                let oneLine = TerminalSession.withoutTrailingPrompt("$ ls\na b\n\n$ ")
+                check(trimmed.hasSuffix("error: boom") && kept.hasSuffix("error: boom\n$") && oneLine.hasSuffix("a b"),
+                      "Add to Chat leaves out the prompt under the output, only when it repeats an earlier one")
+                // A shell that exits with mouse reporting left on (a program that died mid-way): the tab is named
+                // after the shell again, and Restart turns mouse reporting off so you can select text.
+                t.send("printf '\\033[?1000h\\033[?1006h'; exit 3\r")
+                let exited = await wait(10) { !t.running }
+                check(exited && t.exitCode == 3 && t.title == (TerminalSession.shell as NSString).lastPathComponent,
+                      "an exited shell shows its code, and the tab its name (\(t.title), \(t.exitCode.map(String.init) ?? "-"))")
+                let mouseWasOn = t.view.getTerminal().mouseMode != .off
+                t.start()
+                check(mouseWasOn && t.view.getTerminal().mouseMode == .off && t.running,
+                      "Restart turns off what the old shell left on (mouse reporting)")
                 let pids = doc.terminals.map(\.pid)
                 model.closeTerminals(doc)
                 let ended = await wait(5) {
