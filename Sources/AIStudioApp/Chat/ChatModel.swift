@@ -368,6 +368,11 @@ struct LLMKey: Hashable, Codable {
     var modelID: String
 }
 
+/// A model action the user started that the server hasn't finished.
+enum LLMAction: Equatable {
+    case starting, stopping, cancelling, removing
+}
+
 /// The LLMs on the GPU servers: their listings and engine states, installs, and keeping a chat's model warm.
 ///
 /// Warmth: sessions that are working or waiting keep their model warm. While a chat tab is in front, the app is active and the user did something in the last 10 minutes, its
@@ -394,6 +399,13 @@ final class LLMCatalog {
     /// The highest "so far" cost seen in the model's current warm period.
     @ObservationIgnored private var peakCost: [LLMKey: Double] = [:]
     var refreshing: Set<String> = []
+    /// What the user asked a model's server to do and it hasn't finished: one at a time per model. Menus show it
+    /// greyed out ("Starting…"), and polls don't overwrite the status while it runs.
+    var pending: [LLMKey: LLMAction] = [:]
+    /// The last action that failed, per model, shown under its row and in the chat's model menu until the next one.
+    var actionErrors: [LLMKey: String] = [:]
+    /// Bumped by every action: a poll asked before it answers about the old state, so its answer is dropped.
+    @ObservationIgnored private var epoch: [LLMKey: Int] = [:]
     @ObservationIgnored let connections: ConnectionStore
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var ticks = 0
@@ -423,7 +435,14 @@ final class LLMCatalog {
     }
 
     func status(_ key: LLMKey) -> LLMStatus? {
-        guard var s = statuses[key] ?? model(key)?.status else { return nil }
+        var known = statuses[key] ?? model(key)?.status
+        // Start pressed, the server hasn't answered yet: show it starting (the chip spins, the menu offers Cancel).
+        if pending[key] == .starting, known?.isActive != true {
+            var st = LLMStatus(state: "starting", phase: "Asking the server for a GPU")
+            st.coldStart = known?.coldStart
+            known = st
+        }
+        guard var s = known else { return nil }
         if let peak = peakCost[key], s.costUSD.map({ $0 < peak }) ?? false { s.costUSD = peak }
         return s
     }
@@ -432,11 +451,15 @@ final class LLMCatalog {
         guard let client = client(serverID) else { return }
         refreshing.insert(serverID)
         defer { refreshing.remove(serverID) }
+        let asked = epoch
         do {
             let l = try await client.models()
             listings[serverID] = l
             errors[serverID] = nil
-            for m in l.models { if let s = m.status { statuses[LLMKey(serverID: serverID, modelID: m.id)] = s } }
+            for m in l.models {
+                let key = LLMKey(serverID: serverID, modelID: m.id)
+                if let s = m.status { applyPolled(s, for: key, epoch: asked[key] ?? 0) }
+            }
         } catch {
             errors[serverID] = error.localizedDescription
         }
@@ -447,19 +470,76 @@ final class LLMCatalog {
     }
 
     func refreshStatus(_ key: LLMKey) async {
-        guard let client = client(key.serverID), let s = try? await client.status(key.modelID) else { return }
+        guard let client = client(key.serverID) else { return }
+        let asked = askEpoch(key)
+        guard let s = try? await client.status(key.modelID) else { return }
+        applyPolled(s, for: key, epoch: asked)
+    }
+
+    /// The number a poll notes before asking (see `applyPolled`).
+    func askEpoch(_ key: LLMKey) -> Int { epoch[key] ?? 0 }
+
+    /// A poll's answer (listing, status, keepalive): kept unless an action started since it was asked, or is running.
+    func applyPolled(_ s: LLMStatus, for key: LLMKey, epoch asked: Int) {
+        guard pending[key] == nil, (epoch[key] ?? 0) == asked else { return }
         statuses[key] = s
     }
 
+    /// What the menus say while an action runs.
+    func busyLabel(_ key: LLMKey) -> String? {
+        switch pending[key] {
+        case .starting: "Starting…"
+        case .stopping: "Shutting Down…"
+        case .cancelling: "Cancelling the Start…"
+        case .removing: "Removing…"
+        case nil: nil
+        }
+    }
+
+    /// Marks an action as running; returns its number, for `finish`.
+    private func begin(_ action: LLMAction, _ key: LLMKey) -> Int {
+        let n = (epoch[key] ?? 0) + 1
+        epoch[key] = n
+        pending[key] = action
+        actionErrors[key] = nil
+        return n
+    }
+
+    /// Ends an action, unless another took over meanwhile (a Stop while the Start's request was out).
+    private func finish(_ n: Int, _ key: LLMKey) {
+        if epoch[key] == n { pending[key] = nil }
+    }
+
+    private func failed(_ key: LLMKey, _ what: String, _ error: Error) {
+        actionErrors[key] = "\(what): \(error.localizedDescription)"
+        errors[key.serverID] = error.localizedDescription
+    }
+
     func warm(_ key: LLMKey) async {
-        guard let client = client(key.serverID) else { return }
-        do { statuses[key] = try await client.warm(key.modelID) } catch { errors[key.serverID] = error.localizedDescription }
+        guard pending[key] == nil, let client = client(key.serverID) else { return }
+        let n = begin(.starting, key)
+        defer { finish(n, key) }
+        do {
+            let s = try await client.warm(key.modelID)
+            if epoch[key] == n {
+                statuses[key] = s
+            } else if s.isActive, pending[key] == .cancelling {
+                // Cancelled while this request was out, and the server got the Stop first: stop the start it began.
+                _ = try? await client.stop(key.modelID)
+            }
+        } catch {
+            if epoch[key] == n { failed(key, "Couldn't start", error) }
+        }
     }
 
     /// Stop: "stopping" at once (the GPU takes ~15–25 s to go), then the server's word every 2 s until it's gone.
+    /// Allowed while a Start's request is out (it cancels that start); otherwise one action at a time.
     func stop(_ key: LLMKey) async {
-        guard let client = client(key.serverID) else { return }
-        let before = status(key)
+        guard pending[key] == nil || pending[key] == .starting, let client = client(key.serverID) else { return }
+        let before = statuses[key] ?? model(key)?.status  // the server's word, not the pending Start's stand-in
+        let cancelling = before?.isStarting == true || pending[key] == .starting
+        let n = begin(cancelling && before?.state != "loading" ? .cancelling : .stopping, key)
+        defer { finish(n, key) }
         if var s = before, s.isActive {
             // Still waiting for a GPU: the server cancels that at once. Loading or ready: the container shuts down.
             s.state = s.state == "starting" ? "cold" : "stopping"
@@ -467,26 +547,45 @@ final class LLMCatalog {
             s.progress = nil
             statuses[key] = s
         }
-        guard let s = try? await client.stop(key.modelID) else {
+        let s: LLMStatus
+        do {
+            s = try await client.stop(key.modelID)
+        } catch {
             if let before { statuses[key] = before }  // the request failed: nothing is stopping
+            failed(key, "Couldn't shut the GPU down", error)
             return
         }
         statuses[key] = s
-        for _ in 0..<45 where status(key)?.isStopping == true {
+        // The action's own polls (a timer poll can't end it early): until the server stops saying stopping.
+        for _ in 0..<45 where statuses[key]?.isStopping == true {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            await refreshStatus(key)
+            if let s = try? await client.status(key.modelID) { statuses[key] = s }
         }
     }
 
     func remove(_ key: LLMKey) async {
-        guard let client = client(key.serverID) else { return }
+        guard pending[key] == nil, let client = client(key.serverID) else { return }
+        let n = begin(.removing, key)
         do {
             try await client.remove(key.modelID)
             statuses[key] = nil
         } catch {
-            errors[key.serverID] = error.localizedDescription
+            failed(key, "Couldn't remove it", error)
         }
+        finish(n, key)
         await refresh(key.serverID)
+    }
+
+    /// Forgets a server's models (it was removed from the list).
+    func forget(server id: String) {
+        listings[id] = nil
+        errors[id] = nil
+        for key in Set(statuses.keys).union(pending.keys).union(actionErrors.keys) where key.serverID == id {
+            statuses[key] = nil
+            pending[key] = nil
+            actionErrors[key] = nil
+            epoch[key] = (epoch[key] ?? 0) + 1
+        }
     }
 
     // MARK: warmth
@@ -517,9 +616,9 @@ final class LLMCatalog {
             let current = status(key)
             // Keepalive once a minute: for the chat in front while the user is around, for working sessions always.
             let wanted = busy.contains(key) || (key == focused && NSApp.isActive && Date().timeIntervalSince(lastActivity) < 600)
-            if ticks % 6 == 0, current?.isActive == true, wanted,
-               let client = client(key.serverID), let s = try? await client.keepalive(key.modelID) {
-                statuses[key] = s
+            if ticks % 6 == 0, current?.isActive == true, wanted, pending[key] == nil, let client = client(key.serverID) {
+                let asked = epoch[key] ?? 0
+                if let s = try? await client.keepalive(key.modelID) { applyPolled(s, for: key, epoch: asked) }
             }
         }
     }

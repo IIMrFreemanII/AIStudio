@@ -137,7 +137,9 @@ struct LibraryRow: View {
             MGMenuItem.button("Install on This Mac", enabled: item.source != nil) { lib.installOnMac(item.id) }
         }
         for s in model.connections.gpuServers {
-            if lib.serverState(item, s.id) == .installed {
+            if case .working(let line) = lib.serverState(item, s.id) {
+                MGMenuItem.button("\(s.name): \(line)…", enabled: false) {}  // one job at a time per server
+            } else if lib.serverState(item, s.id) == .installed {
                 MGMenuItem.button("Remove from \(s.name)") { lib.removeFromServer(item.id, s.id) }
             } else if item.kind == .model, let why = LinkLibrary.serverModelRefusal(item.family) {
                 MGMenuItem.button("Install on \(s.name) (\(why))", enabled: false) {}

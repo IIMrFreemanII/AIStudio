@@ -169,12 +169,17 @@ final class ConnectionStore {
             status[id] = .offline("No token saved")
             return
         }
+        if case .checking? = status[id] { return }  // already being checked
         status[id] = .checking
+        let result: Status
         do {
-            status[id] = try await Self.check(kind: c.kind, url: url, token: token)
+            result = try await Self.check(kind: c.kind, url: url, token: token)
         } catch {
-            status[id] = .offline(Self.describe(error))
+            result = .offline(Self.describe(error))
         }
+        // Removed (or edited: Save resets it) while this check was out: its answer is about a server that's gone.
+        guard connection(id) != nil, case .checking? = status[id] else { return }
+        status[id] = result
     }
 
     /// Asks a server for `/v1/info` (a GPU server answers from its front desk: no GPU starts).
@@ -189,8 +194,17 @@ final class ConnectionStore {
         }
     }
 
+    /// True while `refreshAll` runs (the Servers panel's refresh button spins and can't be pressed again).
+    var refreshingAll = false
+
+    /// Checks every server, all at once; a second call while one runs does nothing.
     func refreshAll() async {
-        for c in connections { await test(c.id) }
+        guard !refreshingAll else { return }
+        refreshingAll = true
+        defer { refreshingAll = false }
+        await withTaskGroup(of: Void.self) { group in
+            for c in connections { group.addTask { await self.test(c.id) } }
+        }
     }
 
     static func describe(_ error: Error) -> String {

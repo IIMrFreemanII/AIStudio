@@ -407,12 +407,14 @@ final class LinkLibrary {
         try? Library.update(id, models: models()) { $0.localFile = nil }
     }
 
+    /// Deletes the server's copy. Tracked like an install (one job per item and server): Install can't start during
+    /// it, and the server check doesn't overwrite "Removing".
     func removeFromServer(_ id: String, _ serverID: String) {
-        tasks["srv:\(id):\(serverID)"]?.cancel()
-        guard let item = item(id), let endpoint = RemoteEndpoints.resolve(serverID) else { return }
+        let key = "srv:\(id):\(serverID)"
+        guard tasks[key] == nil, let item = item(id), let endpoint = RemoteEndpoints.resolve(serverID) else { return }
         let client = GPUJobClient(baseURL: endpoint.baseURL, token: endpoint.token)
         setServer(id, serverID, .working("Removing"))
-        Task {
+        tasks[key] = Task {
             do {
                 if item.kind == .model {
                     try await client.deleteModel(family: item.family ?? "", id: item.id)
@@ -423,6 +425,7 @@ final class LinkLibrary {
             } catch {
                 setServer(id, serverID, .failed(String(describing: error)))
             }
+            tasks[key] = nil
         }
     }
 

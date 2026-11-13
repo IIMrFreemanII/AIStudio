@@ -184,7 +184,10 @@ struct ChatHeader: View {
                     // The live status (as the chip shows it): the polled one can still say cold while a reply waits
                     // for a GPU, and then the menu offered only Start.
                     let live = engineStatus(key)
-                    if live?.isStopping == true {
+                    if let failure = llm.actionErrors[key] { MGMenuItem.header(failure) }
+                    if let busy = llm.busyLabel(key), llm.pending[key] != .starting {
+                        MGMenuItem.button(busy, icon: "power", enabled: false) {}
+                    } else if live?.isStopping == true {
                         MGMenuItem.button("Shutting the GPU Down…", icon: "power", enabled: false) {}
                     } else if live?.isStarting == true {
                         MGMenuItem.button("Cancel the Start", icon: "xmark.circle") { Task { await llm.stop(key) } }

@@ -47,13 +47,18 @@ struct LLMModelsSection: View {
                 }
                 ForEach(llm.listings[s.id]?.models ?? []) { m in
                     let key = LLMKey(serverID: s.id, modelID: m.id)
-                    LLMModelRow(model: m, status: llm.status(key), server: llm.servers.count > 1 ? s.name : nil)
+                    LLMModelRow(model: m, status: llm.status(key), server: llm.servers.count > 1 ? s.name : nil,
+                                busy: llm.pending[key] == .removing ? "Removing…" : nil,
+                                failure: llm.actionErrors[key], dismissFailure: { llm.actionErrors[key] = nil })
                         .contentShape(Rectangle())
                         .onTapGesture { model.chat(with: key) }
                         .mgHelp("Chat with \(m.name)")
                         .mgContextMenu {
                             MGMenuItem.button("New Chat", icon: "square.and.pencil") { model.newChat(model: key) }
-                            if llm.status(key)?.isStopping == true {
+                            let idle = llm.pending[key] == nil
+                            if let busy = llm.busyLabel(key), llm.pending[key] != .starting {
+                                MGMenuItem.button(busy, icon: "power", enabled: false) {}
+                            } else if llm.status(key)?.isStopping == true {
                                 MGMenuItem.button("Shutting Down…", icon: "power", enabled: false) {}
                             } else if llm.status(key)?.isStarting == true {
                                 MGMenuItem.button("Cancel the Start", icon: "xmark.circle") { Task { await llm.stop(key) } }
@@ -62,11 +67,11 @@ struct LLMModelsSection: View {
                             } else {
                                 MGMenuItem.button("Start", icon: "play") { Task { await llm.warm(key) } }
                             }
-                            MGMenuItem.button("GPUs and Context…", icon: "slider.horizontal.3") {
+                            MGMenuItem.button("GPUs and Context…", icon: "slider.horizontal.3", enabled: idle) {
                                 model.llmSettingsRequest = LLMSettingsRequest(key: key)
                             }
                             MGMenuItem.divider
-                            MGMenuItem.button("Remove…", destructive: true) { confirmRemove(key, m) }
+                            MGMenuItem.button("Remove…", enabled: idle, destructive: true) { confirmRemove(key, m) }
                         }
                 }
             }
@@ -90,6 +95,11 @@ struct LLMModelRow: View {
     let model: LLMModel
     let status: LLMStatus?
     var server: String?
+    /// An action with no engine state of its own (Removing…), shown instead of the chip.
+    var busy: String? = nil
+    /// The last action that failed, with × to dismiss it.
+    var failure: String? = nil
+    var dismissFailure: () -> Void = {}
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -100,7 +110,24 @@ struct LLMModelRow: View {
                       model.source == "civitai" ? "Civitai" : nil, model.vision == true ? "vision" : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
-                EngineChip(status: status, model: model)
+                if let busy {
+                    HStack(spacing: 5) {
+                        MGSpinner().controlSize(.mini)
+                        Text(busy).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                    }
+                } else {
+                    EngineChip(status: status, model: model)
+                }
+                if let failure {
+                    HStack(alignment: .top, spacing: 4) {
+                        Text(failure).font(.mgFootnote).foregroundStyle(MG.destructive)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button(action: dismissFailure) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
+                            .buttonStyle(.plain).foregroundStyle(MG.tertiaryLabel)
+                            .accessibilityLabel("Dismiss").mgHelp("Dismiss")
+                    }
+                    .mgTestAnchor("llm-action-error")
+                }
             }
             Spacer(minLength: 0)
         }
@@ -191,6 +218,7 @@ struct LLMAddSheet: View {
                             MGPicker(selection: Binding(get: { quant ?? f.facts.quant?["type"]?.string ?? opts[0].quant },
                                                         set: { q in quant = q; Task { await lookUp() } }),
                                      options: opts.map { ($0.quant, String(format: "%@ · %.0f GB", $0.quant, Double($0.bytes) / 1e9)) })
+                                .disabled(busy)
                         }
                     }
                     MGFormRow("GPUs") {
@@ -265,6 +293,7 @@ struct LLMAddSheet: View {
     }
 
     func lookUp() async {
+        guard !busy else { return }  // Return in the field and the quant picker also start one
         guard let client = model.llm.client(serverID) else { error = "Choose a GPU server"; return }
         busy = true
         error = nil
@@ -285,7 +314,7 @@ struct LLMAddSheet: View {
     }
 
     func install() async {
-        guard let client = model.llm.client(serverID), let o = option ?? found?.plan.recommended else { return }
+        guard !busy, let client = model.llm.client(serverID), let o = option ?? found?.plan.recommended else { return }
         busy = true
         error = nil
         defer { busy = false }

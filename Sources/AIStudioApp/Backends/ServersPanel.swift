@@ -12,13 +12,18 @@ struct ServersPanel: View {
         let store = model.connections
         VStack(spacing: 0) {
             PanelHeader(title: "Servers") {
+                let refreshing = store.refreshingAll || !model.llm.refreshing.isEmpty
                 Button {
                     Task {
                         await store.refreshAll()
                         await model.llm.refreshAll()  // and the language models (new installs, removals)
                     }
-                } label: { Image(systemName: "arrow.clockwise") }
-                    .mgHelp("Check every server").accessibilityLabel("Check every server")
+                } label: {
+                    if refreshing { MGSpinner().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
+                }
+                    .disabled(refreshing)
+                    .mgHelp(refreshing ? "Checking the servers…" : "Check every server").accessibilityLabel("Check every server")
+                    .mgTestAnchor("servers-refresh")
                 Button { editing = ServerConnection(name: "", baseURL: "http://") } label: { Image(systemName: "plus") }
                     .mgHelp("Add a server").accessibilityLabel("Add a server")
             }
@@ -34,7 +39,9 @@ struct ServersPanel: View {
                             .onTapGesture { model.active.backendID = c.id }
                             .mgContextMenu {
                                 MGMenuItem.button("Run This Tab Here") { model.active.backendID = c.id }
-                                MGMenuItem.button("Check Connection") { Task { await store.test(c.id) } }
+                                MGMenuItem.button(checking(c.id) ? "Checking…" : "Check Connection", enabled: !checking(c.id)) {
+                                    Task { await store.test(c.id) }
+                                }
                                 MGMenuItem.button("Open Dashboard", enabled: c.url != nil) {
                                     if let u = c.url { NSWorkspace.shared.open(u) }
                                 }
@@ -43,6 +50,7 @@ struct ServersPanel: View {
                                 MGMenuItem.button("Remove", destructive: true) {
                                     for doc in model.tabs where doc.backendID == c.id { doc.backendID = BackendID.local }
                                     store.remove(c.id)
+                                    model.llm.forget(server: c.id)
                                 }
                             }
                     }
@@ -59,10 +67,15 @@ struct ServersPanel: View {
                             .contentShape(Rectangle())
                             .onTapGesture(count: 2) { editing = c }
                             .mgContextMenu {
-                                MGMenuItem.button("Check Connection") { Task { await store.test(c.id) } }
+                                MGMenuItem.button(checking(c.id) ? "Checking…" : "Check Connection", enabled: !checking(c.id)) {
+                                    Task { await store.test(c.id) }
+                                }
                                 MGMenuItem.button("Edit…") { editing = c }
                                 MGMenuItem.divider
-                                MGMenuItem.button("Remove", destructive: true) { store.remove(c.id) }
+                                MGMenuItem.button("Remove", destructive: true) {
+                                    store.remove(c.id)
+                                    model.llm.forget(server: c.id)  // its models and anything they were doing
+                                }
                             }
                     }
                     if !store.gpuServers.isEmpty {
@@ -81,6 +94,13 @@ struct ServersPanel: View {
         }
         .mgSheet("server-editor", item: $editing) { c in ServerEditor(connection: c).environment(model) }
         .task { if store.checksOnAppear { await store.refreshAll() } }
+    }
+}
+
+extension ServersPanel {
+    func checking(_ id: String) -> Bool {
+        if case .checking? = model.connections.status[id] { return true }
+        return false
     }
 }
 
