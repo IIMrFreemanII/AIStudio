@@ -11,8 +11,11 @@ struct ToolCard: View {
     let call: ToolCall
     /// The tool turn with its result (nil until the call starts).
     let result: ChatTurn?
-    @State private var open: Bool?
+    /// In a run's folded steps: every tool is a one-line step until opened (its +/- and status on the line).
+    var compact = false
 
+    /// Opened or closed by hand (kept in the chat, so a rebuilt row remembers); nil: the default.
+    var open: Bool? { doc.toolOpen[call.id] }
     var status: String { result?.toolStatus ?? "running" }
     var asking: Bool { doc.permission?.call.id == call.id }
     var isCommand: Bool { call.name == "run_command" }
@@ -52,23 +55,25 @@ struct ToolCard: View {
     var quiet: Bool { status == "done" && !asking && Self.lookTools.contains(call.name) }
 
     var body: some View {
-        let expanded = open ?? (asking || ((isCommand || isTask) && status == "running") || (isDiff && status != "denied")
-                                || (isGraphEdit && status == "done"))
-        let plain = quiet && !expanded
+        let expanded = open ?? (compact ? asking : (asking || ((isCommand || isTask) && status == "running")
+                                                     || (isDiff && status != "denied") || (isGraphEdit && status == "done")))
+        let plain = (quiet || (compact && !asking)) && !expanded
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
             Button {
-                withAnimation(.easeOut(duration: 0.15)) { open = !expanded }
+                withAnimation(.easeOut(duration: 0.15)) { doc.toolOpen[call.id] = !expanded }
             } label: {
                 HStack(spacing: 8) {
                     statusIcon.font(plain ? .system(size: 10) : nil).opacity(plain ? 0.8 : 1)
                     Text(result?.toolTitle ?? call.name).font(.mgCallout).lineLimit(1).truncationMode(.middle)
                         .foregroundStyle(plain ? MG.secondaryLabel : MG.label)
+                        .layoutPriority(1)
                     if isDiff, let d = result?.toolDetail {
                         let (a, r) = counts(d)
                         if a > 0 { Text("+\(a)").font(.mgFootnote).foregroundStyle(MG.success) }
                         if r > 0 { Text("−\(r)").font(.mgFootnote).foregroundStyle(MG.destructive) }
                     }
+                    if compact, status == "running", !expanded { runningNote }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
                         .foregroundStyle(MG.tertiaryLabel).rotationEffect(.degrees(expanded ? 90 : 0))
@@ -116,6 +121,24 @@ struct ToolCard: View {
         .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous),
                     color: plain ? .clear : asking ? MG.accent : MG.border)
         .mgTestAnchor(plain ? "tool-line:\(call.id)" : "tool-card:\(call.id)")
+    }
+
+    /// On a running step's line: how long it has run and, for a subagent, its newest step.
+    @ViewBuilder
+    var runningNote: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let since = result?.date ?? ctx.date
+            let clock = RunSummary.clock(ctx.date.timeIntervalSince(since))
+            if isTask, let step = (doc.toolOutputs[call.id] ?? "").split(separator: "\n").last(where: { $0.hasPrefix("•") }) {
+                Text("\(clock) · \(step.dropFirst().trimmingCharacters(in: .whitespaces))")
+                    .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel).lineLimit(1).truncationMode(.tail)
+                    .mgTestAnchor("task-steps:\(call.id)")
+            } else {
+                Text(isTask ? "\(clock) · Thinking…" : clock).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                    .monospacedDigit()
+                    .mgTestAnchor(isTask ? "task-steps:\(call.id)" : "running:\(call.id)")
+            }
+        }
     }
 
     @ViewBuilder
@@ -205,7 +228,10 @@ struct ToolCard: View {
         }
     }
 
-    func counts(_ diff: String) -> (Int, Int) {
+    func counts(_ diff: String) -> (Int, Int) { Self.diffCounts(diff) }
+
+    /// Lines added and removed in a unified diff.
+    static func diffCounts(_ diff: String) -> (Int, Int) {
         var a = 0, r = 0
         for line in diff.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("+"), !line.hasPrefix("+++") { a += 1 }
@@ -780,26 +806,7 @@ struct PlanCard: View {
     /// A long plan's first lines, shown collapsed (nil: short enough to show whole). Only these are laid out, so a
     /// long plan doesn't slow the chat down.
     static func collapsed(_ plan: String) -> (text: String, hidden: Int)? {
-        let lines = plan.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count > 24 || plan.count > 2400 else { return nil }
-        var shown: [Substring] = []
-        var chars = 0
-        for l in lines.prefix(14) {
-            if chars + l.count > 1400 {
-                // A very long line (one huge paragraph): its start, cut at a word.
-                let room = max(0, 1400 - chars)
-                let head = l.prefix(room)
-                let cut = head.lastIndex(of: " ").map { head[..<$0] } ?? head
-                if !cut.isEmpty { shown.append(Substring(cut + "…")) }
-                break
-            }
-            shown.append(l)
-            chars += l.count + 1
-        }
-        // Not cut right after a heading: it would end the preview with a title and nothing under it.
-        while let last = shown.last, last.trimmingCharacters(in: .whitespaces).hasPrefix("#") || last.trimmingCharacters(in: .whitespaces).isEmpty,
-              shown.count > 1 { shown.removeLast() }
-        return (shown.joined(separator: "\n"), lines.count - shown.count)
+        CollapsedText.of(plan, overLines: 24, overChars: 2400, showLines: 14, showChars: 1400).map { ($0.text, $0.hidden) }
     }
 
     var body: some View {
