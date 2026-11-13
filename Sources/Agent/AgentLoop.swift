@@ -320,6 +320,11 @@ public enum ProjectContext {
         (its own worktree by default) that reports back here; propose_session only suggests one. Pieces of your \
         current task stay here.
 
+        Commands for the user: when one has to be run by them (plan mode, they declined it, it's interactive or \
+        asks for a password, like gh auth login, sudo or ssh, or run_command can't do it), give it in a ```bash \
+        block, one command per block where you can. The chat shows a Run button on it that runs it in their \
+        terminal; afterwards read_terminal shows what happened.
+
         \(gitRules)Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)

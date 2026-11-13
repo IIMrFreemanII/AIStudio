@@ -15,6 +15,13 @@ struct ChatView: View {
     @AppStorage("changesWidth") private var changesWidth = 440.0  // the side panel's width
     @AppStorage("flowPanelWidth") private var flowWidth = 460.0
 
+    /// Coding chats: a suggested ```bash command's Run button runs it in the chat's terminal.
+    private var runCommand: (@MainActor (String) -> Void)? {
+        guard doc.isCoding else { return nil }
+        let model = model, doc = doc
+        return { command in model.runInTerminal(doc, command) }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -56,6 +63,7 @@ struct ChatView: View {
         })
         .environment(\.chatFiles, ChatFilesContext(index: doc.isCoding ? doc.fileIndex : nil,
                                                    folder: model.chatStore.filesFolder(doc.id), root: doc.projectURL))
+        .environment(\.chatRunCommand, runCommand)
         .onAppear { ChatQuoting.visibleChats += 1 }
         .onDisappear { ChatQuoting.visibleChats -= 1 }
         .onReceive(NotificationCenter.default.publisher(for: ChatQuoting.notification)) { note in

@@ -52,6 +52,17 @@ struct MarkdownTests {
         ])
     }
 
+    @Test func shellBlocksGiveTheirCommands() {
+        #expect(ShellBlock.commands(language: "bash", code: "$ ls -la\n$ git status\n") == "ls -la\ngit status")
+        #expect(ShellBlock.commands(language: "Bash title=x", code: "\ngh auth login\n\n") == "gh auth login")
+        #expect(ShellBlock.commands(language: "console", code: "$ echo hi\nhi\n% pwd\n/tmp") == "echo hi\npwd")
+        #expect(ShellBlock.commands(language: "sh", code: "for f in *; do\n  echo $f\ndone") == "for f in *; do\n  echo $f\ndone")
+        #expect(ShellBlock.commands(language: "python", code: "print(1)") == nil)
+        #expect(ShellBlock.commands(language: "", code: "ls") == nil)
+        #expect(ShellBlock.commands(language: "bash", code: "\n  \n") == nil)
+        #expect(ShellBlock.commands(language: "console", code: "just output") == nil)
+    }
+
     @Test func notHeadingsOrLists() {
         #expect(Markdown.blocks("#hashtag\n-not a list\n3.5 is a number") == [
             .paragraph("#hashtag\n-not a list\n3.5 is a number"),

@@ -44,6 +44,39 @@ extension AppModel {
         focusTerminal(doc)
     }
 
+    /// A command the AI suggested (a ```bash block's Run button): shows the Terminal tab and runs it there, in the
+    /// shown terminal when it's waiting at its prompt, else in a new one (a program is running in it, or its shell
+    /// ended). The cursor goes to the terminal, for a password or a question the command asks.
+    func runInTerminal(_ doc: ChatDocument, _ command: String) {
+        guard doc.isCoding else { return }
+        showSidePanel(doc, .terminal)  // makes the first terminal when there's none
+        let fresh: Bool
+        let session: TerminalSession
+        if let t = doc.activeTerminal, t.isIdle, !t.text(lastLines: 5).isEmpty {
+            session = t
+            fresh = false
+        } else if let t = doc.activeTerminal, t.isIdle, doc.terminals.count == 1 {
+            session = t  // the one showSidePanel just made: its prompt hasn't come yet
+            fresh = true
+        } else {
+            guard let t = newTerminal(doc) else { return }
+            session = t
+            fresh = true
+        }
+        focusTerminal(doc)
+        guard fresh else { session.runCommand(command); return }
+        // A new shell: wait for its prompt (typed-ahead text can be dropped while it starts), up to 5 s.
+        Task { @MainActor [weak session] in
+            for _ in 0..<50 {
+                guard let session, session.running else { return }
+                if !session.text(lastLines: 5).isEmpty { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            try? await Task.sleep(for: .milliseconds(300))
+            session?.runCommand(command)
+        }
+    }
+
     /// Puts the cursor in the shown terminal (once it's in the window).
     func focusTerminal(_ doc: ChatDocument) {
         DispatchQueue.main.async { [weak doc] in
