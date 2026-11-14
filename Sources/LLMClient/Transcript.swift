@@ -146,6 +146,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var effort: String?
     /// Why the reply stopped early (a failed request, a cancel). The turn isn't sent back to the model.
     public var error: String?
+    /// When a stopped or failed reply ended (its stats, if any, cover only the last request).
+    public var ended: Date?
     public var date: Date
     /// Assistant turns: the follow-ups the model suggested (taken out of its text, see `FollowUps`).
     public var followUps: [String]?

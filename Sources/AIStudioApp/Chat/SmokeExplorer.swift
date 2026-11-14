@@ -259,6 +259,12 @@ extension SmokeTest {
             check(s.status == .done && s.actions == 3 && s.kinds == ["read 1", "edited 1", "ran 1"]
                   && s.added == 2 && s.removed == 1 && s.failed == 1,
                   "the header counts what the run did (\(s.kinds), +\(s.added) −\(s.removed), \(s.failed) failed)")
+            var stopped = a3
+            stopped.error = "Stopped"
+            stopped.ended = a1.date.addingTimeInterval(25)
+            let ss = RunSummary.of([a1, a2, stopped], results: results, live: false)
+            check(ss.status == .stopped && ss.seconds >= 25,
+                  "a stopped run counts up to the stop, not its last step's start (\(Int(ss.seconds)) s)")
             let paste = "Count the words below. " + String(repeating: "alpha bravo charlie delta ", count: 10_000)
             let p = CollapsedText.message(paste)
             check(p != nil && p!.text.utf16.count <= 901 && CollapsedText.message("short") == nil
@@ -269,6 +275,11 @@ extension SmokeTest {
         starting.coldStart = nil
         let chip = EngineChip(status: starting, model: nil, since: Date().addingTimeInterval(-80))
         check(chip.label("starting").hasPrefix("Waiting for a GPU · 1:2"), "the chip counts the wait (\(chip.label("starting")))")
+        var ready = LLMStatus(state: "ready", phase: nil, progress: nil)
+        ready.costUSD = 1.12
+        let header = EngineChip(status: ready, model: nil, plain: true, showsCost: false)
+        check(!header.label("ready").contains("so far") && header.label("ready", cost: true).contains("$1.12 so far"),
+              "the header chip leaves the GPU's total to the menu (\(header.label("ready")))")
         doc.draft = "look at @mai"
         await settle()
         check(MGTestAnchors.frame("composer-suggestions") != nil, "typing @mai shows the suggestion list")
@@ -500,11 +511,13 @@ extension SmokeTest {
             doc.transcript.append(a)
             doc.transcript.append(r)
             doc.toolOutputs["smoke-task"] = "• Read Sources/App/main.swift\n"
+            doc.liveTurnID = a.id  // a reply is running (without one, a call with no result reads as stopped)
             await settle()
             check(MGTestAnchors.frame("task-steps:smoke-task") != nil, "a running subagent's line shows its newest step")
             check(MGTestAnchors.anchors.keys.contains { $0.hasPrefix("live-box:") && MGTestAnchors.frame($0) != nil },
                   "a working run shows its live box")
             // A long message: its preview and buttons; the run before it is no longer live, so it folds.
+            doc.liveTurnID = nil
             let long = ChatTurn(role: .user, text: String(repeating: "alpha bravo charlie delta\n", count: 400))
             doc.transcript.append(long)
             await settle()
