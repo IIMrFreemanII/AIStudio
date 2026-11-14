@@ -400,8 +400,8 @@ EDGE0_MESSAGE_FIELDS = {"role", "content", "tool_calls", "tool_call_id", "reason
 
 
 def edge0_body(m: dict, body: dict) -> dict:
-    """A chat body Edge0's engine accepts: only the fields it knows, text-only messages, thinking switched by
-    ``enable_thinking`` alone. Raises ``ValueError`` for images and videos (it can't read them)."""
+    """A chat body Edge0's engine accepts: only the fields it knows, text-only messages, thinking set by a
+    ``reasoning_effort`` level or switched off by ``enable_thinking`` (not both). Raises ``ValueError`` for images and videos (it can't read them)."""
     out = {k: v for k, v in body.items() if k in EDGE0_FIELDS}
     kwargs = out.pop("chat_template_kwargs", None) or {}
     if "enable_thinking" in kwargs:
