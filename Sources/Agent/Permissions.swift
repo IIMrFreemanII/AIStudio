@@ -27,6 +27,9 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
     case ask
     /// Edits in the project are free too; commands still ask.
     case acceptEdits
+    /// Reads and project edits are free; a reviewer model checks the rest against the user's request instead of
+    /// asking (Claude Code's auto mode). See `AutoReviewer`. (Declared here for the menu's order.)
+    case auto
     /// Read only: edits and commands are refused (the agent plans instead).
     case plan
     /// Everything is allowed, without asking.
@@ -37,6 +40,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
         case .ask: return "Ask"
         case .acceptEdits: return "Auto-accept Edits"
         case .plan: return "Plan (read only)"
+        case .auto: return "Auto"
         case .bypass: return "Bypass Permissions"
         }
     }
@@ -46,6 +50,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
         case .ask: return "Reads files freely; asks before each edit and command."
         case .acceptEdits: return "Edits files in the project without asking; asks before commands."
         case .plan: return "Only reads and searches; edits and commands are refused."
+        case .auto: return "Runs actions without asking; a reviewer model checks risky ones against your request and blocks the rest."
         case .bypass: return "Edits and runs anything without asking. Only for projects you can afford to lose."
         }
     }
@@ -55,6 +60,8 @@ public enum PermissionDecision: Equatable, Sendable {
     case allow
     case ask
     case deny(String)
+    /// Auto mode: the reviewer model decides (`AutoReviewer`), instead of the user.
+    case review
 }
 
 /// "Always allow" answers given in a chat: all edits, commands starting with a prefix, workflow runs, web domains.
@@ -165,6 +172,9 @@ public enum PermissionEngine {
     public static func decide(effect: ToolEffect, inProject: Bool, command: String? = nil, domain: String? = nil,
                               app: String? = nil, mode: PermissionMode, rules: AllowRules) -> PermissionDecision {
         if mode == .bypass { return .allow }
+        if mode == .auto {
+            return autoDecision(effect: effect, inProject: inProject, command: command, domain: domain, app: app, rules: rules)
+        }
         switch effect {
         case .read:
             return inProject ? .allow : .ask
@@ -199,6 +209,37 @@ public enum PermissionEngine {
             if mode == .plan { return .deny("Plan mode is read only: the agent may look at apps but not click or type in them.") }
             guard let app else { return .ask }
             return rules.controlApps.contains(app) ? .allow : .ask
+        }
+    }
+}
+
+extension PermissionEngine {
+    /// Auto mode: reads and edits in the project, and what the user always allowed, run at once; the rest goes to the
+    /// reviewer (git-risky commands too, whatever the rules say).
+    static func autoDecision(effect: ToolEffect, inProject: Bool, command: String?, domain: String?, app: String?,
+                             rules: AllowRules) -> PermissionDecision {
+        switch effect {
+        case .read, .edit:
+            return inProject ? .allow : .review
+        case .execute:
+            if let command, GitSafety.risk(command) == nil, rules.allows(command: command) { return .allow }
+            return .review
+        case .graphEdit:
+            return .allow
+        case .run:
+            return rules.runs ? .allow : .review
+        case .orchestrate:
+            return .review
+        case .network:
+            if domain == nil, inProject { return .allow }
+            if let domain, rules.allows(domain: domain) { return .allow }
+            return .review
+        case .observe:
+            guard let app else { return .review }
+            return rules.observeApps.contains(app) || rules.controlApps.contains(app) ? .allow : .review
+        case .control:
+            guard let app else { return .review }
+            return rules.controlApps.contains(app) ? .allow : .review
         }
     }
 }

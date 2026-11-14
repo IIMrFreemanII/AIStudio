@@ -1498,7 +1498,7 @@ struct ChatComposer: View {
         let down = press.phase == .down
         if (press.key == .tab && press.modifiers.contains(.shift)) || press.characters == "\u{19}" {
             guard doc.isAgent else { return .ignored }
-            if down { doc.mode = doc.mode.cycled }
+            if down { doc.mode = doc.mode.cycled(auto: doc.isCoding) }
             return .handled
         }
         switch press.key {

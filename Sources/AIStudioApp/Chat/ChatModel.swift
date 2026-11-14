@@ -92,6 +92,8 @@ final class ChatDocument: Identifiable {
     @ObservationIgnored var permissionAnswer: CheckedContinuation<PermissionAnswer, Never>?
     /// Live output of running commands, by call id.
     var toolOutputs: [String: String] = [:]
+    /// Auto mode's verdicts on this reply's calls (call id → allowed, why), for the shield on their rows.
+    var reviews: [String: (allowed: Bool, reason: String)] = [:]
     /// The to-do list of the run in progress (nil: the transcript's last `todo_write` is the list).
     var liveTodos: [ToolContext.Todo]?
     /// The agent's to-do list: the run's while it works, else derived from the transcript.
