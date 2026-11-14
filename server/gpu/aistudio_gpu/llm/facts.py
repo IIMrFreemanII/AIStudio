@@ -3,6 +3,8 @@
 - Hugging Face, safetensors (vLLM): the repo's file list (sizes), ``config.json`` and the chat template.
 - Hugging Face, GGUF (llama.cpp): the repo's GGUF files grouped by quantization (split files summed), and the chosen
   one's header, read with HTTP Range requests. A ``mmproj`` file next to them gives vision.
+- Hugging Face, an Edge0 "strata pack" (Edge0-145B, Edge0-120B; NVFP4 or Q3_K experts): its ``model.json``. These run
+  on Edge0's own engine (edge0-strata), not vLLM or llama.cpp.
 - Civitai: the model version's files. A GGUF file runs on llama.cpp; a zip of a Hugging Face model folder on vLLM
   (its config.json is read from inside the zip, remotely); a bare safetensors file is refused (it needs its base).
 
@@ -87,7 +89,7 @@ class Facts:
     chat_template: str = ""
     params: int | None = None
     notes: list[str] = field(default_factory=list)
-    engine: str = "vllm"  # or "llamacpp" (GGUF)
+    engine: str = "vllm"  # or "llamacpp" (GGUF), "edge0" (a strata pack)
     source: str = "huggingface"  # or "civitai"
     gguf_file: str | None = None  # the first (or only) file of the chosen GGUF, as named in `download`
     mmproj: str | None = None
@@ -201,6 +203,10 @@ async def _inspect_hf(ref: ModelRef, tokens: dict, client: httpx.AsyncClient, sy
     names = {s.get("rfilename", ""): int(s.get("size") or (s.get("lfs") or {}).get("size") or 0)
              for s in meta.get("siblings") or []}
     weights = {n: b for n, b in names.items() if n.endswith(".safetensors") and "/" not in n}
+    if "model.json" in names and not ref.file and not weights:
+        pack = await _hf_json(client, f"{base}/{ref.repo}/resolve/{sha}/model.json", headers, ref)
+        if is_edge0_pack(pack):
+            return facts_from_edge0(ref, meta, pack, names)
     has_gguf = any(n.lower().endswith(".gguf") for n in names)
     if ref.file or (not weights and has_gguf):
         return await _hf_gguf(ref, meta, sha, names, tokens, sync_client, quant)
@@ -242,6 +248,72 @@ async def _inspect_hf(ref: ModelRef, tokens: dict, client: httpx.AsyncClient, sy
             f.notes.append(f"vLLM keeps the n-gram embeddings ({f.cpu_bytes / 1e9:.0f} GB) in CPU memory, so the "
                            "GPUs hold the rest")
     return f
+
+
+async def _hf_json(client: httpx.AsyncClient, url: str, headers: dict, ref: ModelRef) -> dict:
+    resp = await client.get(url, headers=headers)
+    if resp.status_code in (401, 403):
+        raise LinkError(f"{ref.repo} {GATED}")
+    resp.raise_for_status()
+    try:
+        out = json.loads(resp.text)
+    except ValueError:
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+# MARK: Edge0 (strata packs)
+
+# Files of a strata pack the engine can't start without (edge0-infer's "Model directory").
+EDGE0_REQUIRED = ("model.json", "experts.bin", "model-skeleton.gguf", "tokenizer/tokenizer.json")
+# Not needed to run it: the model card's pictures and video, and the publisher's launcher.
+EDGE0_SKIP = ("assets/*", "README*.md", "start.sh", ".gitattributes")
+
+
+def is_edge0_pack(pack: dict) -> bool:
+    """A ``model.json`` that describes a strata pack (Edge0's own format and engine)."""
+    return pack.get("exe") == "strata" and str(pack.get("pack_format") or "").startswith("strata pack")
+
+
+def facts_from_edge0(ref: ModelRef, meta: dict, pack: dict, names: dict) -> Facts:
+    """Facts for an Edge0 model folder. The engine streams experts from host memory when the GPU can't hold them all,
+    and keeps the per-layer n-gram embedding table (``ple-*.gguf``) in host memory: that's ``cpu_bytes``."""
+    missing = [n for n in EDGE0_REQUIRED if n not in names]
+    if missing:
+        raise LinkError(f"this Edge0 model folder is incomplete (no {', '.join(missing)})")
+    download = {n: b for n, b in names.items() if not any(fnmatch(n, p) for p in EDGE0_SKIP)}
+    ple = sum(b for n, b in download.items() if fnmatch(n.split("/")[-1], "ple-*.gguf"))
+    args = [str(a) for a in pack.get("args") or []]
+    context = int(pack.get("context") or 131072)
+    if "--max-context" in args[:-1]:
+        try:
+            context = min(context, int(args[args.index("--max-context") + 1]))
+        except ValueError:
+            pass
+    build = str(pack.get("build") or ("NVFP4" if "fp4" in str(pack.get("model_name") or "") else "Q3_K"))
+    bits = 4 if "FP4" in build.upper() else 3
+    f = Facts(
+        repo=ref.repo, revision=ref.revision, sha=meta.get("sha"), architecture="edge0",
+        model_type=str(pack.get("model_name") or "edge0"), weight_bytes=sum(download.values()),
+        files=len(download), quant={"method": "edge0", "type": build, "bits": bits}, dtype=build,
+        native_context=context, vision=False, layers=int(pack.get("layers") or 0), attention_layers=0,
+        attention_heads=0, kv_heads=0, head_dim=0, kv_lora_rank=0, rope_head_dim=0, sliding_window=0,
+        experts=int(pack.get("experts") or 0), gated=bool(meta.get("gated")), 
+        params=_params(pack.get("params")), engine="edge0", cpu_bytes=ple,
+        notes=["Runs on Edge0's own engine (edge0-strata): one request at a time, no images",
+               f"Keeps its n-gram embedding table ({ple / 1e9:.0f} GB) in host memory"])
+    card = meta.get("cardData") or {}
+    if lic := card.get("license_name") or (card.get("license") if card.get("license") != "other" else None):
+        f.notes.append(f"License: {lic} (see the repo's LICENSE; commercial services need Edge0's permission)")
+    f.download = [{"name": n, "size": b} for n, b in sorted(download.items())]
+    return f
+
+
+def _params(v) -> int | None:
+    m = re.fullmatch(r"\s*([\d.]+)\s*([BM])\s*", str(v or ""), re.I)
+    if not m:
+        return None
+    return int(float(m.group(1)) * (1e9 if m.group(2).upper() == "B" else 1e6))
 
 
 INDEX = "model.safetensors.index.json"

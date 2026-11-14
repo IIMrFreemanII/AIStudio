@@ -343,6 +343,8 @@ class LLMService:
         body = profiles.apply_effort({**body, "model": mid}, m)
         if stream:
             body["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
+        if m.get("engine") == "edge0":
+            body = edge0_body(m, body)
         upstream = self._engine_chat(mid, m, body)
         if not stream:
             return False, upstream
@@ -388,6 +390,38 @@ class LLMService:
         # Absolute, but not resolved: on Modal /uploads is a link to this container's own mount of the Volume, and
         # the GPU container only knows it as /uploads.
         return self.files.path(name).absolute().as_uri()
+
+
+# What edge0-strata's chat completions take (it answers 400 to any other field).
+EDGE0_FIELDS = {"model", "messages", "stream", "stream_options", "tools", "tool_choice", "parallel_tool_calls",
+                "temperature", "top_p", "top_k", "max_tokens", "max_completion_tokens", "seed", "stop",
+                "presence_penalty", "frequency_penalty", "chat_template_kwargs", "reasoning_effort"}
+EDGE0_MESSAGE_FIELDS = {"role", "content", "tool_calls", "tool_call_id", "reasoning_content"}
+
+
+def edge0_body(m: dict, body: dict) -> dict:
+    """A chat body Edge0's engine accepts: only the fields it knows, text-only messages, thinking switched by
+    ``enable_thinking`` alone. Raises ``ValueError`` for images and videos (it can't read them)."""
+    out = {k: v for k, v in body.items() if k in EDGE0_FIELDS}
+    kwargs = out.pop("chat_template_kwargs", None) or {}
+    if "enable_thinking" in kwargs:
+        out["chat_template_kwargs"] = {"enable_thinking": bool(kwargs["enable_thinking"])}
+        out.pop("reasoning_effort", None)  # both at once is refused
+    stream_options = out.get("stream_options")
+    if isinstance(stream_options, dict):
+        out["stream_options"] = {k: v for k, v in stream_options.items() if k == "include_usage"}
+    messages = []
+    for msg in out.get("messages") or []:
+        if not isinstance(msg, dict):
+            messages.append(msg)
+            continue
+        msg = {k: v for k, v in msg.items() if k in EDGE0_MESSAGE_FIELDS}
+        if isinstance(msg.get("content"), list):
+            if any(isinstance(p, dict) and p.get("type") in MEDIA_PARTS for p in msg["content"]):
+                raise ValueError(f"{m.get('name') or m['id']} can't read images or videos")
+        messages.append(msg)
+    out["messages"] = messages
+    return out
 
 
 def local_media(messages: list, root: Path) -> list[Path]:

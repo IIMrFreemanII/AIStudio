@@ -13,6 +13,9 @@ memory; what's left after the weights and overhead is KV cache, which sets the l
   must split evenly). FP8 weights need Ada or newer to run at full speed; FP4 needs Hopper (MXFP4) or Blackwell
   (NVFP4).
 - GGUF on llama.cpp splits the model by layers instead (no head constraint); its KV cache is split the same way.
+- Edge0 models (strata packs) run on one GPU, which holds as many experts as fit and streams the rest from host
+  memory; the engine sizes its own (int8) KV cache. Any GPU with 20 GiB fits; one that can't hold every expert is
+  marked slower. The pick for them is an H100 (all experts in VRAM), not the cheapest.
 - The pick: the cheapest option whose longest context reaches the one asked for; failing that, the longest.
   Options with a caveat (FP8 on A100) are picked only when nothing else fits.
 """
@@ -38,6 +41,9 @@ DEFAULT_CONTEXT = 131072
 MAX_CONTEXT = 1_048_576  # 1M tokens: the most the app offers, whatever the model's native window
 ADA_OR_NEWER = {"L40S", "H100", "H200", "B200"}
 HOPPER_OR_NEWER = {"H100", "H200", "B200"}
+EDGE0_MIN_VRAM = 20 * GIB
+EDGE0_HEADROOM = 6 * GIB  # KV cache and activations, besides the experts
+PREFERRED = {"edge0": "H100"}  # the GPU picked when it fits, whatever is cheaper
 
 
 def max_gpus() -> int:
@@ -83,7 +89,25 @@ def unsupported(f: Facts, gpu: str) -> str | None:
     return None
 
 
+def edge0_options(f: Facts) -> list[Option]:
+    on_gpu = f.weight_bytes - f.cpu_bytes
+    out = []
+    for gpu, mib in GPUS.items():
+        price = GPU_PRICES.get(gpu)
+        if price is None:
+            continue
+        vram = mib * (1 << 20)
+        note = "" if vram * UTILIZATION >= on_gpu + EDGE0_HEADROOM else "experts stream from host memory: slower"
+        fits = vram >= EDGE0_MIN_VRAM
+        context = min(f.native_context, MAX_CONTEXT)
+        out.append(Option(gpu, 1, fits, price * 3600, context if fits else 0, min(on_gpu, vram) / 1e9, 0, note,
+                          context if fits else 0))
+    return out
+
+
 def options(f: Facts, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> list[Option]:
+    if f.engine == "edge0":
+        return edge0_options(f)
     out = []
     for gpu, mib in GPUS.items():
         price = GPU_PRICES.get(gpu)
@@ -109,10 +133,13 @@ def options(f: Facts, kv_dtype_bytes: int = 2, replicated_bytes: int = 0) -> lis
     return out
 
 
-def recommend(opts: list[Option], context: int) -> Option | None:
+def recommend(opts: list[Option], context: int, prefer: str | None = None) -> Option | None:
     fitting = [o for o in opts if o.fits]
     if not fitting:
         return None
+    if prefer and (o := next((o for o in fitting if o.gpu == prefer and not o.note and o.max_context >= context),
+                             None)):
+        return o
     # Options with a caveat ("FP8 runs slower on A100") stay in the list, but aren't picked when another fits.
     fitting = [o for o in fitting if not o.note] or fitting
     enough = [o for o in fitting if o.max_context >= context]
@@ -129,7 +156,7 @@ def plan(f: Facts, context: int | None = None, kv_dtype_bytes: int = 2, replicat
     """The options (cheapest first, those that fit first) and the recommended one, as the API returns them."""
     want = min(context or default_context(f), f.native_context, MAX_CONTEXT)
     opts = options(f, kv_dtype_bytes, replicated_bytes)
-    best = recommend(opts, want)
+    best = recommend(opts, want, PREFERRED.get(f.engine))
     ranked = sorted(opts, key=lambda o: (not o.fits, o.usd_per_hour, o.count))
     return {"context": want, "nativeContext": min(f.native_context, MAX_CONTEXT), "recommended": best.public() if best else None,
             "options": [o.public() for o in ranked]}

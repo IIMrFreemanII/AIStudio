@@ -106,7 +106,7 @@ struct LLMModelRow: View {
             Image(systemName: "text.bubble").foregroundStyle(MG.secondaryLabel)
             VStack(alignment: .leading, spacing: 3) {
                 Text(model.name).font(.mgCallout.weight(.medium)).lineLimit(1)
-                Text([server, model.gpuLabel, "\(contextLabel(model.context)) context", model.engine == "llamacpp" ? "GGUF" : nil,
+                Text([server, model.gpuLabel, "\(contextLabel(model.context)) context", model.engine == "llamacpp" ? "GGUF" : model.engine == "edge0" ? "Edge0 engine" : nil,
                       model.source == "civitai" ? "Civitai" : nil, model.vision == true ? "vision" : nil]
                         .compactMap { $0 }.joined(separator: " · "))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
@@ -256,6 +256,7 @@ struct LLMAddSheet: View {
     func details(_ f: LLMInspection) -> some View {
         let gb = Double(f.facts.weightBytes) / 1e9
         let quant = f.facts.engine == "llamacpp" ? "GGUF \(f.facts.quant?["type"]?.string ?? "")"
+            : f.facts.engine == "edge0" ? "Edge0 \(f.facts.quant?["type"]?.string ?? "")"
             : f.facts.quant?["method"]?.string.map { $0.uppercased() } ?? "full precision"
         VStack(alignment: .leading, spacing: 4) {
             Text(f.facts.repo).font(.mgCallout.weight(.semibold))
@@ -377,14 +378,14 @@ struct LLMSettingsSheet: View {
 
     /// Snapshots need vLLM on one GPU (Modal's GPU snapshots don't handle several).
     var snapshotAllowed: Bool {
-        model.llm.model(request.key)?.engine != "llamacpp" && (option?.count ?? 1) == 1
+        model.llm.model(request.key)?.isVLLM != false && (option?.count ?? 1) == 1
     }
 
     var body: some View {
         let m = model.llm.model(request.key)
         let st = model.llm.status(request.key)
         let running = st?.isActive == true
-        let gguf = m?.engine == "llamacpp"
+        let gguf = m?.isVLLM == false  // GGUF or Edge0: the weights are read by their own engine
         VStack(alignment: .leading, spacing: 14) {
             Text("\(m?.name ?? request.key.modelID): GPUs, Context and Start-up").font(.mgHeadline)
             if let plan {
@@ -414,7 +415,8 @@ struct LLMSettingsSheet: View {
                                  options: [("auto", "Standard"), ("processed", "Fast start"), ("runai", "Run:ai streamer")])
                             .disabled(gguf)
                     }
-                    .mgHelp(gguf ? "GGUF files are read by llama.cpp." : loadFormatHelp)
+                    .mgHelp(m?.engine == "edge0" ? "Edge0 models are read by Edge0's own engine."
+                            : gguf ? "GGUF files are read by llama.cpp." : loadFormatHelp)
                     MGFormRow("GPU snapshot (experimental)") {
                         Toggle("", isOn: Binding(get: { snapshot && snapshotAllowed }, set: { snapshot = $0 }))
                             .labelsHidden().disabled(!snapshotAllowed)
@@ -561,7 +563,7 @@ struct LLMSettingsSheet: View {
         do {
             var changes: [String: JSONValue] = ["gpu": .string(o.gpu), "count": .number(Double(o.count)),
                                                  "context": .number(Double(context)), "snapshot": .bool(snapshot && snapshotAllowed)]
-            if model.llm.model(request.key)?.engine != "llamacpp" { changes["loadFormat"] = .string(loadFormatShown) }
+            if model.llm.model(request.key)?.isVLLM != false { changes["loadFormat"] = .string(loadFormatShown) }
             if model.llm.model(request.key)?.hasMTP == true { changes["mtp"] = .bool(mtp) }
             _ = try await client.update(request.key.modelID, changes)
             if restart { await model.llm.stop(request.key) }
