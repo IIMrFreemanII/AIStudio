@@ -47,7 +47,7 @@ public struct UserQuestion: Codable, Equatable, Sendable, Hashable {
                 return Option(label: l, description: (d["description"] as? String).flatMap { $0.isEmpty ? nil : $0 })
             }
             guard (2...4).contains(options.count) else { throw ToolError("\"\(text)\" needs 2–4 options") }
-            let multi = (q["multiSelect"] as? Bool) ?? ((q["multiSelect"] as? String) == "true")
+            let multi = ToolArgs.flag(q["multiSelect"]) ?? false
             return UserQuestion(question: text, header: q["header"] as? String, multiSelect: multi, options: options)
         }
     }
