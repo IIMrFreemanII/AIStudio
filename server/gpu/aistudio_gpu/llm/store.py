@@ -12,6 +12,7 @@ from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Fields the app may change after installing (PATCH /v1/llm/models/{id}).
+NOT_VLLM = ("llamacpp", "edge0")  # engines without vLLM's extras (MTP drafts, fast loaders, snapshots)
 PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot",
              "mtp"}
 # How vLLM reads the weights: its loader, Run:ai's streamer, or "processed" (AIStudio's vLLM plugin: a copy saved
@@ -129,7 +130,7 @@ def mtp_layers(weights: Path) -> int:
 def with_mtp_layers(models_root: Path, manifest: dict) -> dict:
     """The manifest with ``mtpLayers`` (worked out once from the checkpoint and saved, for models installed before
     the field existed); GGUF models have none."""
-    if "mtpLayers" in manifest or manifest.get("engine") == "llamacpp":
+    if "mtpLayers" in manifest or manifest.get("engine") in NOT_VLLM:
         return manifest
     if not installed(models_root, manifest["id"]):
         return manifest
@@ -180,15 +181,21 @@ def patch(manifest: dict, changes: dict) -> dict:
         raise ValueError("engineArgs is a list of strings")
     if not isinstance(out.get("mtp", True), bool):
         raise ValueError("mtp is true or false")
+    if out.get("engine") == "edge0":
+        if out["count"] != 1:
+            raise ValueError("Edge0 models run on one GPU")
+        if changes.get("mtp") is False:
+            raise ValueError("Edge0's engine always drafts with the model's MTP layer")
     if out.get("loadFormat", "auto") not in LOAD_FORMATS:
         raise ValueError("loadFormat is auto, runai or processed")
-    if out.get("loadFormat", "auto") != "auto" and out.get("engine") == "llamacpp":
-        raise ValueError("the fast loaders are for vLLM models (GGUF files are read by llama.cpp)")
+    if out.get("loadFormat", "auto") != "auto" and out.get("engine") in NOT_VLLM:
+        raise ValueError("the fast loaders are for vLLM models (GGUF files are read by llama.cpp, Edge0 models by "
+                         "their own engine)")
     if out.get("loadFormat") == "processed" and out["count"] != 1:
         raise ValueError("fast start (saved processed weights) works on one GPU only")
     if not isinstance(out.get("snapshot", False), bool):
         raise ValueError("snapshot is true or false")
-    if out.get("snapshot") and (out.get("engine") == "llamacpp" or out["count"] != 1):
+    if out.get("snapshot") and (out.get("engine") in NOT_VLLM or out["count"] != 1):
         raise ValueError("GPU snapshots work for vLLM models on one GPU only")
     out["updated"] = time.time()
     return out

@@ -53,6 +53,15 @@ FLASHINFER_CUDA = os.environ.get("AISTUDIO_FLASHINFER_CUDA", "cu129")  # matches
 LLM_BOOT_TIMEOUT = int(os.environ.get("AISTUDIO_LLM_BOOT_TIMEOUT", "1800"))  # a start that takes longer is given up
 CUDA_BASE = os.environ.get("AISTUDIO_CUDA_IMAGE", "nvidia/cuda:12.9.1-devel-ubuntu24.04")
 LLAMA_IMAGE = os.environ.get("AISTUDIO_LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
+# Edge0's engine (edge0-strata, github.com/Edge0-AI/Edge0) for Edge0 strata packs: built from a pinned commit with
+# the llama.cpp (ggml) commit its EDGE0.md names (the archive's SHA-256 computed here; the doc records none), for
+# A100, L40S, H100/H200 and B200. Its default NVFP4 path (w4a8)
+# runs on all of them; only the optional w4a4 one needs an RTX-class Blackwell card.
+EDGE0_COMMIT = os.environ.get("AISTUDIO_EDGE0_COMMIT", "7b60076641ccd4adeec8b9a41874a24c477fec02")
+EDGE0_GGML = "3cf03257f219afbe7334045ff7c6a06ac68c627d"
+EDGE0_GGML_SHA256 = "c076d7534afa0e5d0ec2a0d425b11e791c16f3de0d727221aea071cef156a280"
+EDGE0_CUDA_ARCHS = os.environ.get("AISTUDIO_EDGE0_CUDA_ARCHS", "80-real;89-real;90-real;100-real")
+EDGE0_CUDA_IMAGE = os.environ.get("AISTUDIO_EDGE0_CUDA_IMAGE", "nvidia/cuda:13.0.3-devel-ubuntu24.04")
 
 
 def _secret_if_exists(name: str) -> str:
@@ -109,6 +118,25 @@ llm_import_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_instal
 llama_image = (modal.Image.from_registry(LLAMA_IMAGE, add_python="3.12").entrypoint([])
                .uv_pip_install("httpx").env({**env, "PATH": "/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
                                              "LD_LIBRARY_PATH": "/app"})
+               .add_local_python_source("aistudio_gpu"))
+# Edge0's engine: /opt/edge0/edge0-strata/build/strata and the Python (.venv) that runs its OpenAI server.
+edge0_image = (modal.Image.from_registry(EDGE0_CUDA_IMAGE, add_python="3.12").entrypoint([])
+               .apt_install("git", "cmake", "ninja-build", "curl", "ca-certificates", "build-essential")
+               .uv_pip_install("httpx", "uv")
+               .run_commands(
+                   "git init -q /opt/edge0 && cd /opt/edge0 && git remote add origin https://github.com/Edge0-AI/Edge0.git"
+                   f" && git fetch -q --depth 1 origin {EDGE0_COMMIT} && git checkout -q FETCH_HEAD",
+                   "cd /opt/edge0/edge0-strata && mkdir -p third_party/llama.cpp"
+                   f" && curl -fsSL -o /tmp/ggml.tar.gz https://github.com/ggml-org/llama.cpp/archive/{EDGE0_GGML}.tar.gz"
+                   f" && echo '{EDGE0_GGML_SHA256}  /tmp/ggml.tar.gz' | sha256sum -c -"
+                   " && tar -xzf /tmp/ggml.tar.gz --strip-components=1 -C third_party/llama.cpp && rm /tmp/ggml.tar.gz",
+                   "cd /opt/edge0/edge0-strata && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release"
+                   f" -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc '-DCMAKE_CUDA_ARCHITECTURES={EDGE0_CUDA_ARCHS}'"
+                   " -DSTRATA_ENABLE_CUDA=ON -DSTRATA_GGML_DIR=/opt/edge0/edge0-strata/third_party/llama.cpp"
+                   " && cmake --build build --target strata",
+                   "cd /opt/edge0/edge0-strata && uv venv -q --python \"$(command -v python3.12 || command -v python3)\" .venv"
+                   " && uv pip install -q --python .venv/bin/python -r requirements.txt")
+               .env({**env, "AISTUDIO_EDGE0_DIR": "/opt/edge0/edge0-strata"})
                .add_local_python_source("aistudio_gpu"))
 # vLLM's OpenAI server (with Run:ai's streamer, the optional fast loader); its compile, Triton and CUDA-graph caches
 # live on the models volume, so restarts reuse them.
@@ -651,6 +679,8 @@ def _llm_obj(m: dict):
     gpu = m["gpu"] if n == 1 else f"{m['gpu']}:{n}"
     if m.get("engine") == "llamacpp":
         return LLMLlamaCpp.with_options(gpu=gpu)(model=m["id"])
+    if m.get("engine") == "edge0":
+        return LLMEdge0.with_options(gpu=m["gpu"])(model=m["id"])
     if m.get("snapshot") and n == 1:
         return LLMSnap.with_options(gpu=gpu)(model=m["id"], rev=str(m.get("updated") or ""))
     return LLM.with_options(gpu=gpu)(model=m["id"])
@@ -829,6 +859,38 @@ class LLMSnap:
 @modal.concurrent(max_inputs=16)
 class LLMLlamaCpp:
     """One GGUF language model: llama.cpp's server on localhost, layers split across the GPUs."""
+
+    model: str = modal.parameter()
+
+    @modal.enter()
+    def boot(self):
+        _llm_boot(self)
+
+    @modal.method()
+    async def chat(self, body: dict):
+        async for chunk in _llm_chat(self, body):
+            yield chunk
+
+    @modal.method()
+    def ping(self) -> dict:
+        _llm_touch(self)  # the app keeps a model warm while a chat with it is open
+        return self.current
+
+    @modal.method()
+    def stop(self) -> None:
+        _llm_stop(self)
+
+    @modal.exit()
+    def shutdown(self):
+        _llm_shutdown(self)
+
+
+@app.cls(image=edge0_image, gpu="H100", **{**LLM_CLS, "memory": (98304, 524288), "cpu": 16})
+@modal.concurrent(max_inputs=16)
+class LLMEdge0:
+    """One Edge0 model (a strata pack) on one GPU: edge0-strata's OpenAI server on localhost. The engine keeps the
+    n-gram embedding table (about 48 GB for Edge0-145B) in host memory, hence the larger memory request; it serves one
+    request at a time and queues the rest."""
 
     model: str = modal.parameter()
 

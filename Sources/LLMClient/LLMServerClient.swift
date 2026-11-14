@@ -19,7 +19,7 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     public var engineArgs: [String]?
     public var installed: Bool?
     public var status: LLMStatus?
-    /// "vllm" or "llamacpp" (GGUF).
+    /// "vllm", "llamacpp" (GGUF) or "edge0" (an Edge0 strata pack, on Edge0's own engine).
     public var engine: String?
     /// "huggingface" or "civitai".
     public var source: String?
@@ -35,7 +35,9 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     /// Thinking levels the model takes ("low"/"medium"/"high", or "off"/"on"); [] can't be controlled; nil: older server.
     public var efforts: [String]?
 
-    public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && engine != "llamacpp" }
+    /// Served by vLLM (fast loaders, GPU snapshots and the MTP switch are vLLM's).
+    public var isVLLM: Bool { engine == nil || engine == "vllm" }
+    public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && isVLLM }
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
 }
 

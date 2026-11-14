@@ -1,4 +1,5 @@
-"""The engine process: vLLM's OpenAI-compatible server (llama.cpp's ``llama-server`` for GGUF models) on localhost,
+"""The engine process: vLLM's OpenAI-compatible server (llama.cpp's ``llama-server`` for GGUF models, edge0-strata's
+``serve/server.py`` for Edge0 strata packs) on localhost,
 started from an installed model's manifest, with its startup log turned into phases ("Loading weights 41%") for the
 app. The same class runs inside a Modal container
 and on a GPU box. ``FakeEngine`` stands in for it in tests and with ``AISTUDIO_FAKE_LLM=1``."""
@@ -11,6 +12,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import deque
@@ -39,6 +41,8 @@ PHASES: list[tuple[re.Pattern, str]] = [
      "Allocating KV cache"),
     (re.compile(r"Starting vLLM API server|Application startup complete|Uvicorn running", re.I), "Starting server"),
     (re.compile(r"Initializing|init engine|Initializing a V\d+ LLM engine|world_size", re.I), "Starting engine"),
+    # edge0-strata (serve/server.py and the engine it starts).
+    (re.compile(r"loading the model|\[strata\] .*(expert|weights|pack|mapping)", re.I), "Loading weights"),
 ]
 PERCENT = re.compile(r"(\d{1,3})%")
 RUNAI_CONCURRENCY = int(os.environ.get("AISTUDIO_RUNAI_CONCURRENCY", "16"))
@@ -60,6 +64,16 @@ REMEMBER_KV = os.environ.get("AISTUDIO_VLLM_REMEMBER_KV", "1") != "0"
 # tokens per step with them, which the model then checks in one pass (same output, fewer steps). Qwen3.8-Flash-Next on
 # a B200: replies 1.56× faster (191 → 298 tokens/s), starts ~40 s slower (more kernel warm-up). 0 turns it off.
 MTP_TOKENS = int(os.environ.get("AISTUDIO_VLLM_MTP_TOKENS", "2"))
+# Edge0's engine: the edge0-strata folder of github.com/Edge0-AI/Edge0, built (build/strata) with its Python (.venv).
+EDGE0_DIR = Path(os.environ.get("AISTUDIO_EDGE0_DIR", "/opt/edge0/edge0-strata"))
+# The publisher's tuning for its own PC (24 GB card, PCIe DMA, 24 CPU workers, 32K tokens of KV in VRAM): on a
+# cloud GPU the engine's defaults fit better.
+EDGE0_DROP = ("--pool-workers", "--pcie-mode", "--pcie-frac", "--kv-resident", "--max-context", "--ple-io")
+# The engine's "all-resident" verify path (taken when every expert fits in VRAM, as on an H100) hung the first decode
+# window on H100 (2026-11-14: "verify: an earlier window never finished on the GPU"), as its authors saw on an RTX
+# Spark, where it is off by default. 24 GB cards, which the engine is tested on, never take it.
+EDGE0_ENV = {"STRATA_VERIFY_ALL_RESIDENT": "0"}
+NOT_VLLM = store.NOT_VLLM
 
 
 def mtp_on(manifest: dict) -> bool:
@@ -67,7 +81,7 @@ def mtp_on(manifest: dict) -> bool:
     engine arguments don't set their own speculative decoding."""
     extra = list(manifest.get("engineArgs") or [])
     return bool(MTP_TOKENS and manifest.get("mtpLayers") and manifest.get("mtp", True) is not False
-                and manifest.get("engine") != "llamacpp" and not _has(extra, "--speculative-config", "-sc"))
+                and manifest.get("engine") not in NOT_VLLM and not _has(extra, "--speculative-config", "-sc"))
 
 
 def _has(extra: list[str], *flags: str) -> bool:
@@ -160,8 +174,61 @@ def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0
     return cmd + list(manifest.get("engineArgs") or [])
 
 
+def edge0_config(manifest: dict, pack: dict, weights: Path, engine_dir: Path = EDGE0_DIR) -> dict:
+    """The strata server config for an Edge0 model: the pack's own ``model.json`` with its relative paths made
+    absolute (under ``weights``), the engine built here, the context the manifest asks for, the n-gram embedding table
+    read into memory (reading it from the Volume as needed would be slow), the publisher's PC tuning left out, and the
+    model id as a name requests may use."""
+    def path(v):
+        return str(weights / v) if isinstance(v, str) and (v == "." or v.startswith("./")) else v
+
+    args, given = [], [str(a) for a in pack.get("args") or []]
+    i = 0
+    while i < len(given):
+        a = given[i]
+        if a in EDGE0_DROP:
+            i += 2  # the flag and its value
+            continue
+        args.append(path(a))
+        i += 1
+    args += ["--max-context", str(int(manifest["context"])), "--ple-io", "ram"]
+    args += [str(a) for a in manifest.get("engineArgs") or []]  # the model's own tuning, last (it wins)
+    cfg = {k: v for k, v in pack.items() if k not in ("log", "port", "gpu", "gpus_asked")}
+    cfg.update({
+        "exe": str(engine_dir / "build" / "strata"), "args": args, "cwd": str(weights),
+        "env": {**EDGE0_ENV, **{k: path(v) for k, v in (pack.get("env") or {}).items()}},
+        "aliases": [manifest["id"]],
+    })
+    if pack.get("tokenizer"):
+        cfg["tokenizer"] = path(pack["tokenizer"])
+    return cfg
+
+
+def edge0_command(manifest: dict, config: Path, port: int, host: str = "127.0.0.1",
+                  engine_dir: Path = EDGE0_DIR) -> list[str]:
+    """edge0-strata's OpenAI server, which starts the engine with ``config`` (the model's engine arguments are in it)
+    and answers for it."""
+    return [str(engine_dir / ".venv" / "bin" / "python"), str(engine_dir / "serve" / "server.py"), "--engine", "strata",
+            "--config", str(config), "--host", host, "--port", str(port)]
+
+
+def edge0_env(engine_dir: Path = EDGE0_DIR) -> dict:
+    """The CUDA 13 runtime libraries the engine's Python environment ships (as the pack's ``start.sh`` adds them)."""
+    libs = sorted(str(d) for d in (engine_dir / ".venv" / "lib").glob("python*/site-packages/nvidia/cu13/lib"))
+    if not libs:
+        return {}
+    return {"LD_LIBRARY_PATH": ":".join(libs + [p for p in [os.environ.get("LD_LIBRARY_PATH")] if p])}
+
+
 def command(manifest: dict, weights: Path, port: int, media: str | None = None,
             kv_bytes: int | None = None) -> list[str]:
+    if manifest.get("engine") == "edge0":
+        if not (EDGE0_DIR / "build" / "strata").exists():
+            raise EngineError(f"the Edge0 engine isn't installed on this server (no {EDGE0_DIR / 'build' / 'strata'})")
+        pack = json.loads((weights / "model.json").read_text())
+        config = Path(tempfile.mkdtemp(prefix="edge0-")) / "config.json"
+        config.write_text(json.dumps(edge0_config(manifest, pack, weights), indent=2))
+        return edge0_command(manifest, config, port)
     if manifest.get("engine") == "llamacpp":
         return llama_command(manifest, weights, port)
     return vllm_command(manifest, weights, port, media=media, kv_bytes=kv_bytes)
@@ -177,10 +244,10 @@ class EngineProcess:
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, port: int = 8000,
                  env: dict | None = None):
-        if manifest.get("engine") != "llamacpp" and "mtpLayers" not in manifest:  # installed before the field
+        if manifest.get("engine") not in NOT_VLLM and "mtpLayers" not in manifest:  # installed before the field
             manifest = {**manifest, "mtpLayers": store.mtp_layers(store.weights_dir(models_root, manifest["id"]))}
         self.manifest, self.models_root, self.on_status, self.port = manifest, models_root, on_status, port
-        self.env = {**os.environ, **(env or {})}
+        self.env = {**os.environ, **(edge0_env() if manifest.get("engine") == "edge0" else {}), **(env or {})}
         self.proc: subprocess.Popen | None = None
         self.log: deque[str] = deque(maxlen=200)
         self.url = f"http://127.0.0.1:{port}"
@@ -205,9 +272,11 @@ class EngineProcess:
             print(line, flush=True)  # stays in the container's / service's log
             if (m := KV_ADVICE.search(line)) and not getattr(self, "kv_bytes", None):
                 self._remember_kv(int(m.group(1)))
-            if getattr(self, "manifest", {}).get("engine") != "llamacpp":
+            if getattr(self, "manifest", {}).get("engine") not in NOT_VLLM:
                 for k, v in parse_kv_capacity(line).items():
                     setattr(self, k, v)
+            if getattr(self, "ready", False):
+                continue  # what the engine says while serving isn't a start-up phase
             if (p := phase_of(line)) is not None:
                 if p[0] == "Starting engine" and later:
                     continue
@@ -221,10 +290,12 @@ class EngineProcess:
                 if getattr(self, "kv_bytes", None):  # maybe the remembered size no longer fits: measure next time
                     self._remember_kv(None)
                 tail = "\n".join(list(self.log)[-25:])
-                name = "llama.cpp" if self.manifest.get("engine") == "llamacpp" else "vLLM"
+                name = ENGINE_NAMES.get(self.manifest.get("engine"), "vLLM")
                 raise EngineError(f"{name} exited while starting:\n{tail}" if tail else f"{name} exited while starting")
             try:
-                if httpx.get(self.url + "/health", timeout=2).status_code == 200:
+                r = httpx.get(self.url + "/health", timeout=2)
+                if r.status_code == 200 and _loaded(r):
+                    self.ready = True
                     self.on_status("Ready", 1.0)
                     return
             except httpx.HTTPError:
@@ -240,7 +311,7 @@ class EngineProcess:
     # with it fails. Committed to the Volume with the rest after the start (modal_app.py).
 
     def _remembered_kv(self) -> int | None:
-        if not REMEMBER_KV or self.manifest.get("engine") == "llamacpp":
+        if not REMEMBER_KV or self.manifest.get("engine") in NOT_VLLM:
             return None
         return store.kv_cache_memory(self.models_root, self.manifest["id"], kv_setup(self.manifest))
 
@@ -291,6 +362,16 @@ class EngineProcess:
 
 
 VLLMProcess = EngineProcess  # the name modal_app.py and older code use
+ENGINE_NAMES = {"llamacpp": "llama.cpp", "edge0": "Edge0's engine"}
+
+
+def _loaded(r: httpx.Response) -> bool:
+    """Whether a 200 from /health means the model is loaded: edge0-strata answers while it loads, with "loaded"."""
+    try:
+        body = r.json()
+    except ValueError:
+        return True
+    return not isinstance(body, dict) or body.get("loaded") is not False
 
 
 def _error_text(status: int, detail: str) -> str:

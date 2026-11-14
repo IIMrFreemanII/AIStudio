@@ -133,7 +133,12 @@ def install(models_root: Path, manifest: dict, files: list[dict], tokens: dict, 
             else:
                 fetch(manifest["repo"], rev, f["name"], weights, tokens.get("huggingface"))
         shutil.rmtree(weights / ".cache", ignore_errors=True)
-        if manifest.get("engine") == "llamacpp":
+        if manifest.get("engine") == "edge0":
+            from .facts import EDGE0_REQUIRED
+            missing = [n for n in EDGE0_REQUIRED if not (weights / n).exists()]
+            if missing:
+                raise RuntimeError(f"the download is incomplete (no {', '.join(missing)})")
+        elif manifest.get("engine") == "llamacpp":
             if not (weights / manifest["ggufFile"]).exists():
                 raise RuntimeError("the download is incomplete (no GGUF file)")
         elif not (weights / "config.json").exists() or not any(weights.glob("*.safetensors")):

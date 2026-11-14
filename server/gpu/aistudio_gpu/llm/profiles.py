@@ -33,6 +33,9 @@ THINK_TAG_PARSERS = ("qwen3", "deepseek_r1")
 
 def guess(f: Facts) -> dict:
     """{"toolParser", "reasoningParser", "engineArgs"} for a model."""
+    if f.engine == "edge0":
+        # Edge0's engine renders the chat template, parses tool calls and splits thinking itself; "edge0" marks that.
+        return {"toolParser": "edge0", "reasoningParser": "edge0", "engineArgs": []}
     if f.engine == "llamacpp":
         # llama.cpp reads tool calls through the model's own chat template (--jinja); "llama.cpp" marks that its
         # reasoning format splits out <think> blocks.
@@ -73,7 +76,7 @@ def kv_dtype_bytes(engine_args: list[str]) -> int:
 
 _LEVELS = ["low", "medium", "high"]
 _SWITCH = ["off", "on"]
-_HYBRID = ("qwen3", "glm45", "llama.cpp")
+_HYBRID = ("qwen3", "glm45", "llama.cpp", "edge0")
 
 
 def _switch_key(m: dict) -> str | None:
