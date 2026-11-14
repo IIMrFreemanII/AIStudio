@@ -515,6 +515,8 @@ extension AppModel {
         config.vision = vision
         let limit = contextLimit(for: key)
         config.contextLimit = limit
+        // The tool definitions sent with every request, for the context meter's estimate.
+        let toolTokens = ((try? JSONEncoder().encode(config.tools.map(\.spec)))?.count ?? 0) / 4
         let ctx = ToolContext(root: setup.root)
         ctx.readRoots = setup.readRoots
         if setup.uiTools {
@@ -599,6 +601,7 @@ extension AppModel {
             let system = plain ? ChatPrompt.system(user: sent.systemPrompt, tools: callsTools)
                 : [sent.systemPrompt ?? "", own, ChatPrompt.section(tools: callsTools)]
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
+            doc.contextOverhead = TokenEstimate.text(system) + toolTokens
             do {
                 let media = try await self?.mediaURLs(sent, doc: doc, vision: vision, client: client) ?? [:]
                 var history = sent.messages(system: false) { media[$0] }
@@ -683,9 +686,6 @@ extension AppModel {
                             case .assistantFinished:
                                 st.acc.finish()
                                 publish()
-                                if let p = st.acc.promptTokens {
-                                    doc.contextUsed = p + (st.acc.completionTokens ?? 0)
-                                }
                             case .toolStarted(let call, let preview):
                                 var t = ChatTurn(role: .tool, text: "", toolCallID: call.id)
                                 t.toolTitle = preview.title

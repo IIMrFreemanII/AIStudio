@@ -1696,37 +1696,205 @@ struct QueuedBar: View {
     }
 }
 
-/// "Context: 45% of 262K tokens" under the field, and Compact.
+/// Under the field: a ring that fills as the chat's context does (a tick where it compacts by itself), the share used
+/// ("~" while part of it is estimated) and, from 60 %, Compact. Click the ring for what the context holds.
 struct ContextMeter: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+    @State private var showDetail = false
+
+    /// Where the meter turns orange (nearing the auto-compact point) and red.
+    static let warnAt = 0.6
+    static let dangerAt = 0.9
+
+    static func tint(_ share: Double) -> Color {
+        share >= dangerAt ? MG.destructive : share >= warnAt ? MG.warning : MG.accent
+    }
+
+    var body: some View {
+        if let key = doc.modelKey, let limit = model.contextLimit(for: key), !doc.transcript.turns.isEmpty {
+            let use = doc.transcript.contextUse(overhead: doc.contextOverhead)
+            let share = Double(use.tokens) / Double(limit)
+            HStack(spacing: 8) {
+                Button { showDetail.toggle() } label: {
+                    HStack(spacing: 5) {
+                        ContextRing(share: share, tint: Self.tint(share))
+                        Text((use.exact ? "" : "~") + "\(Int((share * 100).rounded()))%")
+                            .font(.mgFootnote.monospacedDigit())
+                            .foregroundStyle(share >= Self.warnAt ? Self.tint(share) : MG.secondaryLabel)
+                            .contentTransition(.numericText(value: share))
+                    }
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.mg(.plain))
+                .mgHelp("Context: \(use.exact ? "" : "about ")\(Self.tokens(use.tokens)) of \(Self.tokens(limit)) tokens. Click for details.")
+                .accessibilityLabel("Context \(Int((share * 100).rounded())) percent used")
+                .mgPopover(isPresented: $showDetail, size: ContextDetail.size(rows: showDetail
+                    ? doc.transcript.contextUse(overhead: doc.contextOverhead, breakdown: true).breakdown?.rows ?? 1 : 1)) {
+                    ContextDetail(doc: doc, limit: limit).environment(model)
+                }
+                .mgTestAnchor("context-meter")
+                if share >= Self.warnAt || doc.compacting {
+                    CompactButton(doc: doc)
+                }
+            }
+            .animation(.easeOut(duration: 0.35), value: use.tokens)
+        }
+    }
+
+    /// "850", "14.4K", "131K", "1.0M".
+    static func tokens(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1e6) }
+        if n >= 100_000 { return "\(Int((Double(n) / 1000).rounded()))K" }
+        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1000) }
+        return "\(n)"
+    }
+}
+
+/// A small ring: the track and the share filled clockwise from the top. (The auto-compact point is marked on the
+/// popover's bar; at this size a tick reads as a minus sign.)
+struct ContextRing: View {
+    var share: Double
+    var tint: Color
+    var size: CGFloat = 14
+    var line: CGFloat = 2.5
+
+    var body: some View {
+        ZStack {
+            Circle().inset(by: line / 2).stroke(MG.label.opacity(0.16), lineWidth: line)
+            Circle().inset(by: line / 2).trim(from: 0, to: min(max(share, 0), 1))
+                .stroke(tint, style: StrokeStyle(lineWidth: line, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: size, height: size)
+        .animation(.easeOut(duration: 0.35), value: share)
+    }
+}
+
+/// Compact, or "Compacting…" while it runs.
+private struct CompactButton: View {
     @Environment(AppModel.self) private var model
     let doc: ChatDocument
 
     var body: some View {
-        if doc.isAgent, let key = doc.modelKey, let limit = model.contextLimit(for: key), let used = doc.contextUsed {
-            let share = Double(used) / Double(limit)
-            HStack(spacing: 8) {
-                Text("Context: \(Int((share * 100).rounded()))% of \(Self.tokens(limit)) tokens")
-                    .font(.mgFootnote).foregroundStyle(share >= 0.75 ? MG.warning : MG.secondaryLabel)
-                    .mgHelp("\(used) tokens used by the last request. Near the limit the agent summarizes older messages by itself.")
-                Button {
-                    model.compact(doc)
-                } label: {
-                    if doc.compacting {
-                        HStack(spacing: 4) { ProgressView().controlSize(.mini); Text("Compacting…") }
-                    } else {
-                        Text("Compact")
-                    }
-                }
-                .buttonStyle(.mg(.bordered)).controlSize(.small)
-                .disabled(doc.isStreaming || doc.compacting)
-                .mgHelp("Replace the conversation so far with a summary, freeing up context")
-                Spacer(minLength: 0)
+        Button {
+            model.compact(doc)
+        } label: {
+            if doc.compacting {
+                HStack(spacing: 4) { MGSpinner().controlSize(.mini); Text("Compacting…") }
+            } else {
+                Text("Compact")
             }
         }
+        .buttonStyle(.mg(.bordered)).controlSize(.small)
+        .disabled(doc.isStreaming || doc.compacting)
+        .mgHelp("Replace the conversation so far with a summary, freeing up context")
+    }
+}
+
+extension ContextUse.Breakdown {
+    /// The parts the popover lists (those with tokens), in the bar's order.
+    var parts: [(name: String, tokens: Int, color: Color)] {
+        [("System and tools", system, MG.hueTeal), ("Messages", messages, MG.accent),
+         ("Tool calls and results", tools, MG.huePurple), ("Images and video", media, MG.huePink)]
+            .filter { $0.1 > 0 }
     }
 
-    static func tokens(_ n: Int) -> String {
-        n >= 1_000_000 ? String(format: "%.1fM", Double(n) / 1e6) : n >= 1_000 ? "\(Int((Double(n) / 1000).rounded()))K" : "\(n)"
+    var rows: Int { max(parts.count, 1) }
+}
+
+/// The ring's popover: tokens of the limit, a bar split by what fills it (a tick where it compacts by itself), the
+/// parts, and Compact.
+struct ContextDetail: View {
+    @Environment(AppModel.self) private var model
+    let doc: ChatDocument
+    let limit: Int
+
+    /// The popover is sized up front, as floating panels are.
+    static func size(rows: Int) -> CGSize { CGSize(width: 300, height: 144 + CGFloat(rows) * 22) }
+
+    var body: some View {
+        let use = doc.transcript.contextUse(overhead: doc.contextOverhead, breakdown: true)
+        let parts = use.breakdown?.parts ?? []
+        let share = Double(use.tokens) / Double(limit)
+        let compactAt = AgentConfig.defaultCompactAt
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Context").font(.mgHeadline)
+                Spacer()
+                Text("\(use.exact ? "" : "~")\(ContextMeter.tokens(use.tokens)) of \(ContextMeter.tokens(limit)) tokens")
+                    .font(.mgSubheadline.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ContextBar(parts: parts.map { ($0.tokens, $0.color) }, limit: limit, mark: compactAt)
+                HStack {
+                    Text("\(Int((share * 100).rounded()))% used")
+                        .foregroundStyle(share >= ContextMeter.warnAt ? ContextMeter.tint(share) : MG.secondaryLabel)
+                    Spacer()
+                    Text("Compacts by itself at \(Int(compactAt * 100))%").foregroundStyle(MG.tertiaryLabel)
+                }
+                .font(.mgFootnote.monospacedDigit())
+            }
+            VStack(spacing: 6) {
+                ForEach(parts, id: \.name) { p in
+                    HStack(spacing: 8) {
+                        Circle().fill(p.color).frame(width: 7, height: 7)
+                        Text(p.name).foregroundStyle(MG.label)
+                        Spacer()
+                        Text(ContextMeter.tokens(p.tokens)).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+                    }
+                    .font(.mgSubheadline)
+                    .frame(height: 16)
+                }
+            }
+            MGDivider()
+            HStack(alignment: .center, spacing: 10) {
+                Text(use.exact ? "Counted by the server for the last reply." : "~ Estimated until the next reply.")
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                CompactButton(doc: doc)
+            }
+        }
+        .padding(14)
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// A capsule split into coloured parts of `limit`, with a tick at `mark`.
+struct ContextBar: View {
+    var parts: [(tokens: Int, color: Color)]
+    var limit: Int
+    var mark: Double?
+    var height: CGFloat = 8
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let total = max(parts.reduce(0) { $0 + $1.tokens }, 1)
+            // Past the limit (a single huge message): the parts share the whole bar.
+            let scale = w / CGFloat(max(limit, total))
+            ZStack(alignment: .leading) {
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(MG.label.opacity(0.1))
+                    HStack(spacing: 1) {
+                        ForEach(Array(parts.enumerated()), id: \.offset) { _, p in
+                            Rectangle().fill(p.color).frame(width: max(1, CGFloat(p.tokens) * scale - 1))
+                        }
+                    }
+                }
+                .clipShape(Capsule())
+                if let mark {
+                    Capsule().fill(MG.label.opacity(0.55)).frame(width: 1.5, height: height + 6)
+                        .offset(x: w * CGFloat(mark) - 0.75)
+                }
+            }
+            .frame(height: geo.size.height)
+        }
+        .frame(height: height)
+        .animation(.easeOut(duration: 0.35), value: parts.map(\.tokens))
+        .accessibilityHidden(true)
     }
 }
 

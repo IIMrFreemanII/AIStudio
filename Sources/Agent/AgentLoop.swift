@@ -74,7 +74,9 @@ public struct AgentConfig: Sendable {
     /// The model's context in tokens: when set, the loop compacts the conversation as it nears the limit.
     public var contextLimit: Int?
     /// The share of `contextLimit` that triggers compaction.
-    public var compactAt = 0.75
+    public var compactAt = AgentConfig.defaultCompactAt
+    /// The default `compactAt` (the context meter marks it).
+    public static let defaultCompactAt = 0.75
 
     public init(model: String, tools: [any AgentTool] = CodingTools.all, mode: PermissionMode = .ask,
                 rules: AllowRules = AllowRules()) {
@@ -354,20 +356,7 @@ public enum ProjectContext {
 /// Keeping a long conversation inside the model's context: estimate its size, drop old tool output, summarize.
 public enum Compactor {
     /// Rough tokens: characters of text and tool-call arguments / 4, plus 1,000 per image or video.
-    public static func estimate(_ messages: [ChatMessage]) -> Int {
-        var chars = 0
-        var media = 0
-        for m in messages {
-            for p in m.parts {
-                switch p {
-                case .text(let t): chars += t.count
-                case .image, .video: media += 1
-                }
-            }
-            for c in m.toolCalls { chars += c.arguments.count }
-        }
-        return chars / 4 + media * 1_000
-    }
+    public static func estimate(_ messages: [ChatMessage]) -> Int { TokenEstimate.of(messages) }
 
     static let removed = "[output removed to save context]"
 

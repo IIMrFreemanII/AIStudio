@@ -98,7 +98,6 @@ extension AppModel {
             if chat {
                 doc.draft = target.text
                 doc.transcript.activeLeaf = target.parent
-                doc.contextUsed = nil
                 doc.liveTodos = nil
                 doc.editingTurnID = nil
             }
@@ -127,7 +126,6 @@ extension AppModel {
                 var t = ChatTurn(role: .user, text: summary)
                 t.summary = true
                 doc.transcript.append(t)
-                doc.contextUsed = nil
             } catch is CancellationError {
                 // Stopped: nothing changes.
             } catch {
