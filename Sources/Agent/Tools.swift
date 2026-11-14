@@ -18,7 +18,18 @@ public struct ToolArgs: @unchecked Sendable {
 
     public func string(_ key: String) -> String? { raw[key] as? String }
     public func int(_ key: String) -> Int? { (raw[key] as? Int) ?? (raw[key] as? Double).map(Int.init) ?? (raw[key] as? String).flatMap(Int.init) }
-    public func bool(_ key: String) -> Bool { (raw[key] as? Bool) ?? ((raw[key] as? String) == "true") }
+    public func bool(_ key: String) -> Bool { Self.flag(raw[key]) ?? false }
+
+    /// A yes/no argument however the model wrote it: true, "true", "True" (Python's spelling, which some models'
+    /// tool-call formats send as text: Edge0's engine sent "background": "True"), 1 / "1", "yes"; nil when absent
+    /// or not a yes/no.
+    public static func flag(_ v: Any?) -> Bool? {
+        if let b = v as? Bool { return b }
+        guard let s = (v as? String)?.trimmingCharacters(in: .whitespaces).lowercased() else { return nil }
+        if ["true", "1", "yes"].contains(s) { return true }
+        if ["false", "0", "no"].contains(s) { return false }
+        return nil
+    }
 
     public func required(_ key: String) throws -> String {
         guard let s = string(key) else { throw ToolError("missing \"\(key)\"") }

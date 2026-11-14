@@ -90,7 +90,7 @@ public enum UITools {
         var text = "\(done) in \(app.name)."
         if let title = await ui.frontWindowTitle(of: app), !title.isEmpty { text += " Front window: “\(title)”." }
         var images: [String] = []
-        if ctx.vision, args.raw["screenshot"] as? Bool != false, ui.access().screenRecording,
+        if ctx.vision, ToolArgs.flag(args.raw["screenshot"]) != false, ui.access().screenRecording,
            let shot = try? await ui.screenshot(of: app, window: nil) {
             images = [shot.dataURL]
             text += " Screenshot attached (\(shot.width)×\(shot.height) px)."
