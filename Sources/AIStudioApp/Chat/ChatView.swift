@@ -1144,7 +1144,7 @@ struct WaitingLine: View {
 
 /// The thinking-effort levels of a chat's model and the menu items for them (the header's menu and the composer's).
 enum EffortLevels {
-    static let help = "How hard the model thinks before answering. On/Off models switch thinking; gpt-oss has three levels."
+    static let help = "How hard the model thinks before answering. On/Off models switch thinking; gpt-oss and Edge0 have levels."
 
     static func label(_ value: String?) -> String {
         guard let v = value else { return "Model's default" }

@@ -113,7 +113,7 @@ def test_installing_skips_the_card_and_vllm_settings_are_refused(client, tmp_pat
     r = client.post("/v1/llm/install", json={"url": REPO}, headers=AUTH)
     assert r.status_code == 202, r.text
     m = wait_installed(client, r.json()["id"])
-    assert m["engine"] == "edge0" and m["gpu"] == "H100" and m["count"] == 1 and m["efforts"] == ["off", "on"]
+    assert m["engine"] == "edge0" and m["gpu"] == "H100" and m["count"] == 1 and m["efforts"] == ["off", "low", "medium", "high"]
     weights = tmp_path / "models" / "llm" / m["id"] / "weights"
     assert (weights / "tokenizer" / "tokenizer.json").exists() and (weights / "mtp" / "experts.bin").exists()
     assert not (weights / "assets").exists() and not (weights / "README.md").exists()
@@ -155,10 +155,17 @@ def test_ready_only_once_the_model_is_loaded():
     assert _loaded(health({"status": "ok", "loaded": True})) and _loaded(health({"status": "ok"}))
 
 
-def test_thinking_is_a_switch():
+def test_thinking_has_levels():
+    # The engine maps the level onto its template (high is the template's xhigh, its default); "on" is what chats
+    # saved before Edge0 had levels.
     m = {"id": "e", "engine": "edge0", "reasoningParser": "edge0"}
-    assert efforts(m) == ["off", "on"]
-    assert apply_effort({"reasoning_effort": "off"}, m) == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert efforts(m) == ["off", "low", "medium", "high"]
+    for level in ("off", "low", "medium", "high"):
+        assert apply_effort({"reasoning_effort": level}, m) == {"reasoning_effort": level}
+        assert edge0_body(m, apply_effort({"reasoning_effort": level, "messages": []}, m))["reasoning_effort"] == level
+    assert apply_effort({"reasoning_effort": "on"}, m) == {"reasoning_effort": "high"}
+    assert apply_effort({"reasoning_effort": "extreme", "a": 1}, m) == {"a": 1}
+    assert apply_effort({"a": 1}, m) == {"a": 1}
 
 
 def test_the_request_guard_keeps_what_the_engine_takes():

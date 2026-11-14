@@ -76,7 +76,11 @@ def kv_dtype_bytes(engine_args: list[str]) -> int:
 
 _LEVELS = ["low", "medium", "high"]
 _SWITCH = ["off", "on"]
-_HYBRID = ("qwen3", "glm45", "llama.cpp", "edge0")
+_HYBRID = ("qwen3", "glm45", "llama.cpp")
+# Edge0's engine takes a level (its template's low, medium and xhigh, which the engine calls high) or off. "on" is
+# what the app sent before it had levels: the template's default.
+_EDGE0 = ["off", "low", "medium", "high"]
+_EDGE0_ALIASES = {"on": "high"}
 
 
 def _switch_key(m: dict) -> str | None:
@@ -98,6 +102,8 @@ def efforts(m: dict) -> list[str]:
     """The thinking levels a model supports, for the app's menu: [] when it can't be controlled."""
     if m.get("reasoningParser") == "openai_gptoss":
         return list(_LEVELS)
+    if m.get("engine") == "edge0":
+        return list(_EDGE0)
     return list(_SWITCH) if _switch_key(m) else []
 
 
@@ -108,6 +114,13 @@ def apply_effort(body: dict, m: dict) -> dict:
         return body
     if m.get("reasoningParser") == "openai_gptoss":
         body["reasoning_effort"] = {"off": "low", "on": "medium"}.get(effort, effort)
+        return body
+    if m.get("engine") == "edge0":  # the engine maps the level onto its template itself
+        effort = _EDGE0_ALIASES.get(effort, effort)
+        if effort in _EDGE0:
+            body["reasoning_effort"] = effort
+        else:  # an unknown level would be a 400: the model's default instead
+            del body["reasoning_effort"]
         return body
     del body["reasoning_effort"]
     key = _switch_key(m)
