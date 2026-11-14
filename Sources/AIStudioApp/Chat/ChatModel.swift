@@ -132,8 +132,9 @@ final class ChatDocument: Identifiable {
     @ObservationIgnored var planAnswer: CheckedContinuation<PlanAnswer, Never>?
     /// The conversation is being summarized.
     var compacting = false
-    /// Tokens of the last request (prompt and reply): how full the context is.
-    var contextUsed: Int?
+    /// The system prompt and tool definitions of the last run, estimated in tokens: the context meter's base before
+    /// the server has counted a reply (`ChatTranscript.contextUse`).
+    var contextOverhead: Int?
     /// The message a rewind goes back to before (its card), and the files that would be restored.
     var rewindTarget: UUID?
     var rewindFiles: [URL]?
