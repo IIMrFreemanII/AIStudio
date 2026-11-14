@@ -163,8 +163,9 @@ extension SmokeTest {
               "choosing a file puts its path in backticks")
         check(ComposerSuggestions.slash("/comp", skills: []).map(\.draft) == ["/compact "]
               && ComposerSuggestions.slash("/compact now", skills: []).isEmpty, "slash suggestions until a space")
-        check([PermissionMode.ask, .acceptEdits, .plan, .bypass].map(\.cycled) == [.acceptEdits, .plan, .ask, .ask],
-              "⇧⇥ cycles Ask → Auto-accept → Plan")
+        check([PermissionMode.ask, .acceptEdits, .auto, .plan, .bypass].map { $0.cycled() } == [.acceptEdits, .auto, .plan, .ask, .ask]
+              && PermissionMode.acceptEdits.cycled(auto: false) == .plan,
+              "⇧⇥ cycles Ask → Auto-accept → Auto → Plan (no Auto for graph helpers)")
 
         // Agent runs: the buttons and stats go under a run's last reply only; mid-run replies with nothing under them
         // get no tail row. Finished look-only tools are plain lines, edits stay cards.

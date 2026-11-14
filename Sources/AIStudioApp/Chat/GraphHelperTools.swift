@@ -300,7 +300,7 @@ enum GraphHelper {
         let modeLine: String
         switch mode {
         case .plan: modeLine = "You are in plan mode: look and explain, but don't edit or run the workflow; finish with the changes you'd make."
-        case .ask, .acceptEdits: modeLine = "Edits apply right away (the user can undo them as one step); the user approves each run."
+        case .ask, .acceptEdits, .auto: modeLine = "Edits apply right away (the user can undo them as one step); the user approves each run."
         case .bypass: modeLine = "Edits and runs happen without asking."
         }
         return """

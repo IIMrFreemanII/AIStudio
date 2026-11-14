@@ -75,6 +75,14 @@ struct ToolCard: View {
                         if r > 0 { Text("−\(r)").font(.mgFootnote).foregroundStyle(MG.destructive) }
                     }
                     if compact, status == "running", !expanded { runningNote }
+                    if let review = doc.reviews[call.id] {
+                        Image(systemName: review.allowed ? "checkmark.shield" : "xmark.shield")
+                            .font(.system(size: 10))
+                            .foregroundStyle(review.allowed ? MG.tertiaryLabel : MG.warning)
+                            .mgHelp((review.allowed ? "Auto mode's reviewer allowed this" : "Auto mode's reviewer blocked this")
+                                    + (review.reason.isEmpty ? "." : ": " + review.reason))
+                            .accessibilityLabel(review.allowed ? "Reviewed and allowed" : "Blocked by the reviewer")
+                    }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
                         .foregroundStyle(MG.tertiaryLabel).rotationEffect(.degrees(expanded ? 90 : 0))
@@ -341,6 +349,10 @@ struct PermissionCard: View {
                 Label(risk, systemImage: "exclamationmark.triangle")
                     .font(.mgFootnote).foregroundStyle(MG.warning)
             }
+            if let note = request.reviewNote {
+                Label(note, systemImage: "checkmark.shield")
+                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            }
             HStack(spacing: 8) {
                 Button("Allow") { doc.answer(.allow) }
                     .buttonStyle(.mg(.prominent))
@@ -589,7 +601,8 @@ struct PermissionModeMenu: View {
     var body: some View {
         if doc.isAgent {
             MGMenuButton(kind: .plain) {
-                for m in PermissionMode.allCases {
+                // Auto mode needs a reviewer, which only coding chats set up.
+                for m in PermissionMode.allCases where m != .auto || doc.isCoding {
                     MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
                 }
                 if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty
@@ -607,7 +620,8 @@ struct PermissionModeMenu: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: doc.mode == .bypass ? "exclamationmark.shield" : doc.mode == .plan ? "doc.text.magnifyingglass" : "lock.shield")
+                    Image(systemName: doc.mode == .bypass ? "exclamationmark.shield" : doc.mode == .plan ? "doc.text.magnifyingglass"
+                          : doc.mode == .auto ? "checkmark.shield" : "lock.shield")
                     Text(doc.mode.title).lineLimit(1)
                 }
                 .font(.mgFootnote)
@@ -621,7 +635,7 @@ struct PermissionModeMenu: View {
 
     var helperDetail: String {
         switch doc.mode {
-        case .ask, .acceptEdits: return "Changes the workflow without asking (one undo step per reply); asks before each run."
+        case .ask, .acceptEdits, .auto: return "Changes the workflow without asking (one undo step per reply); asks before each run."
         case .plan: return "Only looks at the workflow and explains; edits and runs are refused."
         case .bypass: return "Changes and runs the workflow without asking."
         }
@@ -629,11 +643,13 @@ struct PermissionModeMenu: View {
 }
 
 extension PermissionMode {
-    /// The next mode for ⇧⇥: Ask → Auto-accept Edits → Plan → Ask (Bypass only from the menu; from it, back to Ask).
-    var cycled: PermissionMode {
+    /// The next mode for ⇧⇥: Ask → Auto-accept Edits → Auto → Plan → Ask (Bypass only from the menu; from it, back to
+    /// Ask). Without `auto` (graph helpers: no reviewer) Auto is skipped.
+    func cycled(auto: Bool = true) -> PermissionMode {
         switch self {
         case .ask: return .acceptEdits
-        case .acceptEdits: return .plan
+        case .acceptEdits: return auto ? .auto : .plan
+        case .auto: return .plan
         case .plan, .bypass: return .ask
         }
     }

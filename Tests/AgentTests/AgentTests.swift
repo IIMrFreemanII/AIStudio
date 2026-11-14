@@ -41,6 +41,7 @@ final class Recorder: @unchecked Sendable {
         case .toolOutput: return
         case .toolFinished(_, _, let status): s = "end \(status.rawValue)"
         case .compacted: s = "compacted"
+        case .reviewed(_, let allowed, _): s = allowed ? "reviewed allow" : "reviewed block"
         }
         lock.withLock { _events.append(s) }
     }
@@ -61,6 +62,30 @@ func call(_ name: String, _ args: [String: Any], id: String = "c1") -> ChatEvent
 }
 
 struct PermissionTests {
+    @Test func autoModeReviewsWhatAskWouldAsk() {
+        func d(_ e: ToolEffect, outside: Bool = false, rules: AllowRules = AllowRules(), cmd: String? = nil,
+               domain: String? = nil, app: String? = nil) -> PermissionDecision {
+            PermissionEngine.decide(effect: e, inProject: !outside, command: cmd, domain: domain, app: app, mode: .auto, rules: rules)
+        }
+        let rules = AllowRules(commandPrefixes: ["swift test", "git push"], domains: ["swift.org"], controlApps: ["TextEdit"])
+        #expect(d(.read) == .allow && d(.edit) == .allow && d(.graphEdit) == .allow)
+        #expect(d(.read, outside: true) == .review && d(.edit, outside: true) == .review)
+        #expect(d(.execute, rules: rules, cmd: "swift test") == .allow && d(.execute, rules: rules, cmd: "rm -rf build") == .review)
+        #expect(d(.execute, rules: rules, cmd: "git push") == .review)  // git-risky: reviewed whatever the rules say
+        #expect(d(.network, rules: rules, domain: "docs.swift.org") == .allow && d(.network, rules: rules, domain: "x.com") == .review)
+        #expect(d(.network) == .allow)  // the project's own page, no host
+        #expect(d(.run) == .review && d(.run, rules: AllowRules(runs: true)) == .allow && d(.orchestrate) == .review)
+        #expect(d(.control, rules: rules, app: "TextEdit") == .allow && d(.control, rules: rules, app: "Mail") == .review)
+        #expect(d(.observe, rules: rules, app: "TextEdit") == .allow && d(.observe, app: "Mail") == .review)
+        // The other modes never review.
+        for m in [PermissionMode.ask, .acceptEdits, .plan, .bypass] {
+            for e in [ToolEffect.read, .edit, .execute, .network, .run, .orchestrate, .observe, .control] {
+                #expect(PermissionEngine.decide(effect: e, inProject: false, command: "ls", domain: "x.com", app: "Mail",
+                                                mode: m, rules: AllowRules()) != .review)
+            }
+        }
+    }
+
     @Test func theMatrix() {
         func d(_ e: ToolEffect, _ m: PermissionMode, outside: Bool = false, rules: AllowRules = AllowRules(),
                cmd: String? = nil) -> PermissionDecision {

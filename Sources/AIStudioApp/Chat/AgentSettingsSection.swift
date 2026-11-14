@@ -14,6 +14,8 @@ struct AgentSettingsSection: View {
     @AppStorage("codeGraph") private var codeGraph = true
     @AppStorage("flowConcurrency") private var flowConcurrency = 0
     @AppStorage("flowMaxAgents") private var flowMaxAgents = 30
+    /// Extra rules for auto mode's reviewer, in your words (see `AutoReviewer`).
+    @AppStorage("autoModeRules") private var autoModeRules = ""
     @State private var graphifyPath: String?
     @State private var installing = false
     @State private var installError: String?
@@ -35,6 +37,12 @@ struct AgentSettingsSection: View {
                     .mgHelp(key.isEmpty ? "Remove the saved key" : "Save the key")
                     if keySaved { Text("Key saved").font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
                 }
+            }
+            MGFormRow("Auto mode rules") {
+                TextField("e.g. Pushing to my fork is fine. Never touch deploy/.", text: $autoModeRules, axis: .vertical)
+                    .lineLimit(2...5)
+                    .frame(maxWidth: 360)
+                    .mgHelp("In Auto mode a reviewer model checks risky actions against your request; these rules win over its defaults.")
             }
             MGFormRow("Worktree branch prefix") {
                 TextField("aistudio/", text: $branchPrefix).frame(maxWidth: 260)

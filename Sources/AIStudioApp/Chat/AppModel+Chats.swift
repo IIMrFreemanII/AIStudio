@@ -515,6 +515,13 @@ extension AppModel {
         config.vision = vision
         let limit = contextLimit(for: key)
         config.contextLimit = limit
+        // Auto mode's reviewer: the chat's model with thinking off (when it can be switched off), coding chats only.
+        if setup.coding, doc.mode == .auto {
+            let efforts = llm.model(key)?.efforts ?? []
+            let rules = UserDefaults.standard.string(forKey: "autoModeRules")
+            config.reviewer = AutoReviewer(client: client.chat, model: key.modelID,
+                                           reasoningEffort: efforts.contains("off") ? "off" : nil, extraRules: rules)
+        }
         // The tool definitions sent with every request, for the context meter's estimate.
         let toolTokens = ((try? JSONEncoder().encode(config.tools.map(\.spec)))?.count ?? 0) / 4
         let ctx = ToolContext(root: setup.root)
@@ -743,6 +750,8 @@ extension AppModel {
                                         doc.todoStepStarted = nil
                                     }
                                 }
+                            case .reviewed(let id, let allowed, let reason):
+                                doc.reviews[id] = (allowed, reason)
                             case .compacted(let summary):
                                 // The next assistant message follows the summary.
                                 var t = ChatTurn(role: .user, text: summary)

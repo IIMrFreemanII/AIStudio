@@ -26,6 +26,8 @@ public enum AgentEvent: Sendable {
     /// The conversation so far was replaced by this summary (the context was filling up): later requests start from
     /// it.
     case compacted(summary: String)
+    /// Auto mode's reviewer let a call run (`allowed`) or blocked it, and why.
+    case reviewed(callID: String, allowed: Bool, reason: String)
 }
 
 /// A call that needs the user's answer.
@@ -36,9 +38,13 @@ public struct PermissionRequest: Sendable {
     public var inProject: Bool
     /// Why the command needs an answer every time (git safety), nil for an ordinary one.
     public var risk: String?
+    /// Auto mode: why the reviewer handed this call to the user (it couldn't decide, or blocked too many).
+    public var reviewNote: String?
 
-    public init(call: ToolCall, preview: ToolPreview, effect: ToolEffect, inProject: Bool, risk: String? = nil) {
+    public init(call: ToolCall, preview: ToolPreview, effect: ToolEffect, inProject: Bool, risk: String? = nil,
+                reviewNote: String? = nil) {
         self.risk = risk
+        self.reviewNote = reviewNote
         self.call = call
         self.preview = preview
         self.effect = effect
@@ -77,6 +83,10 @@ public struct AgentConfig: Sendable {
     public var compactAt = AgentConfig.defaultCompactAt
     /// The default `compactAt` (the context meter marks it).
     public static let defaultCompactAt = 0.75
+    /// Auto mode's reviewer; without one, calls it would review ask the user.
+    public var reviewer: AutoReviewer?
+    /// Blocks in one reply after which the next reviewed call asks the user instead.
+    public var maxBlocks = 3
 
     public init(model: String, tools: [any AgentTool] = CodingTools.all, mode: PermissionMode = .ask,
                 rules: AllowRules = AllowRules()) {
@@ -100,6 +110,7 @@ public enum AgentLoop {
         var messages = initial
         var rules = config.rules
         let byName = Dictionary(config.tools.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+        let blocks = BlockCounter()
         ctx.mode = config.mode
         ctx.vision = config.vision
         for _ in 0..<config.maxSteps {
@@ -120,6 +131,10 @@ public enum AgentLoop {
             await events(.assistantFinished(content: acc.content, reasoning: acc.reasoning, toolCalls: calls))
             messages.append(ChatMessage(role: .assistant, parts: [.text(acc.content)], toolCalls: calls))
             if calls.isEmpty { return .finished }
+            // What auto mode's reviewer sees: the user's words and the agent's calls, not tool results.
+            let history = ReviewRequest.history(messages)
+            let review = ReviewScope(reviewer: config.reviewer, users: history.users, calls: history.calls,
+                                     blocks: blocks, maxBlocks: config.maxBlocks)
 
             let appendedFrom = messages.count
             var images: [String] = []
@@ -148,7 +163,7 @@ public enum AgentLoop {
                             g.addTask {
                                 var own = rulesNow
                                 let (o, st) = await ToolCallScope.$id.withValue(call.id) {
-                                    await runCall(call, byName: byName, rules: &own, ctx: ctx, ask: ask,
+                                    await runCall(call, byName: byName, rules: &own, ctx: ctx, review: review, ask: ask,
                                                   rulesChanged: rulesChanged, events: events)
                                 }
                                 return (k, o, st)
@@ -166,7 +181,7 @@ public enum AgentLoop {
                     let modeBefore = ctx.mode
                     let call = calls[i]
                     let (o, st) = await ToolCallScope.$id.withValue(call.id) {
-                        await runCall(call, byName: byName, rules: &rules, ctx: ctx, ask: ask,
+                        await runCall(call, byName: byName, rules: &rules, ctx: ctx, review: review, ask: ask,
                                       rulesChanged: rulesChanged, events: events)
                     }
                     let done = settled(o)
@@ -219,7 +234,7 @@ public enum AgentLoop {
     }
 
     static func runCall(_ call: ToolCall, byName: [String: any AgentTool], rules: inout AllowRules,
-                        ctx: ToolContext, ask: @Sendable (PermissionRequest) async -> PermissionAnswer,
+                        ctx: ToolContext, review: ReviewScope? = nil, ask: @Sendable (PermissionRequest) async -> PermissionAnswer,
                         rulesChanged: @Sendable (AllowRules) async -> Void,
                         events: @Sendable (AgentEvent) async -> Void) async -> (ToolOutput, ToolStatus) {
         guard let tool = byName[call.name] else {
@@ -240,14 +255,46 @@ public enum AgentLoop {
         await events(.toolStarted(call: call, preview: preview))
         // Reads may also go to the skills' folders without asking.
         let inProject = preview.paths.allSatisfy(tool.effect == .read ? ctx.canRead : ctx.inProject)
-        switch PermissionEngine.decide(effect: tool.effect, inProject: inProject, command: preview.command,
-                                       domain: preview.domain, app: preview.app, mode: ctx.mode, rules: rules) {
+        var decision = PermissionEngine.decide(effect: tool.effect, inProject: inProject, command: preview.command,
+                                               domain: preview.domain, app: preview.app, mode: ctx.mode, rules: rules)
+        var reviewNote: String?
+        if decision == .review {
+            let risk = tool.effect == .execute ? preview.command.flatMap(GitSafety.risk) : nil
+            if review?.reviewer == nil {
+                decision = .ask
+                reviewNote = "Auto mode has no reviewer here, so you decide."
+            } else if let review, await review.blocks.count >= review.maxBlocks {
+                decision = .ask
+                reviewNote = "The reviewer blocked \(review.maxBlocks) actions in this reply, so you decide this one."
+            } else if let review, let reviewer = review.reviewer {
+                let verdict = await reviewer.review(ReviewRequest(
+                    userMessages: review.users, recentCalls: review.calls, project: ctx.root.path, tool: call.name,
+                    effect: tool.effect, title: preview.title, command: preview.command, paths: preview.paths.map(\.path),
+                    domain: preview.domain, app: preview.appName ?? preview.app, inProject: inProject, risk: risk))
+                if Task.isCancelled { return (ToolOutput("Stopped.", isError: true), .denied) }
+                switch verdict {
+                case .allow(let reason):
+                    await events(.reviewed(callID: call.id, allowed: true, reason: reason))
+                    decision = .allow
+                case .block(let reason):
+                    await review.blocks.add()
+                    await events(.reviewed(callID: call.id, allowed: false, reason: reason))
+                    let why = reason.hasSuffix(".") ? reason : reason + "."
+                    return (ToolOutput("Auto mode's reviewer blocked this: \(why) Don't retry it as is: take another way the user asked for, or ask the user.",
+                                       isError: true), .denied)
+                case .unsure(let why):
+                    decision = .ask
+                    reviewNote = "The reviewer couldn't decide (\(why)), so you decide."
+                }
+            }
+        }
+        switch decision {
         case .deny(let why):
             return (ToolOutput(why, isError: true), .denied)
-        case .ask:
+        case .ask, .review:
             let risk = tool.effect == .execute ? preview.command.flatMap(GitSafety.risk) : nil
             let answer = await ask(PermissionRequest(call: call, preview: preview, effect: tool.effect, inProject: inProject,
-                                                     risk: risk))
+                                                     risk: risk, reviewNote: reviewNote))
             if Task.isCancelled { return (ToolOutput("Stopped.", isError: true), .denied) }
             switch answer {
             case .deny:
@@ -336,6 +383,7 @@ public enum ProjectContext {
         case .plan: modeLine = "You are in plan mode: only read and search (web_fetch is allowed). Don't edit files or run commands. When the plan is ready, call exit_plan with it: the user approves it, or asks for changes."
         case .ask: modeLine = "The user approves each edit and command, and may decline one: then ask what they want instead."
         case .acceptEdits: modeLine = "Edits in the project are applied without asking; the user approves each command."
+        case .auto: modeLine = "Auto mode: your tool calls run without asking the user, but a reviewer checks risky ones (commands, the web, files outside the project) against what the user asked for. If one is blocked, don't retry it as is: take another way the user asked for, or ask the user."
         case .bypass: modeLine = "Edits and commands run without asking. Edits can be rewound from the chat; what commands do can't."
         }
         let day = ISO8601DateFormatter.string(from: date, timeZone: .current, formatOptions: [.withFullDate])
