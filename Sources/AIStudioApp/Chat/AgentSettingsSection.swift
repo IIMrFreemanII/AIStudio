@@ -104,7 +104,7 @@ struct AgentSettingsSection: View {
                 }
             }
         } footer: {
-            Text("Skills are folders with a SKILL.md. Personal skills live here; a project's .claude/skills and .aistudio/skills are loaded in its coding chats. web_search is offered to the agent only when a key is saved.")
+            Text("Skills are folders with a SKILL.md. Personal skills live here; a project's .claude/skills and .aistudio/skills are loaded in its coding chats. web_search uses Brave Search when a key is saved, else DuckDuckGo (no key needed, but it limits automated searches).")
         }
         .onAppear {
             keySaved = model.searchAPIKey != nil

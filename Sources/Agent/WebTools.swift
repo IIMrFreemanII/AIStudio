@@ -295,16 +295,21 @@ public struct OpenPageTool: AgentTool {
 
 // MARK: web_search
 
+/// Brave Search with an API key; without one, DuckDuckGo's plain-HTML results page (no account needed).
 public struct WebSearchTool: AgentTool {
-    let apiKey: String
+    let apiKey: String?
     let fetch: WebFetcher
-    public init(apiKey: String, fetch: @escaping WebFetcher = WebAccess.urlSession) {
-        self.apiKey = apiKey
+    public init(apiKey: String? = nil, fetch: @escaping WebFetcher = WebAccess.urlSession) {
+        self.apiKey = apiKey.flatMap { $0.isEmpty ? nil : $0 }
         self.fetch = fetch
     }
 
+    static let duckHost = "html.duckduckgo.com"
+
     public let name = "web_search"
-    public let description = "Search the web (Brave Search) and return the top results with title, URL and a snippet. Read a result with web_fetch."
+    public var description: String {
+        "Search the web (\(apiKey == nil ? "DuckDuckGo" : "Brave Search")) and return the top results with title, URL and a snippet. Read a result with web_fetch."
+    }
     public var parameters: JSONValue {
         schema(["query": ("string", "What to search for"), "count": ("integer", "How many results, 1 to 10 (default 5)")],
                required: ["query"])
@@ -313,21 +318,25 @@ public struct WebSearchTool: AgentTool {
 
     public func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview {
         var p = ToolPreview(kind: .read, title: "Search the web for “\(try args.required("query"))”")
-        p.domain = "api.search.brave.com"
+        p.domain = apiKey == nil ? Self.duckHost : "api.search.brave.com"
         return p
+    }
+
+    /// The query percent-encoded by hand: queryItems leaves "+" and "&" in a value as they are.
+    static func encoded(_ query: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return query.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
         let query = try args.required("query")
         let count = min(10, max(1, args.int("count") ?? 5))
+        guard let apiKey else { return try await duckDuckGo(query, count: count) }
         var comps = URLComponents()
         comps.scheme = "https"
         comps.host = "api.search.brave.com"
         comps.path = "/res/v1/web/search"
-        // Encoded by hand: queryItems leaves "+" and "&" in a value as they are.
-        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-        let q = query.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
-        comps.percentEncodedQuery = "q=\(q)&count=\(count)"
+        comps.percentEncodedQuery = "q=\(Self.encoded(query))&count=\(count)"
         guard let url = comps.url else { throw ToolError("can't search for that query") }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
@@ -352,8 +361,86 @@ public struct WebSearchTool: AgentTool {
             if !snippet.isEmpty { item += "\n   " + snippet.replacingOccurrences(of: "\n", with: " ") }
             return item
         }
+        return Self.numbered(items, query: query)
+    }
+
+    static func numbered(_ items: [String], query: String) -> ToolOutput {
         guard !items.isEmpty else { return ToolOutput("No results for “\(query)”.") }
-        let numbered = items.enumerated().map { "\($0.offset + 1). \($0.element)" }
-        return ToolOutput(numbered.joined(separator: "\n\n"))
+        return ToolOutput(items.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n\n"))
+    }
+
+    // MARK: DuckDuckGo
+
+    func duckDuckGo(_ query: String, count: Int) async throws -> ToolOutput {
+        guard let url = URL(string: "https://\(Self.duckHost)/html/?q=\(Self.encoded(query))") else {
+            throw ToolError("can't search for that query")
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        // The plain-HTML page is for browsers without JavaScript; a generic browser name, nothing about the user.
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                         forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        let (data, response) = try await fetch(request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 200
+        let html = String(decoding: data, as: UTF8.self)
+        let results = Self.duckResults(html)
+        if results.isEmpty, code == 202 || code == 403 || code == 429 || html.contains("anomaly") {
+            return ToolOutput("DuckDuckGo didn't answer this search (it limits automated searches; HTTP \(code)). Try again in a minute, or "
+                              + "save a Brave Search API key in Settings → Coding Agent.", isError: true)
+        }
+        if code >= 400 {
+            return ToolOutput("HTTP \(code) from DuckDuckGo\n" + clip(HTMLText.text(html), max: 2000), isError: true)
+        }
+        let items = results.prefix(count).map { r in
+            var item = "\(r.title.ifEmpty(r.url))\n   \(r.url)"
+            if !r.snippet.isEmpty { item += "\n   " + r.snippet }
+            return item
+        }
+        return Self.numbered(Array(items), query: query)
+    }
+
+    struct DuckResult: Equatable {
+        var title: String
+        var url: String
+        var snippet: String
+    }
+
+    private static let duckTitle = try! NSRegularExpression(pattern: #"<a\b([^>]*\bclass="result__a"[^>]*)>([\s\S]*?)</a\s*>"#)
+    private static let duckSnippet = try! NSRegularExpression(pattern: #"<a\b[^>]*\bclass="result__snippet"[^>]*>([\s\S]*?)</a\s*>"#)
+    private static let href = try! NSRegularExpression(pattern: #"\bhref\s*=\s*"([^"]*)""#)
+
+    /// The results on DuckDuckGo's HTML page, in order: each title link, and the snippet before the next title. Ads
+    /// (links back to duckduckgo.com) are left out.
+    static func duckResults(_ html: String) -> [DuckResult] {
+        let ns = html as NSString
+        let titles = duckTitle.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        var out: [DuckResult] = []
+        for (i, m) in titles.enumerated() {
+            let attrs = ns.substring(with: m.range(at: 1))
+            guard let h = href.firstMatch(in: attrs, range: NSRange(location: 0, length: (attrs as NSString).length)),
+                  let link = resolve((attrs as NSString).substring(with: h.range(at: 1))) else { continue }
+            let end = i + 1 < titles.count ? titles[i + 1].range.location : ns.length
+            let after = NSRange(location: m.range.upperBound, length: end - m.range.upperBound)
+            let snippet = duckSnippet.firstMatch(in: html, range: after).map {
+                HTMLText.text(ns.substring(with: $0.range(at: 1))).replacingOccurrences(of: "\n", with: " ")
+            } ?? ""
+            out.append(DuckResult(title: HTMLText.text(ns.substring(with: m.range(at: 2))).replacingOccurrences(of: "\n", with: " "),
+                                  url: link, snippet: snippet))
+        }
+        return out
+    }
+
+    /// A result's real address: the link itself, or the one inside DuckDuckGo's redirect (`//duckduckgo.com/l/?uddg=…`).
+    /// Nil for its own links (ads go through duckduckgo.com/y.js).
+    static func resolve(_ raw: String) -> String? {
+        var s = raw.replacingOccurrences(of: "&amp;", with: "&")
+        if s.hasPrefix("//") { s = "https:" + s }
+        guard let c = URLComponents(string: s), let host = c.host?.lowercased(), c.scheme?.hasPrefix("http") == true else { return nil }
+        if host == "duckduckgo.com" || host.hasSuffix(".duckduckgo.com") {
+            guard c.path == "/l/", let target = c.queryItems?.first(where: { $0.name == "uddg" })?.value else { return nil }
+            return resolve(target)
+        }
+        return s
     }
 }

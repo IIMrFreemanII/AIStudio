@@ -1198,3 +1198,42 @@ def test_stopping_shows_from_stop_until_the_container_is_gone():
     assert stopping(ready, 50.0) == ready  # a Stop from before this container started
     assert stopping(ready, None) == ready
     assert stopping({"state": "cold", "started": 100.0}, 150.0)["state"] == "cold"
+
+
+def test_relay_bills_from_when_a_gpu_runs():
+    """A request that waits for a GPU pays only from when one runs (loading or ready), not for the wait."""
+    import asyncio
+
+    from aistudio_gpu.llm import proxy
+
+    states = iter(["starting", "starting", "loading", "loading"])
+
+    async def status():
+        return {"state": next(states, "ready")}
+
+    async def upstream():
+        await asyncio.sleep(0.5)  # four status polls at 0.1 s: two waiting, two loading
+        yield b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+        yield b"data: [DONE]\n\n"
+
+    async def run():
+        return [c async for c in proxy.relay(upstream(), status, 1.0, ping_seconds=0.1)]
+
+    out = b"".join(asyncio.run(run())).decode()
+    usage = json.loads(out.split("event: aistudio.usage\ndata: ")[1].split("\n")[0])
+    assert usage["seconds"] >= 0.45
+    assert 0.1 <= usage["gpuSeconds"] <= usage["seconds"] - 0.15  # the two waiting polls aren't billed
+    assert abs(usage["costUSD"] - usage["gpuSeconds"]) < 0.001  # $1 a second
+
+    async def ready():
+        return {"state": "ready"}
+
+    async def warm():
+        await asyncio.sleep(0.25)
+        yield b"data: [DONE]\n\n"
+
+    async def run_warm():
+        return [c async for c in proxy.relay(warm(), ready, 1.0, ping_seconds=0.1)]
+
+    warm_usage = json.loads(b"".join(asyncio.run(run_warm())).decode().split("event: aistudio.usage\ndata: ")[1].split("\n")[0])
+    assert abs(warm_usage["gpuSeconds"] - warm_usage["seconds"]) < 0.002  # a running model bills the whole request

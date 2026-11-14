@@ -1538,7 +1538,7 @@ struct ChatComposer: View {
                 dismissedFor = doc.draft
                 return .handled
             }
-            // A card waiting for an answer keeps esc (Deny, Skip, Cancel).
+            // A card waiting for an answer: Esc does nothing (it used to deny), and doesn't stop the reply either.
             if down, doc.isStreaming, doc.permission == nil, doc.question == nil, doc.plan == nil, doc.rewindTarget == nil {
                 model.stopReply(doc)
                 return .handled
