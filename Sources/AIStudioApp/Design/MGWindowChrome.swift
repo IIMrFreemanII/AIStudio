@@ -160,6 +160,10 @@ extension View {
 }
 
 /// A 6 pt grab strip on a column's edge that resizes it; the cursor turns into the resize arrows over it.
+///
+/// The cursor is a pointer style (the system tracks it), not NSCursor push/pop on hover: a missed hover exit (the panel
+/// closing under the pointer, a quick move) left the arrows stuck or popped the wrong cursor, and views underneath
+/// with their own cursor (text, web pages) took it back. While dragging, the arrows stay even off the strip.
 struct MGResizeHandle: View {
     @Binding var width: Double
     let range: ClosedRange<Double>
@@ -171,11 +175,10 @@ struct MGResizeHandle: View {
         Color.clear
             .frame(width: 6)
             .contentShape(Rectangle())
-            .onHover { inside in
-                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
-            }
+            .pointerStyle(.columnResize)
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { v in
+                    NSCursor.columnResize.set()
                     if start == nil { start = width }
                     let d = Double(v.translation.width) * (trailingColumn ? -1 : 1)
                     width = min(max(start! + d, range.lowerBound), range.upperBound)
@@ -184,7 +187,8 @@ struct MGResizeHandle: View {
     }
 }
 
-/// A horizontal divider that resizes the pane above it (a list over a preview): a hairline with a 7 pt grab area.
+/// A horizontal divider that resizes the pane above it (a list over a preview): a hairline with a 7 pt grab area. Its
+/// cursor works as `MGResizeHandle`'s.
 struct MGRowResizeHandle: View {
     @Binding var height: Double
     let range: ClosedRange<Double>
@@ -195,11 +199,10 @@ struct MGRowResizeHandle: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 3)
             .contentShape(Rectangle())
-            .onHover { inside in
-                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-            }
+            .pointerStyle(.rowResize)
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { v in
+                    NSCursor.rowResize.set()
                     if start == nil { start = min(max(height, range.lowerBound), range.upperBound) }
                     height = min(max(start! + Double(v.translation.height), range.lowerBound), range.upperBound)
                 }
