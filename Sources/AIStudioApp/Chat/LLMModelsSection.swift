@@ -224,7 +224,7 @@ struct LLMAddSheet: View {
                     MGFormRow("GPUs") {
                         MGPicker(selection: Binding(get: { option ?? f.plan.recommended ?? f.plan.options[0] },
                                                     set: { option = $0; clampContext() }),
-                                 options: f.plan.options.filter(\.fits).map { ($0, optionTitle($0, recommended: $0 == f.plan.recommended)) })
+                                 options: f.plan.options.filter(\.fits).map { ($0, optionTitle($0, recommended: f.plan.recommended, options: f.plan.options)) })
                     }
                     MGFormRow("Context") {
                         MGPicker(selection: $context, options: contextChoices(f).map { ($0, "\(contextLabel($0)) tokens") })
@@ -275,9 +275,16 @@ struct LLMAddSheet: View {
         }
     }
 
-    func optionTitle(_ o: GPUOption, recommended: Bool) -> String {
-        String(format: "%@ · $%.2f/h · up to %dk", o.label, o.usdPerHour, o.maxContext / 1024)
-            + (recommended ? " (cheapest)" : "") + ((o.note ?? "").isEmpty ? "" : " · \(o.note!)")
+    /// "H100 · $3.95/h · up to 128k (recommended)": "cheapest" only when the server's pick is the cheapest that fits
+    /// (it may prefer another, as for Edge0 models: all experts in VRAM).
+    func optionTitle(_ o: GPUOption, recommended: GPUOption?, options: [GPUOption]) -> String {
+        var tag = ""
+        if o == recommended {
+            let cheapest = options.filter(\.fits).map(\.usdPerHour).min() ?? o.usdPerHour
+            tag = o.usdPerHour <= cheapest ? " (cheapest)" : " (recommended)"
+        }
+        return String(format: "%@ · $%.2f/h · up to %dk", o.label, o.usdPerHour, o.maxContext / 1024)
+            + tag + ((o.note ?? "").isEmpty ? "" : " · \(o.note!)")
     }
 
     func contextChoices(_ f: LLMInspection) -> [Int] {
@@ -497,8 +504,10 @@ struct LLMSettingsSheet: View {
     }
 
     func gpuTitle(_ o: GPUOption) -> String {
-        o.maxContext >= context ? String(format: "%@ · $%.2f/h", o.label, o.usdPerHour)
-            : "\(o.label) · too small for \(contextLabel(context))"
+        guard o.maxContext >= context else { return "\(o.label) · too small for \(contextLabel(context))" }
+        // A menu item is one short line: a note's first clause ("slower" of "slower: experts stream from host memory").
+        let note = (o.note ?? "").split(separator: ":").first.map(String.init) ?? ""
+        return String(format: "%@ · $%.2f/h", o.label, o.usdPerHour) + (note.isEmpty ? "" : " · \(note)")
     }
 
     /// Options that fit the model but can't hold the context (left out of the picker, which can't disable items).

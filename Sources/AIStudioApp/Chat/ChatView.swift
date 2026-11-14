@@ -311,7 +311,10 @@ struct EngineChip: View {
             var parts = ["Shutting down", gpu]
             if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
             return parts.filter { !$0.isEmpty }.joined(separator: " · ")
-        default: return gpu.isEmpty ? "Cold" : "Cold · \(gpu)"
+        default:
+            // Cold: the GPU it starts on next (its settings), not the one its last start used.
+            let next = model?.gpuLabel ?? gpu
+            return next.isEmpty ? "Cold" : "Cold · \(next)"
         }
     }
 
