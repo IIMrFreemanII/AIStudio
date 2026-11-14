@@ -120,8 +120,19 @@ public struct ShellRunner: Sendable {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        // Default signal handling and nothing blocked: a child inherits ignored signals, and something in this process
+        // ignores SIGTERM, so without this an app the agent starts can't be stopped with a plain `kill`.
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+                                              | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
         posix_spawnattr_setpgroup(&attr, 0)
+        var defaults = sigset_t()
+        sigfillset(&defaults)
+        sigdelset(&defaults, SIGKILL)
+        sigdelset(&defaults, SIGSTOP)
+        posix_spawnattr_setsigdefault(&attr, &defaults)
+        var none = sigset_t()
+        sigemptyset(&none)
+        posix_spawnattr_setsigmask(&attr, &none)
 
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = Self.loginPath

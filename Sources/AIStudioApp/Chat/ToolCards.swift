@@ -51,7 +51,8 @@ struct ToolCard: View {
     /// Tools that only look (read, list, search, fetch): finished well, they're a plain line instead of a card, so the
     /// steps that need you (a question, a diff, a command, a failure) stand out.
     static let lookTools: Set<String> = ["read_file", "list_files", "search", "web_fetch", "web_search", "open_page",
-                                         "use_skill", "code_graph", "command_output", "list_sessions", "read_terminal"]
+                                         "use_skill", "code_graph", "command_output", "list_sessions", "read_terminal",
+                                         "ui_apps", "ui_elements", "ui_screenshot"]
     var quiet: Bool { status == "done" && !asking && Self.lookTools.contains(call.name) }
 
     var body: some View {
@@ -111,6 +112,9 @@ struct ToolCard: View {
             } else if expanded {
                 MGDivider()
                 details.padding(10)
+            } else if call.name == "ui_screenshot", hasMedia {
+                // A look tool is one line, but its picture stays visible.
+                toolMedia.padding(.horizontal, 10).padding(.bottom, 8)
             }
             if asking, let request = doc.permission {
                 MGDivider()
@@ -222,10 +226,47 @@ struct ToolCard: View {
                 .font(.mgMono).foregroundStyle(MG.secondaryLabel).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        if hasMedia { toolMedia.padding(.top, 6) }
         if status == "failed" || status == "denied", let t = result?.text, !isCommand {
             Text(t).font(.mgFootnote).foregroundStyle(status == "denied" ? MG.secondaryLabel : MG.destructive)
                 .padding(.top, 4)
         }
+    }
+
+    var hasMedia: Bool { !(result?.images.isEmpty ?? true) || !(result?.toolFiles?.isEmpty ?? true) }
+
+    /// A `ui_*` call's screenshots (thumbnails that open the viewer) and recordings (played here).
+    @ViewBuilder
+    var toolMedia: some View {
+        let folder = model.chatStore.filesFolder(doc.id)
+        let images = result?.images ?? []
+        VStack(alignment: .leading, spacing: 8) {
+            if !images.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(images.enumerated()), id: \.element) { i, name in
+                            if let image = NSImage(contentsOf: folder.appendingPathComponent(name)) {
+                                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit).frame(height: 120)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .contentShape(Rectangle())
+                                    .onTapGesture {
+                                        model.chatViewer = ChatViewerItem(
+                                            urls: images.map { folder.appendingPathComponent($0) }, index: i,
+                                            titles: images.indices.map { "Screenshot" + (images.count > 1 ? " \($0 + 1)" : "") })
+                                    }
+                                    .mgHelp("Screenshot (click to view)")
+                                    .mgTestAnchor("tool-image:\(name)")
+                            }
+                        }
+                    }
+                }
+            }
+            ForEach(result?.toolFiles ?? [], id: \.self) { name in
+                ChatVideoPlayer(url: folder.appendingPathComponent(name)).frame(height: 240)
+                    .mgTestAnchor("tool-video:\(name)")
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     func counts(_ diff: String) -> (Int, Int) { Self.diffCounts(diff) }
@@ -330,6 +371,8 @@ struct PermissionCard: View {
             }
         case .network: return "Read \(request.preview.domain ?? "this web page")?"
         case .orchestrate: return "Run this flow?"
+        case .observe: return "Let the agent look at \(request.preview.appName ?? "this app")?"
+        case .control: return "Let the agent use the mouse and keyboard in \(request.preview.appName ?? "this app")?"
         }
     }
 
@@ -343,6 +386,7 @@ struct PermissionCard: View {
             return ps.isEmpty ? nil : "Always Allow " + ps.map { "“\($0)”" }.joined(separator: ", ")
         case .run: return "Allow Runs in This Chat"
         case .network: return request.preview.domain.map { "Always Allow \($0)" }
+        case .observe, .control: return request.preview.appName.map { "Always for \($0)" }
         default: return nil
         }
     }
@@ -537,7 +581,8 @@ struct PermissionModeMenu: View {
     let doc: ChatDocument
 
     var allowed: String {
-        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []) + doc.rules.domains)
+        ((doc.rules.edits ? ["edits"] : []) + doc.rules.commandPrefixes.map { "“\($0)”" } + (doc.rules.runs ? ["runs"] : []) + doc.rules.domains
+            + doc.rules.observeApps.map { "\($0) (look)" } + doc.rules.controlApps.map { "\($0) (use)" })
             .joined(separator: ", ")
     }
 
@@ -547,7 +592,8 @@ struct PermissionModeMenu: View {
                 for m in PermissionMode.allCases {
                     MGMenuItem.button(m.title, checked: doc.mode == m) { doc.mode = m }
                 }
-                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty {
+                if doc.rules.edits || !doc.rules.commandPrefixes.isEmpty || doc.rules.runs || !doc.rules.domains.isEmpty
+                    || !doc.rules.observeApps.isEmpty || !doc.rules.controlApps.isEmpty {
                     MGMenuItem.divider
                     MGMenuItem.header("Always allowed: " + allowed)
                     MGMenuItem.button("Forget Always-Allow Answers") {
@@ -555,6 +601,8 @@ struct PermissionModeMenu: View {
                         doc.transcript.allowCommands = nil
                         doc.transcript.allowRuns = nil
                         doc.transcript.allowDomains = nil
+                        doc.transcript.allowObserveApps = nil
+                        doc.transcript.allowControlApps = nil
                     }
                 }
             } label: {

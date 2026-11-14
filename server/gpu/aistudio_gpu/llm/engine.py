@@ -382,7 +382,7 @@ class FakeEngine:
     in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
     "Done: " and the result. "create hello.txt with a todo list" calls todo_write (two steps, the first in progress)
     before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
-    FAKE_PR."""
+    FAKE_PR. With the ui tools offered, "test the ui" calls ui_apps, then "Done: " and the result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -430,6 +430,12 @@ class FakeEngine:
                 tool_results.insert(0, str(m.get("content") or ""))
             if m.get("role") == "user":
                 c = m.get("content")
+                text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or []
+                                                             if isinstance(p, dict) and p.get("type") == "text")
+                # The agent's own follow-ups after tool results that carry images or videos are not the user.
+                if text.startswith(("The images from the tool results above", "The images and videos from",
+                                    "The videos from")):
+                    continue
                 last = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or []
                                                              if isinstance(p, dict) and p.get("type") == "text")
                 # Videos it could read (uploads resolved to files, as vLLM gets them) are counted in the reply.
@@ -470,6 +476,8 @@ class FakeEngine:
         if "start a session" in last.lower() and "start_session" in tool_names:
             script = [("start_session", {"title": "Hello file", "prompt": "create hello.txt and show it",
                                          "worktree": True})]
+        elif "test the ui" in last.lower() and "ui_apps" in tool_names:
+            script = [("ui_apps", {})]
         elif "run a slow flow" in last.lower() and "flow" in tool_names:
             script = [("flow", {"script": FAKE_SLOW_FLOW})]
         elif "run a flow" in last.lower() and "flow" in tool_names:

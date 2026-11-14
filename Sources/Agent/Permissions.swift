@@ -13,6 +13,12 @@ public enum ToolEffect: String, Codable, Sendable {
     /// Starts a flow (many agents, GPU time): asks every time (no "always allow"), refused in plan mode, free only
     /// in Bypass.
     case orchestrate
+    /// Looks at another app (`ui_elements`, `ui_screenshot`, `ui_record`): asks unless always-allowed for that app,
+    /// in every mode but Bypass; plan mode doesn't refuse it (it only looks).
+    case observe
+    /// Uses the mouse and keyboard in another app (`ui_click`, `ui_type`…): asks per app unless always-allowed for
+    /// it, also in Auto-accept Edits; refused in plan mode.
+    case control
 }
 
 /// How much the agent may do without asking, as in Claude Code.
@@ -58,12 +64,19 @@ public struct AllowRules: Codable, Equatable, Sendable {
     public var runs = false
     /// Hosts `web_fetch` may read without asking (`example.com` also allows `docs.example.com`).
     public var domains: [String] = []
+    /// Apps (`UIApp.ruleKey`) the agent may look at without asking.
+    public var observeApps: [String] = []
+    /// Apps it may use the mouse and keyboard in without asking (looking at them too).
+    public var controlApps: [String] = []
 
-    public init(edits: Bool = false, commandPrefixes: [String] = [], runs: Bool = false, domains: [String] = []) {
+    public init(edits: Bool = false, commandPrefixes: [String] = [], runs: Bool = false, domains: [String] = [],
+                observeApps: [String] = [], controlApps: [String] = []) {
         self.edits = edits
         self.commandPrefixes = commandPrefixes
         self.runs = runs
         self.domains = domains
+        self.observeApps = observeApps
+        self.controlApps = controlApps
     }
 
     func allows(domain: String) -> Bool {
@@ -126,8 +139,9 @@ public struct AllowRules: Codable, Equatable, Sendable {
 public enum PermissionEngine {
     /// - `inProject`: every path the call touches is inside the project folder.
     /// - `domain`: the host a `.network` call reads from.
+    /// - `app`: the app an `.observe` or `.control` call acts on (`UIApp.ruleKey`).
     public static func decide(effect: ToolEffect, inProject: Bool, command: String? = nil, domain: String? = nil,
-                              mode: PermissionMode, rules: AllowRules) -> PermissionDecision {
+                              app: String? = nil, mode: PermissionMode, rules: AllowRules) -> PermissionDecision {
         if mode == .bypass { return .allow }
         switch effect {
         case .read:
@@ -156,6 +170,13 @@ public enum PermissionEngine {
             if domain == nil, inProject { return .allow }
             if let domain, rules.allows(domain: domain) { return .allow }
             return .ask
+        case .observe:
+            guard let app else { return .ask }
+            return rules.observeApps.contains(app) || rules.controlApps.contains(app) ? .allow : .ask
+        case .control:
+            if mode == .plan { return .deny("Plan mode is read only: the agent may look at apps but not click or type in them.") }
+            guard let app else { return .ask }
+            return rules.controlApps.contains(app) ? .allow : .ask
         }
     }
 }

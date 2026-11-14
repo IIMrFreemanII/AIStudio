@@ -136,6 +136,9 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var toolTitle: String?
     public var toolStatus: String?
     public var toolDetail: String?
+    /// Tool results: recordings (file names in the chat's files folder) the card plays. Never sent to the model, and
+    /// not in `attachments` (a video would be uploaded every time). A tool's screenshots are in `images`.
+    public var toolFiles: [String]?
     /// The model that wrote it (assistant turns).
     public var model: String?
     public var stats: RequestStats?
@@ -222,6 +225,9 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var allowRuns: Bool?
     /// "Always allow" for web domains (`web_fetch`).
     public var allowDomains: [String]?
+    /// "Always allow" for apps the `ui_*` tools look at, and apps they use (`UIApp.ruleKey`).
+    public var allowObserveApps: [String]?
+    public var allowControlApps: [String]?
     /// Sessions: pinned and archived in the list, when it was last looked at.
     public var pinned: Bool?
     public var archived: Bool?
@@ -362,7 +368,17 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         // Everything before the latest summary is in it.
         let shown = turns
         let from = shown.lastIndex { $0.summary == true } ?? shown.startIndex
+        // Only the last two tool results with screenshots keep them: older pictures cost a lot of context.
+        let withShots = shown[from...].filter { $0.role == .tool && !$0.images.isEmpty }.map(\.id)
+        let keepShots = Set(withShots.suffix(2))
+        var shots: [ContentPart] = []  // the pictures of the run of tool messages being written
+        func flushShots() {
+            guard !shots.isEmpty else { return }
+            out.append(ChatMessage(role: .user, parts: [.text("The images from the tool results above, in order:")] + shots))
+            shots = []
+        }
         for t in shown[from...] where t.error == nil || !t.text.isEmpty || t.sessionEvent != nil || t.flowEvent != nil {
+            if t.role != .tool { flushShots() }
             if let e = t.flowEvent {
                 out.append(ChatMessage(role: .user, parts: [.text(e.textForModel)]))
                 continue
@@ -385,9 +401,18 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
             case .assistant:
                 out.append(ChatMessage(role: .assistant, parts: [.text(t.text)], toolCalls: t.toolCalls))
             case .tool:
-                out.append(ChatMessage(role: .tool, parts: [.text(t.text)], toolCallID: t.toolCallID))
+                var text = t.text
+                if !t.images.isEmpty {
+                    if keepShots.contains(t.id) {
+                        shots += t.images.compactMap { name in image(name).map { ContentPart.image(url: $0) } }
+                    } else {
+                        text += " [screenshot omitted]"
+                    }
+                }
+                out.append(ChatMessage(role: .tool, parts: [.text(text)], toolCallID: t.toolCallID))
             }
         }
+        flushShots()
         return out
     }
 
@@ -405,6 +430,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         copy.allowEdits = allowEdits
         copy.allowCommands = allowCommands
         copy.allowDomains = allowDomains
+        copy.allowObserveApps = allowObserveApps
+        copy.allowControlApps = allowControlApps
         copy.graphHelper = graphHelper
         copy.allowRuns = allowRuns
         copy.brief = brief
@@ -439,6 +466,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
         case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
+        case allowObserveApps, allowControlApps
         case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen, sidePanel, sidePanelClosed, browserURL
     }
 
@@ -459,6 +487,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
         allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
         allowDomains = try c.decodeIfPresent([String].self, forKey: .allowDomains)
+        allowObserveApps = try c.decodeIfPresent([String].self, forKey: .allowObserveApps)
+        allowControlApps = try c.decodeIfPresent([String].self, forKey: .allowControlApps)
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned)
         archived = try c.decodeIfPresent(Bool.self, forKey: .archived)
         lastViewed = try c.decodeIfPresent(Date.self, forKey: .lastViewed)
@@ -498,6 +528,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
         try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
         try c.encodeIfPresent(allowDomains, forKey: .allowDomains)
+        try c.encodeIfPresent(allowObserveApps, forKey: .allowObserveApps)
+        try c.encodeIfPresent(allowControlApps, forKey: .allowControlApps)
         try c.encodeIfPresent(pinned, forKey: .pinned)
         try c.encodeIfPresent(archived, forKey: .archived)
         try c.encodeIfPresent(lastViewed, forKey: .lastViewed)

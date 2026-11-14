@@ -9,7 +9,8 @@ public enum FlowPolicy {
         case .execute: return r.inProject && GitSafety.risk(r.preview.command ?? "") == nil ? .allow : .deny
         case .edit, .read: return r.inProject ? .allow : .deny
         case .network: return .allow
-        case .run, .orchestrate, .graphEdit: return .deny
+        // Flow agents run unattended: they never look at or drive other apps.
+        case .run, .orchestrate, .graphEdit, .observe, .control: return .deny
         }
     }
 }

@@ -1,4 +1,5 @@
 import AIStudioProtocol
+import CryptoKit
 import Foundation
 
 /// An installed model on a GPU server (`GET v1/llm/models`).
@@ -260,14 +261,29 @@ public struct LLMServerClient: Sendable {
 
     public var chat: OpenAIChatClient { OpenAIChatClient(http: http) }
 
-    /// Uploads a chat's video unless the server has it (resumable; the file's name must be `<sha256>.<ext>`, as the
-    /// app saves them) and returns the URL a message uses for it: `upload:<name>`.
+    /// Uploads a chat's video unless the server has it (resumable) and returns the URL a message uses for it:
+    /// `upload:<name>`. The server stores files by content, `<sha256>.<ext>`: the composer saves attachments under
+    /// such names already; any other file (a `ui_record` recording) is hashed for its name.
     public func uploadMedia(_ file: URL,
                             progress: (@Sendable (_ sent: Int64, _ total: Int64, _ start: Int64) -> Void)? = nil)
         async throws -> String {
         let bytes = (try file.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
-        _ = try await http.upload(name: file.lastPathComponent, file: file, bytes: bytes, progress: progress)
-        return "upload:" + file.lastPathComponent
+        let name = try Self.contentName(file)
+        _ = try await http.upload(name: name, file: file, bytes: bytes, progress: progress)
+        return "upload:" + name
+    }
+
+    /// `<sha256>.<ext>` for a file: its own name when it already has that form, else the hash of its bytes.
+    static func contentName(_ file: URL) throws -> String {
+        let own = file.lastPathComponent
+        if own.range(of: #"^[0-9a-f]{64}(\.[a-z0-9]{1,8})?$"#, options: .regularExpression) != nil { return own }
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let ext = file.pathExtension.lowercased()
+        return ext.isEmpty ? hex : "\(hex).\(ext)"
     }
 
     public func inspect(url: String, hfToken: String? = nil, civitaiToken: String? = nil, context: Int? = nil,

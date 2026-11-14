@@ -59,6 +59,8 @@ extension AppModel {
             t.allowEdits = pt.allowEdits
             t.allowCommands = pt.allowCommands
             t.allowDomains = pt.allowDomains
+            t.allowObserveApps = pt.allowObserveApps
+            t.allowControlApps = pt.allowControlApps
             t.reasoningEffort = pt.reasoningEffort
         }
         if let e = spec.effort { t.reasoningEffort = e }

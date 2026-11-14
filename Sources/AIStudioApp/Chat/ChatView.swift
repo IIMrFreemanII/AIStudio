@@ -43,6 +43,7 @@ struct ChatView: View {
                 } else {
                     ChatTranscriptView(doc: doc)
                 }
+                if let kind = doc.uiAccessNeeded { UIAccessCard(doc: doc, kind: kind) }
                 ChatComposer(doc: doc, inFront: inFront)
             }
             .frame(maxWidth: .infinity)
