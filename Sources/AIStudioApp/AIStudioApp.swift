@@ -85,6 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if CommandLine.arguments.contains("--smoke-ui") {
+            Task { @MainActor in
+                let ok = await SmokeTest.runUI()
+                exit(ok ? 0 : 1)
+            }
+        }
         if CommandLine.arguments.contains("--smoke-tokens") { exit(SmokeTest.runTokens() ? 0 : 1) }
         if CommandLine.arguments.contains("--smoke-explorer") {
             Task { @MainActor in
@@ -275,6 +281,8 @@ struct AIStudioApp: App {
     @State private var settingsPresenter = MGPresenter()
 
     init() {
+        // The UI test fixture is a standalone window with none of the app's state: it takes over before anything loads.
+        if CommandLine.arguments.contains("--ui-fixture") { UIFixture.run() }
         // An install from before the rename keeps its folders and settings; this runs before either is read.
         LegacyMigration.run()
         // JetBrains Mono, the design system's typeface, before any view draws.

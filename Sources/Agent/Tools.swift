@@ -47,6 +47,9 @@ public struct ToolPreview: Equatable, Sendable {
     public var command: String?
     /// The host a `.network` call reads from (for the permission rules and "Always allow").
     public var domain: String?
+    /// The app an `.observe` or `.control` call acts on (`UIApp.ruleKey`, for the rules) and its name (for the card).
+    public var app: String?
+    public var appName: String?
 
     public init(kind: Kind, title: String, detail: String? = nil, paths: [URL] = [], command: String? = nil) {
         self.kind = kind
@@ -65,11 +68,18 @@ public struct ToolOutput: Equatable, Sendable {
     public var images: [String]
     /// What the card shows once the call is done, in place of the preview's detail (an answered question's summary).
     public var detail: String?
-    public init(_ text: String, isError: Bool = false, images: [String] = [], detail: String? = nil) {
+    /// Videos for a model that takes them (URLs the server accepts, e.g. `upload:<name>`), sent with the images.
+    public var videos: [String] = []
+    /// Local files the card shows (a recording's MP4).
+    public var attachments: [URL] = []
+    public init(_ text: String, isError: Bool = false, images: [String] = [], detail: String? = nil,
+                videos: [String] = [], attachments: [URL] = []) {
         self.text = text
         self.isError = isError
         self.images = images
         self.detail = detail
+        self.videos = videos
+        self.attachments = attachments
     }
 }
 
@@ -106,6 +116,14 @@ public final class ToolContext: @unchecked Sendable {
     public var flowLimits: (concurrency: Int, maxAgents: Int) = (4, 30)
     /// Folders outside the project that may be read without asking (the skills' folders).
     public var readRoots: [URL] = []
+    /// Sees and drives other apps for the `ui_*` tools (nil: not on this Mac, or not in this chat).
+    public var ui: (any UIDriving)?
+    /// This process, which the `ui_*` tools refuse to drive (tests set another).
+    public var ownPID: Int32 = ProcessInfo.processInfo.processIdentifier
+    /// The model sees images (the loop sets it from its config): `ui_*` actions then return a screenshot.
+    public var vision = false
+    /// Uploads a local video for a model that takes video and returns the URL to send (nil: the model doesn't).
+    public var uploadVideo: (@Sendable (URL) async throws -> String)?
     private var _callID = ""
     private var _mode = PermissionMode.ask
     /// The call being run. Calls run at the same time (`task`) each see their own, through `ToolCallScope`.

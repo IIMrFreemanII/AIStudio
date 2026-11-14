@@ -318,6 +318,14 @@ let package = Package(
             name: "Agent",
             dependencies: ["LLMClient"]
         ),
+        // Drives other Mac apps for the coding agent's UI testing: accessibility, CGEvent, ScreenCaptureKit, AVFoundation.
+        .target(
+            name: "UIControl",
+            dependencies: ["Agent"],
+            linkerSettings: [.linkedFramework("ScreenCaptureKit"), .linkedFramework("ApplicationServices"),
+                             .linkedFramework("AVFoundation"), .linkedFramework("CoreMedia"),
+                             .linkedFramework("AppKit"), .linkedFramework("CoreGraphics")]
+        ),
         // `aistudio-cli serve`: runs graphs for remote clients, plus the web dashboard.
         .target(
             name: "AIStudioServer",
@@ -368,6 +376,7 @@ let package = Package(
                 "ModelImport",
                 "LLMClient",
                 "Agent",
+                "UIControl",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
@@ -423,6 +432,10 @@ let package = Package(
         .testTarget(
             name: "AgentTests",
             dependencies: ["Agent", "LLMClient"]
+        ),
+        .testTarget(
+            name: "UIControlTests",
+            dependencies: ["UIControl", "Agent"]
         ),
         .testTarget(
             name: "LLMClientTests",

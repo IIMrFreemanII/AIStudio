@@ -5,6 +5,7 @@ import AppKit
 import Foundation
 import GraphRuntime
 import LLMClient
+import UIControl
 import Observation
 
 /// An open chat tab: the saved transcript plus what only exists while it's open (the draft, the reply streaming in).
@@ -104,6 +105,13 @@ final class ChatDocument: Identifiable {
     /// Background commands (dev servers…) the agent started, and the ids of those still running.
     @ObservationIgnored lazy var jobs = BackgroundJobs()
     @ObservationIgnored var jobsObserved = false
+    /// Drives other apps for the `ui_*` tools. Lives with the chat so element ids survive from one reply to the next;
+    /// made on the first reply that needs it (its recordings go in the chat's files folder).
+    @ObservationIgnored var uiDriver: UIDriver?
+    /// The app being recorded (the "controlling" panel stays up until the recording stops or the reply ends).
+    @ObservationIgnored var uiRecordingApp: String?
+    /// A macOS permission the `ui_*` tools lacked: the chat shows a setup card for it.
+    var uiAccessNeeded: UIAccessKind?
     /// Files the agent read or wrote in this chat (path → modification date then), carried from one reply to the next
     /// so an edit doesn't need a fresh read every turn. In memory only: after a restart the agent reads once more.
     @ObservationIgnored var readStamps: [String: Date] = [:]
@@ -239,7 +247,8 @@ final class ChatDocument: Identifiable {
     }
     var rules: AllowRules {
         AllowRules(edits: transcript.allowEdits ?? false, commandPrefixes: transcript.allowCommands ?? [],
-                   runs: transcript.allowRuns ?? false, domains: transcript.allowDomains ?? [])
+                   runs: transcript.allowRuns ?? false, domains: transcript.allowDomains ?? [],
+                   observeApps: transcript.allowObserveApps ?? [], controlApps: transcript.allowControlApps ?? [])
     }
 
     /// Answers the pending permission question.
@@ -643,4 +652,9 @@ final class LLMCatalog {
             }
         }
     }
+}
+
+/// Which macOS permission the setup card asks for.
+enum UIAccessKind: Equatable {
+    case accessibility, screenRecording
 }

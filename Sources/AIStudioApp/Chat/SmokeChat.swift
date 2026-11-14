@@ -454,6 +454,16 @@ extension SmokeTest {
             }
         }
         check(doc, "after the reply")
+
+        // The ui tools: ui_apps only lists apps (effect .read), so it needs no permission card or macOS permission.
+        let before = doc.transcript.turns.count
+        let uiReply = await send("test the ui")
+        let uiTools = doc.transcript.turns.dropFirst(before).filter { $0.role == .tool }
+        if uiTools.count != 1 || uiTools.first?.toolStatus != "done" {
+            say("ui tools: \(uiTools.map { "\($0.toolTitle ?? "?"): \($0.toolStatus ?? "?")" })"); ok = false
+        }
+        if uiReply?.text.isEmpty != false { say("no reply after ui_apps: \(uiReply?.error ?? "none")"); ok = false }
+        say("ui_apps: \(uiReply?.text.prefix(80) ?? "none")")
         model.closeChat(doc.id)
         model.openChat(doc.id)
         if let reopened = model.chats.first(where: { $0.id == doc.id }), reopened !== doc {

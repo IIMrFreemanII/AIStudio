@@ -4,6 +4,7 @@ import Foundation
 import PDFKit
 import ImageIO
 import LLMClient
+import UIControl
 
 /// Chat tabs: opening, closing, sending, and saving them.
 extension AppModel {
@@ -330,19 +331,20 @@ extension AppModel {
             let task = TaskTool(client: client.chat, model: key.modelID, tools: TaskTool.defaultTools + graphTools + [WebFetchTool()],
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
             var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), OpenPageTool(), ExitPlanTool(), task, FlowTool()]
-                + SessionTools.all + [ReadTerminalTool()]
+                + SessionTools.all + [ReadTerminalTool()] + UITools.all
             if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
             var setup = AgentSetup(tools: tools, root: root) {
                 let map = codeGraph ? await ProjectGraphs.shared.hubs(root: root) : nil
                 let base = await ProjectContext.systemPrompt(root: root, mode: doc.mode, coAuthor: coAuthor, projectMap: map,
-                                                                flows: FlowStore.promptSection(FlowStore.list(root: root)))
+                                                                flows: FlowStore.promptSection(FlowStore.list(root: root)), uiTools: true)
                 let section = SkillStore.promptSection(skills)
                 return section.isEmpty ? base : base + "\n\n" + section
             }
             setup.readRoots = skills.map(\.folder)
             setup.coding = true
+            setup.uiTools = true
             runAgent(doc, key: key, client: client, setup: setup, add: add)
             return
         }
@@ -446,7 +448,10 @@ extension AppModel {
         guard vision else { return [:] }
         let folder = chatStore.filesFolder(doc.id)
         var out: [String: String] = [:]
-        for name in transcript.attachments where out[name] == nil {
+        // Tool screenshots older than the last two aren't sent again (`ChatTranscript.messages`): don't read them.
+        let shots = transcript.turns.filter { $0.role == .tool && !$0.images.isEmpty }
+        let unsent = Set(shots.dropLast(2).flatMap(\.images))
+        for name in transcript.attachments where out[name] == nil && !unsent.contains(name) {
             let file = folder.appendingPathComponent(name)
             if ChatTurn.isVideo(name) {
                 guard FileManager.default.fileExists(atPath: file.path) else { continue }
@@ -512,6 +517,13 @@ extension AppModel {
         config.contextLimit = limit
         let ctx = ToolContext(root: setup.root)
         ctx.readRoots = setup.readRoots
+        if setup.uiTools {
+            if doc.uiDriver == nil { doc.uiDriver = UIDriver(filesFolder: chatStore.filesFolder(doc.id)) }
+            ctx.ui = doc.uiDriver
+            if vision, llm.model(key)?.engine != "llamacpp" {
+                ctx.uploadVideo = { url in try await client.uploadMedia(url) }
+            }
+        }
         if setup.coding {
             ctx.checkpoints = checkpoints(for: doc)
             ctx.turnID = sent.turns.last { $0.role == .user && $0.summary != true }?.id
@@ -609,7 +621,10 @@ extension AppModel {
                 let outcome = try await AgentLoop.run(
                     client: client.chat, messages: [.system(system)] + history, config: config, context: ctx,
                     ask: { [weak self, weak doc] request in
-                        await withCheckedContinuation { cont in
+                        // The "controlling" panel waits for the user's answer: nothing is being controlled yet.
+                        let ui = Self.uiControlTools.contains(request.call.name)
+                        if ui { await MainActor.run { UIControlPanel.shared.hide() } }
+                        let answer: PermissionAnswer = await withCheckedContinuation { cont in
                             Task { @MainActor in
                                 guard let doc else { cont.resume(returning: .deny); return }
                                 doc.permissionAnswer = cont
@@ -617,6 +632,15 @@ extension AppModel {
                                 self?.sessionChanged(doc)
                             }
                         }
+                        if ui, answer != .deny {
+                            await MainActor.run {
+                                guard let doc else { return }
+                                let recording = request.call.name == "ui_record"
+                                UIControlPanel.shared.show(app: request.preview.appName ?? "an app",
+                                                           verb: recording ? "recording" : "controlling") { self?.stopReply(doc) }
+                            }
+                        }
+                        return answer
                     },
                     rulesChanged: { [weak doc] rules in
                         await MainActor.run {
@@ -624,6 +648,8 @@ extension AppModel {
                             doc?.transcript.allowCommands = rules.commandPrefixes
                             doc?.transcript.allowRuns = rules.runs ? true : nil
                             doc?.transcript.allowDomains = rules.domains.isEmpty ? nil : rules.domains
+                            doc?.transcript.allowObserveApps = rules.observeApps.isEmpty ? nil : rules.observeApps
+                            doc?.transcript.allowControlApps = rules.controlApps.isEmpty ? nil : rules.controlApps
                         }
                     },
                     modeChanged: { [weak doc] m in await MainActor.run { doc?.mode = m } },
@@ -666,6 +692,21 @@ extension AppModel {
                                 t.toolDetail = preview.detail
                                 t.toolStatus = "running"
                                 doc.transcript.append(t)
+                                if Self.uiControlTools.contains(call.name) {
+                                    let name = preview.appName ?? "an app"
+                                    let start = (try? ToolArgs(json: call.arguments))?.string("action") == "start"
+                                    if call.name == "ui_record", start { doc.uiRecordingApp = name }
+                                    let recording = doc.uiRecordingApp != nil && call.name == "ui_record"
+                                    // When the call will ask first, the panel comes up once it's allowed (`ask`).
+                                    let effect: ToolEffect = call.name == "ui_record" ? .observe : .control
+                                    let free = PermissionEngine.decide(effect: effect, inProject: true, app: preview.app,
+                                                                       mode: doc.mode, rules: doc.rules) == .allow
+                                    if free {
+                                        UIControlPanel.shared.show(app: name, verb: recording ? "recording" : "controlling") {
+                                            self?.stopReply(doc)
+                                        }
+                                    }
+                                }
                             case .toolOutput:
                                 break  // ctx.onOutput streams it
                             case .toolFinished(let id, let output, let status):
@@ -674,13 +715,19 @@ extension AppModel {
                                     self?.refreshGitSoon(doc)
                                     self?.codeGraphToolFinished(doc, callID: id)
                                 }
+                                let shots = setup.uiTools ? self?.saveToolImages(output, doc: doc) : nil
                                 if let t = doc.transcript.turns.last(where: { $0.toolCallID == id }) {
                                     doc.transcript.update(t.id) {
                                         $0.text = output.text
                                         $0.toolStatus = status.rawValue
                                         if let detail = output.detail { $0.toolDetail = detail }
+                                        if let shots {
+                                            if !shots.images.isEmpty { $0.images = shots.images }
+                                            if !shots.files.isEmpty { $0.toolFiles = shots.files }
+                                        }
                                     }
                                 }
+                                if setup.uiTools { self?.uiToolFinished(doc, callID: id, output: output) }
                                 if doc.transcript.turns.contains(where: { $0.toolCalls.contains { $0.id == id && $0.name == "todo_write" } }) {
                                     let list = ctx.todos
                                     doc.liveTodos = list
@@ -725,6 +772,12 @@ extension AppModel {
             if doc.question != nil { doc.answerQuestion(nil) }
             if doc.plan != nil { doc.answerPlan(.keepPlanning(nil)) }
             setup.finished()
+            if setup.uiTools {
+                // No recording outlives the reply.
+                _ = try? await doc.uiDriver?.stopRecording()
+                doc.uiRecordingApp = nil
+                UIControlPanel.shared.hide()
+            }
             doc.liveTurnID = nil
             doc.liveTodos = nil
             doc.todoStepStarted = nil
@@ -736,6 +789,57 @@ extension AppModel {
             self?.sessionRunEnded(doc)
             self?.unloadIfHidden(doc)
             await self?.llm.refreshStatus(key)
+        }
+    }
+
+    // MARK: ui_* tools
+
+    /// The tools that move the mouse or keyboard, or record: while one runs the "controlling" panel is up.
+    static let uiControlTools: Set<String> = ["ui_click", "ui_type", "ui_key", "ui_scroll", "ui_drag", "ui_record"]
+
+    /// Keeps a ui_* result's screenshots (data URLs, as JPEG files) and recordings in the chat's files folder, and
+    /// gives their names for the tool turn.
+    func saveToolImages(_ output: ToolOutput, doc: ChatDocument) -> (images: [String], files: [String]) {
+        let folder = chatStore.filesFolder(doc.id)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        var images: [String] = []
+        for url in output.images {
+            guard let comma = url.firstIndex(of: ","), url.hasPrefix("data:"),
+                  let data = Data(base64Encoded: String(url[url.index(after: comma)...])) else { continue }
+            let name = UUID().uuidString + ".jpg"
+            if (try? data.write(to: folder.appendingPathComponent(name))) != nil { images.append(name) }
+        }
+        var files: [String] = []
+        for url in output.attachments {
+            let inside = url.standardizedFileURL.deletingLastPathComponent().path == folder.standardizedFileURL.path
+            if inside {
+                files.append(url.lastPathComponent)
+            } else {
+                let dest = folder.appendingPathComponent(url.lastPathComponent)
+                if !fm.fileExists(atPath: dest.path) { try? fm.copyItem(at: url, to: dest) }
+                if fm.fileExists(atPath: dest.path) { files.append(url.lastPathComponent) }
+            }
+        }
+        return (images, files)
+    }
+
+    /// After a ui_* call: the panel goes away (a recording keeps it until it stops) and a missing permission gets its
+    /// setup card.
+    func uiToolFinished(_ doc: ChatDocument, callID: String, output: ToolOutput) {
+        let call = doc.transcript.turns.lazy.flatMap(\.toolCalls).first { $0.id == callID }
+        if let call, Self.uiControlTools.contains(call.name) {
+            let stop = (try? ToolArgs(json: call.arguments))?.string("action") == "stop"
+            if call.name == "ui_record", stop || output.isError { doc.uiRecordingApp = nil }
+            if let app = doc.uiRecordingApp {
+                UIControlPanel.shared.show(app: app, verb: "recording") { [weak self] in self?.stopReply(doc) }
+            } else {
+                UIControlPanel.shared.hide()
+            }
+        }
+        if output.isError {
+            if output.text.hasPrefix(UITools.needsAccessibility) { doc.uiAccessNeeded = .accessibility }
+            else if output.text.hasPrefix(UITools.needsScreenRecording) { doc.uiAccessNeeded = .screenRecording }
         }
     }
 
@@ -775,6 +879,8 @@ struct AgentSetup {
     var readRoots: [URL] = []
     /// A coding chat: its file changes are checkpointed and its background commands tracked.
     var coding = false
+    /// The `ui_*` tools are in `tools`: the run gives them a driver.
+    var uiTools = false
 
     init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
         self.tools = tools

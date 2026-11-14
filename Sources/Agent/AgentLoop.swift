@@ -99,6 +99,7 @@ public enum AgentLoop {
         var rules = config.rules
         let byName = Dictionary(config.tools.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
         ctx.mode = config.mode
+        ctx.vision = config.vision
         for _ in 0..<config.maxSteps {
             try Task.checkCancellation()
             var request = ChatRequest(model: config.model, messages: messages)
@@ -120,6 +121,7 @@ public enum AgentLoop {
 
             let appendedFrom = messages.count
             var images: [String] = []
+            var videos: [String] = []
             var results = [(output: ToolOutput, status: ToolStatus)?](repeating: nil, count: calls.count)
             var i = 0
             while i < calls.count {
@@ -164,13 +166,15 @@ public enum AgentLoop {
                     if config.vision { images += output.images }
                     else { output.text += "\n(\(output.images.count) image(s) left out: this model can't see images.)" }
                 }
+                if config.vision { videos += output.videos }
                 await events(.toolFinished(callID: call.id, output: output, status: status))
                 messages.append(ChatMessage(role: .tool, parts: [.text(output.text)], toolCallID: call.id))
             }
             // Tool messages are text only in the OpenAI API: images follow as a user message.
-            if !images.isEmpty {
-                messages.append(ChatMessage(role: .user, parts: [.text("The images from the tool results above, in order:")]
-                                            + images.map { .image(url: $0) }))
+            if !images.isEmpty || !videos.isEmpty {
+                let what = videos.isEmpty ? "images" : images.isEmpty ? "videos" : "images and videos"
+                messages.append(ChatMessage(role: .user, parts: [.text("The \(what) from the tool results above, in order:")]
+                                            + images.map { .image(url: $0) } + videos.map { .video(url: $0) }))
             }
 
             if let limit = config.contextLimit {
@@ -226,7 +230,7 @@ public enum AgentLoop {
         // Reads may also go to the skills' folders without asking.
         let inProject = preview.paths.allSatisfy(tool.effect == .read ? ctx.canRead : ctx.inProject)
         switch PermissionEngine.decide(effect: tool.effect, inProject: inProject, command: preview.command,
-                                       domain: preview.domain, mode: ctx.mode, rules: rules) {
+                                       domain: preview.domain, app: preview.app, mode: ctx.mode, rules: rules) {
         case .deny(let why):
             return (ToolOutput(why, isError: true), .denied)
         case .ask:
@@ -244,6 +248,8 @@ public enum AgentLoop {
                 if tool.effect == .network, let d = preview.domain?.lowercased(), !d.isEmpty, !rules.domains.contains(d) {
                     rules.domains.append(d)
                 }
+                if tool.effect == .observe, let a = preview.app, !rules.observeApps.contains(a) { rules.observeApps.append(a) }
+                if tool.effect == .control, let a = preview.app, !rules.controlApps.contains(a) { rules.controlApps.append(a) }
                 if tool.effect == .execute, risk == nil, let cmd = preview.command {
                     for prefix in AllowRules.prefixes(of: cmd) where !rules.commandPrefixes.contains(prefix) {
                         rules.commandPrefixes.append(prefix)
@@ -272,7 +278,7 @@ public enum AgentLoop {
 public enum ProjectContext {
     public static func systemPrompt(root: URL, mode: PermissionMode, date: Date = Date(),
                                      coAuthor: String? = nil, projectMap: String? = nil,
-                                     flows: String? = nil) async -> String {
+                                     flows: String? = nil, uiTools: Bool = false) async -> String {
         let git = await ShellRunner().run("git status --short --branch 2>/dev/null | head -40", cwd: root, timeout: 10)
         let isRepo = git.status == 0 && !git.output.isEmpty
         var gitInfo = "Not a git repository."
@@ -302,6 +308,18 @@ public enum ProjectContext {
             flowInfo = "\n\nFlows: for a big job with independent parts, the flow tool runs a JavaScript script that starts many agents. API: agent(prompt, {label, phase, schema, mode: 'read'|'edit', effort}) → text, or the parsed object with schema, or {text, branch} for edit; parallel([() => agent(…), …]); pipeline(items, stage1, stage2); phase(title); log(msg); args; verifyEach(findings, {phase}) adds {verdict: {real, reason}} to each; implementAndCheck(task, {check: 'swift test'}) → {branch, passed, report}. Read agents only read; edit agents work in their own git worktree and branch. The script starts with export const meta = {name, description, phases: [{title}]} and ends with return <result>. Prompts must be complete: agents don't see this chat. effort sets an agent's thinking (e.g. 'low' for quick scouts, 'high' for verifiers and implementers; models with only on/off thinking take 'off'/'on'). Use plain tools for small jobs; the user approves each flow."
             if !flows.isEmpty { flowInfo += "\n" + flows }
         }
+        var uiInfo = ""
+        if uiTools {
+            uiInfo = "\n\n" + """
+            # Testing UI apps
+            You can look at and use other Mac apps with the ui_* tools, one app at a time, named by `app`.
+            - Start the app you built with run_command (background: true), e.g. `open path/to/App.app` or the built binary; wait a moment, then call ui_apps to find its name.
+            - Read the window with ui_elements first and act by element id (ui_click element: "e12", ui_type with element). After each step, check the result (ui_elements again, or the screenshot that comes back) before the next one.
+            - Use ui_screenshot when layout or looks matter; ui_click x/y are pixels of the last screenshot.
+            - Record with ui_record (start, do the steps, stop) when the user wants to see a flow.
+            - The user approves each app once. Never type passwords, tokens or other secrets, and don't touch apps the task doesn't need. If a tool says a permission is missing, tell the user which one and stop.
+            """
+        }
         let modeLine: String
         switch mode {
         case .plan: modeLine = "You are in plan mode: only read and search (web_fetch is allowed). Don't edit files or run commands. When the plan is ready, call exit_plan with it: the user approves it, or asks for changes."
@@ -328,7 +346,7 @@ public enum ProjectContext {
         \(gitRules)Project folder: \(root.path)
         Today: \(day)
         Shell: zsh on macOS (no interactive commands; stdin is closed)
-        \(gitInfo)\(instructions)\(mapInfo)\(flowInfo)
+        \(gitInfo)\(uiInfo)\(instructions)\(mapInfo)\(flowInfo)
         """
     }
 }
