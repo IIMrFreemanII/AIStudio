@@ -13,59 +13,97 @@ public struct OpenAIChatClient: Sendable {
         self.apiPath = apiPath
     }
 
+    /// Seconds to wait before each new attempt after the connection dropped (see `stream`); its count is the number of
+    /// retries.
+    public var retryDelays: [Double] = [1, 2, 4, 8, 15]
+
     /// The reply as events. Cancel the consuming task (or stop iterating) to stop generation.
+    ///
+    /// A connection lost before the reply began (a long cold start, a network blip, a gateway error) is retried with the
+    /// same request: nothing was shown or run yet, and the server is still starting the model, so the reply would
+    /// otherwise be lost and the GPU would start for nothing. A `Reconnecting` status shows meanwhile.
     public func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                do {
-                    var request = request
-                    request.stream = true
-                    var r = http.request("\(apiPath)/chat/completions", method: "POST")
-                    r.httpBody = try JSONEncoder().encode(request)
-                    r.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    r.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    // The server pings every few seconds, also through a cold start.
-                    r.timeoutInterval = 120
-                    let (bytes, response) = try await http.session.bytes(for: r)
-                    if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) {
-                        var body = Data()
-                        for try await b in bytes {
-                            body.append(b)
-                            if body.count > 65536 { break }
-                        }
-                        throw LLMError.http(status, Self.errorText(body))
-                    }
-                    var parser = SSEParser()
-                    var line: [UInt8] = []
-                    line.reserveCapacity(4096)
-                    func handle(_ e: SSEEvent) throws -> Bool {
-                        try Self.handle(e) { continuation.yield($0) }
-                    }
-                    var done = false
-                    for try await b in bytes {
-                        if b == 10 {
-                            if let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try handle(e) {
-                                done = true
-                                break
+                var lastStatus: EngineStatus?
+                var attempt = 0
+                while true {
+                    var began = false
+                    do {
+                        try await once(request) { e in
+                            switch e {
+                            case .status(let s): lastStatus = s
+                            default: began = true
                             }
-                            line.removeAll(keepingCapacity: true)
-                        } else {
-                            line.append(b)
+                            continuation.yield(e)
                         }
-                    }
-                    if !done {
-                        if !line.isEmpty, let e = parser.feed(line: String(decoding: line, as: UTF8.self)) {
-                            _ = try handle(e)
+                        continuation.finish()
+                        return
+                    } catch {
+                        if error is CancellationError || Task.isCancelled {
+                            continuation.finish(throwing: CancellationError())
+                            return
                         }
-                        if let e = parser.flush() { _ = try handle(e) }
+                        guard !began, attempt < retryDelays.count, Self.isTransient(error) else {
+                            continuation.finish(throwing: error)
+                            return
+                        }
+                        continuation.yield(.status(EngineStatus(state: lastStatus?.state ?? "starting", phase: "Reconnecting",
+                                                                gpu: lastStatus?.gpu, count: lastStatus?.count)))
+                        do {
+                            try await Task.sleep(for: .seconds(retryDelays[attempt]))
+                        } catch {
+                            continuation.finish(throwing: CancellationError())
+                            return
+                        }
+                        attempt += 1
                     }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error is CancellationError ? CancellationError() : error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// A dropped or refused connection, or a gateway error: worth sending the request again.
+    static func isTransient(_ error: Error) -> Bool {
+        if case LLMError.http(let code, _) = error { return [502, 503, 504].contains(code) }
+        guard let u = error as? URLError else { return false }
+        return [.networkConnectionLost, .timedOut, .notConnectedToInternet, .cannotConnectToHost, .dataNotAllowed,
+                .cannotFindHost, .dnsLookupFailed].contains(u.code)
+    }
+
+    /// One request: its events, until `[DONE]` or the end of the stream.
+    private func once(_ request: ChatRequest, yield: (ChatEvent) -> Void) async throws {
+        var request = request
+        request.stream = true
+        var r = http.request("\(apiPath)/chat/completions", method: "POST")
+        r.httpBody = try JSONEncoder().encode(request)
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        // The server pings every few seconds, also through a cold start.
+        r.timeoutInterval = 120
+        let (bytes, response) = try await http.session.bytes(for: r)
+        if let status = (response as? HTTPURLResponse)?.statusCode, !(200..<300).contains(status) {
+            var body = Data()
+            for try await b in bytes {
+                body.append(b)
+                if body.count > 65536 { break }
+            }
+            throw LLMError.http(status, Self.errorText(body))
+        }
+        var parser = SSEParser()
+        var line: [UInt8] = []
+        line.reserveCapacity(4096)
+        for try await b in bytes {
+            if b == 10 {
+                if let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try Self.handle(e, yield: yield) { return }
+                line.removeAll(keepingCapacity: true)
+            } else {
+                line.append(b)
+            }
+        }
+        if !line.isEmpty, let e = parser.feed(line: String(decoding: line, as: UTF8.self)) { _ = try Self.handle(e, yield: yield) }
+        if let e = parser.flush() { _ = try Self.handle(e, yield: yield) }
     }
 
     /// Yields the event's chat events; true at `[DONE]`.

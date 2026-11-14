@@ -269,6 +269,60 @@ struct WebSearchTests {
         #expect(out.text.contains("slow down"))
     }
 
+    static let duck = """
+    <div class="result results_links results_links_deep web-result ">
+      <h2 class="result__title">
+        <a rel="nofollow" class="result__a" href="https://docs.swift.org/concurrency/">Concurrency | Documentation</a>
+      </h2>
+      <a class="result__snippet" href="https://docs.swift.org/concurrency/">The <b>Swift</b> standard library &amp; tasks.</a>
+    </div>
+    <div class="result result--ad">
+      <a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_domain=x.com&amp;u3=1">Buy now</a>
+      <a class="result__snippet" href="https://duckduckgo.com/y.js?u3=1">An ad.</a>
+    </div>
+    <div class="result">
+      <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1&amp;rut=abc">Old style</a>
+    </div>
+    <div class="result">
+      <a rel="nofollow" class="result__a" href="https://third.example/">Third</a>
+      <a class="result__snippet" href="https://third.example/">Three.</a>
+    </div>
+    """
+
+    @Test func duckDuckGoWithoutAKey() async throws {
+        let web = FakeWeb(Self.duck)
+        let tool = WebSearchTool(apiKey: nil, fetch: web.fetcher)
+        let out = try await tool.run(ToolArgs(["query": "swift & c++", "count": 2]), webCtx)
+        let r = try #require(web.requests.first)
+        #expect(r.url?.absoluteString == "https://html.duckduckgo.com/html/?q=swift%20%26%20c%2B%2B")
+        #expect(r.value(forHTTPHeaderField: "X-Subscription-Token") == nil)
+        #expect(!out.isError)
+        #expect(out.text == """
+        1. Concurrency | Documentation
+           https://docs.swift.org/concurrency/
+           The Swift standard library & tasks.
+
+        2. Old style
+           https://example.com/a?b=1
+        """)
+        let all = WebSearchTool.duckResults(Self.duck)
+        #expect(all.map(\.url) == ["https://docs.swift.org/concurrency/", "https://example.com/a?b=1", "https://third.example/"])
+        #expect(all.last?.snippet == "Three.")
+        #expect(try tool.preview(ToolArgs(["query": "x"]), webCtx).domain == "html.duckduckgo.com")
+        #expect(tool.description.contains("DuckDuckGo") && WebSearchTool(apiKey: "", fetch: web.fetcher).description.contains("DuckDuckGo"))
+        #expect(WebSearchTool(apiKey: "k", fetch: web.fetcher).description.contains("Brave"))
+    }
+
+    @Test func duckDuckGoLimitsAndEmptyPages() async throws {
+        for (code, body) in [(202, "<html>please wait</html>"), (200, "<form id=\"challenge-form\">anomaly</form>"), (429, "")] {
+            let out = try await WebSearchTool(fetch: FakeWeb(status: code, body).fetcher).run(ToolArgs(["query": "x"]), webCtx)
+            #expect(out.isError && out.text.contains("limits automated searches"), "\(code)")
+        }
+        let none = try await WebSearchTool(fetch: FakeWeb("<html><div class=\"no-results\">No results.</div></html>").fetcher)
+            .run(ToolArgs(["query": "zzz"]), webCtx)
+        #expect(!none.isError && none.text == "No results for “zzz”.")
+    }
+
     @Test func previewAndSpec() throws {
         let tool = WebSearchTool(apiKey: "k", fetch: FakeWeb("").fetcher)
         let p = try tool.preview(ToolArgs(["query": "swift"]), webCtx)

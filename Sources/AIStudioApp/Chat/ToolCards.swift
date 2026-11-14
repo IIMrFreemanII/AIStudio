@@ -348,9 +348,9 @@ struct PermissionCard: View {
                 if let always = alwaysTitle {
                     Button(always) { doc.answer(.allowAlways) }.buttonStyle(.mg(.bordered))
                 }
+                // No Esc shortcut: Esc pressed for something else denied by accident.
                 Button("Deny") { doc.answer(.deny) }
                     .buttonStyle(.mg(.bordered))
-                    .keyboardShortcut(.cancelAction)
                 Spacer()
             }
         }
@@ -735,8 +735,8 @@ struct QuestionCard: View {
             }
             HStack(spacing: 8) {
                 Spacer()
-                Button("Skip") { doc.answerQuestion(nil) }
-                    .buttonStyle(.mg(.bordered)).keyboardShortcut(.cancelAction)
+                Button("Skip") { doc.answerQuestion(nil) }  // no Esc shortcut, as for Deny
+                    .buttonStyle(.mg(.bordered))
                 Button("Send") { send() }
                     .buttonStyle(.mg(.prominent)).disabled(answers.allSatisfy(\.isEmpty))
             }

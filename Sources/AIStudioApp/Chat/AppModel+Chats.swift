@@ -332,7 +332,7 @@ extension AppModel {
                                 reasoningEffort: doc.transcript.reasoningEffort, inlineThinking: inline)
             var tools: [any AgentTool] = CodingTools.all + graphTools + [WebFetchTool(), OpenPageTool(), ExitPlanTool(), task, FlowTool()]
                 + SessionTools.all + [ReadTerminalTool()] + UITools.all
-            if let k = searchAPIKey { tools.append(WebSearchTool(apiKey: k)) }
+            tools.append(WebSearchTool(apiKey: searchAPIKey))  // DuckDuckGo without a key
             if !skills.isEmpty { tools.append(UseSkillTool(skills: skills)) }
             let coAuthor = gitCoAuthorLine(for: doc)
             var setup = AgentSetup(tools: tools, root: root) {
@@ -672,9 +672,15 @@ extension AppModel {
                             case .delta(let e):
                                 st.acc.add(e)
                                 switch e {
-                                case .status(let s): doc.engine = s
-                                case .reasoning: if st.thinkStart == nil { st.thinkStart = Date() }; doc.engine = nil
+                                case .status(let s):
+                                    doc.engine = s
+                                    st.engineState(s.state)
+                                case .reasoning:
+                                    if st.thinkStart == nil { st.thinkStart = Date() }
+                                    doc.engine = nil
+                                    st.engineState("ready")
                                 case .content, .toolCall:
+                                    st.engineState("ready")
                                     if st.thinkStart != nil, st.thinkEnd == nil { st.thinkEnd = Date() }
                                     doc.engine = nil
                                 default: break
@@ -756,7 +762,7 @@ extension AppModel {
                 // (Only once the GPU was running: a reply stopped while waiting for one cost nothing.)
                 let engine = self?.llm.status(key)
                 let price = ["ready", "stopping"].contains(engine?.state ?? "") ? engine?.usdPerSecond ?? 0 : 0
-                let seconds = Date().timeIntervalSince(st.requestStart)
+                let seconds = Date().timeIntervalSince(st.billedFrom ?? Date())
                 doc.transcript.update(st.turn) {
                     $0.error = message
                     $0.ended = Date()
@@ -907,12 +913,23 @@ final class AgentRunState: @unchecked Sendable {
         acc = ReplyAccumulator(inlineThinking: inline)
     }
 
-    /// When this request went out (a stopped reply gets no stats from the server: its cost is estimated from this).
+    /// When this request went out.
     var requestStart = Date()
+    /// Whether it waited for a GPU ("starting"), and when one began running: a stopped reply gets no stats from the
+    /// server, so its cost is estimated from `billedFrom` (a wait for a GPU isn't billed).
+    var waitedForGPU = false
+    var gpuSince: Date?
+    var billedFrom: Date? { waitedForGPU ? gpuSince : requestStart }
+
+    func engineState(_ state: String) {
+        if state == "starting" { if gpuSince == nil { waitedForGPU = true } } else if gpuSince == nil { gpuSince = Date() }
+    }
 
     func reset() {
         acc = ReplyAccumulator(inlineThinking: inline)
         requestStart = Date()
+        waitedForGPU = false
+        gpuSince = nil
         thinkStart = nil
         thinkEnd = nil
     }

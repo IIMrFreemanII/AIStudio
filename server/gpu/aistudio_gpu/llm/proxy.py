@@ -4,7 +4,7 @@
   ``event: aistudio.status`` lines (``{"state", "phase", "progress"}``) whenever the phase changes, so the stream
   stays open and the app can show what's happening;
 - before ``data: [DONE]``, ``event: aistudio.usage``: time to first token, tokens per second, tokens, and what the
-  request cost (its seconds × the GPUs' price);
+  request cost (its seconds × the GPUs' price, counted from when a GPU was running: a wait for one isn't billed);
 - an engine failure becomes ``event: aistudio.error`` (``{"error"}``), then ``[DONE]``.
 
 Clients that ignore named events (any OpenAI client) see a normal stream.
@@ -49,6 +49,8 @@ async def relay(upstream: AsyncIterator[bytes], status: Callable[[], Awaitable[d
     last_status = None
     started_stream = False
     start_generation = start
+    # GPU time: from the request, unless it first waits for a GPU ("starting" on Modal), then from when one runs.
+    billed_from: float | None = start
     try:
         while True:
             try:
@@ -61,6 +63,10 @@ async def relay(upstream: AsyncIterator[bytes], status: Callable[[], Awaitable[d
                     s = await status()
                 except Exception:  # noqa: BLE001
                     s = None
+                if s and s.get("state") == "starting" and billed_from == start and not started_stream:
+                    billed_from = None
+                elif s and billed_from is None and s.get("state") in ("loading", "ready"):
+                    billed_from = time.monotonic()
                 if s and s != last_status:
                     last_status = s
                     yield event("aistudio.status", s)
@@ -72,6 +78,8 @@ async def relay(upstream: AsyncIterator[bytes], status: Callable[[], Awaitable[d
                 break
             if not started_stream:
                 started_stream = True
+                if billed_from is None:
+                    billed_from = time.monotonic()
                 start_generation = time.monotonic()
             buf += item
             while b"\n\n" in buf:
@@ -98,13 +106,15 @@ async def relay(upstream: AsyncIterator[bytes], status: Callable[[], Awaitable[d
     completion = int((usage or {}).get("completion_tokens") or 0)
     gen_start = first_token or now
     seconds = now - start
+    billed = now - (billed_from if billed_from is not None else now)
     yield event("aistudio.usage", {
         "seconds": round(seconds, 3),
         "waitSeconds": round((start_generation if started_stream else now) - start, 3),
         "ttftMs": round((gen_start - start) * 1000) if first_token else None,
         "tokPerSec": round(completion / (now - gen_start), 1) if completion and now > gen_start else None,
         "promptTokens": (usage or {}).get("prompt_tokens"), "completionTokens": completion or None,
-        "usdPerSecond": usd_per_second, "costUSD": round(seconds * usd_per_second, 6)})
+        "usdPerSecond": usd_per_second, "gpuSeconds": round(billed, 3),
+        "costUSD": round(billed * usd_per_second, 6)})
     yield DONE + b"\n\n"
 
 
