@@ -172,7 +172,8 @@ struct ChatHeader: View {
         let chip = key.map { k -> EngineChip in
             let st = engineStatus(k)
             let since = doc.isStreaming ? doc.requestStarted : st?.bootSeconds.map { Date().addingTimeInterval(-$0) }
-            return EngineChip(status: st, model: m, streaming: doc.isStreaming, plain: true, since: since)
+            // The GPU's running total is in the menu: beside the chat's own cost it read as a second price.
+            return EngineChip(status: st, model: m, streaming: doc.isStreaming, plain: true, since: since, showsCost: false)
         }
             MGMenuButton(kind: .bordered) {
                 if llm.models.isEmpty {
@@ -196,7 +197,7 @@ struct ChatHeader: View {
                     // for a GPU, and then the menu offered only Start.
                     let live = engineStatus(key)
                     // The state in the chip's words, so the menu reads as the header and the sidebar do.
-                    if let chip { MGMenuItem.header(chip.label(chip.status?.state ?? "cold")) }
+                    if let chip { MGMenuItem.header(chip.label(chip.status?.state ?? "cold", cost: true)) }
                     if let failure = llm.actionErrors[key] { MGMenuItem.header(failure) }
                     if let busy = llm.busyLabel(key), llm.pending[key] != .starting {
                         MGMenuItem.button(busy, icon: "power", enabled: false) {}
@@ -243,7 +244,7 @@ struct ChatHeader: View {
                 Text(String(format: "$%.2f", doc.transcript.costUSD))
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).monospacedDigit()
                     .mgHelp(String(format: "This chat: $%.3f of GPU time for its replies. ", doc.transcript.costUSD)
-                            + "The model's figure is the GPU's whole warm period, for every chat.")
+                            + "The model menu shows the GPU's whole warm period, for every chat.")
             }
     }
 }
@@ -258,6 +259,8 @@ struct EngineChip: View {
     /// When the wait began (the reply's request, else the server's boot time): starting and loading show the time
     /// so far, ticking.
     var since: Date? = nil
+    /// "$1.12 so far" (the GPU's warm period) in the label.
+    var showsCost = true
 
     var helpText: String { help(status?.state ?? "cold") }
 
@@ -290,7 +293,8 @@ struct EngineChip: View {
         }
     }
 
-    func label(_ s: String, now: Date = Date()) -> String {
+    func label(_ s: String, now: Date = Date(), cost: Bool? = nil) -> String {
+        let withCost = cost ?? showsCost
         let gpu = status?.count.map { c in c > 1 ? "\(c)× \(status?.gpu ?? "")" : status?.gpu ?? "" } ?? model?.gpuLabel ?? ""
         // "1:20" so far while it starts.
         let waited = since.map { d -> String in
@@ -304,12 +308,12 @@ struct EngineChip: View {
             return (status?.phase ?? "Loading") + waited + usually
         case "ready":
             var parts = [streaming ? "Generating" : "Ready", gpu]
-            if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
+            if withCost, let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
             return parts.filter { !$0.isEmpty }.joined(separator: " · ")
         case "failed": return "Failed to start"
         case "stopping":
             var parts = ["Shutting down", gpu]
-            if let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
+            if withCost, let c = status?.costUSD, c > 0 { parts.append(String(format: "$%.2f so far", c)) }
             return parts.filter { !$0.isEmpty }.joined(separator: " · ")
         default:
             // Cold: the GPU it starts on next (its settings), not the one its last start used.
@@ -338,7 +342,9 @@ struct EngineChip: View {
             let rate = (status?.usdPerSecond ?? 0) * 3600
             let run = rate > 0 ? String(format: "Running: $%.2f an hour while warm. It shuts down a few minutes after the last message.", rate)
                 : "Running."
-            return [run, lastStart].compactMap { $0 }.joined(separator: "\n")
+            let spent = (status?.costUSD ?? 0) > 0
+                ? String(format: "$%.2f so far since it started, for every chat.", status?.costUSD ?? 0) : nil
+            return [run, spent, lastStart].compactMap { $0 }.joined(separator: "\n")
         case "stopping":
             return "Shutting the GPU down: it finishes the replies in progress, then stops (usually 15–25 s). Billing ends when it's gone."
         case "cold":

@@ -74,6 +74,7 @@ struct RunSummary: Equatable {
         var end = steps.first?.date ?? Date()
         for s in steps {
             end = max(end, s.date.addingTimeInterval(s.stats?.seconds ?? 0))
+            if let e = s.ended { end = max(end, e) }  // stopped while a tool ran or a question waited
             for call in s.toolCalls {
                 let result = results[call.id]
                 if let r = result { end = max(end, r.date) }

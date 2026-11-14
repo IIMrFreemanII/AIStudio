@@ -759,6 +759,7 @@ extension AppModel {
                 let seconds = Date().timeIntervalSince(st.requestStart)
                 doc.transcript.update(st.turn) {
                     $0.error = message
+                    $0.ended = Date()
                     if $0.stats == nil, price > 0 {
                         $0.stats = RequestStats(seconds: seconds, usdPerSecond: price, costUSD: seconds * price)
                     }
