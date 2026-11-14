@@ -110,6 +110,7 @@ struct MGFormRow<Control: View>: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(label).foregroundStyle(MG.label)
+                .layoutPriority(1)  // a wide control shrinks, not the label ("GP Us" on two lines)
             Spacer(minLength: 8)
             control
         }

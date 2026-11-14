@@ -122,7 +122,8 @@ private final class TaskModel: ChatStreaming, @unchecked Sendable {
         return AsyncThrowingStream { c in
             Task {
                 if isSub {
-                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    // B takes longer: A's result must show before B ends.
+                    try? await Task.sleep(nanoseconds: request.messages.last?.text == "B" ? 400_000_000 : 100_000_000)
                     c.yield(.content("found " + (request.messages.last?.text ?? "")))
                 } else if parentFirst {
                     c.yield(call("task", ["description": "first", "prompt": "A"], id: "t1"))
@@ -142,15 +143,29 @@ struct TaskToolTests {
         var config = AgentConfig(model: "m", tools: CodingTools.all + [TaskTool(client: model, model: "m")])
         config.mode = .ask
         let start = Date()
+        let finished = FinishTimes()
         _ = try await AgentLoop.run(client: model, messages: [.user("go")], config: config,
-                                    context: ToolContext(root: try tempProject()), ask: { _ in .allow }, events: { _ in })
+                                    context: ToolContext(root: try tempProject()), ask: { _ in .allow }, events: { e in
+                                        if case .toolFinished(let id, _, _) = e { finished.add(id) }
+                                    })
         #expect(Date().timeIntervalSince(start) < 0.6)
+        // Each subagent's row stops when it does, not when the slowest one has.
+        let at = finished.value
+        #expect(at.map(\.0) == ["t1", "t2"])
+        #expect(at.count == 2 && at[1].1.timeIntervalSince(at[0].1) > 0.2)
         let parentSecond = model.requests.last { $0.messages.first?.text.hasPrefix("You are a research subagent") == false }!
         let tools = parentSecond.messages.filter { $0.role == .tool }
         #expect(tools.map(\.toolCallID) == ["t1", "t2"])
         #expect(tools.map(\.text) == ["found A", "found B"])
         let subs = model.requests.filter { $0.messages.first?.text.hasPrefix("You are a research subagent") == true }
         #expect(subs.count == 2)
-        #expect(subs.allSatisfy { Set($0.tools.map(\.name)) == ["read_file", "list_files", "search"] })
+        #expect(subs.allSatisfy { Set($0.tools.map(\.name)) == ["read_file", "list_files", "search", "git_diff"] })
     }
+}
+
+private final class FinishTimes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var times: [(String, Date)] = []
+    func add(_ id: String) { lock.withLock { times.append((id, Date())) } }
+    var value: [(String, Date)] { lock.withLock { times } }
 }

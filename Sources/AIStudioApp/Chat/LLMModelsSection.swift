@@ -413,6 +413,9 @@ struct LLMSettingsSheet: View {
                     Text("Smaller GPUs can't hold \(contextLabel(context)) of context.")
                         .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 }
+                if let note = option?.note, !note.isEmpty, option?.maxContext ?? 0 >= context {
+                    Text(note.prefix(1).uppercased() + note.dropFirst() + ".").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
                 if let agents = agentsLine {
                     Text(agents).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 }
@@ -505,8 +508,9 @@ struct LLMSettingsSheet: View {
 
     func gpuTitle(_ o: GPUOption) -> String {
         guard o.maxContext >= context else { return "\(o.label) · too small for \(contextLabel(context))" }
-        // A menu item is one short line: a note's first clause ("slower" of "slower: experts stream from host memory").
-        let note = (o.note ?? "").split(separator: ":").first.map(String.init) ?? ""
+        // A menu item is one short line: a note's verdict ("slower" of "experts stream from host memory: slower"),
+        // the whole note under the picker.
+        let note = (o.note ?? "").split(separator: ":").last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         return String(format: "%@ · $%.2f/h", o.label, o.usdPerHour) + (note.isEmpty ? "" : " · \(note)")
     }
 

@@ -286,6 +286,16 @@ final class ChatDocument: Identifiable {
 
     var title: String { transcript.title }
     var isStreaming: Bool { liveTurnID != nil }
+
+    /// A tool call's status from its result turn. "running" only while the reply runs: a call the reply was stopped
+    /// before (no result yet) or left running is "failed", not a spinner ("Asking…") that never ends.
+    func toolStatus(_ result: ChatTurn?) -> String {
+        let s = result?.toolStatus ?? "running"
+        return s == "running" && !isStreaming ? "failed" : s
+    }
+
+    /// The call whose card waits on the user: an approval, a question or a plan.
+    var waitingCallID: String? { permission?.call.id ?? question?.callID ?? plan?.callID }
     var modelKey: LLMKey? {
         guard let s = transcript.serverID, let m = transcript.modelID else { return nil }
         return LLMKey(serverID: s, modelID: m)

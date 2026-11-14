@@ -18,7 +18,7 @@ public struct TaskTool: AgentTool {
         self.inlineThinking = inlineThinking
     }
 
-    public static var defaultTools: [any AgentTool] { [ReadFileTool(), ListFilesTool(), SearchTool()] }
+    public static var defaultTools: [any AgentTool] { [ReadFileTool(), ListFilesTool(), SearchTool(), GitDiffTool()] }
 
     public let name = "task"
     public let description = "Hand a self-contained research question to a subagent that reads and searches on its own (read-only) and reports back. Use it for broad searches across many files, so their contents don't fill this conversation. Its prompt must be complete: it doesn't see this conversation. Several task calls in one message run at the same time."
@@ -35,7 +35,7 @@ public struct TaskTool: AgentTool {
 
     static func systemPrompt(root: URL, codeGraph: Bool = false) -> String {
         let day = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
-        return "You are a research subagent working in the project at \(root.path) on the user's Mac. Answer the task below using the read-only tools; you can't edit files, run commands or ask the user. Finish with a concise report of what you found, with file paths and line numbers.\nToday: \(day)" + (codeGraph ? "\nUse code_graph first to locate code (it returns file:line), then read only those lines." : "")
+        return "You are a research subagent working in the project at \(root.path) on the user's Mac. Answer the task below using the read-only tools (git_diff shows what changed); you can't edit files, run commands or ask the user. Finish with a concise report of what you found, with file paths and line numbers.\nToday: \(day)" + (codeGraph ? "\nUse code_graph first to locate code (it returns file:line), then read only those lines." : "")
     }
 
     public func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {

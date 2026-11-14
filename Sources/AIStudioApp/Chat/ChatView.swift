@@ -364,6 +364,14 @@ struct ChatTranscriptView: View {
     /// (`scrollTo(edge: .bottom)` on it isn't used to follow: with this lazy list it sometimes landed at the top.)
     @State private var position = ScrollPosition()
 
+    /// The row holding a waiting call's card: its pinned row (`TranscriptRow.rows`), else the end (a subagent's call).
+    func waitingRow(_ callID: String) -> AnyHashable {
+        guard let t = doc.transcript.turns.last(where: { $0.toolCalls.contains { $0.id == callID } }) else {
+            return AnyHashable("bottom")
+        }
+        return AnyHashable("\(t.id.uuidString)#pin:\(callID)")
+    }
+
     /// Where the transcript is scrolled to, and whether that's (near) its end.
     struct Spot: Equatable {
         var offset: CGFloat
@@ -453,8 +461,17 @@ struct ChatTranscriptView: View {
                     withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
                 }
             }
-            .onChange(of: doc.question?.callID) { _, id in
-                if id != nil, following { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            // A card waiting on the user (an approval, a question, a plan) is brought into view wherever the
+            // transcript was scrolled: it opens inside a row already shown, so nothing else scrolled to it, and the
+            // Tasks list above the composer often covered it.
+            .onChange(of: doc.waitingCallID) { _, id in
+                guard let id else { return }
+                following = true
+                let row = waitingRow(id)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(60))  // the card's height first
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(row, anchor: .bottom) }
+                }
             }
             .overlay(alignment: .bottom) {
                 if !following && !atBottom {

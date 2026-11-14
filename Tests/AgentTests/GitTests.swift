@@ -258,4 +258,26 @@ struct GitTests {
             _ = try await GitDrafts.commitMessage(client: empty, model: "m", diff: "d", log: [])
         }
     }
+
+    @Test func gitDiffToolShowsChanges() async throws {
+        let dir = try await makeRepo()
+        let ctx = ToolContext(root: dir)
+        let tool = GitDiffTool()
+        #expect(try await tool.run(ToolArgs(json: "{}"), ctx).text == "(no changes)")
+        try "changed\n".write(to: dir.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        try "new\n".write(to: dir.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let out = try await tool.run(ToolArgs(json: "{}"), ctx).text
+        #expect(out.contains("-base") && out.contains("+changed"))
+        #expect(out.contains("Untracked files") && out.hasSuffix("b.txt"))
+        let stat = try await tool.run(ToolArgs(json: #"{"stat": true, "path": "a.txt"}"#), ctx).text
+        #expect(stat.contains("a.txt") && stat.contains("1 file changed") && !stat.contains("b.txt"))
+        // Since a branch: from where they diverged, the working tree included.
+        _ = await sh("git checkout -q -b feature && git add -A && git commit -q -m work && echo more >> a.txt", dir)
+        let since = try await tool.run(ToolArgs(json: #"{"base": "main"}"#), ctx).text
+        #expect(since.contains("+changed") && since.contains("+more") && since.contains("+new"))
+        // Never an option or a path outside the project.
+        #expect(try await tool.run(ToolArgs(json: #"{"base": "--output=/tmp/x"}"#), ctx).isError)
+        #expect(try await tool.run(ToolArgs(json: #"{"path": "/etc"}"#), ctx).isError)
+        #expect(!GitDiffTool.isRef("a..b") && GitDiffTool.isRef("origin/main") && GitDiffTool.isRef("HEAD~2"))
+    }
 }
