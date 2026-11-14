@@ -104,6 +104,14 @@ struct PermissionTests {
         #expect(AllowRules.prefixes(of: "cd x && python3 -m unittest > out.txt").isEmpty)
         #expect(AllowRules.prefixes(of: "cd x && tail $(cat list)").isEmpty)
         #expect(!AllowRules(commandPrefixes: ["tail"]).allows(command: "tail x 2>&1 > log"))
+        // A here-document's lines are input, not commands: only the command that reads them is remembered.
+        let script = "cd app && python3 - <<'EOF'\nimport json\nprint(json.dumps({}))\nEOF\necho done"
+        #expect(AllowRules.prefixes(of: script) == ["cd", "python3", "echo"])
+        #expect(AllowRules(commandPrefixes: ["cd", "python3", "echo"]).allows(command: script))
+        #expect(AllowRules.prefixes(of: "cat <<-END | wc -l\n\tone\n\tEND") == ["cat", "wc"])
+        #expect(AllowRules.prefixes(of: "grep x <<< \"$var\"\nls") == ["grep", "ls"])
+        // An unquoted here-document expands $(…) in its text, so it still asks.
+        #expect(AllowRules.prefixes(of: "cat <<EOF\n$(rm -rf x)\nEOF").isEmpty)
     }
 
     /// A project or skill under /tmp or /var (symlinks to /private/…) contains its own files, whichever spelling each

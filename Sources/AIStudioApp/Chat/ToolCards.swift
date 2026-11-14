@@ -16,7 +16,7 @@ struct ToolCard: View {
 
     /// Opened or closed by hand (kept in the chat, so a rebuilt row remembers); nil: the default.
     var open: Bool? { doc.toolOpen[call.id] }
-    var status: String { result?.toolStatus ?? "running" }
+    var status: String { doc.toolStatus(result) }
     var asking: Bool { doc.permission?.call.id == call.id }
     var isCommand: Bool { call.name == "run_command" }
     var isDiff: Bool { call.name == "edit_file" || call.name == "write_file" }
@@ -697,7 +697,7 @@ struct QuestionCard: View {
         (try? UserQuestion.parse(ToolArgs(json: call.arguments))) ?? []
     }
     var asking: Bool { doc.question?.callID == call.id }
-    var status: String { result?.toolStatus ?? "running" }
+    var status: String { doc.toolStatus(result) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -848,7 +848,7 @@ struct PlanCard: View {
 
     var plan: String { (try? ToolArgs(json: call.arguments).string("plan")) ?? "" }
     var asking: Bool { doc.plan?.callID == call.id }
-    var status: String { result?.toolStatus ?? "running" }
+    var status: String { doc.toolStatus(result) }
 
     /// A long plan's first lines, shown collapsed (nil: short enough to show whole). Only these are laid out, so a
     /// long plan doesn't slow the chat down.

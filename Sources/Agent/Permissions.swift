@@ -103,10 +103,32 @@ public struct AllowRules: Codable, Equatable, Sendable {
         command.replacingOccurrences(of: #"\s*(&>|\d?>>?)\s*/dev/null\b|\s*\d?>&\d\b"#, with: "", options: .regularExpression)
     }
 
-    /// The parts of a command chained with ;, &&, || or |.
+    /// The parts of a command chained with ;, &&, || or | (or on separate lines). A here-document's text is the
+    /// command's input, not more commands: "Always allow" remembered each of its lines as a command.
     static func parts(of command: String) -> [String] {
-        withoutHarmlessRedirects(command).components(separatedBy: CharacterSet(charactersIn: ";|&\n"))
+        withoutHarmlessRedirects(withoutHeredocText(command)).components(separatedBy: CharacterSet(charactersIn: ";|&\n"))
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// `<<EOF`, `<<-'EOF'`, `<< "EOF"` (not a `<<<` here-string): the delimiter of each here-document a line starts.
+    private static let heredoc = try! NSRegularExpression(pattern: #"(?<!<)<<(?!<)-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1"#)
+
+    /// The command without the text of its here-documents (the lines up to each delimiter, the delimiter included).
+    static func withoutHeredocText(_ command: String) -> String {
+        var kept: [Substring] = []
+        var open: [String] = []  // delimiters still to come, in order
+        for line in command.split(separator: "\n", omittingEmptySubsequences: false) {
+            if let end = open.first {
+                if line.trimmingCharacters(in: .whitespaces) == end { open.removeFirst() }
+                continue
+            }
+            kept.append(line)
+            let s = String(line)
+            open += heredoc.matches(in: s, range: NSRange(s.startIndex..., in: s)).compactMap {
+                Range($0.range(at: 2), in: s).map { String(s[$0]) }
+            }
+        }
+        return kept.joined(separator: "\n")
     }
 
     /// Substitutions and redirections into files can do anything: such a command always asks, whatever the rules.

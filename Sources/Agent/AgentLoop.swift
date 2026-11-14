@@ -125,6 +125,14 @@ public enum AgentLoop {
             var images: [String] = []
             var videos: [String] = []
             var results = [(output: ToolOutput, status: ToolStatus)?](repeating: nil, count: calls.count)
+            // A call's result is shown as soon as it ends, not when the whole batch has (its row stopped spinning
+            // only then: parallel subagents all looked busy until the slowest finished).
+            let vision = config.vision
+            func settled(_ output: ToolOutput) -> ToolOutput {
+                var o = output
+                if !o.images.isEmpty, !vision { o.text += "\n(\(o.images.count) image(s) left out: this model can't see images.)" }
+                return o
+            }
             var i = 0
             while i < calls.count {
                 try Task.checkCancellation()
@@ -146,7 +154,11 @@ public enum AgentLoop {
                                 return (k, o, st)
                             }
                         }
-                        for await (k, o, st) in g { results[k] = (o, st) }
+                        for await (k, o, st) in g {
+                            let o = settled(o)
+                            results[k] = (o, st)
+                            await events(.toolFinished(callID: calls[k].id, output: o, status: st))
+                        }
                     }
                     if ctx.mode != modeBefore { await modeChanged(ctx.mode) }
                     i = j
@@ -157,19 +169,16 @@ public enum AgentLoop {
                         await runCall(call, byName: byName, rules: &rules, ctx: ctx, ask: ask,
                                       rulesChanged: rulesChanged, events: events)
                     }
-                    results[i] = (o, st)
+                    let done = settled(o)
+                    results[i] = (done, st)
+                    await events(.toolFinished(callID: call.id, output: done, status: st))
                     if ctx.mode != modeBefore { await modeChanged(ctx.mode) }
                     i += 1
                 }
             }
             for (k, call) in calls.enumerated() {
-                guard var (output, status) = results[k] else { continue }
-                if !output.images.isEmpty {
-                    if config.vision { images += output.images }
-                    else { output.text += "\n(\(output.images.count) image(s) left out: this model can't see images.)" }
-                }
-                if config.vision { videos += output.videos }
-                await events(.toolFinished(callID: call.id, output: output, status: status))
+                guard let (output, _) = results[k] else { continue }
+                if vision { images += output.images; videos += output.videos }
                 messages.append(ChatMessage(role: .tool, parts: [.text(output.text)], toolCallID: call.id))
             }
             // Tool messages are text only in the OpenAI API: images follow as a user message.
