@@ -32,7 +32,8 @@ struct StudioTool: AgentTool {
     func preview(_ args: ToolArgs, _ ctx: ToolContext) throws -> ToolPreview { makePreview(args) }
 
     func run(_ args: ToolArgs, _ ctx: ToolContext) async throws -> ToolOutput {
-        let id = ctx.callID
+        // A worker's calls are "<its delegate call>/<call>", so step rows of different workers never share an id.
+        let id = StudioActorScope.prefix + ctx.callID
         do {
             var out = try await body(args, id)
             if await MainActor.run(body: { () -> Bool in
@@ -493,7 +494,20 @@ final class StudioSession {
         guard doc.movie.isUnlocked(w.page) || w.page == .idea else {
             throw ToolError("the \(w.page.title) page is locked until the stage before it is approved")
         }
-        guard !doc.isBusy, doc.pendingGate == nil else { throw ToolError("the movie is busy (\(doc.job?.title ?? "a cost sheet is open")): wait for it") }
+        // One job per movie: another actor's (or the user's) run first.
+        let turn = "movie:\(doc.id)"
+        try await studio.lock(turn, caption: studio.actorPrefix + "Waiting for “\(doc.movie.title)” to be free")
+        defer { studio.unlock(turn) }
+        while doc.isBusy || doc.pendingGate != nil {
+            let c = studio.actorPrefix + "Waiting for \(doc.job?.title.lowercased() ?? "the cost sheet") to finish"
+            if studio.caption != c { studio.caption = c }
+            try await Task.sleep(for: .milliseconds(300))
+        }
+        // One cost sheet on screen at a time, and its page stays in front until the user answers.
+        try await studio.lock("sheet", caption: studio.actorPrefix + "Waiting for another cost sheet")
+        var sheetHeld = true
+        defer { if sheetHeld { studio.unlock("sheet"); studio.releaseScreen() } }
+        try await studio.holdScreen(.movie(doc.id, w.page))
         let before = w.count()
         let spent = doc.movie.costSpent
         let started = Date()
@@ -524,7 +538,7 @@ final class StudioSession {
             }
             if doc.pendingGate != nil || seen.gate {
                 let usd = (doc.pendingGate ?? seen.estimate)?.estimate.lines.reduce(0) { $0 + $1.usd } ?? 0
-                studio.waitingOnUser = String(format: "Cost sheet ≈ $%.2f: waiting for you to press Run", usd)
+                studio.waitingOnUser = studio.actorPrefix + String(format: "\(w.label.prefix(1).uppercased() + w.label.dropFirst()) ≈ $%.2f: waiting for you to press Run", usd)
                 await studio.point(at: "movie-gate-run", fallback: "movie-cost-gate", caption: studio.waitingOnUser ?? "")
                 defer { studio.waitingOnUser = nil }
                 while doc.pendingGate != nil { try await Task.sleep(for: .milliseconds(200)) }
@@ -535,6 +549,9 @@ final class StudioSession {
             } else if doc.job == nil, w.count() == before {
                 return doc.error.map { "It didn't start: \($0)" } ?? "Nothing new to make for \(w.label): it's all there already (pass shots, characters or scenes to retake some)."
             }
+            studio.unlock("sheet")
+            studio.releaseScreen()
+            sheetHeld = false
             // The work.
             while let job = doc.job {
                 let caption = job.title + (job.progress.map { String(format: " · %.0f%%", $0 * 100) } ?? "")
@@ -549,7 +566,10 @@ final class StudioSession {
         let made = w.count() - before
         var out = "Finished \(w.label) in \(Int(Date().timeIntervalSince(started))) s: \(made) new."
         let cost = doc.movie.costSpent - spent
-        if cost > 0 { out += String(format: " It cost ≈ $%.2f.", cost) }
+        if cost > 0 {
+            out += String(format: " It cost ≈ $%.2f.", cost)
+            studio.current.spent += cost
+        }
         if let e = doc.error { out += " Error: \(e)" }
         out += " Check what was made with look_at (images and clips) before going on."
         return out
@@ -740,10 +760,18 @@ final class StudioSession {
         let url = folder.appendingPathComponent(t.file)
         let images = try await studio.act(StudioStep(doing: "Looking at \(name)", done: "Looked at \(name)", target: target),
                                           at: .movie(doc.id, page), callID: id) { () -> [String] in
-            openViewer()
-            try? await Task.sleep(for: .seconds(studio.pace == .fast ? 0.3 : 1.2))
+            // The viewer opens only on screen, one actor at a time; off screen it just reads the file.
+            let shows = !studio.isOffscreen
+            if shows {
+                try await studio.lock("viewer")
+                openViewer()
+                try? await Task.sleep(for: .seconds(studio.pace == .fast ? 0.3 : 1.2))
+            }
             let frames = MediaFrames.isVideo(url) ? await MediaFrames.video(url, at: [0.1, 0.35, 0.65, 0.9]) : MediaFrames.image(url).map { [$0] } ?? []
-            app.chatViewer = nil
+            if shows {
+                app.chatViewer = nil
+                studio.unlock("viewer")
+            }
             return frames.compactMap { GraphHelper.dataURL($0, maxSide: 1024) }
         }
         guard !images.isEmpty else { return ToolOutput("Couldn't read \(t.file).", isError: true) }
@@ -817,12 +845,14 @@ final class StudioSession {
         try await studio.act(StudioStep(doing: "Running the workflow", done: "Ran the workflow", target: "generate-button"),
                              at: .workflow(wf.id), callID: id) {}
         if !remote.isEmpty {
+            try await studio.lock("sheet", caption: studio.actorPrefix + "Waiting for another cost sheet")
+            defer { studio.unlock("sheet") }
             let estimate = await app.workflowRunEstimate(tasks: remote, workflow: wf.name)
             let usd = estimate.lines.reduce(0) { $0 + $1.usd }
             final class Pressed { var run = false }
             let pressed = Pressed()
             app.studioRunGate = CostGate(estimate: estimate, run: { pressed.run = true })
-            studio.waitingOnUser = String(format: "Cost sheet ≈ $%.2f: waiting for you to press Run", usd)
+            studio.waitingOnUser = studio.actorPrefix + String(format: "Cost sheet ≈ $%.2f: waiting for you to press Run", usd)
             await studio.point(at: "movie-gate-run", fallback: "movie-cost-gate", caption: studio.waitingOnUser ?? "")
             defer { studio.waitingOnUser = nil }
             do {

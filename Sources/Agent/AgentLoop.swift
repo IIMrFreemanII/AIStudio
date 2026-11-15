@@ -101,6 +101,9 @@ public struct AgentConfig: Sendable {
 /// send back the results, repeat until it answers without tools. Cancelling the task stops it (a running command
 /// is ended).
 public enum AgentLoop {
+    /// Tools whose consecutive calls in one message run at the same time: research subagents and Studio workers.
+    public static let parallelTools: Set<String> = ["task", "delegate"]
+
     public static func run(client: any ChatStreaming, messages initial: [ChatMessage], config: AgentConfig,
                            context ctx: ToolContext,
                            ask: @escaping @Sendable (PermissionRequest) async -> PermissionAnswer,
@@ -152,7 +155,9 @@ public enum AgentLoop {
             while i < calls.count {
                 try Task.checkCancellation()
                 var j = i
-                if calls[i].name == "task" { while j < calls.count, calls[j].name == "task" { j += 1 } }
+                if AgentLoop.parallelTools.contains(calls[i].name) {
+                    while j < calls.count, AgentLoop.parallelTools.contains(calls[j].name) { j += 1 }
+                }
                 if j - i >= 2 {
                     let group = Array(i..<j)
                     let modeBefore = ctx.mode

@@ -109,6 +109,7 @@ struct StudioPanelView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         MGDivider()
+                        StudioPlanCard(studio: studio)
                         if chat.transcript.turns.isEmpty {
                             StudioEmptyState(chat: chat)
                         } else {
@@ -156,7 +157,10 @@ struct StudioPanelHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "sparkles").foregroundStyle(MG.accent)
+            let architect = studio.cursor(.architect)
+            StudioActorIcon(actor: .architect, state: chat.isStreaming ? (architect.waiting != nil ? .waiting : .working) : .idle,
+                            size: 18, motions: chat.isStreaming ? studio.motions(architect) : [], moment: architect.moment)
+                .mgTarget("studio-header-icon")
             Text("Studio Agent").font(.mgHeadline).lineLimit(1).fixedSize()
             Spacer(minLength: 4)
             MGMenuButton(kind: .plain) {
@@ -165,6 +169,8 @@ struct StudioPanelHeader: View {
                 }
                 MGMenuItem.divider
                 MGMenuItem.header(studio.pace.detail)
+                MGMenuItem.divider
+                MGMenuItem.button("Wander when idle", checked: studio.wanders) { studio.wanders.toggle() }
             } label: {
                 Label(studio.pace.title, systemImage: studio.pace == .step ? "forward.frame" : studio.pace == .fast ? "hare" : "tortoise")
                     .font(.mgFootnote)
@@ -195,7 +201,7 @@ struct StudioEmptyState: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Spacer()
-            Image(systemName: "sparkles").font(.system(size: 26)).foregroundStyle(MG.accent)
+            StudioActorIcon(actor: .architect, size: 30)
             Text("I can use AIStudio for you").font(.mgHeadline)
             Text("Make a movie from an idea, write prompts, make images, video and sound, look at the results and fix what's wrong. You'll see where I'm working in the window; any click or key there pauses me. Paid runs wait for you to press Run on the cost sheet.")
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
@@ -237,7 +243,7 @@ struct StudioGateBar: View {
                         Button("Stop") { model.stopReply(chat) }.buttonStyle(.mg(.bordered)).controlSize(.small)
                     }
                 case .awaitingNext(let doing):
-                    bar("forward.frame", MG.accent, "Next: " + doing) {
+                    bar("forward.frame", MG.accent, "Next: " + doing + (studio.gate.queue.count > 1 ? " (+\(studio.gate.queue.count - 1) waiting)" : "")) {
                         Button("Next") { studio.gate.next() }.buttonStyle(.mg(.prominent)).controlSize(.small)
                             .keyboardShortcut(.return, modifiers: [.command])
                             .mgTarget("studio-next")

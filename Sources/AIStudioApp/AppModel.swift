@@ -3,6 +3,7 @@ import Foundation
 import MovieCore
 import GraphRuntime
 import ImageIO
+import Agent
 import MLXDiffusionCore
 import AIStudioLibrary
 import NodesRemote
@@ -117,6 +118,8 @@ final class AppModel {
     @ObservationIgnored let studio = StudioController()
     /// The cost sheet of a workflow run the Studio agent started on the cloud GPU (Run or Cancel is the user's).
     var studioRunGate: CostGate?
+    /// The smoke test's scripted model for the Studio agent's workers (nil: the chat's own client).
+    @ObservationIgnored var studioWorkerClient: (any ChatStreaming)?
     /// The graph helper panel next to the graph.
     var showHelper = UserDefaults.standard.bool(forKey: "showHelper") {
         didSet {
