@@ -4,7 +4,9 @@
     modal run --detach server/gpu/modal_download.py --models wan22  # keeps running if this Mac sleeps
 
 FLUX.1 dev is gated: first `modal secret create huggingface HF_TOKEN=hf_…` with a token whose account accepted the
-licence on huggingface.co/black-forest-labs/FLUX.1-dev. Finished models are skipped, so it is safe to re-run.
+licence on huggingface.co/black-forest-labs/FLUX.1-dev. Stable Diffusion 3.5 (`sd35`, or `sd` for SDXL too) is gated
+the same way: accept the licences of stabilityai/stable-diffusion-3.5-large and …-large-turbo. SDXL (`sdxl`) is not
+gated. Finished models are skipped, so it is safe to re-run.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ def download(models: str):
 
 @app.local_entrypoint()
 def main(models: str = "wan22,flux"):
-    if "flux" in models and not HF_SECRET:
-        raise SystemExit("FLUX.1 dev needs the huggingface secret (see the top of this file)")
+    wanted = {m.strip() for m in models.split(",")}
+    if not HF_SECRET and (wanted & {"flux", "flux1-dev", "sd35", "sd", "sd35-large", "sd35-large-turbo"}):
+        raise SystemExit("FLUX.1 dev and Stable Diffusion 3.5 need the huggingface secret (see the top of this file)")
     download.remote(models)

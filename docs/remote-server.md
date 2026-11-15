@@ -198,6 +198,8 @@ How it fits together (all of it is `server/gpu/modal_app.py`):
   | Wan 2.2 Image to Video (A14B) | H100 80 GB, $3.95/h | ≈ 63 GB |
   | FLUX.1 dev | L40S 48 GB, $1.95/h | ≈ 34 GB |
   | Qwen-Image (20B) | H100 80 GB, $3.95/h | ≈ 58 GB (bf16; fp8 on a 48 GB card) |
+  | Stable Diffusion 3.5 Large (+ Turbo) | L40S 48 GB, $1.95/h | ≈ 44 GB |
+  | Stable Diffusion XL | L40S 48 GB, $1.95/h | ≈ 7 GB |
   | ACE-Step 1.5 XL music (4B planner + 4B DiT) | L40S 48 GB, $1.95/h | ≈ 38 GB |
   | Stable Audio 3 medium sound | L40S 48 GB, $1.95/h | ≈ 10 GB |
   | Qwen3-TTS speech (three 1.7B checkpoints) | L40S 48 GB, $1.95/h | ≈ 14 GB |
@@ -211,18 +213,21 @@ On this Mac, in the repository:
 ```bash
 pip install modal                      # or: uv tool install modal
 modal setup                            # opens the browser to sign in
-modal secret create huggingface HF_TOKEN=hf_...   # for FLUX.1 dev and Stable Audio 3 (gated: accept their licences on Hugging Face first)
-modal run server/gpu/modal_download.py --models wan22,flux,qwen,audio   # into the Volume, on Modal CPUs; ~20–25 min
+modal secret create huggingface HF_TOKEN=hf_...   # for FLUX.1 dev, SD 3.5 and Stable Audio 3 (gated: accept their licences on Hugging Face first)
+modal run server/gpu/modal_download.py --models wan22,flux,qwen,sd,audio   # into the Volume, on Modal CPUs; ~20–25 min
 modal deploy server/gpu/modal_app.py   # prints the front desk's URL: https://<you>--aistudio-gpu-api.<region>.modal.run
 ```
 
 - `--models` takes `wan22` (both Wan tasks and the Lightning LoRAs, ≈ 140 GB), `flux` (≈ 34 GB), `qwen` (Qwen-Image
-  and its Lightning LoRA, ≈ 58 GB, not gated), `audio` (music, sound and speech, ≈ 62 GB), `music`, `sound`, `speech`,
+  and its Lightning LoRA, ≈ 58 GB, not gated), `sd` (`sd35`: SD 3.5 Large and Large Turbo, ≈ 44 GB, gated; `sdxl`:
+  ≈ 7 GB, not gated), `audio` (music, sound and speech, ≈ 62 GB), `music`, `sound`, `speech`,
   or single ones (`wan22-t2v`, `wan22-i2v`, `wan22-lightning`, `flux1-dev`, `qwen-image`, `qwen-image-lightning`,
-  `ace-step-xl`, `stable-audio-3`, `qwen3-tts`). Finished models are skipped, so it is safe to re-run.
+  `sd35-large`, `sd35-large-turbo`, `sdxl`, `ace-step-xl`, `stable-audio-3`, `qwen3-tts`). Finished models are skipped, so it is safe to re-run.
   Without the Hugging Face secret, use `AISTUDIO_HF_SECRET= modal run … --models wan22,music,speech`.
-- Gated models: [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev) and
-  [Stable Audio 3 medium](https://huggingface.co/stabilityai/stable-audio-3-medium). Accept each licence with the
+- Gated models: [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev),
+  [SD 3.5 Large](https://huggingface.co/stabilityai/stable-diffusion-3.5-large) *and*
+  [SD 3.5 Large Turbo](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) (two licences, Stability AI
+  Community) and [Stable Audio 3 medium](https://huggingface.co/stabilityai/stable-audio-3-medium). Accept each licence with the
   Hugging Face account whose token is in the secret. Stable Audio 3 is converted to the diffusers layout during the
   download, by diffusers' own script (fetched at the pinned release, checked by its hash).
 - The Wan transformers come from bf16 copies of the official weights (`ai-toolkit/…`, `cbensimon/…`: safetensors,
@@ -279,7 +284,7 @@ before anything is sent (*This LoRA is for Flux.1 D, not Qwen-Image*); one that 
 - **GPU:** loading a LoRA adds well under a second. A warm container keeps the last 8 loaded, so a re-run only
   switches them on. A 1024×1024, 28-step image took 16 s on the L40S with or without LoRAs (≈ $0.009).
 
-**Fine-tunes from links (FLUX.1 dev, Qwen-Image, Wan 2.2):** **Models window › Models from Links › Add from Link…**
+**Fine-tunes from links (FLUX.1 dev, Qwen-Image, SDXL, Wan 2.2):** **Models window › Models from Links › Add from Link…**
 takes a Civitai checkpoint page or a Hugging Face link (a single `.safetensors`, or a diffusers repo with a
 `transformer/` folder). Tick your GPU server and **Add**; the cloud node's **model** menu then lists it next to *FLUX.1
 dev (base)*, *Qwen-Image (base)* or *Wan 2.2 T2V / I2V (base)*. (Qwen-Image 2.1 fine-tunes install on this Mac only;
@@ -300,11 +305,14 @@ the server runs the original Qwen-Image.)
   expert it is is refused. Kijai's fp8 low-noise expert from Civitai (15 GB) imported in about 17 minutes (15 of them
   downloading) to 28.6 GB; its first clip spent about 40 s more reading it, and switching back to the base about 20 s.
   The Models window's chip follows it (*Server downloading … GB · … left*, *Converting*).
+  An SDXL fine-tune (Juggernaut, Pony, Illustrious, NoobAI…) is one Civitai checkpoint file; the server converts its
+  UNet and both text encoders to diffusers folders next to SDXL (`variants/sdxl/<id>/{unet,text_encoder,text_encoder_2}`,
+  about 6.8 GB in bf16) and keeps SDXL's VAE. A Hugging Face diffusers repo works too. Two files are refused.
 - **Using it:** a job with another model swaps only the transformer's weights in the warm GPU container (read from the
   Volume); the same model again costs nothing extra, and LoRAs still work on top. **Remove from <server>** deletes it
   from the Volume (`DELETE /v1/models/flux.1/<id>`).
 - **API:** `POST /v1/models/import`, `GET /v1/models`, `DELETE /v1/models/{family}/{id}`; `/v1/info` lists them as
-  `variants`, and the `flux1-dev`, `qwen-image` and Wan tasks take `model` (an id, or `base`). A Wan import's files
+  `variants`, and the `flux1-dev`, `qwen-image`, `sdxl` and Wan tasks take `model` (an id, or `base`). A Wan import's files
   each carry a `role` (`high` / `low`).
 
 **LoRAs on cloud Wan 2.2:** the Wan nodes take *LoRA (Cloud GPU)* nodes too (**Add to Workflow › LoRA**), up to
@@ -328,6 +336,15 @@ versions.
   cross-attention; Qwen-Image's attention is joint.)
 - On an H100 everything stays bf16; `AISTUDIO_GPU_QWEN=L40S` stores the transformer's weights in fp8 instead (48 GB).
 - LoRAs and fine-tunes from the library work as for FLUX.
+
+**Stable Diffusion 3.5 Large (`sd35-large`):** **fast** (on by default) runs Large Turbo (4 steps, no guidance);
+**fast** off runs Large (28 steps, guidance 3.5; `steps` and `guidance` override, 0 = automatic). The **negative**
+prompt is used whenever guidance is above 1. Turbo and Large share the text encoders and VAE; the server swaps the
+transformer in place from the Volume when the mode changes. Up to four LoRAs; there are no SD 3.5 fine-tunes. The
+licence for both repos must be accepted (above). Fits an L40S (`AISTUDIO_GPU_SD`).
+
+**Stable Diffusion XL (`sdxl`):** SDXL 1.0 base, 30 steps, guidance 6, a negative prompt, and a **sampler** (DPM++ 2M
+Karras, Euler a, Euler). It takes up to four LoRAs and fine-tunes from links (above), picked with `model`.
 
 The Wan nodes' **negative** prompt ("blurry, static, distorted hands") works in both modes:
 

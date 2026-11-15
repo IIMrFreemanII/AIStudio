@@ -95,7 +95,7 @@ class TaskSpec:
                 "params": {k: v.describe() for k, v in self.params.items()}}
 
 
-FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image and Wan tasks
+FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image, SD 3.5, SDXL and Wan tasks
 
 
 def _lora_params() -> dict[str, Param]:
@@ -134,6 +134,7 @@ GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
+GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
 
 # ACE-Step's planner and DiT: keys as "C major" … "B minor", time signatures as beats per bar, ISO 639-1 languages
 # (the same lists as the app's local Text to Music node; "auto" lets the planner choose).
@@ -181,6 +182,34 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "model": Param("string", "base"),
         **_lora_params(),
     }, optional_inputs=LORA_INPUTS, models=("qwen-image", "qwen-image-lightning")),
+    TaskSpec("sd35-large", "Stable Diffusion 3.5 Large", "image", "sd35-large", GPU_SD, {
+        "prompt": Param("string", ""),
+        # Used with guidance above 1 (Large's classifier-free guidance); Turbo runs without guidance and ignores it.
+        "negative": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "width": Param("int", 1024, min=256, max=2048, multiple=16),
+        "height": Param("int", 1024, min=256, max=2048, multiple=16),
+        # Large Turbo: 4 steps without guidance, ≈ 7× fewer GPU seconds than Large's 28 steps.
+        "fast": Param("bool", True),
+        # 0 = automatic: 4 steps when fast, else 28.
+        "steps": Param("int", 0, min=0, max=100),
+        # 0 = automatic: 0 when fast, else 3.5.
+        "guidance": Param("float", 0.0, min=0.0, max=20.0),
+        **_lora_params(),
+    }, optional_inputs=LORA_INPUTS, models=("sd35-large", "sd35-large-turbo")),
+    TaskSpec("sdxl", "Stable Diffusion XL", "image", "sdxl", GPU_SD, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "width": Param("int", 1024, min=512, max=2048, multiple=8),
+        "height": Param("int", 1024, min=512, max=2048, multiple=8),
+        "steps": Param("int", 30, min=1, max=100),
+        "guidance": Param("float", 6.0, min=0.0, max=20.0),
+        "sampler": Param("string", "dpmpp-2m-karras", choices=("dpmpp-2m-karras", "euler-a", "euler")),
+        # A fine-tune installed from a link (variants.py), by its id; "base" is SDXL 1.0 itself.
+        "model": Param("string", "base"),
+        **_lora_params(),
+    }, optional_inputs=LORA_INPUTS, models=("sdxl",)),
     TaskSpec("ace-step-xl", "ACE-Step 1.5 XL music", "audio", "music", GPU_AUDIO, {
         "tags": Param("string", ""),  # the style: genre, instruments, mood, voice
         "lyrics": Param("string", "[Instrumental]"),
@@ -284,6 +313,12 @@ def make_worker(family: str) -> Worker:
     if family == "qwen-image":
         from .qwen_image import QwenImageWorker
         return QwenImageWorker()
+    if family == "sd35-large":
+        from .sd35 import SD35Worker
+        return SD35Worker()
+    if family == "sdxl":
+        from .sdxl import SDXLWorker
+        return SDXLWorker()
     if family == "music":
         from .music import MusicWorker
         return MusicWorker()

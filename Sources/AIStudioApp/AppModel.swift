@@ -643,8 +643,18 @@ final class AppModel {
 
     // MARK: model
 
-    func preloadModel() {
+    /// Loads the image model at `modelPath`. At launch a model that isn't on disk (never downloaded, or deleted) is
+    /// skipped quietly; asked for by hand, it says so.
+    func preloadModel(atLaunch: Bool = false) {
         guard !modelLoading else { return }
+        let missing = !modelPath.isEmpty && !FileManager.default.fileExists(atPath: (modelPath as NSString).expandingTildeInPath)
+        if missing {
+            modelStatus = "Model not downloaded"
+            if !atLaunch {
+                lastError = "\(URL(fileURLWithPath: modelPath).lastPathComponent) isn't downloaded: get it in the Models window"
+            }
+            return
+        }
         modelLoading = true
         modelStatus = "Loading model…"
         let path = modelPath

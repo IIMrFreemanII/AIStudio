@@ -1,0 +1,46 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "negative" : "blurry, low quality, watermark",
+          "prompt" : "A portrait of an old fisherman, weathered face, golden hour light, shallow depth of field, photo"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteSDXL"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-sdxl",
+  "modelName" : "SDXL 1.0 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "SDXL · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 250,
+  "summary" : "SDXL 1.0 on an NVIDIA GPU. SDXL fine-tunes (Juggernaut, Pony, Illustrious…) and LoRAs from the library work too.",
+  "symbol" : "cloud"
+}

@@ -198,6 +198,41 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         }
     }
 
+    @Test func sdxlAndSD35Families() throws {
+        for b in ["SDXL 1.0", "SDXL Lightning", "Pony", "Illustrious", "NoobAI"] {
+            #expect(LoRASources.family(forBaseModel: b) == "sdxl", "\(b)")
+        }
+        #expect(LoRASources.family(forBaseModel: "Pony V7") == nil)
+        for b in ["SD 3.5 Large", "SD 3.5 Large Turbo", "SD 3.5"] {
+            #expect(LoRASources.family(forBaseModel: b) == "sd3.5-large", "\(b)")
+        }
+        #expect(LoRASources.family(forBaseModel: "SD 3.5 Medium") == "sd3.5-medium")
+        #expect(LoRASources.familyName("sdxl") == "SDXL")
+        #expect(LoRASources.familyName("sd3.5-large") == "SD 3.5 Large")
+        #expect(LoRASources.familyName("sd3.5-medium") == "SD 3.5 Medium")
+    }
+
+    @Test func sdxlAndSD35LoRAsMustFitTheirModels() throws {
+        func lora(_ base: String?) -> CloudLoRA {
+            CloudLoRA(source: .file(URL(fileURLWithPath: "/x.safetensors")), strength: 1, baseModel: base)
+        }
+        try lora("SDXL 1.0").checkFits("sdxl")
+        try lora("Pony").checkFits("sdxl")
+        #expect(throws: LoRASourceError.wrongBaseModel("Flux.1 D", expected: "SDXL")) { try lora("Flux.1 D").checkFits("sdxl") }
+        try lora("SD 3.5 Large Turbo").checkFits("sd3.5-large")
+        #expect(throws: LoRASourceError.wrongBaseModel("SD 3.5 Medium", expected: "SD 3.5 Large")) {
+            try lora("SD 3.5 Medium").checkFits("sd3.5-large")
+        }
+    }
+
+    @Test func cloudImageNodesAreRegistered() {
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteSD35") == "sd35-large")
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteSDXL") == "sdxl")
+        #expect(RemoteNodes.libraryFamilies["RemoteSD35"] == "sd3.5-large")
+        #expect(RemoteNodes.libraryFamilies["RemoteSDXL"] == "sdxl")
+        #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL"]))
+    }
+
     @Test func huggingFaceTreeAndRedirectHeaders() throws {
         let tree = """
         [{"type": "file", "path": "README.md", "size": 10},

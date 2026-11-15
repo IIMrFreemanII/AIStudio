@@ -1238,11 +1238,11 @@ extension SmokeTest {
         let loras = (1...2).map { FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gpu-lora\($0).safetensors") }
         for (i, url) in loras.enumerated() { try? Data(repeating: UInt8(i + 1), count: 1 << 20).write(to: url) }
         for (id, video) in [("cloud-flux", false), ("cloud-flux-lora", false), ("cloud-qwen-image", false),
-                            ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
+                            ("cloud-sd35", false), ("cloud-sdxl", false), ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
             guard let p = model.preset(id: id) else { say("\(id): missing"); ok = false; continue }
             let doc = model.openPreset(p)
-            model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
-            model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+            model.setLiteral(.int(id == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "width", undoManager: nil)
+            model.setLiteral(.int(id == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "height", undoManager: nil)
             if video { model.setLiteral(.int(9), node: "cloud", input: "length", undoManager: nil) }
             if id == "cloud-wan-i2v" { model.setLiteral(.string(start.path), node: "first_frame", input: "path", undoManager: nil) }
             if id == "cloud-flux-lora" {
@@ -1250,7 +1250,7 @@ extension SmokeTest {
                 guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
                 model.addCloudLoRA(loras[1], strength: 0.7, undoManager: nil)
             }
-            if id == "cloud-qwen-image" {  // a LoRA chain on the Qwen-Image node, from Add to Workflow
+            if id == "cloud-qwen-image" || id == "cloud-sdxl" {  // a LoRA chain on the Qwen-Image / SDXL node, from Add to Workflow
                 guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
                 model.addCloudLoRA(loras[0], undoManager: nil)
             }
@@ -1271,7 +1271,7 @@ extension SmokeTest {
             let cost = doc.nodeStatus["cloud"] ?? ""
             let embedded = video ? await MediaIO.readMetadata(result)["aistudio.graph"] : AppModel.embeddedGraph(in: result).map { _ in "png" }
             var loraOK = true
-            if id == "cloud-flux-lora" || id == "cloud-qwen-image" {
+            if id == "cloud-flux-lora" || id == "cloud-qwen-image" || id == "cloud-sdxl" {
                 let count: Float = id == "cloud-flux-lora" ? 2 : 1
                 let image = (try? ImageArray.load(result)).map { ImageArray.array(from: $0) }
                 let top = image.map { abs($0[0, 0..., ..<3] - count / 4).max().item(Float.self) } ?? 1
@@ -1364,7 +1364,7 @@ extension SmokeTest {
             var modelRemote = remote
             modelRemote.kind = .model
             for (family, presetID) in [("flux.1", "cloud-flux"), ("qwen-image", "cloud-qwen-image"),
-                                       ("wan-2.2-t2v", "cloud-wan-t2v")] {
+                                       ("sdxl", "cloud-sdxl"), ("wan-2.2-t2v", "cloud-wan-t2v")] {
                 guard let preset = model.preset(id: presetID) else { ok = false; continue }
                 var fineTune = modelRemote
                 if family.hasPrefix("wan") { fineTune.expert = "low" }  // one expert's file; the other stays the base's
@@ -1377,8 +1377,8 @@ extension SmokeTest {
                 }
                 let installedOnServer = lib.item(modelID).map { lib.serverState($0, conn.id) } == .installed
                 let fdoc = model.openPreset(preset)
-                model.setLiteral(.int(256), node: "cloud", input: "width", undoManager: nil)
-                model.setLiteral(.int(256), node: "cloud", input: "height", undoManager: nil)
+                model.setLiteral(.int(presetID == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "width", undoManager: nil)
+                model.setLiteral(.int(presetID == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "height", undoManager: nil)
                 model.setLiteral(.string(modelID), node: "cloud", input: "model", undoManager: nil)
                 model.enqueue(undoManager: nil)
                 if let item = model.queue.last {
@@ -1392,7 +1392,8 @@ extension SmokeTest {
                     if family.hasPrefix("wan") {
                         right = await frameMarks(url).map { 1 - $0.right } ?? 1
                     } else if let img = try? ImageArray.load(url) {
-                        right = abs(ImageArray.array(from: img)[0..., 255, ..<3] - 1).max().item(Float.self)
+                        let a = ImageArray.array(from: img)  // the last column (SDXL renders at 512)
+                        right = abs(a[0..., a.dim(1) - 1, ..<3] - 1).max().item(Float.self)
                     }
                 }
                 let modelOK = installedOnServer && right < (family.hasPrefix("wan") ? 0.08 : 0.01)

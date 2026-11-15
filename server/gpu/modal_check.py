@@ -1,11 +1,13 @@
 """Runs one job on the deployed GPU workers straight through the Modal SDK (your `modal setup` login, no proxy token):
-prints the status lines, steps and previews as they arrive with timestamps, saves the result, and reports the
+prints the status lines, steps and previews as they arrive with timestamps, saves the result (and each preview), and reports the
 measured times and the cost. For checking a deployment and measuring cold and warm starts.
 
     python server/gpu/modal_check.py wan22-t2v [--prompt "…"] [--width 832 --height 480 --length 81] [--full]
     python server/gpu/modal_check.py wan22-i2v --image start.png
     python server/gpu/modal_check.py flux1-dev --width 1024 --height 1024
     python server/gpu/modal_check.py qwen-image --prompt "a sign reading OPEN" [--full] [--set model=<fine-tune id>]
+    python server/gpu/modal_check.py sd35-large --prompt "a lighthouse at dusk" [--full]
+    python server/gpu/modal_check.py sdxl --set sampler=euler-a --set negative="blurry" [--set model=<fine-tune id>]
     python server/gpu/modal_check.py stable-audio-3 --prompt "rain on a tin roof" --set seconds=20
     python server/gpu/modal_check.py ace-step-xl --prompt "indie pop, female vocals" --set lyrics=@lyrics.txt
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --set voice=designed --set description="…"
@@ -32,6 +34,7 @@ import modal  # noqa: E402
 from aistudio_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
 
 CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "flux1-dev": "Flux", "qwen-image": "QwenImage",
+           "sd35-large": "SD35", "sdxl": "SDXL",
            "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech"}
 
@@ -45,7 +48,7 @@ def main() -> int:
     p.add_argument("--length", type=int)
     p.add_argument("--steps", type=int)
     p.add_argument("--seed", type=int, default=7)
-    p.add_argument("--full", action="store_true", help="Wan / Qwen-Image without the Lightning LoRAs")
+    p.add_argument("--full", action="store_true", help="Wan / Qwen-Image without the Lightning LoRAs, SD 3.5 Large without Turbo")
     p.add_argument("--image", type=Path, help="wan22-i2v: the start image")
     p.add_argument("--set", action="append", default=[], metavar="NAME=VALUE", help="any task parameter")
     p.add_argument("--input", action="append", default=[], metavar="NAME=PATH", help="a file input")
@@ -109,8 +112,10 @@ def main() -> int:
                 say(f"status: {payload}")
             elif kind == "progress":
                 say(f"step {step}/{total}")
-            elif kind == "preview":
+            elif kind == "preview":  # a JPEG, saved next to the result
                 previews += 1
+                a.out.mkdir(parents=True, exist_ok=True)
+                (a.out / f"{a.task}-{job[:8]}-preview-{step}.jpg").write_bytes(payload)
         try:
             result = call.get(timeout=0)
             break

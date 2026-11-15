@@ -1,4 +1,4 @@
-"""The real Wan 2.2 and FLUX workers on tiny random-weight models (a few MB), on whatever device this machine has
+"""The real Wan 2.2, FLUX, Qwen-Image, SD 3.5 and SDXL workers on tiny random-weight models (a few MB), on whatever device this machine has
 (MPS on a Mac, CUDA, or the CPU). Checks the wiring — loading the folder layout the download step writes, both
 Wan transformers, the Lightning LoRA files in their original key format, fp8 storage, progress, previews, cancel and
 the encoded result — not image quality. Skipped without torch/diffusers. Downloads a tiny T5 (≈ 1 MB) once."""
@@ -107,6 +107,82 @@ def tiny_flux(root: Path) -> None:
     (root / "flux1-dev" / ".complete").write_text("{}")
 
 
+def tiny_clip_config():
+    from transformers import CLIPTextConfig
+
+    return CLIPTextConfig(bos_token_id=0, eos_token_id=2, hidden_size=32, intermediate_size=37, layer_norm_eps=1e-05,
+                          num_attention_heads=4, num_hidden_layers=5, pad_token_id=1, vocab_size=1000,
+                          hidden_act="gelu", projection_dim=32)
+
+
+def tiny_sd3_transformer(seed: int):
+    from diffusers import SD3Transformer2DModel
+
+    torch.manual_seed(seed)
+    return SD3Transformer2DModel(sample_size=32, patch_size=1, in_channels=4, num_layers=1, attention_head_dim=8,
+                                 num_attention_heads=4, caption_projection_dim=32, joint_attention_dim=32,
+                                 pooled_projection_dim=64, out_channels=4)
+
+
+def tiny_sd35(root: Path) -> None:
+    """A tiny SD 3.5 Large folder, and a second random transformer as Large Turbo's (same config)."""
+    from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, StableDiffusion3Pipeline
+    from transformers import AutoTokenizer, CLIPTextModelWithProjection, CLIPTokenizer, T5EncoderModel
+
+    torch.manual_seed(0)
+    clip_tokenizer = CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip")
+    pipe = StableDiffusion3Pipeline(
+        transformer=tiny_sd3_transformer(0),
+        vae=AutoencoderKL(sample_size=32, in_channels=3, out_channels=3, block_out_channels=(4,), layers_per_block=1,
+                          latent_channels=4, norm_num_groups=1, use_quant_conv=False, use_post_quant_conv=False,
+                          shift_factor=0.0609, scaling_factor=1.5035),
+        scheduler=FlowMatchEulerDiscreteScheduler(shift=3.0),
+        text_encoder=CLIPTextModelWithProjection(tiny_clip_config()), tokenizer=clip_tokenizer,
+        text_encoder_2=CLIPTextModelWithProjection(tiny_clip_config()), tokenizer_2=clip_tokenizer,
+        text_encoder_3=T5EncoderModel.from_pretrained(TINY_T5), tokenizer_3=AutoTokenizer.from_pretrained(TINY_T5))
+    pipe.save_pretrained(root / "sd35-large")
+    (root / "sd35-large" / ".complete").write_text("{}")
+    tiny_sd3_transformer(1).save_pretrained(root / "sd35-large-turbo" / "transformer")
+    (root / "sd35-large-turbo" / ".complete").write_text("{}")
+
+
+def tiny_sdxl_pipeline(seed: int):
+    from diffusers import AutoencoderKL, EulerDiscreteScheduler, StableDiffusionXLPipeline, UNet2DConditionModel
+    from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+
+    torch.manual_seed(seed)
+    tokenizer = CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip")
+    return StableDiffusionXLPipeline(
+        unet=UNet2DConditionModel(
+            block_out_channels=(2, 4), layers_per_block=2, sample_size=32, in_channels=4, out_channels=4,
+            down_block_types=("DownBlock2D", "CrossAttnDownBlock2D"),
+            up_block_types=("CrossAttnUpBlock2D", "UpBlock2D"), attention_head_dim=(2, 4),
+            use_linear_projection=True, addition_embed_type="text_time", addition_time_embed_dim=8,
+            transformer_layers_per_block=(1, 2), projection_class_embeddings_input_dim=80, cross_attention_dim=64,
+            norm_num_groups=1),
+        scheduler=EulerDiscreteScheduler(beta_start=0.00085, beta_end=0.012, steps_offset=1,
+                                         beta_schedule="scaled_linear", timestep_spacing="leading"),
+        vae=AutoencoderKL(block_out_channels=[4, 8], in_channels=3, out_channels=3,
+                          down_block_types=["DownEncoderBlock2D"] * 2, up_block_types=["UpDecoderBlock2D"] * 2,
+                          latent_channels=4, sample_size=128, norm_num_groups=1),
+        text_encoder=CLIPTextModel(tiny_clip_config()), tokenizer=tokenizer,
+        text_encoder_2=CLIPTextModelWithProjection(tiny_clip_config()), tokenizer_2=tokenizer,
+        image_encoder=None, feature_extractor=None)
+
+
+def tiny_sdxl(root: Path) -> None:
+    """Saved with the fp16 variant names, like the real download's folder. Its CLIP-L file keeps the names the
+    Hugging Face repo uses (`text_model.…`), which transformers 5's `CLIPTextModel` renames when loading."""
+    from safetensors.torch import load_file, save_file
+
+    tiny_sdxl_pipeline(0).save_pretrained(root / "sdxl", variant="fp16")
+    clip_l = root / "sdxl" / "text_encoder" / "model.fp16.safetensors"
+    state = load_file(str(clip_l))
+    save_file({k if k.startswith("text_model.") else "text_model." + k: v for k, v in state.items()}, str(clip_l),
+              metadata={"format": "pt"})
+    (root / "sdxl" / ".complete").write_text("{}")
+
+
 QWEN_IMAGE = ("Qwen/Qwen-Image", "75e0b4be04f60ec59a75f475837eced720f823b6")
 
 
@@ -164,6 +240,8 @@ def models(tmp_path_factory):
     tiny_lightning(root)
     tiny_flux(root)
     tiny_qwen(root)
+    tiny_sd35(root)
+    tiny_sdxl(root)
     return root
 
 
@@ -653,6 +731,256 @@ def test_qwen_image_fp8_storage(models, tmp_path, monkeypatch):
     save_file(qwen_lora(worker.pipe.transformer, 13, scale=0.3), str(lora))
     with_lora, _, out = qwen_image(worker, tmp_path, {"lora1": lora}, steps=2)
     assert out.extra["loras"] == 1 and np.abs(with_lora - image).max() > 0
+
+
+def lora_on_attention(module, path: Path, prefix: str, seed: int, scale: float = 1.0) -> Path:
+    """A diffusers-format LoRA (``<prefix>.<layer>.lora_A/B.weight``) on a model's attention q/k/v projections."""
+    from safetensors.torch import save_file
+
+    g = torch.Generator().manual_seed(seed)
+    tensors = {}
+    for name, m in module.named_modules():
+        if name.endswith((".to_q", ".to_k", ".to_v")) and not name.split(".")[-2].startswith("attn2"):
+            tensors[f"{prefix}.{name}.lora_A.weight"] = torch.randn(4, m.in_features, generator=g) * scale
+            tensors[f"{prefix}.{name}.lora_B.weight"] = torch.randn(m.out_features, 4, generator=g) * scale
+    save_file(tensors, str(path))
+    return path
+
+
+class ImageJobs:
+    """Runs jobs of one task on one warm worker, each into its own folder; returns the decoded image."""
+
+    def __init__(self, task: str, models: Path, tmp_path: Path, **defaults):
+        self.spec = TASKS[task]
+        self.worker = make_worker(self.spec.family)
+        self.worker.load(models, lambda s: None)
+        self.tmp, self.n, self.defaults = tmp_path, iter(range(1000)), defaults
+
+    def __call__(self, inputs=None, **params):
+        from PIL import Image
+
+        out_dir = self.tmp / f"img{next(self.n)}"
+        out_dir.mkdir()
+        sink = Sink()
+        out = self.worker.run(self.spec, {**self.spec.normalize({}), "prompt": "a lighthouse", "width": 64,
+                                          "height": 64, **self.defaults, **params}, inputs or {}, sink, out_dir)
+        return np.asarray(Image.open(out.path)).astype(int), sink, out
+
+
+def test_sd35_fast_and_full(models, tmp_path):
+    """Fast (the default) is Large Turbo: 4 steps, no guidance. Full swaps Large's transformer in place from the
+    Volume (and back again gives the first image exactly)."""
+    jobs = ImageJobs("sd35-large", models, tmp_path)
+    assert jobs.worker.has_fast and jobs.worker.current == "turbo"
+    fast, sink, out = jobs(negative="blurry")
+    assert out.extra["fast"] is True and out.extra["steps"] == 4 and out.extra["guidance"] == 0.0
+    assert out.extra["negative"] == "ignored" and "Sampling (fast)" in sink.statuses
+    assert sink.steps[-1] == (4, 4) and not sink.previews and not any(s.startswith("Loading") for s in sink.statuses)
+    full, sink, out = jobs(fast=False, steps=2)
+    assert "Loading SD 3.5 Large" in sink.statuses and "Sampling" in sink.statuses
+    assert out.extra["fast"] is False and out.extra["guidance"] == 3.5 and out.extra["negative"] == "none"
+    assert np.abs(full - fast).max() > 0
+    _, _, out = jobs(fast=False, steps=2, negative="blurry")
+    assert out.extra["negative"] == "cfg"
+    longer, sink, _ = jobs(fast=False, steps=9)
+    assert [s for _, s in sink.previews] == [4, 8] and sink.previews[0][0] == (64, 64, 3)
+    assert not any(s.startswith("Loading") for s in sink.statuses)
+    again, sink, _ = jobs(negative="blurry")
+    assert "Loading SD 3.5 Large Turbo" in sink.statuses and np.array_equal(again, fast)
+
+
+def test_sd35_without_turbo_runs_large_only(models, tmp_path):
+    """Without Turbo installed there's no fast mode: a job asking for it runs Large."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "sd35-large").symlink_to(models / "sd35-large")
+    jobs = ImageJobs("sd35-large", root, tmp_path)
+    assert not jobs.worker.has_fast and jobs.worker.current == "large"
+    _, _, out = jobs(steps=2)
+    assert out.extra["fast"] is False and out.extra["steps"] == 2 and out.extra["guidance"] == 3.5
+
+
+def test_sd35_loras(models, tmp_path):
+    """A LoRA on the transformer's attention changes the image, strength 0 gives the plain one, and it keeps
+    working after the Turbo / Large swap (PEFT's wrapped layers receive the copied weights)."""
+    jobs = ImageJobs("sd35-large", models, tmp_path, steps=2)
+    a = lora_on_attention(jobs.worker.pipe.transformer, tmp_path / ("a" * 64 + ".safetensors"), "transformer", 1)
+    plain, _, out = jobs()
+    assert out.extra["loras"] == 0
+    with_a, sink, out = jobs({"lora1": a})
+    assert out.extra["loras"] == 1 and "Loading LoRA 1" in sink.statuses and np.abs(with_a - plain).max() > 0
+    off, _, out = jobs({"lora1": a}, lora1_strength=0.0)
+    assert np.array_equal(off, plain) and out.extra["loras"] == 0
+    large_plain, _, _ = jobs(fast=False)
+    large_a, sink, _ = jobs({"lora1": a}, fast=False)
+    assert "Loading LoRA 1" not in sink.statuses and np.abs(large_a - large_plain).max() > 0
+    assert np.array_equal(jobs({"lora1": a})[0], with_a)  # and back to Turbo, the LoRA still applies
+    assert np.array_equal(jobs()[0], plain)
+
+
+def test_sdxl_samplers(models, tmp_path):
+    from diffusers import DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler, EulerDiscreteScheduler
+
+    jobs = ImageJobs("sdxl", models, tmp_path, width=64, height=64)
+    kinds = {"dpmpp-2m-karras": DPMSolverMultistepScheduler, "euler-a": EulerAncestralDiscreteScheduler,
+             "euler": EulerDiscreteScheduler}
+    images = {}
+    worker, preview = jobs.worker, jobs.worker._preview
+    decoded = []  # whether each preview decoded the step's estimate of the finished latents (not the noisy ones)
+
+    def recording_preview(latents):
+        decoded.append(worker.x0.get("x0") is not None and latents is worker.x0["x0"])
+        return preview(latents)
+
+    worker._preview = recording_preview
+    for sampler, kind in kinds.items():
+        decoded.clear()
+        images[sampler], sink, out = jobs(sampler=sampler, steps=11, negative="blurry, low quality")
+        assert isinstance(jobs.worker.pipe.scheduler, kind) and out.extra["sampler"] == sampler
+        assert images[sampler].shape == (64, 64, 3) and out.extra["steps"] == 11 and out.extra["guidance"] == 6.0
+        assert sink.steps[-1] == (11, 11) and [s for _, s in sink.previews] == [5, 10]
+        assert sink.previews[0][0] == (64, 64, 3) and decoded == [True, True], sampler
+    assert np.abs(images["euler"] - images["dpmpp-2m-karras"]).max() > 0
+    again, _, _ = jobs(sampler="euler", steps=11, negative="blurry, low quality")
+    assert np.array_equal(again, images["euler"])
+    no_negative, _, _ = jobs(sampler="euler", steps=11)
+    assert np.abs(no_negative - images["euler"]).max() > 0
+    wide, _, _ = jobs(width=96, height=64, steps=2)
+    assert wide.shape == (64, 96, 3)
+
+
+def test_sdxl_loras(models, tmp_path):
+    jobs = ImageJobs("sdxl", models, tmp_path, steps=2)
+    a = lora_on_attention(jobs.worker.pipe.unet, tmp_path / ("a" * 64 + ".safetensors"), "unet", 1)
+    plain, _, out = jobs()
+    assert out.extra["loras"] == 0
+    with_a, sink, out = jobs({"lora1": a})
+    assert out.extra["loras"] == 1 and "Loading LoRA 1" in sink.statuses and np.abs(with_a - plain).max() > 0
+    again, sink, _ = jobs({"lora1": a})
+    assert np.array_equal(again, with_a) and "Loading LoRA 1" not in sink.statuses
+    off, _, out = jobs({"lora1": a}, lora1_strength=0.0)
+    assert np.array_equal(off, plain) and out.extra["loras"] == 0
+    assert np.array_equal(jobs()[0], plain)
+
+
+def test_sdxl_fine_tune_from_a_single_file_and_swapping_back(models, tmp_path, monkeypatch):
+    """An SDXL fine-tune is one checkpoint file. A real one (the original SGM layout) can't be made tiny, so the
+    single-file loader returns a tiny pipeline with perturbed UNet and text encoders; what's checked is the rest:
+    the three folders written, the variant listed, the in-place swap of all three, and the base restored exactly."""
+    from diffusers import StableDiffusionXLPipeline
+
+    from aistudio_gpu import variants
+
+    tuned_pipe = StableDiffusionXLPipeline.from_pretrained(models / "sdxl", variant="fp16")
+    torch.manual_seed(5)
+    with torch.no_grad():
+        for module in (tuned_pipe.unet, tuned_pipe.text_encoder, tuned_pipe.text_encoder_2):
+            for p in module.parameters():
+                p.add_(torch.randn_like(p) * 0.05)
+    loaded = {}
+
+    def single_file(ckpt, **kwargs):
+        loaded.update(kwargs, ckpt=ckpt)
+        return tuned_pipe
+
+    def fake_download(url, dest, sha256, tokens, progress, extra_hosts=(), cancelled=lambda: False):
+        dest.write_bytes(b"checkpoint")
+
+    monkeypatch.setattr(StableDiffusionXLPipeline, "from_single_file", staticmethod(single_file))
+    monkeypatch.setattr(variants, "download_file", fake_download)
+    progress = []
+    dest = variants.import_variant(models, "sdxl", "tiny-xl-ft", "Tiny", files=[{"url": "https://civitai.com/x"}],
+                                   progress=progress.append)
+    assert loaded["config"] == str(models / "sdxl") and loaded["local_files_only"]
+    assert all((dest / c).is_dir() for c in ("unet", "text_encoder", "text_encoder_2"))
+    assert not (dest / ".work").exists() and {"state": "converting", "file": 1, "files": 1} in progress
+    assert variants.list_variants(models)["sdxl"][0]["id"] == "tiny-xl-ft"
+
+    jobs = ImageJobs("sdxl", models, tmp_path, steps=2)
+    base, _, _ = jobs()
+    tuned, sink, _ = jobs(model="tiny-xl-ft")
+    assert "Loading tiny-xl-ft" in sink.statuses and np.abs(tuned - base).max() > 0
+    again, sink, _ = jobs(model="tiny-xl-ft")
+    assert np.array_equal(again, tuned) and not any(s.startswith("Loading") for s in sink.statuses)
+    back, sink, _ = jobs(model="base")
+    assert "Loading the base model" in sink.statuses and np.array_equal(back, base)
+    assert np.array_equal(jobs()[0], base)
+    with pytest.raises(ValueError, match="isn't installed on this server"):
+        jobs(model="nope")
+
+    # A swap that fails part-way is redone by the next job, never taken as done: the text encoder that failed
+    # isn't left holding the fine-tune's weights while counted as the base's.
+    from aistudio_gpu.tasks import adapters
+
+    real = adapters._copy_weights
+    calls = []
+
+    def flaky(module, src, vid):
+        calls.append(src.name)
+        if vid == "base" and src.name == "text_encoder" and calls.count("text_encoder") == 2:
+            raise ValueError("disk hiccup")
+        return real(module, src, vid)
+
+    monkeypatch.setattr(adapters, "_copy_weights", flaky)
+    jobs(model="tiny-xl-ft")
+    with pytest.raises(ValueError, match="disk hiccup"):
+        jobs(model="base")
+    back, sink, _ = jobs(model="base")
+    assert "Loading the base model" in sink.statuses and np.array_equal(back, base)
+
+
+def test_copy_weights_matches_every_key_first(models, tmp_path):
+    """A file with a weight the module doesn't have changes nothing (no half-copied module)."""
+    from safetensors.torch import load_file, save_file
+
+    from aistudio_gpu.tasks import adapters
+
+    jobs = ImageJobs("sdxl", models, tmp_path, steps=2)
+    encoder = jobs.worker.pipe.text_encoder
+    before = {k: v.clone() for k, v in encoder.state_dict().items()}
+    state = {k: v + 1 for k, v in load_file(str(models / "sdxl" / "text_encoder" / "model.fp16.safetensors")).items()}
+    state["zzz.not_in_the_model"] = torch.zeros(1)
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    save_file(state, str(bad / "model.safetensors"))
+    with pytest.raises(ValueError, match="unexpected weight zzz.not_in_the_model"):
+        adapters._copy_weights(encoder, bad, "bad")
+    assert all(torch.equal(before[k], v) for k, v in encoder.state_dict().items())
+
+
+def test_sdxl_fine_tune_refuses_two_files(models, tmp_path, monkeypatch):
+    from aistudio_gpu import variants
+
+    monkeypatch.setattr(variants, "download_file", lambda *a, **k: pytest.fail("nothing should be downloaded"))
+    files = [{"url": "https://civitai.com/a"}, {"url": "https://civitai.com/b"}]
+    with pytest.raises(ValueError, match="an SDXL fine-tune is one checkpoint file"):
+        variants.import_variant(models, "sdxl", "two-files", "Two", files=files)
+    assert not variants.variant_dir(models, "sdxl", "two-files").exists()
+
+
+def test_import_from_a_repo_skips_flax_and_fp16_duplicates(tmp_path, monkeypatch):
+    """The repo download asks only for safetensors and json files, and keeps one set of weights per folder."""
+    from aistudio_gpu import variants
+
+    seen = {}
+
+    def snapshot(repo, revision=None, allow_patterns=None, local_dir=None, token=None):
+        seen["allow"] = allow_patterns
+        for name in ("unet/diffusion_pytorch_model.safetensors", "unet/diffusion_pytorch_model.fp16.safetensors",
+                     "unet/config.json", "text_encoder/model.fp16.safetensors", "text_encoder/config.json"):
+            f = Path(local_dir) / name
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b"x")
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    work = tmp_path / "work"
+    work.mkdir()
+    variants._download_repo_transformer("a/b@rev", work, None, lambda p: None, variants.components("sdxl"))
+    assert "unet/*.safetensors" in seen["allow"] and "text_encoder_2/*.json" in seen["allow"]
+    assert sorted(p.name for p in (work / "unet").iterdir()) == ["config.json", "diffusion_pytorch_model.safetensors"]
+    assert (work / "text_encoder" / "model.fp16.safetensors").exists()  # alone: kept
 
 
 def test_download_takes_bf16_transformers_from_the_mirror_and_converts_the_rest(models, tmp_path, monkeypatch):
