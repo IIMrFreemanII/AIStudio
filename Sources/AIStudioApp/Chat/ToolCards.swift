@@ -291,16 +291,21 @@ struct ToolCard: View {
 }
 
 /// A unified diff: line numbers, a +/− column, added lines green and removed ones red, ⋯ between hunks.
+/// At most `rowLimit` lines are drawn, with a note giving the total: a huge diff (a big untracked file in the Changes
+/// pane) laid out as one stack of 200 000 rows crashed the app.
 struct DiffView: View {
     let diff: String
     var maxHeight: CGFloat? = 320
 
+    static let rowLimit = 5000
+
     var body: some View {
-        let rows = DiffNumbers.rows(diff)
+        let all = DiffNumbers.rows(diff)
+        let rows = all.count > Self.rowLimit ? Array(all.prefix(Self.rowLimit)) : all
         let digits = String(rows.compactMap(\.number).max() ?? 0).count
         let numbered = rows.contains { $0.number != nil }
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(rows) { row in
                     if row.gap {
                         Text("⋯").font(.mgMono).foregroundStyle(MG.tertiaryLabel)
@@ -324,6 +329,12 @@ struct DiffView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(row.sign == "+" ? MG.success.opacity(0.10) : row.sign == "-" ? MG.destructive.opacity(0.10) : .clear)
                     }
+                }
+                if all.count > rows.count {
+                    Text("Showing the first \(rows.count.formatted()) of \(all.count.formatted()) lines. Open the file to see the rest.")
+                        .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        .padding(.horizontal, 6).padding(.vertical, 8)
+                        .mgTestAnchor("diff-truncated")
                 }
             }
             .textSelection(.enabled)
