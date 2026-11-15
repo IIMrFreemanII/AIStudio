@@ -12,7 +12,7 @@ import NodesStandard
 public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
-        RemoteSD35Node.self, RemoteSDXLNode.self,
+        RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self,
     ]
 
@@ -28,7 +28,7 @@ public enum RemoteNodes {
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
     public static let taskIDs: [String: String] = [
         "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v", "RemoteFlux": "flux1-dev",
-        "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
+        "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
     ]
 
@@ -161,7 +161,53 @@ func runRemoteJob(task: String, params: [String: Any], images: [String: MLXArray
     try await client.downloadResult(job.id, to: url)
     let load = (try? await client.job(job.id))?.loadSeconds ?? 0
     context.status(costLine(gpuSeconds: result.gpuSeconds, loadSeconds: load, cost: result.costUSD))
+    RemoteJobLog.post(RemoteJobRecord(task: task, serverID: endpoint.id, width: params["width"] as? Int,
+                                      height: params["height"] as? Int, gpuSeconds: result.gpuSeconds,
+                                      loadSeconds: load, costUSD: result.costUSD))
     return (url, result.output.kind)
+}
+
+/// A finished Cloud GPU job: what it ran, how long the GPU worked, and what it cost (the server's figures).
+public struct RemoteJobRecord: Sendable, Equatable {
+    public var task: String
+    public var serverID: String
+    public var width: Int?
+    public var height: Int?
+    public var gpuSeconds: Double
+    /// Model loading before it, on a cold start (billed too).
+    public var loadSeconds: Double
+    public var costUSD: Double?
+
+    public init(task: String, serverID: String, width: Int?, height: Int?, gpuSeconds: Double, loadSeconds: Double,
+                costUSD: Double?) {
+        self.task = task
+        self.serverID = serverID
+        self.width = width
+        self.height = height
+        self.gpuSeconds = gpuSeconds
+        self.loadSeconds = loadSeconds
+        self.costUSD = costUSD
+    }
+}
+
+/// Where finished Cloud GPU jobs are announced, for whoever ran the graph (the movie studio adds up its costs and
+/// learns how long jobs take). Observers are called on the node's thread.
+public enum RemoteJobLog {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var observers: [UUID: @Sendable (RemoteJobRecord) -> Void] = [:]
+
+    @discardableResult
+    public static func observe(_ f: @escaping @Sendable (RemoteJobRecord) -> Void) -> UUID {
+        let id = UUID()
+        lock.withLock { observers[id] = f }
+        return id
+    }
+
+    public static func remove(_ id: UUID) { _ = lock.withLock { observers.removeValue(forKey: id) } }
+
+    public static func post(_ r: RemoteJobRecord) {
+        for f in lock.withLock({ Array(observers.values) }) { f(r) }
+    }
 }
 
 /// Status lines for an upload ("Uploading 230 / 612 MB · 1.9 MB/s · 3 min left (name)"), at most four a second.
@@ -510,6 +556,50 @@ public struct RemoteQwenImageNode: NodeImplementation {
                                                   family: "qwen-image", to: &params)
         let (url, _) = try await runRemoteJob(task: "qwen-image", params: params, files: files, links: links,
                                               inputs: inputs, context: context)
+        return ["image": .object(try loadImage(url))]
+    }
+}
+
+/// Qwen-Image-Edit 2511 on a GPU server: a new picture from an instruction and one to three pictures ("picture 1 is
+/// the woman, picture 2 the room: she sits by the window"). The movie studio makes its keyframes with it from the
+/// cast's reference sheets. Width and height 0 keep picture 1's shape at about a megapixel.
+public struct RemoteQwenImageEditNode: NodeImplementation {
+    public static let pictures = ["image1", "image2", "image3"]
+
+    public static let schema = NodeSchema(
+        type: "RemoteQwenImageEdit", displayName: "Qwen-Image-Edit (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("image1", .image),
+            InputSpec("image2", .image, optional: true),
+            InputSpec("image3", .image, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(0), widget: .number(min: 0, max: 2048, step: 16), zeroLabel: "auto"),
+            InputSpec("height", .int, default: .int(0), widget: .number(min: 0, max: 2048, step: 16), zeroLabel: "auto"),
+            // The Lightning 8-step LoRA: about 10× fewer GPU seconds.
+            InputSpec("fast", .bool, default: .bool(true), widget: .toggle),
+            // 0 = automatic (8 with fast, else 40).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
+            // True classifier-free guidance; 0 = automatic (1, none, with fast, else 4).
+            InputSpec("cfg", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5), zeroLabel: "auto"),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var images: [String: MLXArray] = ["image1": try inputs.object("image1")]
+        for name in Self.pictures.dropFirst() {
+            if let image = inputs.optionalObject(name, as: MLXArray.self) { images[name] = image }
+        }
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "fast": try inputs.bool("fast"), "steps": try inputs.int("steps"), "cfg": try inputs.float("cfg"),
+        ]
+        let (url, _) = try await runRemoteJob(task: "qwen-image-edit", params: params, images: images, inputs: inputs,
+                                              context: context)
         return ["image": .object(try loadImage(url))]
     }
 }

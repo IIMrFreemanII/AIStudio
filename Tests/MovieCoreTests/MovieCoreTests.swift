@@ -211,3 +211,97 @@ Here's the script.
     #expect(warm.seconds == 500)
     #expect(CostEstimate.format(0.004) == "<$0.01" && CostEstimate.format(1.2) == "$1.20")
 }
+
+// MARK: cast and keyframes
+
+private func castMovie() -> MovieProject {
+    var m = MovieProject(style: "anime")
+    let sheet = Take(file: "cast/mara-1.png")
+    m.characters = [
+        MovieCharacter(id: "mara", name: "Mara", look: "girl of 12, red raincoat", voice: "", sheets: [sheet],
+                       selectedSheet: sheet.id),
+        MovieCharacter(id: "tomas", name: "Tomas", look: "old man", voice: ""),
+    ]
+    let key = Take(file: "keyframes/1.png")
+    m.scenes = [MovieScene(id: "s1", heading: "INT. LIGHTHOUSE – NIGHT"), MovieScene(id: "s2", heading: "EXT. CLIFF")]
+    m.shots = [
+        Shot(scene: "s1", framing: "wide", keyframePrompt: "the lamp room", characters: ["mara"], keyframes: [key],
+             selectedKeyframe: key.id),
+        Shot(scene: "s1", framing: "close-up", keyframePrompt: "Mara shouts", characters: ["mara"],
+             continuesPrevious: true),
+        Shot(scene: "s2", keyframePrompt: "", characters: [], continuesPrevious: true),
+        Shot(scene: "s2", keyframePrompt: "Tomas waits", characters: ["tomas"]),
+    ]
+    return m
+}
+
+@Test func keyframesAreMadeFromSheetsAndThePreviousShot() {
+    let m = castMovie()
+    let close = MovieArt.references(for: m.shots[1], in: m)
+    #expect(close.map(\.label) == ["Mara", "the previous shot"] && close.map(\.file) == ["cast/mara-1.png", "keyframes/1.png"])
+    // A shot that "continues" across a scene change doesn't take the other scene's keyframe.
+    #expect(MovieArt.references(for: m.shots[2], in: m).isEmpty)
+    #expect(MovieArt.missingSheets(for: m.shots[3], in: m) == ["Tomas"])
+    let prompt = MovieArt.keyframePrompt(for: m.shots[1], in: m, references: close)
+    #expect(prompt.hasPrefix("Picture 1 is Mara. Picture 2 is the previous shot"))
+    #expect(prompt.contains("Mara shouts.") && prompt.contains("Close-up shot.") && prompt.contains("anime key visual"))
+    // No pictures: a plain prompt, the scene's heading when the shot has none.
+    let plain = MovieArt.keyframePrompt(for: m.shots[2], in: m, references: [])
+    #expect(plain.hasPrefix("EXT. CLIFF.") && !plain.contains("Picture"))
+    #expect(!m.castIsReady && !m.keyframesAreReady)
+}
+
+@Test func keyframeRenderBindsPicturesAndDropsTheUnused() throws {
+    let m = castMovie()
+    let folder = URL(fileURLWithPath: "/movies/x")
+    let (render, refs) = MovieArt.keyframeRender(m.shots[0], movie: m, folder: folder, seed: 5, server: "gpu1")
+    #expect(refs.count == 1 && render.unusedPictures == ["image2", "image3"])
+    #expect(render.values["image1"] == .string("/movies/x/cast/mara-1.png") && render.values["width"] == .int(1344))
+    let graph = try MovieArt.editTemplate().bind(render.values, optional: Set(render.values.keys),
+                                                 remove: render.unusedPictures)
+    #expect(graph.nodes.map(\.id).sorted() == ["edit", "out", "picture1"])
+    let edit = try #require(graph["edit"])
+    #expect(edit.inputs["image1"] == .link(node: "picture1", output: "image") && edit.inputs["image2"] == nil)
+    #expect(edit.inputs["seed"] == .value(.int(5)) && edit.inputs["server"] == .value(.string("gpu1")))
+    #expect(graph["picture1"]?.inputs["path"] == .value(.string("/movies/x/cast/mara-1.png")))
+    // Sheets: Qwen-Image at its wide size.
+    let sheet = MovieArt.sheetRender(m.characters[0], movie: m, seed: 1, server: "")
+    let g = try MovieArt.textToImageTemplate(name: "character-sheet").bind(sheet.values)
+    #expect(g["image"]?.type == "RemoteQwenImage" && g["image"]?.inputs["width"] == .value(.int(1664)))
+    #expect(MovieArt.sheetPrompt(m.characters[0], style: .anime).contains("Mara, girl of 12, red raincoat"))
+}
+
+@Test func planPartsIgnoreTakes() {
+    var m = castMovie()
+    let before = m.shots.map(\.planPart)
+    m.shots[1].keyframes.append(Take(file: "k.png"))
+    #expect(m.shots.map(\.planPart) == before)
+    m.shots[1].framing = "medium"
+    #expect(m.shots.map(\.planPart) != before)
+    let cast = m.characters.map(\.scriptPart)
+    m.characters[1].sheets.append(Take(file: "t.png"))
+    #expect(m.characters.map(\.scriptPart) == cast)
+}
+
+@Test func gpuTimingsLearnAndEstimate() throws {
+    var t = GPUTimings()
+    // Defaults until a job ran, scaled by pixels.
+    #expect(t.seconds(task: "qwen-image-edit", megapixels: 2) == 16 && t.loadSeconds(task: "qwen-image-edit") == 60)
+    #expect(t.seconds(task: "unknown", megapixels: 1) == 60)
+    let now = Date()
+    t.record(task: "qwen-image-edit", megapixels: 1.03, gpuSeconds: 8, loadSeconds: 70, at: now)
+    t.record(task: "qwen-image-edit", megapixels: 1.03, gpuSeconds: 10, loadSeconds: 0, at: now)
+    #expect(t.seconds(task: "qwen-image-edit", megapixels: 1.0) == 9)  // the average, same bucket
+    #expect(abs(t.seconds(task: "qwen-image-edit", megapixels: 2.06) - 18) < 1e-9)  // scaled from the learned size
+    #expect(t.loadSeconds(task: "qwen-image-edit") == 70)  // only cold starts count
+    #expect(t.isWarm(task: "qwen-image-edit", idleSeconds: 120, now: now.addingTimeInterval(60)))
+    #expect(!t.isWarm(task: "qwen-image-edit", idleSeconds: 120, now: now.addingTimeInterval(110)))
+    let line = MovieCost.images(label: "Keyframes", task: "qwen-image-edit", jobs: 4, megapixels: 1, gpu: "H100",
+                                usdPerSecond: 0.001, timings: t, warm: false, idleSeconds: 120)
+    #expect(line.seconds == 70 + 4 * 9 + 120 && abs(line.usd - 0.226) < 1e-9)
+
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("timings-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: url) }
+    try t.save(url)
+    #expect(GPUTimings.load(url) == t)
+}

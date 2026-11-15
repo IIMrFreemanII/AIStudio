@@ -48,6 +48,8 @@ def test_auth_and_info(client):
     assert tasks["test-video"]["installed"] and not tasks["wan22-t2v"]["installed"]
     assert tasks["wan22-t2v"]["gpu"] == "H100" and tasks["wan22-t2v"]["pricePerSecond"] > 0
     assert tasks["wan22-i2v"]["inputs"] == ["image"]
+    assert tasks["qwen-image-edit"]["inputs"] == ["image1"] and tasks["qwen-image-edit"]["gpu"] == "H100"
+    assert tasks["qwen-image-edit"]["optionalInputs"][:2] == ["image2", "image3"]
 
 
 def test_video_job_streams_status_progress_previews_and_result(client):
@@ -227,6 +229,36 @@ def test_fake_models_give_each_audio_model_its_format(tmp_path, monkeypatch):
         assert out.kind == "audio" and out.content_type == "audio/wav"
         got = _wav_info(out.path.read_bytes())
         assert got[:2] == (rate, channels) and (frames is None or got[2] == frames), (task, got)
+
+
+def test_fake_models_edit_returns_picture_one_tinted(tmp_path, monkeypatch):
+    """The movie studio's keyframes against the fake server: picture 1 at the asked size, tinted red, its bottom row
+    the number of pictures / 4."""
+    import numpy as np
+    from PIL import Image
+
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+
+    class Sink:
+        def status(self, t): pass
+        def progress(self, s, t): pass
+        def preview(self, *a): pass
+        def check(self): pass
+
+    spec = TASKS["qwen-image-edit"]
+    pics = {}
+    for i, color in enumerate([(0, 0, 255), (0, 255, 0)], 1):
+        pics[f"image{i}"] = tmp_path / f"p{i}.png"
+        Image.new("RGB", (40, 20), color).save(pics[f"image{i}"])
+    out = make_worker(spec.family).run(spec, spec.normalize({"width": 80, "height": 48}), pics, Sink(), tmp_path)
+    image = np.asarray(Image.open(out.path)).astype(float) / 255
+    assert image.shape == (48, 80, 3)
+    assert abs(image[10, 10, 0] - 0.5) < 0.02 and abs(image[10, 10, 2] - 0.25) < 0.02  # blue, tinted
+    assert abs(image[-1, 10, 0] - 0.5) < 0.02  # two pictures
+    out = make_worker(spec.family).run(spec, spec.normalize({}), {"image1": pics["image1"]}, Sink(), tmp_path)
+    assert Image.open(out.path).size == (40, 20)  # 0 × 0: picture 1's own size
 
 
 def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):

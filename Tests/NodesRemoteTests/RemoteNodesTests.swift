@@ -99,6 +99,13 @@ final class EventLog: @unchecked Sendable {
     }
 }
 
+final class RecordBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var items: [RemoteJobRecord] = []
+    func add(_ r: RemoteJobRecord) { lock.withLock { items.append(r) } }
+    var all: [RemoteJobRecord] { lock.withLock { items } }
+}
+
 /// One serialized suite: the tests share the global `RemoteEndpoints`.
 @Suite(.serialized)
 struct RemoteNodesTests {
@@ -120,6 +127,7 @@ struct RemoteNodesTests {
         #expect(info.api == 1 && info.runner == "local")
         #expect(info.task("wan22-t2v")?.gpu == "H100" && info.task("wan22-t2v")?.installed == true)
         #expect(info.task("wan22-i2v")?.inputs == ["image"])
+        #expect(info.task("qwen-image-edit")?.inputs == ["image1"] && info.task("qwen-image-edit")?.installed == true)
         // A wrong token is refused.
         await #expect(throws: RemoteClient.ClientError.self) {
             _ = try await GPUJobClient(baseURL: server.baseURL, token: "nope-nope-nope").info()
@@ -188,6 +196,40 @@ struct RemoteNodesTests {
             return
         }
         #expect(image.shape[0] == 256 && image.shape[1] == 320)
+    }
+
+    @Test(.enabled(if: hasServer)) func qwenImageEditUploadsItsPicturesAndReportsTheJob() async throws {
+        // Two solid pictures: the fake edit returns picture 1 tinted red, its bottom row the picture count / 4.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        var paths: [String] = []
+        for (i, color) in [[0.1, 0.1, 0.9], [0.1, 0.9, 0.1]].enumerated() {
+            let png = out.appendingPathComponent("pic\(i + 1).png")
+            try ImageArray.savePNG(MLXArray.ones([40, 60, 4]) * MLXArray((color + [1.0]).map(Float.init)), to: png)
+            paths.append(png.path)
+        }
+        let records = RecordBox()
+        let token = RemoteJobLog.observe { records.add($0) }
+        defer { RemoteJobLog.remove(token) }
+        let (result, log) = try await run([
+            GraphNode(id: "p1", type: "LoadImage", inputs: ["path": .value(.string(paths[0]))]),
+            GraphNode(id: "p2", type: "LoadImage", inputs: ["path": .value(.string(paths[1]))]),
+            GraphNode(id: "edit", type: "RemoteQwenImageEdit", inputs: [
+                "image1": .link(node: "p1", output: "image"), "image2": .link(node: "p2", output: "image"),
+                "prompt": .value(.string("picture 1 meets picture 2")), "width": .value(.int(96)),
+                "height": .value(.int(64))]),
+            GraphNode(id: "show", type: "PreviewImage", inputs: ["image": .link(node: "edit", output: "image")]),
+        ])
+        #expect(log.statuses.contains("Uploading") && log.statuses.contains { $0.hasPrefix("GPU ") })
+        guard case .object(let o)? = result.outputs["show"]?["image"], let image = o as? MLXArray else {
+            Issue.record("no image")
+            return
+        }
+        #expect(image.shape[0] == 64 && image.shape[1] == 96)
+        let middle = image[32, 48]
+        #expect(abs(middle[0].item(Float.self) - 0.55) < 0.05 && abs(middle[2].item(Float.self) - 0.225) < 0.05)
+        #expect(abs(image[63, 10][0].item(Float.self) - 0.5) < 0.03)  // two pictures
+        let r = try #require(records.all.last)
+        #expect(r.task == "qwen-image-edit" && r.width == 96 && r.height == 64 && (r.costUSD ?? 0) > 0)
     }
 
     @Test(.enabled(if: hasServer)) func fluxUploadsChainedCloudLoRAs() async throws {

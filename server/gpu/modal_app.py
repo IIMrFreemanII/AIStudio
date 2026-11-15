@@ -3,7 +3,7 @@
     pip install modal && modal setup                       # once, signs in
     modal secret create huggingface HF_TOKEN=hf_…          # for FLUX.1 dev, SD 3.5 (gated); skip for Wan, SDXL only
     modal secret create civitai CIVITAI_TOKEN=…            # optional: LoRA links from Civitai (most need a key)
-    modal run server/gpu/modal_download.py --models wan22,flux,qwen,sd,audio   # the weights, on CPUs (modal_download.py)
+    modal run server/gpu/modal_download.py --models wan22,flux,qwen,qwen-edit,sd,audio   # the weights, on CPUs (modal_download.py)
     modal deploy server/gpu/modal_app.py                   # prints the URL of `api`; GPUs need a payment method
     # Modal dashboard › Settings › Proxy Auth Tokens → new token; in the app: Servers › + › GPU server,
     # the URL and the token as  wk-….ws-…
@@ -11,8 +11,8 @@
 Layout:
 - ``api``: the front desk (FastAPI on 1 CPU core, proxy-auth protected; it relays LLM streams too). Checking it, uploading, and the CPU test
   tasks never start a GPU. It scales to zero 5 min after the last request.
-- ``WanT2V`` / ``WanI2V`` and ``QwenImage`` (H100), ``Flux`` (L40S): GPU workers, one per model family, each with
-  the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
+- ``WanT2V`` / ``WanI2V``, ``QwenImage`` and ``QwenImageEdit`` (H100), ``Flux`` (L40S): GPU workers, one per model
+  family, each with the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
 - ``SD35`` (Stable Diffusion 3.5 Large, with its Turbo mode) and ``SDXL`` (L40S): the same, for the Stable Diffusion
   family. SD 3.5 is gated: accept the licences of both repos (``stable-diffusion-3.5-large`` and ``…-large-turbo``)
   with the Hugging Face account of the ``huggingface`` secret.
@@ -26,8 +26,8 @@ Layout:
   up to ``AISTUDIO_UPLOADS_GB`` (default 50; least recently used go first). Workers copy inputs straight from it.
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
-``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
-fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
+``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
@@ -169,6 +169,11 @@ vllm_snap_image = (vllm_base.env({"VLLM_SERVER_DEV_MODE": "1", "TORCHINDUCTOR_CO
                    .add_local_python_source("aistudio_gpu"))
 gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS).env(env)
              .add_local_python_source("aistudio_gpu"))
+# Qwen-Image-Edit's processor (transformers' Qwen2-VL image and video processors) needs torchvision; only its worker
+# gets it, so the other GPU images stay as they are.
+TORCHVISION = "torchvision==0.29.2"
+edit_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS, TORCHVISION)
+              .env(env).add_local_python_source("aistudio_gpu"))
 
 # ACE-Step 1.5's own code at a pinned commit, with the versions its uv.lock pins (torch 2.10 + CUDA 12.8, transformers
 # 4.57) and its bundled nano-vllm for the planner; flash-attn from the prebuilt wheel its lock file names (py3.11).
@@ -303,6 +308,26 @@ class QwenImage:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("qwen-image", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(image=edit_image, gpu=GPU_QWEN, memory=(16384, 98304))
+class QwenImageEdit:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("qwen-image-edit", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1168,7 +1193,7 @@ def api():
 
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "flux1-dev": Flux, "qwen-image": QwenImage,
-                          "sd35-large": SD35, "sdxl": SDXL, "music": Music,
+                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "music": Music,
                           "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

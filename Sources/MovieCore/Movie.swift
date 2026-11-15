@@ -35,7 +35,7 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
     }
 
     /// Stages built so far (the rest show "coming in a later phase").
-    public var isAvailable: Bool { [.idea, .script, .shots].contains(self) }
+    public var isAvailable: Bool { [.idea, .script, .shots, .cast, .keyframes].contains(self) }
 
     public var previous: MovieStage? {
         let all = Self.allCases

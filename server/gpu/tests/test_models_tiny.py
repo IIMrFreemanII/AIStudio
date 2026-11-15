@@ -1,4 +1,4 @@
-"""The real Wan 2.2, FLUX, Qwen-Image, SD 3.5 and SDXL workers on tiny random-weight models (a few MB), on whatever device this machine has
+"""The real Wan 2.2, FLUX, Qwen-Image (and Edit), SD 3.5 and SDXL workers on tiny random-weight models (a few MB), on whatever device this machine has
 (MPS on a Mac, CUDA, or the CPU). Checks the wiring — loading the folder layout the download step writes, both
 Wan transformers, the Lightning LoRA files in their original key format, fp8 storage, progress, previews, cancel and
 the encoded result — not image quality. Skipped without torch/diffusers. Downloads a tiny T5 (≈ 1 MB) once."""
@@ -731,6 +731,113 @@ def test_qwen_image_fp8_storage(models, tmp_path, monkeypatch):
     save_file(qwen_lora(worker.pipe.transformer, 13, scale=0.3), str(lora))
     with_lora, _, out = qwen_image(worker, tmp_path, {"lora1": lora}, steps=2)
     assert out.extra["loras"] == 1 and np.abs(with_lora - image).max() > 0
+
+
+QWEN_EDIT = ("Qwen/Qwen-Image-Edit-2511", "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9")
+
+
+@pytest.fixture(scope="module")
+def edit_models(models):
+    """A random Qwen-Image-Edit 2511 (two blocks, zero_cond_t, a 2-layer Qwen2.5-VL that also reads the pictures)
+    with the real processor (≈ 11 MB, fetched once), plus a Lightning-style LoRA, beside the other tiny models."""
+    from diffusers import (AutoencoderKLQwenImage, FlowMatchEulerDiscreteScheduler, QwenImageEditPlusPipeline,
+                           QwenImageTransformer2DModel)
+    from huggingface_hub import snapshot_download
+    from safetensors.torch import save_file
+    from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Qwen2VLProcessor
+
+    root = models
+    if (root / "qwen-image-edit" / ".complete").exists():
+        return root
+    torch.manual_seed(0)
+    repo, revision = QWEN_EDIT
+    fetched = Path(snapshot_download(repo, revision=revision, allow_patterns=["processor/*", "tokenizer/*"]))
+    config = Qwen2_5_VLConfig(
+        text_config={"hidden_size": 16, "intermediate_size": 16, "num_hidden_layers": 2, "num_attention_heads": 2,
+                     "num_key_value_heads": 2, "rope_theta": 1000000.0, "vocab_size": 152064,
+                     "rope_scaling": {"mrope_section": [1, 1, 2], "rope_type": "default", "type": "default"}},
+        vision_config={"depth": 2, "hidden_size": 16, "intermediate_size": 16, "num_heads": 2, "out_hidden_size": 16},
+        hidden_size=16, vocab_size=152064, vision_end_token_id=151653, vision_start_token_id=151652,
+        vision_token_id=151654, image_token_id=151655)
+    transformer = QwenImageTransformer2DModel(patch_size=2, in_channels=16, out_channels=4, num_layers=2,
+                                              attention_head_dim=16, num_attention_heads=3, joint_attention_dim=16,
+                                              guidance_embeds=False, axes_dims_rope=(8, 4, 4), zero_cond_t=True)
+    pipe = QwenImageEditPlusPipeline(
+        transformer=transformer, scheduler=FlowMatchEulerDiscreteScheduler(),
+        vae=AutoencoderKLQwenImage(base_dim=24, z_dim=4, dim_mult=[1, 2, 4], num_res_blocks=1,
+                                   temperal_downsample=[False, True], latents_mean=[0.0] * 4, latents_std=[1.0] * 4),
+        text_encoder=Qwen2_5_VLForConditionalGeneration(config),
+        tokenizer=Qwen2Tokenizer.from_pretrained(fetched / "tokenizer"),
+        processor=Qwen2VLProcessor.from_pretrained(fetched / "processor"))
+    pipe.save_pretrained(root / "qwen-image-edit")
+    (root / "qwen-image-edit" / ".complete").write_text("{}")
+    out = root / "qwen-image-edit-lightning" / "8steps.safetensors"
+    out.parent.mkdir(parents=True)
+    save_file(qwen_lora(transformer, 9, scale=0.05), str(out))
+    (root / "qwen-image-edit-lightning" / ".complete").write_text("{}")
+    return root
+
+
+def picture(path: Path, color, size=(48, 32)) -> Path:
+    from PIL import Image
+
+    Image.new("RGB", size, color).save(path)
+    return path
+
+
+def qwen_edit(worker, tmp_path, inputs, **params):
+    from PIL import Image
+
+    spec = TASKS["qwen-image-edit"]
+    out_dir = tmp_path / f"e{len(list(tmp_path.iterdir()))}"
+    out_dir.mkdir()
+    sink = Sink()
+    out = worker.run(spec, {**spec.normalize({}), "prompt": "picture 1 waves at picture 2", "width": 64, "height": 48,
+                            **params}, inputs, sink, out_dir)
+    return np.asarray(Image.open(out.path)).astype(int), sink, out
+
+
+def test_qwen_image_edit_auto_size():
+    from aistudio_gpu.tasks.qwen_image_edit import auto_size
+
+    assert auto_size(1344, 768, 1.0) == (1344, 768)
+    assert auto_size(1010, 500, 1.0) == (1008, 496)  # multiples of 16
+    w, h = auto_size(0, 0, 16 / 9)  # picture 1's shape at about a megapixel
+    assert w % 16 == 0 and h % 16 == 0 and abs(w / h - 16 / 9) < 0.02 and abs(w * h - 1024 * 1024) < 40_000
+
+
+def test_qwen_image_edit_fast_full_and_pictures(edit_models, tmp_path):
+    """Fast: Lightning, 8 steps, no guidance. Full: true CFG. One to three pictures, each changing the result; the
+    same seed and pictures give the same image."""
+    spec = TASKS["qwen-image-edit"]
+    assert spec.inputs == ("image1",) and spec.optional_inputs[:2] == ("image2", "image3")
+    worker = make_worker(spec.family)
+    worker.load(edit_models, lambda s: None)
+    assert worker.has_fast and type(worker.pipe).__name__ == "QwenImageEditPlusPipeline"
+    one = {"image1": picture(tmp_path / "a.png", (200, 40, 40))}
+    two = {**one, "image2": picture(tmp_path / "b.png", (40, 40, 200), size=(32, 48))}
+    fast, sink, out = qwen_edit(worker, tmp_path, one, negative="blurry")
+    assert out.extra["steps"] == 8 and out.extra["cfg"] == 1.0 and out.extra["negative"] == "ignored"
+    assert out.extra["pictures"] == 1 and fast.shape == (48, 64, 3)
+    assert sink.steps[-1] == (8, 8) and "Sampling (fast)" in sink.statuses and sink.previews[0][0] == (48, 64, 3)
+    both, _, out = qwen_edit(worker, tmp_path, two)
+    assert out.extra["pictures"] == 2 and np.abs(both - fast).max() > 0
+    assert np.array_equal(qwen_edit(worker, tmp_path, one, negative="blurry")[0], fast)
+    _, _, out = qwen_edit(worker, tmp_path, two, fast=False, steps=2, negative="blurry")
+    assert out.extra["cfg"] == 4.0 and out.extra["negative"] == "cfg" and not out.extra["fast"]
+    with pytest.raises(ValueError, match="at least one picture"):
+        qwen_edit(worker, tmp_path, {})
+
+
+def test_qwen_image_edit_cancel(edit_models, tmp_path):
+    spec = TASKS["qwen-image-edit"]
+    worker = make_worker(spec.family)
+    worker.load(edit_models, lambda s: None)
+    out_dir = tmp_path / "c"
+    out_dir.mkdir()
+    with pytest.raises(JobCancelled):
+        worker.run(spec, {**spec.normalize({}), "width": 64, "height": 48},
+                   {"image1": picture(tmp_path / "a.png", (10, 200, 10))}, Sink(cancel_at=2), out_dir)
 
 
 def lora_on_attention(module, path: Path, prefix: str, seed: int, scale: float = 1.0) -> Path:

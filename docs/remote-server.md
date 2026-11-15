@@ -198,6 +198,7 @@ How it fits together (all of it is `server/gpu/modal_app.py`):
   | Wan 2.2 Image to Video (A14B) | H100 80 GB, $3.95/h | ≈ 63 GB |
   | FLUX.1 dev | L40S 48 GB, $1.95/h | ≈ 34 GB |
   | Qwen-Image (20B) | H100 80 GB, $3.95/h | ≈ 58 GB (bf16; fp8 on a 48 GB card) |
+  | Qwen-Image-Edit 2511 (20B, 1–3 input pictures) | H100 80 GB, $3.95/h | ≈ 58 GB (bf16; fp8 on a 48 GB card) |
   | Stable Diffusion 3.5 Large (+ Turbo) | L40S 48 GB, $1.95/h | ≈ 44 GB |
   | Stable Diffusion XL | L40S 48 GB, $1.95/h | ≈ 7 GB |
   | ACE-Step 1.5 XL music (4B planner + 4B DiT) | L40S 48 GB, $1.95/h | ≈ 38 GB |
@@ -214,14 +215,16 @@ On this Mac, in the repository:
 pip install modal                      # or: uv tool install modal
 modal setup                            # opens the browser to sign in
 modal secret create huggingface HF_TOKEN=hf_...   # for FLUX.1 dev, SD 3.5 and Stable Audio 3 (gated: accept their licences on Hugging Face first)
-modal run server/gpu/modal_download.py --models wan22,flux,qwen,sd,audio   # into the Volume, on Modal CPUs; ~20–25 min
+modal run server/gpu/modal_download.py --models wan22,flux,qwen,qwen-edit,sd,audio   # into the Volume, on Modal CPUs; ~20–25 min
 modal deploy server/gpu/modal_app.py   # prints the front desk's URL: https://<you>--aistudio-gpu-api.<region>.modal.run
 ```
 
 - `--models` takes `wan22` (both Wan tasks and the Lightning LoRAs, ≈ 140 GB), `flux` (≈ 34 GB), `qwen` (Qwen-Image
-  and its Lightning LoRA, ≈ 58 GB, not gated), `sd` (`sd35`: SD 3.5 Large and Large Turbo, ≈ 44 GB, gated; `sdxl`:
+  and its Lightning LoRA, ≈ 58 GB, not gated), `qwen-edit` (Qwen-Image-Edit 2511 and its Lightning LoRA, ≈ 59 GB,
+  not gated), `sd` (`sd35`: SD 3.5 Large and Large Turbo, ≈ 44 GB, gated; `sdxl`:
   ≈ 7 GB, not gated), `audio` (music, sound and speech, ≈ 62 GB), `music`, `sound`, `speech`,
   or single ones (`wan22-t2v`, `wan22-i2v`, `wan22-lightning`, `flux1-dev`, `qwen-image`, `qwen-image-lightning`,
+  `qwen-image-edit`, `qwen-image-edit-lightning`,
   `sd35-large`, `sd35-large-turbo`, `sdxl`, `ace-step-xl`, `stable-audio-3`, `qwen3-tts`). Finished models are skipped, so it is safe to re-run.
   Without the Hugging Face secret, use `AISTUDIO_HF_SECRET= modal run … --models wan22,music,speech`.
 - Gated models: [FLUX.1 dev](https://huggingface.co/black-forest-labs/FLUX.1-dev),
@@ -244,7 +247,7 @@ Servers panel › **+** › kind **GPU server**, the URL from `modal deploy`, an
 secret). **Test** lists the tasks, their GPUs and prices, and which models are installed — without starting a GPU.
 
 Then open a Cloud GPU preset (Presets panel or gallery, marked with a cloud): *Wan 2.2 Text to Video · Cloud GPU*,
-*Wan 2.2 Image to Video · Cloud GPU*, *FLUX.1 dev · Cloud GPU*, *Qwen-Image · Cloud GPU*, *Song · Cloud GPU*, *Sound Effect · Cloud GPU*,
+*Wan 2.2 Image to Video · Cloud GPU*, *FLUX.1 dev · Cloud GPU*, *Qwen-Image · Cloud GPU*, *Qwen-Image-Edit · Cloud GPU*, *Song · Cloud GPU*, *Sound Effect · Cloud GPU*,
 *Voice Clone & TTS · Cloud GPU*. Or add the nodes yourself (Node Library › remote) and wire them to any local node: a
 cloud Wan clip into Save Video, a cloud FLUX image into a local inpaint, a cloud song into Mix Audio. A node's server
 input picks the GPU server (empty: the first one).

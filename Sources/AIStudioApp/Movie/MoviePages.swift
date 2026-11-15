@@ -122,7 +122,10 @@ struct MovieScriptPage: View {
             }
         }
         .onChange(of: doc.movie.scenes) { _, _ in if doc.movie.approved.contains(.script) { doc.movie.reopen(.script) } }
-        .onChange(of: doc.movie.characters) { _, _ in if doc.movie.approved.contains(.script) { doc.movie.reopen(.script) } }
+        // Names, looks and voices: a new sheet take (Cast) isn't a script edit.
+        .onChange(of: doc.movie.characters.map(\.scriptPart)) { _, _ in
+            if doc.movie.approved.contains(.script), !doc.isBusy { doc.movie.reopen(.script) }
+        }
     }
 
     private var castSection: some View {
@@ -247,6 +250,9 @@ struct MovieShotsPage: View {
                                 ForEach(ids, id: \.self) { id in
                                     if let binding = shotBinding(id) {
                                         ShotCard(shot: binding, number: shotNumber(id), cast: doc.movie.characters,
+                                                 keyframe: binding.wrappedValue.selectedKeyframeFile.map {
+                                                     model.movieStore.url(doc.id, relative: $0)
+                                                 },
                                                  move: { move(id, by: $0) }, remove: { remove(id) })
                                     }
                                 }
@@ -256,7 +262,8 @@ struct MovieShotsPage: View {
                 }
             }
         }
-        .onChange(of: doc.movie.shots) { _, _ in
+        // The plan, not its takes: a keyframe made later isn't a shot list edit.
+        .onChange(of: doc.movie.shots.map(\.planPart)) { _, _ in
             if doc.movie.approved.contains(.shots), !doc.isBusy { doc.movie.reopen(.shots) }
         }
     }
@@ -286,6 +293,8 @@ private struct ShotCard: View {
     @Binding var shot: Shot
     let number: Int
     let cast: [MovieCharacter]
+    /// The chosen keyframe's file, when there is one.
+    var keyframe: URL? = nil
     let move: (Int) -> Void
     let remove: () -> Void
 
@@ -303,16 +312,18 @@ private struct ShotCard: View {
                 Button { move(1) } label: { Image(systemName: "chevron.right") }.buttonStyle(.mg(.icon)).mgHelp("Later")
                 Button(action: remove) { Image(systemName: "trash") }.buttonStyle(.mg(.icon)).mgHelp("Remove this shot")
             }
-            // The keyframe goes here once it's made (next update).
+            // The chosen keyframe, once the Keyframes stage made one.
             RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
                 .fill(MG.fill)
                 .aspectRatio(16 / 9, contentMode: .fit)
                 .overlay {
+                    if let url = keyframe { MovieStill(url: url, maxPixels: 840) } else {
                     VStack(spacing: 4) {
                         Image(systemName: "photo").font(.mg(size: 18))
                         Text(MovieFormat.seconds(shot.duration)).font(.mgFootnote)
                     }
                     .foregroundStyle(MG.tertiaryLabel)
+                    }
                 }
             MovieField(label: "Keyframe") {
                 TextField("The first frame: who, where, light, composition", text: $shot.keyframePrompt, axis: .vertical)
