@@ -7,13 +7,13 @@ import Testing
 
 // MARK: shots
 
-@Test func videoAndEditStagesFollowKeyframesWhileVoicesAndSoundWait() {
+@Test func everyStageIsAvailableAndUnlocksInOrder() {
     var m = MovieProject()
     for s in [MovieStage.idea, .script, .shots, .cast, .keyframes] { m.approve(s) }
-    #expect(m.currentStage == .video && m.isUnlocked(.video) && !m.isUnlocked(.edit))
-    m.approve(.video)
+    #expect(m.currentStage == .voices && m.isUnlocked(.voices) && !m.isUnlocked(.video))
+    for s in [MovieStage.voices, .video, .sound] { m.approve(s) }
     #expect(m.currentStage == .edit && m.isUnlocked(.edit))
-    #expect(MovieStage.video.previous == .keyframes && !MovieStage.voices.isAvailable)
+    #expect(MovieStage.video.previous == .voices && MovieStage.allCases.allSatisfy(\.isAvailable))
 }
 
 @Test func oldShotsDecodeWithoutTrimsAndTakesWithoutPosters() throws {
@@ -78,9 +78,19 @@ private func clipMovie() -> MovieProject {
     #expect(!m.videosAreReady)
 }
 
+@Test func continuingShotsRenderInOrderAndTheRestAtOnce() {
+    let m = clipMovie()  // shot 2 continues shot 1; shot 3 "continues" across a scene change
+    let ids = m.shots.map(\.id)
+    #expect(MovieShots.chains(ids, in: m) == [[0, 1], [2]])
+    // Without the shot before in the batch it uses that shot's chosen take, so it waits for nothing.
+    #expect(MovieShots.chains([ids[1], ids[2]], in: m) == [[0], [1]])
+    // Indices are the batch's, each run in film order.
+    #expect(MovieShots.chains(ids.reversed(), in: m) == [[2, 1], [0]])
+}
+
 // MARK: timeline
 
-private func editMovie(_ transitions: [ShotTransition], trims: [(Double, Double)] = []) -> MovieProject {
+func editMovie(_ transitions: [ShotTransition], trims: [(Double, Double)] = []) -> MovieProject {
     var m = MovieProject()
     m.shots = transitions.enumerated().map { i, t in
         let v = Take(file: "shots/\(i).mp4", poster: "shots/\(i).png")
@@ -121,7 +131,7 @@ private func editMovie(_ transitions: [ShotTransition], trims: [(Double, Double)
 // MARK: composer
 
 /// A solid-colour clip at 16 fps, as Wan's are.
-private func writeClip(_ url: URL, frames: Int, rgb: (UInt8, UInt8, UInt8), size: (Int, Int) = (64, 48)) async throws {
+func writeClip(_ url: URL, frames: Int, rgb: (UInt8, UInt8, UInt8), size: (Int, Int) = (64, 48)) async throws {
     let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
     let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
         AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: size.0, AVVideoHeightKey: size.1,

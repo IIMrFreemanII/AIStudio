@@ -189,6 +189,12 @@ extension Shot {
         s.selectedVideo = nil
         s.trimStart = 0
         s.trimEnd = 0
+        s.sounds = []
+        s.selectedSound = nil
+        for i in s.dialogue.indices {
+            s.dialogue[i].takes = []
+            s.dialogue[i].selectedTake = nil
+        }
         return s
     }
 }

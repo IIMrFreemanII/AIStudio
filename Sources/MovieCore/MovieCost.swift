@@ -22,14 +22,44 @@ public struct CostEstimate: Sendable, Equatable {
         }
     }
 
+    /// One way to run the work: on one GPU per kind of job, or several at once (each extra GPU loads the model and
+    /// idles too, so it costs more and finishes sooner).
+    public struct Plan: Sendable, Equatable, Identifiable {
+        public var id: Int { parallel }
+        /// Jobs of a kind sent at once (1: one GPU each).
+        public var parallel: Int
+        public var lines: [Line]
+        /// Roughly how long until everything is done.
+        public var wallSeconds: Double
+
+        public init(parallel: Int, lines: [Line], wallSeconds: Double) {
+            self.parallel = parallel
+            self.lines = lines
+            self.wallSeconds = wallSeconds
+        }
+
+        public var usd: Double { lines.reduce(0) { $0 + $1.usd } }
+    }
+
     public var title: String
+    /// The chosen plan's lines.
     public var lines: [Line]
     /// Said under the lines: what the figure leaves out or rests on.
     public var notes: [String]
+    /// Ways to run it to choose from (empty: just `lines`).
+    public var plans: [Plan] = []
 
     public init(title: String, lines: [Line], notes: [String] = []) {
         self.title = title
         self.lines = lines
+        self.notes = notes
+    }
+
+    /// With a choice of plans, `chosen` first.
+    public init(title: String, plans: [Plan], chosen: Int, notes: [String] = []) {
+        self.title = title
+        self.plans = plans
+        self.lines = plans.first { $0.parallel == chosen }?.lines ?? plans.first?.lines ?? []
         self.notes = notes
     }
 
@@ -73,13 +103,42 @@ public enum MovieCost {
 extension MovieCost {
     /// Image jobs on a GPU server's task. A cold worker loads its models first (billed); after the last job it stays
     /// up for the server's idle window, which is billed too.
+    /// How long a batch takes from Run to done: the model load when a GPU must start (any extra GPU is cold), then
+    /// the jobs in rounds of `containers`.
+    public static func wallSeconds(jobs: Int, containers: Int, perJob: Double, load: Double, warm: Bool) -> Double {
+        let k = max(1, min(containers, jobs))
+        let start = warm && k == 1 ? 0 : load
+        return start + (Double(jobs) / Double(k)).rounded(.up) * perJob
+    }
+
+    /// Whether to run on several GPUs by default: only when it saves real waiting (5 minutes or more); otherwise one
+    /// GPU, which skips the extra GPUs' loads and idle time.
+    public static func prefersParallel(single: CostEstimate.Plan, parallel: CostEstimate.Plan) -> Bool {
+        single.wallSeconds - parallel.wallSeconds >= 300
+    }
+
+    /// The GPUs a batch of `jobs` will use when the server runs `parallel` jobs of a kind at once and `busy` of them
+    /// are taken already (other work): the free ones, at most `limit` and the jobs; with none free, one (the jobs
+    /// wait for a busy GPU, whose model is loaded) and `waits`.
+    public static func gpus(jobs: Int, parallel: Int, busy: Int, limit: Int) -> (count: Int, waits: Bool) {
+        let free = max(0, parallel - busy)
+        if free == 0 { return (1, true) }
+        return (max(1, min(jobs, free, limit)), false)
+    }
+
+    /// `containers`: how many GPUs the jobs spread over (they run at once); each loads the model when it's cold
+    /// (one is already up when `warm`) and stays up `idleSeconds` after its last job.
     public static func images(label: String, task: String, jobs: Int, megapixels: Double, gpu: String,
-                              usdPerSecond: Double, timings: GPUTimings, warm: Bool, idleSeconds: Double)
+                              usdPerSecond: Double, timings: GPUTimings, warm: Bool, idleSeconds: Double,
+                              containers: Int = 1)
         -> CostEstimate.Line
     {
-        let start = warm ? 0 : timings.loadSeconds(task: task)
-        let seconds = start + Double(jobs) * timings.seconds(task: task, megapixels: megapixels) + idleSeconds
-        return .init(label: label, count: jobs, gpu: gpu, seconds: seconds, usd: seconds * usdPerSecond)
+        let gpus = max(1, min(containers, jobs))
+        let loads = Double(warm ? gpus - 1 : gpus)
+        let seconds = loads * timings.loadSeconds(task: task)
+            + Double(jobs) * timings.seconds(task: task, megapixels: megapixels) + Double(gpus) * idleSeconds
+        return .init(label: label, count: jobs, gpu: gpus > 1 ? "\(gpus)× \(gpu)" : gpu, seconds: seconds,
+                     usd: seconds * usdPerSecond)
     }
 }
 
@@ -122,6 +181,14 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         // A clip's "megapixels" are megapixels × frames (`MovieShots.work`): 832×480 × 81 frames ≈ 32.3. Measured
         // on Modal's H100 on 2026-11-10: 24 s a clip with fast on, about 90 s to load.
         "wan22-i2v": (24, 32.3, 90),
+        // S2V as measured on Modal's H100 on 2026-11-15 with flash-attn (832×448, one 80-frame pass): 28 s of text,
+        // audio and VAE encoding, 9.8 s a step (both guidance passes), so ≈ 430 s for the default 40 steps; a 77 s
+        // cold load. The rest are guesses until measured; the audio models' work is seconds of audio
+        // (`MovieVoices.work`).
+        "wan22-s2v": (450, 32.3, 90),
+        "qwen3-tts": (6, 4, 60),
+        "stable-audio-3": (4, 5, 40),
+        "ace-step-xl": (25, 30, 90),
     ]
 
     /// Jobs of a task are bucketed by size (half-megapixel steps), since time grows with the pixel count.

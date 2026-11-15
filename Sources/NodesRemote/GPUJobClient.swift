@@ -15,6 +15,8 @@ public struct GPUServerInfo: Codable, Sendable, Equatable {
         /// Inputs the task can use when connected (a voice to clone).
         public var optionalInputs: [String]?
         public var params: [String: Param]?
+        /// Its model's jobs queued or running on the server now, from every client (nil from older servers).
+        public var activeJobs: Int?
     }
 
     /// A task parameter's type and limits (its default is the node's business).
@@ -31,11 +33,16 @@ public struct GPUServerInfo: Codable, Sendable, Equatable {
     public var api: Int
     public var runner: String
     public var idleSeconds: Int?
+    /// How many jobs of one task can run at once (on Modal, GPU containers per model); nil from older servers: one.
+    public var parallelJobs: Int?
     /// Fine-tunes installed from links, per family ("flux.1"): what a task's `model` can pick.
     public var variants: [String: [GPUVariant]]?
     public var tasks: [Task]
 
     public func task(_ id: String) -> Task? { tasks.first { $0.id == id } }
+
+    /// How many more of `task`'s jobs would start right away rather than wait for a busy GPU.
+    public func freeSlots(_ task: String) -> Int { max(0, (parallelJobs ?? 1) - (self.task(task)?.activeJobs ?? 0)) }
 }
 
 /// A job as the server describes it (`POST /v1/jobs`, `GET /v1/jobs/{id}`).
@@ -135,7 +142,8 @@ public final class GPUJobClient: @unchecked Sendable {
     /// `<sha256>.<ext>`.
     public func upload(_ data: Data, ext: String, progress: UploadProgressHandler? = nil) async throws -> String {
         let name = FileHasher.hex(SHA256.hash(data: data)) + "." + ext
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(name)")
+        // Its own file: two jobs at once can upload the same bytes (a voice sample both lines clone).
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString)-\(name)")
         try data.write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         try await http.upload(name: name, file: file, bytes: data.count, progress: progress)

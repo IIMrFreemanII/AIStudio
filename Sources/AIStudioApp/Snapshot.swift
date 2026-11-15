@@ -777,6 +777,7 @@ enum Snapshot {
             {"server":"aistudio-gpu","version":"0.1.0","api":1,"runner":"modal","idleSeconds":120,"tasks":[
              {"id":"wan22-t2v","title":"Wan 2.2 Text to Video","kind":"video","gpu":"H100","pricePerSecond":0.001097,"installed":true,"inputs":[]},
              {"id":"wan22-i2v","title":"Wan 2.2 Image to Video","kind":"video","gpu":"H100","pricePerSecond":0.001097,"installed":true,"inputs":["image"]},
+             {"id":"wan22-s2v","title":"Wan 2.2 Speech to Video","kind":"video","gpu":"H100","pricePerSecond":0.001097,"installed":false,"inputs":["image","audio"]},
              {"id":"flux1-dev","title":"FLUX.1 dev","kind":"image","gpu":"L40S","pricePerSecond":0.000542,"installed":false,"inputs":[]},
              {"id":"ace-step-xl","title":"ACE-Step 1.5 XL music","kind":"audio","gpu":"L40S","pricePerSecond":0.000542,"installed":true,"inputs":[]},
              {"id":"stable-audio-3","title":"Stable Audio 3 sound","kind":"audio","gpu":"L40S","pricePerSecond":0.000542,"installed":true,"inputs":[]},

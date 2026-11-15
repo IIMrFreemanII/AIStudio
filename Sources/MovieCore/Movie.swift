@@ -34,9 +34,8 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
         }
     }
 
-    /// Stages built so far (the rest show "coming in a later phase", and are skipped: the film goes on without
-    /// them, silent until Voices and Sound arrive).
-    public var isAvailable: Bool { [.idea, .script, .shots, .cast, .keyframes, .video, .edit].contains(self) }
+    /// Stages built so far (any others would show "coming in a later phase" and be skipped). All of them now.
+    public var isAvailable: Bool { true }
 
     /// The available stage before this one: the one that must be approved first.
     public var previous: MovieStage? {
@@ -94,15 +93,22 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
     public var seed: Int?
     public var costUSD: Double?
     public var date: Date
+    /// A sound's length in seconds (voice lines, effects, music), measured when it was made.
+    public var seconds: Double?
+    /// A sound's loudness correction in dB, measured when it was made (`MovieLoudness`), so every line and cue
+    /// starts from the same level before the mix.
+    public var gainDB: Double?
 
     public init(id: UUID = UUID(), file: String, poster: String? = nil, seed: Int? = nil, costUSD: Double? = nil,
-                date: Date = Date()) {
+                date: Date = Date(), seconds: Double? = nil, gainDB: Double? = nil) {
         self.id = id
         self.file = file
         self.poster = poster
         self.seed = seed
         self.costUSD = costUSD
         self.date = date
+        self.seconds = seconds
+        self.gainDB = gainDB
     }
 }
 
@@ -113,12 +119,31 @@ public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
     public var text: String
     /// How it's said ("quietly, scared"); goes into the voice prompt.
     public var delivery: String
+    /// The line spoken in the character's voice (a shot's lines; a scene's are only the script).
+    public var takes: [Take]
+    public var selectedTake: UUID?
 
-    public init(id: UUID = UUID(), character: String, text: String, delivery: String = "") {
+    public init(id: UUID = UUID(), character: String, text: String, delivery: String = "", takes: [Take] = [],
+                selectedTake: UUID? = nil) {
         self.id = id
         self.character = character
         self.text = text
         self.delivery = delivery
+        self.takes = takes
+        self.selectedTake = selectedTake
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, character, text, delivery, takes, selectedTake }
+
+    /// Lines saved before the Voices stage have no takes.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        character = try c.decode(String.self, forKey: .character)
+        text = try c.decode(String.self, forKey: .text)
+        delivery = try c.decodeIfPresent(String.self, forKey: .delivery) ?? ""
+        takes = try c.decodeIfPresent([Take].self, forKey: .takes) ?? []
+        selectedTake = try c.decodeIfPresent(UUID.self, forKey: .selectedTake)
     }
 }
 
@@ -134,9 +159,13 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
     public var selectedSheet: UUID?
     /// A character LoRA in the library, when one was trained.
     public var loraID: String?
+    /// Their voice, designed from `voice` saying a sample sentence: every line of theirs is spoken in it (cloned),
+    /// so the voice stays the same from line to line.
+    public var voiceSamples: [Take]
+    public var selectedVoiceSample: UUID?
 
     public init(id: String, name: String, look: String, voice: String, sheets: [Take] = [], selectedSheet: UUID? = nil,
-                loraID: String? = nil) {
+                loraID: String? = nil, voiceSamples: [Take] = [], selectedVoiceSample: UUID? = nil) {
         self.id = id
         self.name = name
         self.look = look
@@ -144,6 +173,26 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
         self.sheets = sheets
         self.selectedSheet = selectedSheet
         self.loraID = loraID
+        self.voiceSamples = voiceSamples
+        self.selectedVoiceSample = selectedVoiceSample
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, look, voice, sheets, selectedSheet, loraID, voiceSamples, selectedVoiceSample
+    }
+
+    /// Characters saved before the Voices stage have no voice samples.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        look = try c.decode(String.self, forKey: .look)
+        voice = try c.decode(String.self, forKey: .voice)
+        sheets = try c.decodeIfPresent([Take].self, forKey: .sheets) ?? []
+        selectedSheet = try c.decodeIfPresent(UUID.self, forKey: .selectedSheet)
+        loraID = try c.decodeIfPresent(String.self, forKey: .loraID)
+        voiceSamples = try c.decodeIfPresent([Take].self, forKey: .voiceSamples) ?? []
+        selectedVoiceSample = try c.decodeIfPresent(UUID.self, forKey: .selectedVoiceSample)
     }
 }
 
@@ -211,12 +260,16 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
     /// Seconds cut from the start and the end of the chosen clip in the edit.
     public var trimStart: Double
     public var trimEnd: Double
+    /// The shot's sound effects (from `sfx`), as long as the shot.
+    public var sounds: [Take]
+    public var selectedSound: UUID?
 
     public init(id: UUID = UUID(), scene: String, duration: Double = 5, framing: String = "", camera: String = "",
                 keyframePrompt: String = "", motionPrompt: String = "", characters: [String] = [],
                 dialogue: [DialogueLine] = [], sfx: String = "", talking: Bool = false, continuesPrevious: Bool = false,
                 transition: ShotTransition = .cut, keyframes: [Take] = [], selectedKeyframe: UUID? = nil,
-                videos: [Take] = [], selectedVideo: UUID? = nil, trimStart: Double = 0, trimEnd: Double = 0) {
+                videos: [Take] = [], selectedVideo: UUID? = nil, trimStart: Double = 0, trimEnd: Double = 0,
+                sounds: [Take] = [], selectedSound: UUID? = nil) {
         self.id = id
         self.scene = scene
         self.duration = duration
@@ -236,6 +289,8 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
         self.selectedVideo = selectedVideo
         self.trimStart = trimStart
         self.trimEnd = trimEnd
+        self.sounds = sounds
+        self.selectedSound = selectedSound
     }
 
     /// Wan clips are 1–7.5 s.
@@ -243,10 +298,11 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, scene, duration, framing, camera, keyframePrompt, motionPrompt, characters, dialogue, sfx, talking,
-             continuesPrevious, transition, keyframes, selectedKeyframe, videos, selectedVideo, trimStart, trimEnd
+             continuesPrevious, transition, keyframes, selectedKeyframe, videos, selectedVideo, trimStart, trimEnd,
+             sounds, selectedSound
     }
 
-    /// Movies saved before the edit stage have no trims.
+    /// Movies saved before the edit stage have no trims, and before the sound stage no sounds.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id)
@@ -268,6 +324,47 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
         selectedVideo = try c.decodeIfPresent(UUID.self, forKey: .selectedVideo)
         trimStart = try c.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0
         trimEnd = try c.decodeIfPresent(Double.self, forKey: .trimEnd) ?? 0
+        sounds = try c.decodeIfPresent([Take].self, forKey: .sounds) ?? []
+        selectedSound = try c.decodeIfPresent(UUID.self, forKey: .selectedSound)
+    }
+}
+
+/// A scene's score: one piece of music under all of its shots.
+public struct MusicCue: Codable, Identifiable, Sendable, Equatable {
+    /// The scene's id.
+    public var id: String
+    /// The style of the music (ACE-Step tags: genre, instruments, mood), from the scene's mood and the movie's style.
+    public var prompt: String
+    public var takes: [Take]
+    public var selected: UUID?
+
+    public init(id: String, prompt: String, takes: [Take] = [], selected: UUID? = nil) {
+        self.id = id
+        self.prompt = prompt
+        self.takes = takes
+        self.selected = selected
+    }
+
+    public var selectedTake: Take? { takes.first { $0.id == selected } }
+}
+
+/// How loud each kind of sound plays in the film (linear gains on top of each take's loudness correction).
+public struct MovieMix: Codable, Sendable, Equatable {
+    public var dialogue: Double
+    public var effects: Double
+    public var music: Double
+    /// The music's gain while someone speaks (it dips under the line and comes back after).
+    public var duck: Double
+    /// Burn the subtitles into the exported picture (an SRT is written beside the MP4 either way).
+    public var burnSubtitles: Bool
+
+    public init(dialogue: Double = 1, effects: Double = 0.5, music: Double = 0.35, duck: Double = 0.3,
+                burnSubtitles: Bool = false) {
+        self.dialogue = dialogue
+        self.effects = effects
+        self.music = music
+        self.duck = duck
+        self.burnSubtitles = burnSubtitles
     }
 }
 
@@ -296,12 +393,17 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var costSpent: Double
     public var created: Date
     public var modified: Date
+    /// The scenes' music.
+    public var music: [MusicCue]
+    public var mix: MovieMix
+    /// Talking shots are animated by Wan 2.2 S2V from their lines' audio (lips in sync); off: like any other shot.
+    public var lipSync: Bool
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
                 llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
                 shots: [Shot] = [], approved: Set<MovieStage> = [], costSpent: Double = 0, created: Date = Date(),
-                modified: Date = Date()) {
+                modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true) {
         self.id = id
         self.title = title
         self.idea = idea
@@ -317,6 +419,38 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.costSpent = costSpent
         self.created = created
         self.modified = modified
+        self.music = music
+        self.mix = mix
+        self.lipSync = lipSync
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, approved,
+             costSpent, created, modified, music, mix, lipSync
+    }
+
+    /// Movies saved before the sound stages have no music, mix or lip-sync setting.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? Self.formatVersion
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        idea = try c.decode(String.self, forKey: .idea)
+        style = try c.decode(String.self, forKey: .style)
+        aspect = try c.decode(MovieAspect.self, forKey: .aspect)
+        targetSeconds = try c.decode(Int.self, forKey: .targetSeconds)
+        llm = try c.decodeIfPresent(MovieLLM.self, forKey: .llm)
+        logline = try c.decode(String.self, forKey: .logline)
+        characters = try c.decode([MovieCharacter].self, forKey: .characters)
+        scenes = try c.decode([MovieScene].self, forKey: .scenes)
+        shots = try c.decode([Shot].self, forKey: .shots)
+        approved = try c.decode(Set<MovieStage>.self, forKey: .approved)
+        costSpent = try c.decode(Double.self, forKey: .costSpent)
+        created = try c.decode(Date.self, forKey: .created)
+        modified = try c.decode(Date.self, forKey: .modified)
+        music = try c.decodeIfPresent([MusicCue].self, forKey: .music) ?? []
+        mix = try c.decodeIfPresent(MovieMix.self, forKey: .mix) ?? MovieMix()
+        lipSync = try c.decodeIfPresent(Bool.self, forKey: .lipSync) ?? true
     }
 
     public var runtime: Double { shots.reduce(0) { $0 + $1.duration } }

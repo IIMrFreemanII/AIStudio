@@ -23,7 +23,9 @@ struct MovieView: View {
                     case .shots: MovieShotsPage(doc: doc)
                     case .cast: MovieCastPage(doc: doc)
                     case .keyframes: MovieKeyframesPage(doc: doc)
+                    case .voices: MovieVoicesPage(doc: doc)
                     case .video: MovieClipsPage(doc: doc)
+                    case .sound: MovieSoundPage(doc: doc)
                     case .edit: MovieEditPage(doc: doc)
                     default: MovieLaterPage(stage: doc.stage)
                     }
@@ -117,7 +119,9 @@ private struct MovieJobBar: View {
             MGSpinner()
             VStack(alignment: .leading, spacing: 2) {
                 Text(job.title).font(.mgHeadline)
-                if !job.detail.isEmpty { Text(job.detail).font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
+                ForEach(Array(job.lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                }
             }
             if let p = job.progress { MGProgress(value: p).frame(width: 160) }
             Spacer()
@@ -223,19 +227,53 @@ private struct MovieLaterPage: View {
 struct CostGateSheet: View {
     let gate: CostGate
     @Environment(\.mgDismiss) private var dismiss
+    /// The chosen plan's `parallel`, when the estimate offers a choice.
+    @State private var chosen: Int?
+
+    /// The lines and total shown: the chosen plan's.
+    private var lines: [CostEstimate.Line] {
+        gate.estimate.plans.first { $0.parallel == chosen }?.lines ?? gate.estimate.lines
+    }
+    private var usd: Double { lines.reduce(0) { $0 + $1.usd } }
+    private var seconds: Double { lines.reduce(0) { $0 + $1.seconds } }
+
+    private func planTitle(_ plan: CostEstimate.Plan) -> String {
+        let gpus = plan.parallel == 1 ? "One GPU each" : "Up to \(plan.parallel) GPUs at once"
+        return "\(gpus) · ≈ \(CostEstimate.format(plan.usd)) · done in ~\(MovieFormat.time(plan.wallSeconds))"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(gate.estimate.title).font(.mgTitle3)
             Text("This runs on a cloud GPU and costs money. Nothing starts until you press Run.")
                 .font(.mgCallout).foregroundStyle(MG.secondaryLabel)
+            if gate.estimate.plans.count > 1 {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(gate.estimate.plans) { plan in
+                        Button {
+                            chosen = plan.parallel
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: chosen == plan.parallel ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(chosen == plan.parallel ? MG.accent : MG.tertiaryLabel)
+                                Text(planTitle(plan)).font(.mgCallout)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .mgTestAnchor("movie-gate-plan-\(plan.parallel)")
+                        .mgHelp(plan.parallel == 1 ? "Cheapest: one GPU per kind of job, the jobs one after another"
+                                : "Sooner: each extra GPU loads the model and stays up after its last job, so it costs more")
+                    }
+                }
+            }
             VStack(spacing: 0) {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                     GridRow {
                         Text("Work"); Text("Jobs"); Text("GPU"); Text("GPU time"); Text("Est.").gridColumnAlignment(.trailing)
                     }
                     .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
-                    ForEach(gate.estimate.lines) { line in
+                    ForEach(lines) { line in
                         GridRow {
                             Text(line.label)
                             Text("\(line.count)").monospacedDigit()
@@ -248,8 +286,8 @@ struct CostGateSheet: View {
                     GridRow {
                         Text("Total").font(.mgHeadline)
                         Text(""); Text("")
-                        Text(MovieFormat.time(gate.estimate.seconds)).monospacedDigit()
-                        Text("≈ " + CostEstimate.format(gate.estimate.usd)).font(.mgHeadline).monospacedDigit()
+                        Text(MovieFormat.time(seconds)).monospacedDigit()
+                        Text("≈ " + CostEstimate.format(usd)).font(.mgHeadline).monospacedDigit()
                     }
                 }
                 .font(.mgBody)
@@ -267,9 +305,10 @@ struct CostGateSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Run (≈ \(CostEstimate.format(gate.estimate.usd)))") {
-                    let run = gate.run
+                Button("Run (≈ \(CostEstimate.format(usd)))") {
+                    let (run, choose, plan) = (gate.run, gate.choose, chosen)
                     dismiss()
+                    if let plan { choose(plan) }
                     run()
                 }
                 .buttonStyle(.mg(.prominent))
@@ -279,6 +318,12 @@ struct CostGateSheet: View {
         }
         .padding(20)
         .frame(width: 520)
+        .onAppear {
+            // The estimate's own pick (one GPU unless several save real waiting).
+            if !gate.estimate.plans.isEmpty {
+                chosen = gate.estimate.plans.first { $0.lines == gate.estimate.lines }?.parallel
+            }
+        }
         .mgTestAnchor("movie-cost-gate")
     }
 }

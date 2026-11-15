@@ -20,6 +20,8 @@ final class MovieDocument: Identifiable {
 
     /// A stage's work waiting for the user's OK on its cost.
     var pendingGate: CostGate?
+    /// How many renders the next job may send at once, as chosen on its cost sheet (nil: as many as the server runs).
+    var parallelLimit: Int?
 
     /// Where the film was last exported (this session).
     var lastExport: URL?
@@ -42,12 +44,34 @@ final class MovieDocument: Identifiable {
 }
 
 /// Work running for a movie: what it is, how far it got, and its task (for Stop).
+///
+/// Several renders of a job can run at once, each in its own lane (`MovieJob.$lane.withValue(n)`): `detail` reads
+/// and writes the current lane's line, and the job bar shows every lane's (`lines`).
 struct MovieJob {
     var title: String
-    var detail: String = ""
     /// 0…1 when known.
     var progress: Double?
     var task: Task<Void, Never>?
+    private var lanes: [Int: String] = [:]
+
+    @TaskLocal static var lane = 0
+
+    init(title: String, detail: String = "", progress: Double? = nil) {
+        self.title = title
+        self.progress = progress
+        if !detail.isEmpty { lanes[0] = detail }
+    }
+
+    /// What the current lane's render is doing ("Shot 3 (2 of 10) · step 2/4").
+    var detail: String {
+        get { lanes[Self.lane] ?? "" }
+        set { lanes[Self.lane] = newValue.isEmpty ? nil : newValue }
+    }
+
+    /// Every running render's line, in lane order.
+    var lines: [String] { lanes.sorted { $0.key < $1.key }.map(\.value) }
+
+    mutating func endLane(_ lane: Int) { lanes[lane] = nil }
 }
 
 /// A cost confirmation on screen: the estimate, and what to run when the user approves.
@@ -55,4 +79,6 @@ struct CostGate: Identifiable {
     let id = UUID()
     var estimate: CostEstimate
     var run: @MainActor () -> Void
+    /// Told the chosen plan's `parallel` before `run`, when the estimate offers plans.
+    var choose: @MainActor (Int) -> Void = { _ in }
 }

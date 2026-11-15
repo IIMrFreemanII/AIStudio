@@ -28,8 +28,12 @@ MARKER_REFRESH = 30.0  # seconds between re-reading the models Volume (new downl
 class ModalRunner:
     name = "modal"
 
-    def __init__(self, workers: dict, events, cancels, models_volume, models_root: Path, uploads_volume=None):
+    def __init__(self, workers: dict, events, cancels, models_volume, models_root: Path, uploads_volume=None,
+                 parallel_jobs: int = 1):
         self.workers = workers  # task family → modal Cls
+        # Each task family's Cls scales to this many containers (`max_containers`), so as many of its jobs can run
+        # at once; clients read it from /v1/info.
+        self.parallel_jobs = max(1, parallel_jobs)
         # With an uploads Volume (the front desk's file store) workers read inputs from it; otherwise they get bytes.
         self.uploads_volume = uploads_volume
         self.events, self.cancels = events, cancels

@@ -5,6 +5,7 @@ box (`python -m aistudio_gpu serve`)."""
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import tempfile
 import time
@@ -18,6 +19,9 @@ from .tasks import JobCancelled, TaskSpec, make_worker, models_installed
 
 class LocalRunner:
     name = "local"
+    # One GPU thread: jobs sent together wait their turn here. AISTUDIO_PARALLEL_JOBS raises what /v1/info tells
+    # clients to send at once (they still run one by one), to test a client's parallel path against this server.
+    parallel_jobs = max(1, int(os.environ.get("AISTUDIO_PARALLEL_JOBS", "1")))
 
     def __init__(self, models_root: Path, allow_gpu_tasks: bool = True):
         self.models_root = models_root

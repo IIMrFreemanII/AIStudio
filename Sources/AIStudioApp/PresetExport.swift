@@ -284,6 +284,24 @@ enum PresetExport {
                         "prompt": .string("Turn it into a snowy winter evening, warm light in the windows, keep everything else the same"),
                      ], startImage: true, imageInput: "image1", output: "image", outputDirectory: out)
                  }),
+            Spec(id: "cloud-wan-s2v", name: "Talking Clip · Cloud GPU", category: .video, models: [],
+                 modelName: "Wan 2.2 S2V 14B on a GPU server",
+                 summary: "A picture speaks: a lip-synced clip from a still and a speech recording (up to about 15 s), on an NVIDIA GPU. The clip carries the audio. Several minutes of GPU time per clip.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     Graph(nodes: [
+                        GraphNode(id: "first_frame", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 60)),
+                        GraphNode(id: "speech", type: "LoadAudio", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 260)),
+                        GraphNode(id: "cloud", type: "RemoteWanSpeechToVideo", inputs: [
+                            "image": .link(node: "first_frame", output: "image"),
+                            "audio": .link(node: "speech", output: "audio"),
+                            "prompt": .value(.string("A person talking to the camera, natural expressions")),
+                        ], position: GraphPoint(x: 340, y: 60)),
+                        GraphNode(id: "show", type: "PreviewVideo", inputs: [
+                            "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
+                     ])
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

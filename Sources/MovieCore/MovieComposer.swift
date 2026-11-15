@@ -1,4 +1,5 @@
 import AVFoundation
+import QuartzCore
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -19,6 +20,7 @@ public enum MovieComposer {
         case noVideo(String)
         case exportFailed(String)
         case noFrame(String)
+        case noAudio(String)
 
         public var description: String {
             switch self {
@@ -26,6 +28,7 @@ public enum MovieComposer {
             case .noVideo(let f): "\(f) has no video track"
             case .exportFailed(let why): "The export failed: \(why)"
             case .noFrame(let f): "Couldn't read a frame of \(f)"
+            case .noAudio(let f): "\(f) has no audio track"
             }
         }
     }
@@ -43,6 +46,9 @@ public enum MovieComposer {
     public struct Composition: @unchecked Sendable {
         public let asset: AVMutableComposition
         public let video: AVMutableVideoComposition
+        /// The sound's volumes (nil when the film has no sound).
+        public let audioMix: AVMutableAudioMix?
+        public let subtitles: [MovieTimeline.Subtitle]
         public var duration: Double { asset.duration.seconds }
     }
 
@@ -114,7 +120,50 @@ public enum MovieComposer {
             }
             return instruction
         }
-        return Composition(asset: comp, video: video)
+
+        // Sound: one composition track per kind and lane, with volume ramps from the timeline's volume points.
+        var audioTracks: [String: AVMutableCompositionTrack] = [:]
+        var params: [String: AVMutableAudioMixInputParameters] = [:]
+        var order: [String] = []
+        let limit = time(timeline.duration)
+        for sound in timeline.sounds.sorted(by: { $0.start < $1.start }) {
+            let asset = AVURLAsset(url: folder.appendingPathComponent(sound.file))
+            guard let source = try await asset.loadTracks(withMediaType: .audio).first else {
+                throw ComposerError.noAudio(sound.file)
+            }
+            let range = try await source.load(.timeRange)
+            let key = "\(sound.kind.rawValue)-\(sound.track)"
+            if audioTracks[key] == nil {
+                guard let t = comp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                else { throw ComposerError.exportFailed("couldn't add an audio track") }
+                audioTracks[key] = t
+                params[key] = AVMutableAudioMixInputParameters(track: t)
+                order.append(key)
+            }
+            let track = audioTracks[key]!
+            let at = time(sound.start)
+            guard at < limit else { continue }
+            if track.timeRange.end < at { track.insertEmptyTimeRange(CMTimeRange(start: track.timeRange.end, end: at)) }
+            let wanted = CMTimeRange(start: range.start + time(sound.offset), duration: min(time(sound.duration), limit - at))
+            let part = wanted.intersection(range)
+            guard part.duration > .zero else { continue }
+            try track.insertTimeRange(part, of: source, at: at)
+            let points = timeline.volume(for: sound)
+            guard let first = points.first else { continue }
+            params[key]!.setVolume(Float(first.gain), at: time(first.time))
+            for (a, b) in zip(points, points.dropFirst()) {
+                let from = time(a.time), to = min(time(b.time), limit)
+                guard to > from else { continue }
+                params[key]!.setVolumeRamp(fromStartVolume: Float(a.gain), toEndVolume: Float(b.gain),
+                                           timeRange: CMTimeRange(start: from, end: to))
+            }
+        }
+        var mix: AVMutableAudioMix?
+        if !order.isEmpty {
+            mix = AVMutableAudioMix()
+            mix!.inputParameters = order.compactMap { params[$0] }
+        }
+        return Composition(asset: comp, video: video, audioMix: mix, subtitles: timeline.subtitles)
     }
 
     /// Scales a source to cover the render size and centres it (a clip of another shape is cropped, not stretched).
@@ -132,12 +181,16 @@ public enum MovieComposer {
 
     /// Writes the film as an MP4. `progress` hears 0…1 while it runs.
     public static func export(_ composition: Composition, to url: URL, codec: Codec = .h264,
-                              progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
+                              burnSubtitles: Bool = false, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
         let preset = codec == .hevc ? AVAssetExportPresetHEVCHighestQuality : AVAssetExportPresetHighestQuality
         guard let session = AVAssetExportSession(asset: composition.asset, presetName: preset) else {
             throw ComposerError.exportFailed("no export session for \(codec.title)")
         }
         session.videoComposition = composition.video
+        session.audioMix = composition.audioMix
+        if burnSubtitles, !composition.subtitles.isEmpty {
+            session.videoComposition = burned(composition.video, subtitles: composition.subtitles)
+        }
         session.shouldOptimizeForNetworkUse = true
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: url)
@@ -153,6 +206,54 @@ public enum MovieComposer {
             throw ComposerError.exportFailed(error.localizedDescription)
         }
         progress(1)
+    }
+
+    /// A copy of the video composition with the subtitles drawn over the picture. Only for the export: an `AVPlayer`
+    /// refuses a composition with an animation tool.
+    static func burned(_ video: AVMutableVideoComposition, subtitles: [MovieTimeline.Subtitle])
+        -> AVMutableVideoComposition
+    {
+        let copy = video.mutableCopy() as! AVMutableVideoComposition
+        let size = copy.renderSize
+        let parent = CALayer()
+        parent.frame = CGRect(origin: .zero, size: size)
+        let videoLayer = CALayer()
+        videoLayer.frame = parent.frame
+        parent.addSublayer(videoLayer)
+        let fontSize = size.height * 0.055
+        for s in subtitles {
+            let layer = CATextLayer()
+            layer.string = s.text
+            layer.fontSize = fontSize
+            layer.foregroundColor = CGColor(gray: 1, alpha: 1)
+            layer.alignmentMode = .center
+            layer.isWrapped = true
+            layer.contentsScale = 2
+            layer.shadowColor = CGColor(gray: 0, alpha: 1)
+            layer.shadowOpacity = 0.9
+            layer.shadowRadius = 3
+            layer.shadowOffset = .zero
+            let width = size.width * 0.9
+            let height = fontSize * 3.4
+            layer.frame = CGRect(x: (size.width - width) / 2, y: size.height * 0.06, width: width, height: height)
+            layer.opacity = 0
+            let show = CABasicAnimation(keyPath: "opacity")
+            show.fromValue = 1
+            show.toValue = 1
+            show.beginTime = AVCoreAnimationBeginTimeAtZero + s.start
+            show.duration = max(0.01, s.end - s.start)
+            show.isRemovedOnCompletion = false
+            show.fillMode = .removed
+            layer.add(show, forKey: "show")
+            parent.addSublayer(layer)
+        }
+        copy.animationTool = AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: videoLayer, in: parent)
+        return copy
+    }
+
+    public static func writeSRT(_ subtitles: [MovieTimeline.Subtitle], to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try MovieSubtitles.srt(subtitles).write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: frames

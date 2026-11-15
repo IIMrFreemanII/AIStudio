@@ -3,6 +3,7 @@ the whole job path (upload, events, result download) without a GPU or models."""
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from pathlib import Path
@@ -57,8 +58,9 @@ class TestPatternWorker:
 class FakeModelWorker:
     """Stands in for a GPU model (``AISTUDIO_FAKE_MODELS=1``): the task's own parameters, steps, previews and output
     kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image (and ends on ``last_image``),
-    and an edit returns picture 1 tinted, so a client can check the upload arrived. For testing clients end to end
-    without models."""
+    and an edit returns picture 1 tinted, so a client can check the upload arrived. Speech-to-video makes 16 frames per
+    second of the uploaded audio (refusing more than ``max_seconds``), the first frame the uploaded picture, with the
+    audio muxed in. For testing clients end to end without models."""
 
     def load(self, models_root: Path, status) -> None:
         pass
@@ -66,6 +68,12 @@ class FakeModelWorker:
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
         from PIL import Image
 
+        speech_seconds = None
+        if task.id == "wan22-s2v":  # as the real worker: the clip is as long as the audio, within its limit
+            samples, rate = read_wav(inputs["audio"])
+            speech_seconds = samples.shape[1] / rate
+            if speech_seconds > params["max_seconds"]:
+                raise ValueError(f"the audio is {speech_seconds:.1f} s; at most {params['max_seconds']:g} s per clip")
         steps = params.get("steps") or 4
         sink.status("Sampling")
         for step in range(1, steps + 1):
@@ -115,7 +123,7 @@ class FakeModelWorker:
             path = out_dir / "result.png"
             write_png(image, path)
             return Output(path, "image", "image/png", extra={"loras": loras})
-        n = params.get("length", 9)
+        n = params.get("length", 9) if speech_seconds is None else max(1, math.ceil(speech_seconds * 16))
         frames = np.stack([pattern(w, h, i / max(n, 1), params["seed"]) for i in range(n)])
         if "image" in inputs:
             start = Image.open(inputs["image"]).convert("RGB").resize((w, h))
@@ -125,6 +133,10 @@ class FakeModelWorker:
             frames[-1] = np.asarray(end, dtype=np.float32) / 255.0
         frames = np.stack([mark(f) for f in frames])
         path = out_dir / "result.mp4"
+        if speech_seconds is not None:
+            write_mp4(frames, path, fps=16, audio=inputs["audio"])
+            return Output(path, "video", "video/mp4", extra={"frames": n, "width": w, "height": h,
+                                                            "audioSeconds": round(speech_seconds, 2)})
         write_mp4(frames, path, fps=16)
         return Output(path, "video", "video/mp4")
 

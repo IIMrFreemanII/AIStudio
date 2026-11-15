@@ -9,8 +9,8 @@ import NodesRemote
 extension AppModel {
     // MARK: clips
 
-    /// Shots › Make Clips: one take per shot (`shots` nil: those without a clip yet, else all), in film order so a
-    /// continuing shot starts from its predecessor's new clip.
+    /// Shots › Make Clips: one take per shot (`shots` nil: those without a clip yet, else all), in film order; a
+    /// continuing shot starts from its predecessor's new clip, the others render at the same time.
     func requestClips(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
         let missing = doc.movie.shots.filter { $0.videos.isEmpty }.map(\.id)
         let ids = ids ?? (missing.isEmpty ? doc.movie.shots.map(\.id) : missing)
@@ -22,21 +22,33 @@ extension AppModel {
             return
         }
         let size = doc.movie.aspect.videoSize
-        let work = shots.map { MovieShots.work(width: size.width, height: size.height,
+        let talking = shots.filter { MovieShots.usesLipSync($0, in: doc.movie) }
+        let plain = shots.filter { !MovieShots.usesLipSync($0, in: doc.movie) }
+        let work = plain.map { MovieShots.work(width: size.width, height: size.height,
                                                frames: MovieShots.frames(for: $0.duration)) }
-        var notes = ["Clips are \(size.width)×\(size.height) at 16 fps, Wan 2.2's fast 4-step mode."]
+        let talkWork = talking.map { MovieShots.talkingWork(width: size.width, height: size.height, seconds: $0.duration) }
+        var notes = plain.isEmpty ? ["Clips are \(size.width)×\(size.height) at 16 fps."]
+            : ["Clips are \(size.width)×\(size.height) at 16 fps, Wan 2.2's fast 4-step mode."]
         let continuing = shots.filter(\.continuesPrevious).count
         if continuing > 0 {
             notes.append("\(continuing == 1 ? "1 shot continues" : "\(continuing) shots continue") the one before: it "
                 + "starts from that clip's last frame and ends on its own keyframe.")
         }
-        let talking = shots.filter(\.talking).count
-        if talking > 0 {
-            notes.append("Talking shots are animated without lip-sync for now: voices and lip-sync come in a later update.")
+        if !talking.isEmpty {
+            notes.append("Talking shots are animated from their lines by Wan 2.2 S2V (lips in sync, 40 steps): several "
+                + "minutes of GPU time each. Turn lip-sync off on this page to animate them like the others.")
         }
+        let unvoiced = shots.filter { $0.talking && !MovieShots.usesLipSync($0, in: doc.movie) }.count
+        if unvoiced > 0, doc.movie.lipSync {
+            notes.append("\(unvoiced == 1 ? "1 talking shot has" : "\(unvoiced) talking shots have") no spoken lines yet "
+                + "(Voices), so it's animated without lip-sync.")
+        }
+        func avg(_ w: [Double]) -> Double { w.isEmpty ? 0 : w.reduce(0, +) / Double(w.count) }
         gateImages(doc, title: shots.count == 1 ? "Make a Clip" : "Make Clips", work: [
-            ImageWork(label: shots.count == 1 ? "1 clip" : "\(shots.count) clips", task: "wan22-i2v", jobs: shots.count,
-                      megapixels: work.reduce(0, +) / Double(work.count)),
+            ImageWork(label: plain.count == 1 ? "1 clip" : "\(plain.count) clips", task: "wan22-i2v", jobs: plain.count,
+                      megapixels: avg(work)),
+            ImageWork(label: talking.count == 1 ? "1 talking clip" : "\(talking.count) talking clips", task: "wan22-s2v",
+                      jobs: talking.count, megapixels: avg(talkWork)),
         ], extraNotes: notes) { [weak self] in
             self?.makeClips(doc, shots: shots.map(\.id))
         }
@@ -47,7 +59,12 @@ extension AppModel {
     }
 
     private func makeClips(_ doc: MovieDocument, shots ids: [UUID]) {
-        runImageJob(doc, title: "Making clips", count: ids.count) { [weak self] doc, i, server in
+        // A continuing shot starts from the clip before's last frame, so it waits for that clip; the rest run at once.
+        let tasks = ids.map { id in
+            doc.movie.shots.first { $0.id == id }.map { MovieShots.usesLipSync($0, in: doc.movie) } == true ? "wan22-s2v" : "wan22-i2v"
+        }
+        runImageJob(doc, title: "Making clips", count: ids.count, chains: MovieShots.chains(ids, in: doc.movie),
+                    task: { tasks[$0] }) { [weak self] doc, i, server in
             guard let self, let shot = doc.movie.shots.first(where: { $0.id == ids[i] }),
                   let ends = MovieShots.ends(for: shot, in: doc.movie) else { return }
             let number = (doc.movie.shots.firstIndex { $0.id == shot.id } ?? 0) + 1
@@ -65,9 +82,21 @@ extension AppModel {
                 }
             }
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let render = MovieShots.render(shot, movie: doc.movie, folder: folder, startImage: start, ends: ends,
+            let lipSync = MovieShots.usesLipSync(shot, in: doc.movie)
+            let render: MovieArt.Render
+            let template: MovieTemplate
+            if lipSync {
+                // The shot's lines as one recording as long as the shot: what the lips follow.
+                let voice = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot))
+                try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration, to: voice)
+                render = MovieShots.talkingRender(shot, movie: doc.movie, startImage: start, voice: voice, seed: seed,
+                                                  server: server)
+                template = self.movieTemplate(MovieShots.TemplateName.talking, for: doc) { MovieShots.talkingTemplate() }
+            } else {
+                render = MovieShots.render(shot, movie: doc.movie, folder: folder, startImage: start, ends: ends,
                                            seed: seed, server: server)
-            let template = self.movieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
+                template = self.movieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
+            }
             let (outputs, jobs) = try await self.runMovieGraph(doc, template: template, render: render,
                                                                title: "\(doc.movie.title): shot \(number)")
             guard let made = outputs.first(where: { $0.kind == .video })?.url else { throw MovieVideoError.noClip }
@@ -80,8 +109,9 @@ extension AppModel {
                 try? MovieComposer.writePNG(still, to: folder.appendingPathComponent(poster))
             }
             let size = doc.movie.aspect.videoSize
-            let cost = self.recordJobs(jobs, doc: doc, work: MovieShots.work(
-                width: size.width, height: size.height, frames: MovieShots.frames(for: shot.duration)))
+            let cost = self.recordJobs(jobs, doc: doc, work: lipSync
+                ? MovieShots.talkingWork(width: size.width, height: size.height, seconds: shot.duration)
+                : MovieShots.work(width: size.width, height: size.height, frames: MovieShots.frames(for: shot.duration)))
             guard let j = doc.movie.shots.firstIndex(where: { $0.id == shot.id }) else { return }
             let take = Take(file: file, poster: poster, seed: seed, costUSD: cost)
             doc.movie.shots[j].videos.append(take)
@@ -122,9 +152,14 @@ extension AppModel {
             let timeline = await movieTimeline(doc)
             let composition = try await MovieComposer.build(timeline, folder: movieStore.folder(doc.id),
                                                             size: doc.movie.aspect.videoSize)
-            try await MovieComposer.export(composition, to: url, codec: codec) { p in
+            try await MovieComposer.export(composition, to: url, codec: codec,
+                                           burnSubtitles: doc.movie.mix.burnSubtitles) { p in
                 Task { @MainActor in doc.job?.progress = p }
             }
+            // The lines as subtitles beside the film (players pick up a same-named .srt).
+            let srt = url.deletingPathExtension().appendingPathExtension("srt")
+            if timeline.subtitles.isEmpty { try? FileManager.default.removeItem(at: srt) }
+            else { try MovieComposer.writeSRT(timeline.subtitles, to: srt) }
             doc.lastExport = url
             return url
         } catch {

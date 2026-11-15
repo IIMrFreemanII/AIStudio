@@ -47,6 +47,17 @@ MODELS: dict[str, dict] = {
         "i2v/high_noise_model.safetensors": "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/high_noise_model.safetensors",
         "i2v/low_noise_model.safetensors": "Wan2.2-I2V-A14B-4steps-lora-rank64-Seko-V1/low_noise_model.safetensors",
     }},
+    # Wan 2.2 S2V-14B (Apache 2.0), the official repo's layout (it is not in diffusers): the 14B transformer in bf16
+    # (4 shards), the UMT5-XXL encoder, the Wan 2.1 VAE, the tokenizer and the wav2vec2 audio encoder (safetensors
+    # only; the repo also holds its flax and pytorch copies, a language model and eval logs). ≈ 45.7 GB (42.6 GiB),
+    # summed from the repo's file listing at this revision, 2026-11-15.
+    "wan22-s2v": {"repo": "Wan-AI/Wan2.2-S2V-14B", "revision": "dab4e9c55bbe4c8c4d03db1c2c98c7f0ac9c454b", "allow": [
+        "config.json", "configuration.json", "diffusion_pytorch_model-*.safetensors",
+        "diffusion_pytorch_model.safetensors.index.json", "models_t5_umt5-xxl-enc-bf16.pth", "Wan2.1_VAE.pth",
+        "google/umt5-xxl/*",
+        "wav2vec2-large-xlsr-53-english/config.json", "wav2vec2-large-xlsr-53-english/preprocessor_config.json",
+        "wav2vec2-large-xlsr-53-english/special_tokens_map.json", "wav2vec2-large-xlsr-53-english/vocab.json",
+        "wav2vec2-large-xlsr-53-english/alphabet.json", "wav2vec2-large-xlsr-53-english/model.safetensors"]},
     # Gated: needs a Hugging Face token whose account accepted the licence on the model page.
     "flux1-dev": {"repo": "black-forest-labs/FLUX.1-dev", "revision": "3de623fc3c33e44ffbe2bad470d0f45bccf2eb21",
                   "gated": True, "allow": [
@@ -104,7 +115,7 @@ MODELS: dict[str, dict] = {
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
 }
 # What a task name expands to.
-GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "flux": ["flux1-dev"],
+GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"], "flux": ["flux1-dev"],
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],

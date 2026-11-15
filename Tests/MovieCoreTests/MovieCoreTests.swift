@@ -299,6 +299,36 @@ private func castMovie() -> MovieProject {
     let line = MovieCost.images(label: "Keyframes", task: "qwen-image-edit", jobs: 4, megapixels: 1, gpu: "H100",
                                 usdPerSecond: 0.001, timings: t, warm: false, idleSeconds: 120)
     #expect(line.seconds == 70 + 4 * 9 + 120 && abs(line.usd - 0.226) < 1e-9)
+    // Over 3 GPUs at once: each extra one loads the model and idles too (a warm one skips its load).
+    let wide = MovieCost.images(label: "Keyframes", task: "qwen-image-edit", jobs: 4, megapixels: 1, gpu: "H100",
+                                usdPerSecond: 0.001, timings: t, warm: true, idleSeconds: 120, containers: 3)
+    #expect(wide.seconds == 2 * 70 + 4 * 9 + 3 * 120 && wide.gpu == "3× H100")
+    // Busy GPUs (other work) aren't ours to start: only the free ones are, and with none free the jobs wait.
+    #expect(MovieCost.gpus(jobs: 10, parallel: 4, busy: 0, limit: 4) == (4, false))
+    #expect(MovieCost.gpus(jobs: 10, parallel: 4, busy: 3, limit: 4) == (1, false))
+    #expect(MovieCost.gpus(jobs: 2, parallel: 4, busy: 1, limit: 4) == (2, false))
+    #expect(MovieCost.gpus(jobs: 5, parallel: 4, busy: 4, limit: 4) == (1, true))
+    #expect(MovieCost.gpus(jobs: 5, parallel: 1, busy: 0, limit: 4) == (1, false))
+    // Wall time: a cold GPU loads first, then the jobs in rounds of the GPUs; an extra GPU is always cold.
+    #expect(MovieCost.wallSeconds(jobs: 10, containers: 1, perJob: 4, load: 40, warm: false) == 80)
+    #expect(MovieCost.wallSeconds(jobs: 10, containers: 4, perJob: 4, load: 40, warm: true) == 52)
+    #expect(MovieCost.wallSeconds(jobs: 3, containers: 1, perJob: 10, load: 40, warm: true) == 30)
+    // Several GPUs only by default when they save five minutes or more: not for quick sound effects, yes for clips.
+    let effects1 = CostEstimate.Plan(parallel: 1, lines: [], wallSeconds: 80)
+    let effects4 = CostEstimate.Plan(parallel: 4, lines: [], wallSeconds: 52)
+    #expect(!MovieCost.prefersParallel(single: effects1, parallel: effects4))
+    let clips1 = CostEstimate.Plan(parallel: 1, lines: [], wallSeconds: 90 + 4 * 450)
+    let clips4 = CostEstimate.Plan(parallel: 4, lines: [], wallSeconds: 90 + 450)
+    #expect(MovieCost.prefersParallel(single: clips1, parallel: clips4))
+    // An estimate with plans shows the chosen one's lines.
+    let a = CostEstimate.Line(label: "x", count: 1, gpu: "H100", seconds: 10, usd: 0.1)
+    let b = CostEstimate.Line(label: "x", count: 1, gpu: "4× H100", seconds: 40, usd: 0.4)
+    let e = CostEstimate(title: "t", plans: [.init(parallel: 1, lines: [a], wallSeconds: 1),
+                                             .init(parallel: 4, lines: [b], wallSeconds: 1)], chosen: 4)
+    #expect(e.lines == [b] && e.plans.map(\.usd) == [0.1, 0.4])
+    // Never more GPUs than jobs.
+    #expect(MovieCost.images(label: "", task: "qwen-image-edit", jobs: 1, megapixels: 1, gpu: "H100", usdPerSecond: 0.001,
+                             timings: t, warm: false, idleSeconds: 120, containers: 4).seconds == 70 + 9 + 120)
 
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("timings-\(UUID().uuidString).json")
     defer { try? FileManager.default.removeItem(at: url) }

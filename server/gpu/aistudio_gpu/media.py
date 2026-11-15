@@ -4,6 +4,7 @@ through Pillow, WAV through the standard library. Frames are uint8 RGB numpy arr
 from __future__ import annotations
 
 import io
+import subprocess
 import wave
 from pathlib import Path
 
@@ -19,8 +20,9 @@ def to_uint8(frames) -> np.ndarray:
     return a
 
 
-def write_mp4(frames, path: Path, fps: float = 16.0, crf: int = 16) -> None:
-    """[T, H, W, 3] → H.264 MP4 (yuv420p, faststart) that AVFoundation and browsers play."""
+def write_mp4(frames, path: Path, fps: float = 16.0, crf: int = 16, audio: Path | None = None) -> None:
+    """[T, H, W, 3] → H.264 MP4 (yuv420p, faststart) that AVFoundation and browsers play. With ``audio`` (a WAV or
+    any file ffmpeg reads) the sound is muxed in, cut to the video's length (``mux_audio``)."""
     import imageio_ffmpeg
 
     frames = to_uint8(frames)
@@ -28,13 +30,34 @@ def write_mp4(frames, path: Path, fps: float = 16.0, crf: int = 16) -> None:
     if w % 2 or h % 2:  # yuv420p needs even sizes
         frames = frames[:, : h - h % 2, : w - w % 2]
         h, w = frames.shape[1:3]
+    target = path.with_name(path.stem + ".silent" + path.suffix) if audio is not None else path
     writer = imageio_ffmpeg.write_frames(
-        str(path), (w, h), fps=fps, codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p", quality=None,
+        str(target), (w, h), fps=fps, codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p", quality=None,
         output_params=["-crf", str(crf), "-preset", "medium", "-movflags", "+faststart"], macro_block_size=1)
     writer.send(None)
     for f in frames:
         writer.send(np.ascontiguousarray(f))
     writer.close()
+    if audio is not None:
+        try:
+            mux_audio(target, audio, path, seconds=t / fps)
+        finally:
+            target.unlink(missing_ok=True)
+
+
+def mux_audio(video: Path, audio: Path, out: Path, seconds: float | None = None) -> None:
+    """Copies the H.264 video stream of ``video`` and adds ``audio`` as AAC 192k, cut to ``seconds`` when given
+    (the audio can be longer than the video; a shorter one just ends early)."""
+    import imageio_ffmpeg
+
+    cmd = [imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-v", "error", "-i", str(video), "-i", str(audio),
+           "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k"]
+    if seconds is not None:
+        cmd += ["-t", f"{seconds:.3f}"]
+    cmd += ["-movflags", "+faststart", str(out)]
+    done = subprocess.run(cmd, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"ffmpeg could not add the audio: {done.stderr.strip()[-600:]}")
 
 
 def write_png(image, path: Path) -> None:
