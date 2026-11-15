@@ -203,7 +203,7 @@ def test_model_import_lists_and_removes_a_fine_tune(client, origin, monkeypatch)
     assert client.get("/v1/models").json()["families"]["flux.1"] == []
     assert client.delete("/v1/models/flux.1/realism").status_code == 404
     # Refusals: an unknown family, a bad id, a link elsewhere (the failure shows in the import's state).
-    assert client.post("/v1/models/import", json={"family": "sdxl", "id": "x", "files": []}).status_code == 400
+    assert client.post("/v1/models/import", json={"family": "no-such-family", "id": "x", "files": []}).status_code == 400
     assert client.post("/v1/models/import", json={"family": "flux.1", "id": "../x", "files": []}).status_code == 400
     client.post("/v1/models/import", json={"family": "flux.1", "id": "bad", "files": [{"url": f"{origin}/not-a-lora"}]})
     time.sleep(0.5)
