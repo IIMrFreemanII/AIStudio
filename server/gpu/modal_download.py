@@ -5,8 +5,8 @@
 
 FLUX.1 dev is gated: first `modal secret create huggingface HF_TOKEN=hf_…` with a token whose account accepted the
 licence on huggingface.co/black-forest-labs/FLUX.1-dev. Stable Diffusion 3.5 (`sd35`, or `sd` for SDXL too) is gated
-the same way: accept the licences of stabilityai/stable-diffusion-3.5-large and …-large-turbo. SDXL (`sdxl`) is not
-gated. Finished models are skipped, so it is safe to re-run.
+the same way: accept the licences of stabilityai/stable-diffusion-3.5-large and …-large-turbo. SDXL (`sdxl`) and
+Qwen-Image-Edit (`qwen-edit`) are not gated. Finished models are skipped, so it is safe to re-run.
 """
 
 from __future__ import annotations

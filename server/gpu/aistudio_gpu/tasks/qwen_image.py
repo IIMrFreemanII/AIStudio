@@ -46,16 +46,22 @@ class QwenImageWorker(AdapterSlots):
         self.fp8 = False
         self._init_slots()
 
+    # The pipeline class, its folder under the models root, and its Lightning LoRA (folder, file).
+    pipeline_class = "QwenImagePipeline"
+    folder = "qwen-image"
+    lightning = ("qwen-image-lightning", "8steps.safetensors")
+
     def load(self, models_root: Path, status) -> None:
+        import diffusers
         import torch
-        from diffusers import FlowMatchEulerDiscreteScheduler, QwenImagePipeline
+        from diffusers import FlowMatchEulerDiscreteScheduler
 
         device, dtype = pick_device()
         self.device, self.dtype = device, dtype
         self.models_root = models_root
-        status("Loading Qwen-Image")
-        pipe = QwenImagePipeline.from_pretrained(models_root / "qwen-image", dtype=dtype)
-        lightning = models_root / "qwen-image-lightning" / "8steps.safetensors"
+        status(f"Loading {self.title}")
+        pipe = getattr(diffusers, self.pipeline_class).from_pretrained(models_root / self.folder, dtype=dtype)
+        lightning = models_root / self.lightning[0] / self.lightning[1]
         if lightning.exists():
             status("Loading the Lightning LoRA")
             pipe.load_lora_weights(str(lightning.parent), weight_name=lightning.name, adapter_name="fast")

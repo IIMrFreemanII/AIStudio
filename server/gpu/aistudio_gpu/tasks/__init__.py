@@ -95,7 +95,7 @@ class TaskSpec:
                 "params": {k: v.describe() for k, v in self.params.items()}}
 
 
-FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image, SD 3.5, SDXL and Wan tasks
+FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image (and Edit), SD 3.5, SDXL and Wan tasks
 
 
 def _lora_params() -> dict[str, Param]:
@@ -182,6 +182,22 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "model": Param("string", "base"),
         **_lora_params(),
     }, optional_inputs=LORA_INPUTS, models=("qwen-image", "qwen-image-lightning")),
+    # A new picture from an instruction and one to three pictures ("picture 1 is the woman, picture 2 the room…").
+    TaskSpec("qwen-image-edit", "Qwen-Image-Edit 2511", "image", "qwen-image-edit", GPU_QWEN, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", ""),  # with cfg above 1, as on Qwen-Image
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        # 0 = picture 1's shape at about a megapixel; otherwise rounded to a multiple of 16.
+        "width": Param("int", 0, min=0, max=2048),
+        "height": Param("int", 0, min=0, max=2048),
+        # Its Lightning 8-step LoRA, without guidance: ≈ 10× fewer GPU seconds than 40 steps with CFG.
+        "fast": Param("bool", True),
+        # 0 = automatic: 8 steps at cfg 1 when fast, else 40 steps at cfg 4 (the model card's).
+        "steps": Param("int", 0, min=0, max=100),
+        "cfg": Param("float", 0.0, min=0.0, max=10.0),
+        **_lora_params(),
+    }, inputs=("image1",), optional_inputs=("image2", "image3") + LORA_INPUTS,
+        models=("qwen-image-edit", "qwen-image-edit-lightning")),
     TaskSpec("sd35-large", "Stable Diffusion 3.5 Large", "image", "sd35-large", GPU_SD, {
         "prompt": Param("string", ""),
         # Used with guidance above 1 (Large's classifier-free guidance); Turbo runs without guidance and ignores it.
@@ -313,6 +329,9 @@ def make_worker(family: str) -> Worker:
     if family == "qwen-image":
         from .qwen_image import QwenImageWorker
         return QwenImageWorker()
+    if family == "qwen-image-edit":
+        from .qwen_image_edit import QwenImageEditWorker
+        return QwenImageEditWorker()
     if family == "sd35-large":
         from .sd35 import SD35Worker
         return SD35Worker()

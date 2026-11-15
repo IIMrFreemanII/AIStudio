@@ -239,6 +239,8 @@ final class AppModel {
     @ObservationIgnored let engine = Engine()
     @ObservationIgnored let registry = RemoteNodes.makeRegistry()
     @ObservationIgnored lazy var localBackend = LocalBackend(engine: engine)
+    /// Runs movies' renders (sheets, keyframes) one at a time, outside the workflow queue.
+    @ObservationIgnored lazy var movieRenderer = MovieRenderer()
     /// One running job per backend (a local and a remote run can overlap).
     @ObservationIgnored private var runTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private lazy var coalescer = EventCoalescer.engineEvents { [weak self] batch in

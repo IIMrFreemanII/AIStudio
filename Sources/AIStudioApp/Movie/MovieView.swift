@@ -21,6 +21,8 @@ struct MovieView: View {
                     case .idea: MovieIdeaPage(doc: doc)
                     case .script: MovieScriptPage(doc: doc)
                     case .shots: MovieShotsPage(doc: doc)
+                    case .cast: MovieCastPage(doc: doc)
+                    case .keyframes: MovieKeyframesPage(doc: doc)
                     default: MovieLaterPage(stage: doc.stage)
                     }
                 }
@@ -209,7 +211,7 @@ private struct MovieLaterPage: View {
     let stage: MovieStage
     var body: some View {
         MGEmptyState(symbol: stage.symbol, title: "\(stage.title) is coming next",
-                     message: "This stage is part of the next Movie Studio update. The script and shot list you approve now carry over.")
+                     message: "This stage is part of a later Movie Studio update. Everything you approve now carries over.")
     }
 }
 

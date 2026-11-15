@@ -17,15 +17,16 @@ enum PresetExport {
 
     /// A Cloud GPU node (optionally fed by Load Image) into a local Save node for its output (`video`, `image` or
     /// `audio`); `literals` are the node's preset values.
-    static func cloudGraph(node type: String, literals: [String: JSONValue], startImage: Bool = false, output: String,
-                           prefix: String? = nil, outputDirectory out: String) -> Graph {
+    static func cloudGraph(node type: String, literals: [String: JSONValue], startImage: Bool = false,
+                           imageInput: String = "image", output: String, prefix: String? = nil,
+                           outputDirectory out: String) -> Graph {
         var nodes: [GraphNode] = []
         var remote = literals.mapValues { NodeInput.value($0) }
         var x = 40.0
         if startImage {
             nodes.append(GraphNode(id: "first_frame", type: "LoadImage", inputs: ["path": .value(.string(""))],
                                    position: GraphPoint(x: 40, y: 140)))
-            remote["image"] = .link(node: "first_frame", output: "image")
+            remote[imageInput] = .link(node: "first_frame", output: "image")
             x = 340
         }
         nodes.append(GraphNode(id: "cloud", type: type, inputs: remote, position: GraphPoint(x: x, y: 60)))
@@ -274,6 +275,14 @@ enum PresetExport {
                         "prompt": .string("A portrait of an old fisherman, weathered face, golden hour light, shallow depth of field, photo"),
                         "negative": .string("blurry, low quality, watermark"),
                      ], output: "image", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-qwen-edit", name: "Qwen-Image-Edit · Cloud GPU", category: .image, models: [],
+                 modelName: "Qwen-Image-Edit 2511 on a GPU server",
+                 summary: "Change a picture by telling it what to do, on an NVIDIA GPU: keeps faces, clothes and places. Up to three pictures (wire Load Image into image2 and image3: \"the woman from picture 1 sits in the room from picture 2\"). Fast mode takes 8 steps.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteQwenImageEdit", literals: [
+                        "prompt": .string("Turn it into a snowy winter evening, warm light in the windows, keep everything else the same"),
+                     ], startImage: true, imageInput: "image1", output: "image", outputDirectory: out)
                  }),
         ]
 

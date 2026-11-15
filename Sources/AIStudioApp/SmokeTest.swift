@@ -1238,13 +1238,16 @@ extension SmokeTest {
         let loras = (1...2).map { FileManager.default.temporaryDirectory.appendingPathComponent("smoke-gpu-lora\($0).safetensors") }
         for (i, url) in loras.enumerated() { try? Data(repeating: UInt8(i + 1), count: 1 << 20).write(to: url) }
         for (id, video) in [("cloud-flux", false), ("cloud-flux-lora", false), ("cloud-qwen-image", false),
-                            ("cloud-sd35", false), ("cloud-sdxl", false), ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
+                            ("cloud-qwen-edit", false), ("cloud-sd35", false), ("cloud-sdxl", false),
+                            ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
             guard let p = model.preset(id: id) else { say("\(id): missing"); ok = false; continue }
             let doc = model.openPreset(p)
             model.setLiteral(.int(id == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "width", undoManager: nil)
             model.setLiteral(.int(id == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "height", undoManager: nil)
             if video { model.setLiteral(.int(9), node: "cloud", input: "length", undoManager: nil) }
-            if id == "cloud-wan-i2v" { model.setLiteral(.string(start.path), node: "first_frame", input: "path", undoManager: nil) }
+            if id == "cloud-wan-i2v" || id == "cloud-qwen-edit" {
+                model.setLiteral(.string(start.path), node: "first_frame", input: "path", undoManager: nil)
+            }
             if id == "cloud-flux-lora" {
                 model.setLiteral(.string(loras[0].path), node: "lora1", input: "path", undoManager: nil)
                 guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }

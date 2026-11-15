@@ -6,6 +6,7 @@ measured times and the cost. For checking a deployment and measuring cold and wa
     python server/gpu/modal_check.py wan22-i2v --image start.png
     python server/gpu/modal_check.py flux1-dev --width 1024 --height 1024
     python server/gpu/modal_check.py qwen-image --prompt "a sign reading OPEN" [--full] [--set model=<fine-tune id>]
+    python server/gpu/modal_check.py qwen-image-edit --prompt "she waves" --input image1=woman.png [--input image2=room.png]
     python server/gpu/modal_check.py sd35-large --prompt "a lighthouse at dusk" [--full]
     python server/gpu/modal_check.py sdxl --set sampler=euler-a --set negative="blurry" [--set model=<fine-tune id>]
     python server/gpu/modal_check.py stable-audio-3 --prompt "rain on a tin roof" --set seconds=20
@@ -34,7 +35,7 @@ import modal  # noqa: E402
 from aistudio_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
 
 CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "flux1-dev": "Flux", "qwen-image": "QwenImage",
-           "sd35-large": "SD35", "sdxl": "SDXL",
+           "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL",
            "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech"}
 

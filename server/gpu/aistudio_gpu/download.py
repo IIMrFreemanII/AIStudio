@@ -59,6 +59,15 @@ MODELS: dict[str, dict] = {
     "qwen-image-lightning": {"repo": "lightx2v/Qwen-Image-Lightning",
                              "revision": "d468c534b360e0754c6bf9e38ed49e1e09cd2e2a", "files": {
         "8steps.safetensors": "Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors"}},
+    # Qwen-Image-Edit 2511 (Apache 2.0): bf16 throughout (transformer ≈ 41 GB, Qwen2.5-VL text encoder ≈ 17 GB),
+    # plus the processor that reads the input pictures.
+    "qwen-image-edit": {"repo": "Qwen/Qwen-Image-Edit-2511", "revision": "6f3ccc0b56e431dc6a0c2b2039706d7d26f22cb9",
+                        "allow": ["model_index.json", "processor/*", "scheduler/*", "text_encoder/*", "tokenizer/*",
+                                  "transformer/*", "vae/*"]},
+    # Its Lightning 8-step LoRA (V1.0, bf16): `fast` mode.
+    "qwen-image-edit-lightning": {"repo": "lightx2v/Qwen-Image-Edit-2511-Lightning",
+                                  "revision": "107d238d68b8387e32843d0b4a2e24ceb0d3ad86", "files": {
+        "8steps.safetensors": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors"}},
     # ACE-Step looks for its main repo's four components in checkpoints/ before it loads the XL DiT and the 4B planner.
     "ace-step-xl": {"repo": "ACE-Step/Ace-Step1.5", "parts": [
         ("ACE-Step/Ace-Step1.5", "19671f406d603126926c1b7e2adc169acbcade22", "checkpoints"),
@@ -96,7 +105,8 @@ MODELS: dict[str, dict] = {
 }
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "flux": ["flux1-dev"],
-          "qwen": ["qwen-image", "qwen-image-lightning"], "music": ["ace-step-xl"],
+          "qwen": ["qwen-image", "qwen-image-lightning"],
+          "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl"],
           "sd": ["sd35-large", "sd35-large-turbo", "sdxl"]}

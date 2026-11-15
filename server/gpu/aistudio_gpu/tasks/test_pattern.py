@@ -56,8 +56,8 @@ class TestPatternWorker:
 
 class FakeModelWorker:
     """Stands in for a GPU model (``AISTUDIO_FAKE_MODELS=1``): the task's own parameters, steps, previews and output
-    kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image, so a client can check the
-    upload arrived. For testing clients end to end without models."""
+    kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image, and an edit returns picture 1
+    tinted, so a client can check the upload arrived. For testing clients end to end without models."""
 
     def load(self, models_root: Path, status) -> None:
         pass
@@ -72,7 +72,8 @@ class FakeModelWorker:
             time.sleep(0.02)
             sink.progress(step, steps)
             if task.kind != "audio":
-                sink.preview(pattern(params["width"], params["height"], step / steps, params["seed"]), step, steps)
+                sink.preview(pattern(params["width"] or 64, params["height"] or 64, step / steps, params["seed"]),
+                             step, steps)
         if task.kind == "audio":
             # Each audio model's own rate and channels; length from its seconds (speech: from the text).
             rate, channels = {"music": (48000, 2), "sound": (44100, 2)}.get(task.family, (24000, 1))
@@ -96,6 +97,18 @@ class FakeModelWorker:
                 image[:, -band:] = 1.0
             return image
 
+        if task.kind == "image" and "image1" in inputs:
+            # An edit: picture 1 at the asked size (0: its own), tinted red, with the bottom row's brightness the
+            # number of pictures / 4, so a client can check the uploads arrived.
+            first = Image.open(inputs["image1"]).convert("RGB")
+            w, h = w or first.width, h or first.height
+            image = np.asarray(first.resize((w, h)), dtype=np.float32) / 255.0
+            image = image * np.array([0.5, 0.25, 0.25], dtype=np.float32) + np.array([0.5, 0, 0], dtype=np.float32)
+            image[-1:] = sum(1 for k in ("image1", "image2", "image3") if k in inputs) / 4
+            image = mark(image)
+            path = out_dir / "result.png"
+            write_png(image, path)
+            return Output(path, "image", "image/png", extra={"loras": loras})
         if task.kind == "image":
             image = mark(pattern(w, h, 0.0, params["seed"]))
             path = out_dir / "result.png"
