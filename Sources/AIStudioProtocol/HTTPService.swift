@@ -94,6 +94,10 @@ public struct HTTPService: Sendable {
                 try check(response, data)
                 progress?(Int64(bytes), Int64(bytes), Int64(offset))
                 return true
+            } catch RemoteClient.ClientError.http(409, _) where attempt < 8 {
+                // Another upload of the same bytes moved the server's offset meanwhile: ask again (it may be done).
+                attempt += 1
+                try await Task.sleep(nanoseconds: 250_000_000)
             } catch let e as RemoteClient.ClientError {
                 throw e
             } catch {

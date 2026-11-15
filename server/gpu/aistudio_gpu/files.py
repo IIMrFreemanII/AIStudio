@@ -42,6 +42,9 @@ class FileStore:
     def __init__(self, directory: Path, max_bytes: int | None = None, on_stored: Callable[[], None] | None = None):
         self.directory, self.max_bytes, self.on_stored = directory, max_bytes, on_stored
         directory.mkdir(parents=True, exist_ok=True)
+        # One upload per name at a time: two clients sending the same content at once (two jobs that share an input)
+        # would otherwise write over each other's partial file. The second waits, then finds the file stored.
+        self._receiving: dict[str, list] = {}
 
     def touch(self, name: str) -> None:
         """Marks a file as just used (pruning keeps the most recently used ones)."""
@@ -108,6 +111,17 @@ class FileStore:
 
     async def receive(self, name: str, offset: int, total: int | None, body: AsyncIterator[bytes]) -> bool:
         """Writes the body at ``offset``; returns True once the whole file is stored and verified."""
+        entry = self._receiving.setdefault(name, [asyncio.Lock(), 0])  # the lock, and how many use or wait on it
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                return await self._receive(name, offset, total, body)
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0:
+                del self._receiving[name]
+
+    async def _receive(self, name: str, offset: int, total: int | None, body: AsyncIterator[bytes]) -> bool:
         final = self.path(name)
         if final.exists():
             async for _ in body:

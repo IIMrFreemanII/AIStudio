@@ -52,10 +52,31 @@ public enum MovieShots {
         return Ends(start: .keyframe(key), end: nil)
     }
 
+    /// Which of `ids` must render in order, as runs of their indices (each in film order): a shot that continues the
+    /// shot just before it (in its scene) starts from that shot's new keyframe or clip when both are in the batch, so it joins its
+    /// run; every other shot is a run of its own and can render at the same time as the rest.
+    public static func chains(_ ids: [UUID], in movie: MovieProject) -> [[Int]] {
+        let position = Dictionary(movie.shots.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var chains: [[Int]] = []
+        var chainOf: [UUID: Int] = [:]
+        for (i, id) in ids.enumerated().sorted(by: { (position[$0.1] ?? .max) < (position[$1.1] ?? .max) }) {
+            if let shot = movie.shots.first(where: { $0.id == id }), shot.continuesPrevious,
+               let prev = movie.shot(before: shot), prev.scene == shot.scene, let c = chainOf[prev.id] {
+                chains[c].append(i)
+                chainOf[id] = c
+            } else {
+                chainOf[id] = chains.count
+                chains.append([i])
+            }
+        }
+        return chains
+    }
+
     // MARK: template
 
     public enum TemplateName {
         public static let shot = "shot-i2v"
+        public static let talking = "shot-s2v"
     }
 
     /// The slots of the shot template: the clip's settings on the Wan node, and the paths of its two Load Images.
@@ -94,6 +115,54 @@ public enum MovieShots {
         ]
         if let end = ends.end { values["end"] = .string(folder.appendingPathComponent(end).path) }
         return MovieArt.Render(values: values, unusedPictures: ends.end == nil ? ["end"] : [])
+    }
+
+    /// Load Image (start) and Load Audio (voice) into Wan 2.2 Speech to Video (Cloud GPU) into a Preview Video.
+    public static func talkingTemplate(name: String = TemplateName.talking) -> MovieTemplate {
+        let start = GraphNode(id: "start", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                              position: GraphPoint(x: 40, y: 60))
+        let voice = GraphNode(id: "voice", type: "LoadAudio", inputs: ["path": .value(.string(""))],
+                              position: GraphPoint(x: 40, y: 220))
+        let wan = GraphNode(id: "video", type: "RemoteWanSpeechToVideo", inputs: [
+            "image": .link(node: "start", output: "image"), "audio": .link(node: "voice", output: "audio"),
+            "prompt": .value(.string("")), "negative": .value(.string("")), "seed": .value(.int(0)),
+            "width": .value(.int(832)), "height": .value(.int(480)), "steps": .value(.int(0)),
+            "guidance": .value(.double(0)), "server": .value(.string("")),
+        ], position: GraphPoint(x: 340, y: 60))
+        let out = GraphNode(id: "out", type: "PreviewVideo", inputs: ["video": .link(node: "video", output: "video")],
+                            position: GraphPoint(x: 720, y: 80))
+        var slots = Dictionary(uniqueKeysWithValues: ["prompt", "negative", "seed", "width", "height", "server"]
+            .map { ($0, MovieTemplate.Slot(node: "video", input: $0)) })
+        slots["start"] = .init(node: "start", input: "path")
+        slots["voice"] = .init(node: "voice", input: "path")
+        return MovieTemplate(name: name, graph: Graph(nodes: [start, voice, wan, out]), slots: slots)
+    }
+
+    /// A talking shot's values: Wan animates `startImage` to the voice track (`MovieVoices.voiceTrack`), absolute paths.
+    public static func talkingRender(_ shot: Shot, movie: MovieProject, startImage: URL, voice: URL, seed: Int,
+                                     server: String) -> MovieArt.Render {
+        let size = movie.aspect.videoSize
+        return MovieArt.Render(values: [
+            "prompt": .string(motionPrompt(for: shot, in: movie) + " The person speaks, their lips moving with the words."),
+            "negative": .string(MovieStyle.named(movie.style).negative), "seed": .int(seed),
+            "width": .int(size.width), "height": .int(size.height), "server": .string(server),
+            "start": .string(startImage.path), "voice": .string(voice.path),
+        ], unusedPictures: [])
+    }
+
+    /// Whether the shot is animated from its voice (Wan S2V): lip sync is on, it's a talking shot, and has voiced lines.
+    public static func usesLipSync(_ shot: Shot, in movie: MovieProject) -> Bool {
+        movie.lipSync && shot.talking && !MovieVoices.layout(shot).isEmpty
+    }
+
+    /// Where a shot's voice track is written (relative to the movie's folder).
+    public static func voiceTrackFile(for shot: Shot) -> String {
+        "audio/shot-\(shot.id.uuidString.lowercased().prefix(8))-voice.wav"
+    }
+
+    /// GPU work of a talking clip: like `work`, for `seconds` of video at 16 fps.
+    public static func talkingWork(width: Int, height: Int, seconds: Double) -> Double {
+        work(width: width, height: height, frames: Int((seconds * fps).rounded(.up)))
     }
 
     /// Where a clip's last frame is written, to start the shot that continues it.

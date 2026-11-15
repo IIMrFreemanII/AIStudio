@@ -1,0 +1,73 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "first_frame",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "speech",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 260
+        },
+        "type" : "LoadAudio"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "audio" : {
+            "node" : "speech",
+            "output" : "audio"
+          },
+          "image" : {
+            "node" : "first_frame",
+            "output" : "image"
+          },
+          "prompt" : "A person talking to the camera, natural expressions"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteWanSpeechToVideo"
+      },
+      {
+        "id" : "show",
+        "inputs" : {
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "PreviewVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-wan-s2v",
+  "modelName" : "Wan 2.2 S2V 14B on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Talking Clip · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 270,
+  "summary" : "A picture speaks: a lip-synced clip from a still and a speech recording (up to about 15 s), on an NVIDIA GPU. The clip carries the audio. Several minutes of GPU time per clip.",
+  "symbol" : "cloud"
+}

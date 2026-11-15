@@ -11,41 +11,48 @@ public struct MovieStyle: Identifiable, Sendable, Equatable {
     public var negative: String
     /// Appended to every motion prompt.
     public var motionSuffix: String
+    /// ACE-Step tags for the score (genre, instruments).
+    public var musicTags: String
 
     public static let cinematic = MovieStyle(
         id: "cinematic", name: "Cinematic",
         brief: "photoreal live-action film, natural light, shallow depth of field, anamorphic framing",
         keyframeSuffix: "cinematic film still, 35mm, natural lighting, shallow depth of field, film grain, highly detailed",
         negative: "cartoon, illustration, text, watermark, deformed hands, extra fingers, blurry",
-        motionSuffix: "smooth cinematic camera motion, natural movement")
+        motionSuffix: "smooth cinematic camera motion, natural movement",
+        musicTags: "orchestral film score, strings, piano, cinematic")
 
     public static let anime = MovieStyle(
         id: "anime", name: "Anime",
         brief: "hand-drawn Japanese animation, clean line art, painted backgrounds, expressive faces",
         keyframeSuffix: "anime key visual, clean line art, cel shading, painted background, vibrant colors",
         negative: "photo, realistic, 3d render, text, watermark, deformed",
-        motionSuffix: "anime animation, fluid character motion")
+        motionSuffix: "anime animation, fluid character motion",
+        musicTags: "anime soundtrack, piano, strings, emotional")
 
     public static let animated3D = MovieStyle(
         id: "3d", name: "3D Animation",
         brief: "feature-film 3D animation, stylised characters, soft global illumination, warm palette",
         keyframeSuffix: "3d animated film still, stylized characters, soft global illumination, subsurface scattering, octane render",
         negative: "photo, 2d, sketch, text, watermark, deformed",
-        motionSuffix: "3d animation, smooth character animation")
+        motionSuffix: "3d animation, smooth character animation",
+        musicTags: "whimsical orchestral, playful woodwinds, warm strings")
 
     public static let pixel = MovieStyle(
         id: "pixel", name: "Pixel Art",
         brief: "retro 16-bit pixel art game cutscene, limited palette, side or three-quarter views",
         keyframeSuffix: "pixel art, 16-bit, limited palette, crisp pixels",
         negative: "photo, realistic, blurry, smooth gradients, text, watermark",
-        motionSuffix: "pixel art animation")
+        motionSuffix: "pixel art animation",
+        musicTags: "chiptune, 8-bit, retro game music")
 
     public static let noir = MovieStyle(
         id: "noir", name: "Film Noir",
         brief: "black-and-white 1940s noir, hard shadows, venetian-blind light, rain-slick streets",
         keyframeSuffix: "black and white film noir still, high contrast, hard shadows, 1940s, film grain",
         negative: "color, cartoon, text, watermark, deformed",
-        motionSuffix: "moody noir camera motion")
+        motionSuffix: "moody noir camera motion",
+        musicTags: "1940s jazz, muted trumpet, double bass, smoky")
 
     public static let all: [MovieStyle] = [.cinematic, .anime, .animated3D, .pixel, .noir]
 

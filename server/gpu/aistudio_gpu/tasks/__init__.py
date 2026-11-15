@@ -156,6 +156,18 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
              # last_image: the frame the clip should end on (first-last-frame), optional.
              inputs=("image",), optional_inputs=("last_image",) + WAN_LORA_INPUTS,
              models=("wan22-i2v", "wan22-lightning")),
+    # A talking shot: a still picture and a speech recording make a lip-synced clip (the audio is muxed in).
+    TaskSpec("wan22-s2v", "Wan 2.2 Speech to Video", "video", "wan22-s2v", GPU_WAN, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "width": Param("int", 832, min=256, max=1280, multiple=16),
+        "height": Param("int", 480, min=256, max=1280, multiple=16),
+        "steps": Param("int", 0, min=0, max=60),  # 0 = the model's 40
+        "guidance": Param("float", 0.0, min=0.0, max=10.0),  # 0 = the model's 4.5
+        # Longer audio is refused, so a job's cost stays bounded (≈ 80 frames, 5 s, per pass of the model).
+        "max_seconds": Param("float", 15.0, min=1.0, max=30.0),
+    }, inputs=("image", "audio"), models=("wan22-s2v",)),
     TaskSpec("flux1-dev", "FLUX.1 dev", "image", "flux1-dev", GPU_FLUX, {
         "prompt": Param("string", ""),
         "seed": Param("int", 0, min=0, max=2**32 - 1),
@@ -325,6 +337,9 @@ def make_worker(family: str) -> Worker:
     if family in ("wan22-t2v", "wan22-i2v"):
         from .wan import WanWorker
         return WanWorker(family)
+    if family == "wan22-s2v":
+        from .wan_s2v import WanS2VWorker
+        return WanS2VWorker()
     if family == "flux1-dev":
         from .flux import FluxWorker
         return FluxWorker()

@@ -11,7 +11,7 @@
 Layout:
 - ``api``: the front desk (FastAPI on 1 CPU core, proxy-auth protected; it relays LLM streams too). Checking it, uploading, and the CPU test
   tasks never start a GPU. It scales to zero 5 min after the last request.
-- ``WanT2V`` / ``WanI2V``, ``QwenImage`` and ``QwenImageEdit`` (H100), ``Flux`` (L40S): GPU workers, one per model
+- ``WanT2V`` / ``WanI2V`` / ``WanS2V`` (speech to video; Wan's own code in its own image), ``QwenImage`` and ``QwenImageEdit`` (H100), ``Flux`` (L40S): GPU workers, one per model
   family, each with the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
 - ``SD35`` (Stable Diffusion 3.5 Large, with its Turbo mode) and ``SDXL`` (L40S): the same, for the Stable Diffusion
   family. SD 3.5 is gated: accept the licences of both repos (``stable-diffusion-3.5-large`` and ``…-large-turbo``)
@@ -43,6 +43,9 @@ import modal
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
+# GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
+# that many together and shows the extra model loads in its cost sheet). The LLMs keep one each.
+GPU_CONTAINERS = int(os.environ.get("AISTUDIO_GPU_CONTAINERS", "4"))
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
@@ -210,6 +213,31 @@ speech_image = (
     .add_local_python_source("aistudio_gpu"))
 
 
+# Wan 2.2's official code (S2V is not in diffusers) at a pinned commit, with its requirements.txt versions for torch
+# 2.8 (CUDA 12.8) and transformers 4.51.3 (its last supported), and flash-attn from a prebuilt wheel for that torch:
+# the repo's attention is written for it (variable-length sequences with padding masks); without it the worker falls
+# back to PyTorch's SDPA, which ignores those masks. No dashscope. `import wan` also loads the repo's Animate model, so
+# peft, scipy and regex come too; numpy stays below 2, as the repo requires.
+WAN22_COMMIT = "1ea34ff48f87168174e12956e200b1d908b1c5ff"
+FLASH_ATTN_TORCH28 = ("https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/"
+                      "flash_attn-2.8.3+cu128torch2.8-cp311-cp311-linux_x86_64.whl")
+s2v_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "ffmpeg", "libsndfile1")
+    .run_commands("git init -q /opt/wan22 && cd /opt/wan22 && git remote add origin "
+                  f"https://github.com/Wan-Video/Wan2.2 && git fetch -q --depth 1 origin {WAN22_COMMIT} && "
+                  "git checkout -q FETCH_HEAD")
+    .uv_pip_install("torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0",
+                    index_url="https://download.pytorch.org/whl/cu128")
+    .uv_pip_install("transformers==4.51.3", "tokenizers==0.21.4", "diffusers==0.35.1", "accelerate==1.10.1",
+                    "numpy==1.26.4", "opencv-python-headless==4.11.0.86", "easydict==1.13", "ftfy==6.3.1",
+                    "einops==0.8.1", "librosa==0.11.0", "soundfile==0.13.1", "decord==0.6.0", "safetensors==0.6.2",
+                    "peft==0.17.1", "scipy", "regex", "tqdm", "imageio", "imageio-ffmpeg", "huggingface_hub<1.0",
+                    "fastapi==0.162.2", "pillow", "httpx==0.28.1", FLASH_ATTN_TORCH28)
+    .env({**env, "PYTHONPATH": "/opt/wan22"})
+    .add_local_python_source("aistudio_gpu"))
+
+
 def _imports():
     # Captured in the memory snapshot, so a cold container skips importing torch and diffusers.
     import diffusers  # noqa: F401
@@ -225,6 +253,14 @@ def _music_imports():
     import aistudio_gpu.modal_runner  # noqa: F401
 
 
+def _s2v_imports():
+    # Not `wan` itself: importing it touches CUDA (a default argument calls torch.cuda.current_device()), and the
+    # snapshot is taken without a GPU. The worker imports it when it loads.
+    import torch  # noqa: F401
+
+    import aistudio_gpu.modal_runner  # noqa: F401
+
+
 def _speech_imports():
     import qwen_tts  # noqa: F401
     import torch  # noqa: F401
@@ -234,7 +270,7 @@ def _speech_imports():
 
 def _gpu_class(image=gpu_image, **kwargs):
     return app.cls(image=image, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=IDLE, timeout=60 * 60,
-                   enable_memory_snapshot=True, max_containers=1, **kwargs)
+                   enable_memory_snapshot=True, max_containers=GPU_CONTAINERS, **kwargs)
 
 
 @_gpu_class(gpu=GPU_WAN, memory=(16384, 98304))
@@ -268,6 +304,28 @@ class WanI2V:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-i2v", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# Four CPUs: the official sampling loop does more host-side work per step than diffusers (rope tables, syncs), and
+# the wav2vec2 audio encoder runs on the CPU.
+@_gpu_class(image=s2v_image, gpu=GPU_WAN, memory=(16384, 131072), cpu=4)
+class WanS2V:
+    @modal.enter(snap=True)
+    def imports(self):
+        _s2v_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("wan22-s2v", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1192,9 +1250,11 @@ def api():
     from aistudio_gpu.modal_runner import ModalRunner
 
     data = Path("/tmp/aistudio-gpu")
-    runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "flux1-dev": Flux, "qwen-image": QwenImage,
+    runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
+                          "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "music": Music,
-                          "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads)
+                          "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                         parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.
     files = FileStore(UPLOADS, max_bytes=int(UPLOADS_GB * 1e9), on_stored=uploads.commit)

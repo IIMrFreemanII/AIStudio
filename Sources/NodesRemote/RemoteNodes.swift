@@ -11,7 +11,8 @@ import NodesStandard
 /// audio, so they mix with local nodes (a cloud Wan clip → local Save Video, a cloud song → local Mix Audio…).
 public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
-        RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
+        RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
+        RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self,
     ]
@@ -27,7 +28,8 @@ public enum RemoteNodes {
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
     public static let taskIDs: [String: String] = [
-        "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v", "RemoteFlux": "flux1-dev",
+        "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v",
+        "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
     ]
@@ -109,12 +111,25 @@ func runRemoteJob(task: String, params: [String: Any], images: [String: MLXArray
         GPUJobClient(baseURL: endpoint.baseURL, token: endpoint.token)
     }
 
+    // The pictures are encoded here (MLX); everything after is network, so other graphs can use the Mac meanwhile.
+    let pngs = try images.mapValues(pngData)
+    return try await RemoteWait.outside {
+        try await submitRemoteJob(task: task, params: params, pngs: pngs, audios: audios, files: files, links: links,
+                                  client: client, endpoint: endpoint, context: context)
+    }
+}
+
+/// `runRemoteJob` past encoding: uploads, runs the job, downloads its result.
+private func submitRemoteJob(task: String, params: [String: Any], pngs: [String: Data], audios: [String: AudioClip],
+                             files: [String: URL], links: [String: LoRARemote], client: GPUJobClient,
+                             endpoint: RemoteEndpoints.Endpoint, context: ExecutionContext)
+    async throws -> (URL, OutputDescriptor.Kind)
+{
     var uploaded: [String: String] = [:]
-    if !images.isEmpty || !audios.isEmpty || !files.isEmpty {
+    if !pngs.isEmpty || !audios.isEmpty || !files.isEmpty {
         context.status("Uploading")
-        for (name, image) in images {
-            uploaded[name] = try await client.upload(try pngData(image), ext: "png",
-                                                     progress: uploadReporter("image", context))
+        for (name, png) in pngs {
+            uploaded[name] = try await client.upload(png, ext: "png", progress: uploadReporter("image", context))
         }
         for (name, clip) in audios {
             uploaded[name] = try await client.upload(MediaIO.wavData(clip), ext: "wav",
@@ -177,9 +192,12 @@ public struct RemoteJobRecord: Sendable, Equatable {
     /// Model loading before it, on a cold start (billed too).
     public var loadSeconds: Double
     public var costUSD: Double?
+    /// `RemoteJobLog.scope` where the job ran: which of several graphs running at once it belongs to.
+    public var scope: UUID?
 
     public init(task: String, serverID: String, width: Int?, height: Int?, gpuSeconds: Double, loadSeconds: Double,
-                costUSD: Double?) {
+                costUSD: Double?, scope: UUID? = RemoteJobLog.scope) {
+        self.scope = scope
         self.task = task
         self.serverID = serverID
         self.width = width
@@ -192,21 +210,70 @@ public struct RemoteJobRecord: Sendable, Equatable {
 
 /// Where finished Cloud GPU jobs are announced, for whoever ran the graph (the movie studio adds up its costs and
 /// learns how long jobs take). Observers are called on the node's thread.
+///
+/// Several graphs can run at once: run each inside `RemoteJobLog.$scope.withValue(id)` and observe with that
+/// `scope`, and an observer hears only its own graph's jobs. An observer without a scope hears every job.
 public enum RemoteJobLog {
+    @TaskLocal public static var scope: UUID?
+
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var observers: [UUID: @Sendable (RemoteJobRecord) -> Void] = [:]
+    nonisolated(unsafe) private static var observers: [UUID: (scope: UUID?, f: @Sendable (RemoteJobRecord) -> Void)] = [:]
 
     @discardableResult
-    public static func observe(_ f: @escaping @Sendable (RemoteJobRecord) -> Void) -> UUID {
+    public static func observe(scope: UUID? = nil, _ f: @escaping @Sendable (RemoteJobRecord) -> Void) -> UUID {
         let id = UUID()
-        lock.withLock { observers[id] = f }
+        lock.withLock { observers[id] = (scope, f) }
         return id
     }
 
     public static func remove(_ id: UUID) { _ = lock.withLock { observers.removeValue(forKey: id) } }
 
     public static func post(_ r: RemoteJobRecord) {
-        for f in lock.withLock({ Array(observers.values) }) { f(r) }
+        for o in lock.withLock({ Array(observers.values) }) where o.scope == nil || o.scope == r.scope { o.f(r) }
+    }
+}
+
+/// Lets graphs that run at once take turns with this Mac's side of the work (MLX, the executor's bookkeeping, which
+/// aren't safe to run side by side) while their GPU jobs overlap: whoever runs a graph holds `gate` for it, set as
+/// `RemoteWait.gate`, and a Cloud GPU node lets go of it while it only waits on the server (upload, the job,
+/// download).
+public enum RemoteWait {
+    @TaskLocal public static var gate: AsyncGate?
+
+    /// Runs `body`, which must not touch MLX, with the caller's gate let go meanwhile (when there is one).
+    static func outside<T>(_ body: () async throws -> T) async throws -> T {
+        guard let gate else { return try await body() }
+        await gate.release()
+        do {
+            let value = try await body()
+            await gate.acquire()
+            return value
+        } catch {
+            await gate.acquire()
+            throw error
+        }
+    }
+}
+
+/// A first-come, first-served lock for async code. `acquire` waits even when the task is cancelled, so a holder
+/// always gets it back to release.
+public actor AsyncGate {
+    private var held = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    public init() {}
+
+    public func acquire() async {
+        guard held else {
+            held = true
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    /// Hands the gate to the next waiter, or frees it.
+    public func release() {
+        if waiting.isEmpty { held = false } else { waiting.removeFirst().resume() }
     }
 }
 
@@ -384,6 +451,44 @@ public struct RemoteWanImageToVideoNode: NodeImplementation {
         let job = try wanJob(inputs, family: "wan-2.2-i2v")
         let (url, _) = try await runRemoteJob(task: "wan22-i2v", params: job.params, images: images,
                                               files: job.files, links: job.links, inputs: inputs, context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// Wan 2.2 S2V-14B: a talking clip from a still and a speech recording, lips in sync with the words, as long as the
+/// audio (at most about 15 s; the server refuses longer). The clip comes back with the audio in it. 40 steps with
+/// guidance by default: several minutes of H100 time per clip.
+public struct RemoteWanSpeechToVideoNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteWanSpeechToVideo", displayName: "Wan 2.2 Speech to Video (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("image", .image),
+            InputSpec("audio", .audio),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(832), widget: .number(min: 256, max: 1280, step: 16)),
+            InputSpec("height", .int, default: .int(480), widget: .number(min: 256, max: 1280, step: 16)),
+            // 0 = automatic (40).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 60, step: 1), zeroLabel: "auto"),
+            // 0 = automatic.
+            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5), zeroLabel: "auto"),
+        ],
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+        ]
+        let images: [String: MLXArray] = ["image": try inputs.object("image")]
+        let speech: AudioClip = try inputs.object("audio")
+        let audios = ["audio": MediaOps.channels(speech, 1)]
+        let (url, _) = try await runRemoteJob(task: "wan22-s2v", params: params, images: images, audios: audios,
+                                              inputs: inputs, context: context)
         return ["video": .object(try await loadVideo(url))]
     }
 }

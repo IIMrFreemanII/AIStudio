@@ -222,6 +222,34 @@ struct RemoteNodesTests {
         #expect(rgb(two, 0).1 > 0.7 && rgb(two, 0).0 < 0.3, "clip 2 starts where clip 1 ended")
     }
 
+    @Test(.enabled(if: hasServer)) func wanSpeechToVideoFollowsTheAudio() async throws {
+        // A 1.5 s tone and a red still: the clip has ceil(1.5 * 16) frames at 16 fps, carries the audio, and starts
+        // from the picture.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let png = out.appendingPathComponent("speaker.png"), wav = out.appendingPathComponent("speech.wav")
+        try ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.9, 0.1, 0.1, 1.0] as [Float]), to: png)
+        let tone = MLX.sin(MLXArray(0..<36000).asType(.float32) * 0.05) * 0.5
+        try await MediaIO.writeAudio(AudioClip(samples: MLX.stacked([tone, tone]), sampleRate: 24000), to: wav)
+        let (result, log) = try await run([
+            GraphNode(id: "img", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "voice", type: "LoadAudio", inputs: ["path": .value(.string(wav.path))]),
+            GraphNode(id: "s2v", type: "RemoteWanSpeechToVideo", inputs: [
+                "image": .link(node: "img", output: "image"), "audio": .link(node: "voice", output: "audio"),
+                "width": .value(.int(256)), "height": .value(.int(256))]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "s2v", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        #expect(log.statuses.contains("Uploading"))
+        let clip = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(clip.frameCount == 24 && clip.fps == 16)
+        let audio = try #require(clip.audio)
+        #expect(abs(audio.duration - 1.5) < 0.1)
+        let first = clip.frames[0].mean(axes: [0, 1])
+        #expect(first[0].item(Float.self) > 0.7 && first[1].item(Float.self) < 0.3)
+    }
+
     @Test(.enabled(if: hasServer)) func fluxReturnsAnImage() async throws {
         let (result, _) = try await run([
             GraphNode(id: "flux", type: "RemoteFlux", inputs: [

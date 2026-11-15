@@ -360,6 +360,30 @@ The Wan nodes' **negative** prompt ("blurry, static, distorted hands") works in 
 - **fast** off, or `guidance` above 1: classifier-free guidance, as in Wan's own sampler. Each step runs the model
   twice.
 
+### Speech to video (talking shots)
+
+`wan22-s2v` is Wan 2.2 S2V-14B (Apache-2.0): a still picture (`image`) and a speech recording (`audio`, 16-bit WAV)
+make a lip-synced clip at 16 fps, as long as the audio, returned as an MP4 with the audio in it. The movie studio
+uses it for shots where someone speaks. diffusers has no pipeline for it, so the worker (`WanS2V`) runs the official
+Wan2.2 repo's code, in its own image at a pinned commit, with flash-attn 2.8.3 from a prebuilt wheel for its
+torch 2.8 (without it the worker falls back to PyTorch's SDPA, which ignores the repo's padding masks).
+
+- Download it with `--models wan22-s2v` (≈ 46 GB, not gated; the `wan22` group does not include it).
+- It makes 5 s per pass and chains passes for longer audio, 40 steps each with guidance, so it is much slower than
+  the Lightning Wan tasks (its cost per second of video is not measured yet). `max_seconds` (default 15,
+  at most 30) refuses longer audio up front, so a job's cost stays bounded.
+- Parameters: `prompt`, `negative`, `seed`, `width`/`height` (rounded down to multiples of 64, which the model
+  needs: 832×480 comes out 832×448, the picture cropped to fill it rather than padded with black bars), `steps`
+  (0 = 40), `guidance` (0 = 4.5).
+- Check it with `python server/gpu/modal_check.py wan22-s2v --image face.png --input audio=speech.wav`.
+- The container log has each step's time (`wan22-s2v step 3/40: … s`), and the result's `extra` has `setupSeconds`
+  (text, audio and VAE encoding before the first step), `stepSeconds` (the average step) and `attention`
+  (`flash_attn` or `sdpa`).
+- Measured on Modal's H100 (2026-11-15), 832×448, a 5 s line (one 80-frame pass): a 77 s cold load, 28 s of text,
+  audio and VAE encoding, then 9.8 s a step with flash-attn, so about 7 minutes of GPU (≈ $0.47) for the default 40
+  steps. The first run used PyTorch's SDPA instead, with Modal's default CPU share, and went at about 3 minutes a
+  step, roughly 18× slower.
+
 ### Music, sound and speech
 
 | Node | Model | Licence | What it makes |
@@ -395,6 +419,16 @@ itself, then the idle window (default 2 min) in case another job follows. The no
 - To trade money for latency, raise the idle window (`AISTUDIO_IDLE=600 modal deploy …`); to switch GPUs,
   `AISTUDIO_GPU_WAN=A100-80GB`, `AISTUDIO_GPU_FLUX=L4` (24 GB is too small for FLUX in bf16) or
   `AISTUDIO_GPU_AUDIO=A10` (24 GB: enough for speech or sound, tight for music).
+- **Jobs at once.** Each media model scales to `AISTUDIO_GPU_CONTAINERS` containers (default 4; the LLMs keep one),
+  so that many of its jobs run at the same time, each on its own GPU: the same GPU time per job, done sooner, plus a
+  model load and an idle window for each extra container. `/v1/info` reports it as `parallelJobs`, and each task's
+  `activeJobs` (its model's jobs queued or running now, from every client). The movie studio sends up to that many
+  renders together, starts another only while its task has a free container (others' work may hold some), and
+  counts only the free ones' cold loads in its cost sheet. A GPU box (`serve`) runs one job at a time and reports 1;
+  `AISTUDIO_PARALLEL_JOBS` raises what it reports (jobs still run one by one), for testing a client's parallel path.
+- Uploads of the same file at the same time (two jobs sharing an input) take turns on the server; the second finds
+  it stored.
+
 Measured on Modal's H100 (2026-11-10), 832×480, 81 frames (5 s at 16 fps), fast on:
 
 | | Wan 2.2 Text to Video | Wan 2.2 Image to Video |

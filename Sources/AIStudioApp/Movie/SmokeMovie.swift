@@ -40,11 +40,22 @@ extension SmokeTest {
             say("model didn't install"); return false
         }
 
+        // Estimates from the default job times: the fake server's jobs take no time, and what earlier runs learned
+        // from them would make every task look as cheap as the next.
+        try? FileManager.default.removeItem(at: model.gpuTimingsURL)
+
         func waitForGate(_ doc: MovieDocument) async {
             for _ in 0..<100 where doc.pendingGate == nil && doc.error == nil { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        func waitForJob(_ doc: MovieDocument) async {
-            for _ in 0..<600 where doc.job != nil { try? await Task.sleep(for: .milliseconds(100)) }
+        /// Returns the most renders seen running at once (the job bar's lines).
+        @discardableResult
+        func waitForJob(_ doc: MovieDocument) async -> Int {
+            var most = 0
+            for _ in 0..<600 where doc.job != nil {
+                most = max(most, doc.job?.lines.count ?? 0)
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            return most
         }
 
         // Idea → the gate → the script.
@@ -138,29 +149,83 @@ extension SmokeTest {
         check(!doc.movie.approved.contains(.keyframes) && doc.movie.approved.contains(.cast),
               "choosing another take reopens Keyframes only")
         doc.movie.approve(.keyframes)
-        check(doc.movie.currentStage == .video && doc.movie.isUnlocked(.video), "Shots come next (Voices wait)")
+        check(doc.movie.currentStage == .voices && !doc.movie.isUnlocked(.video), "Voices come next, before the shots")
 
+        // Voices: one designed voice per speaking character, then every line cloned from it (Qwen3-TTS).
+        doc.stage = .voices  // on screen as a user would have it (the Shot List page would see the shots stretch)
+        check(model.speakingCharacters(doc.movie).map(\.id) == ["mara"], "Mara is the one who speaks")
+        model.requestLines(doc)
+        check(doc.error?.contains("Mara") == true && doc.pendingGate == nil, "lines wait for a voice")
+        doc.error = nil
+        model.requestVoiceSamples(doc)
+        await waitForGate(doc)
+        guard let voiceGate = doc.pendingGate else { say("FAIL no cost gate for the voices: \(doc.error ?? "")"); return false }
+        check(voiceGate.estimate.lines.map(\.count) == [1] && voiceGate.estimate.lines[0].gpu == "L40S",
+              "the voice gate counts one Qwen3-TTS job on an L40S")
+        doc.pendingGate = nil
+        voiceGate.run()
+        await waitForJob(doc)
+        check(doc.error == nil, "the voice was made\(doc.error.map { ": \($0)" } ?? "")")
+        let mara = doc.movie.character("mara")
+        check(mara?.selectedVoiceSampleFile.map { FileManager.default.fileExists(atPath: store.url(doc.id, relative: $0).path) } ?? false
+              && (mara?.voiceSamples.first?.seconds ?? 0) > 1, "Mara has a chosen voice on disk, measured")
+        model.requestLines(doc)
+        await waitForGate(doc)
+        guard let lineGate = doc.pendingGate else { say("FAIL no cost gate for the lines: \(doc.error ?? "")"); return false }
+        check(lineGate.estimate.lines.map(\.count) == [2], "the line gate counts both lines")
+        doc.pendingGate = nil
+        lineGate.run()
+        await waitForJob(doc)
+        check(doc.error == nil, "the lines were spoken\(doc.error.map { ": \($0)" } ?? "")")
+        check(doc.movie.silentLines == 0 && doc.movie.shots.flatMap(\.dialogue).allSatisfy {
+            ($0.takes.first?.seconds ?? 0) > 0.5 && $0.takes.first?.gainDB != nil }, "every line has a measured take")
+        check(MovieVoices.layout(doc.movie.shots[1]).first?.start == MovieVoices.leadIn, "the line starts after a lead-in")
+        doc.movie.approve(.voices)
+        check(doc.movie.currentStage == .video && doc.movie.isUnlocked(.video),
+              "then the shots: \(doc.movie.currentStage) \(doc.movie.approved.map(\.rawValue).sorted())")
+        // The fake voice plays the reference first, so its lines are long: the shots stretched to fit them.
+        check(doc.movie.shots[1].duration >= (MovieVoices.neededDuration(doc.movie.shots[1]) ?? 99) - 0.001
+              && doc.movie.shots[1].duration > 3, "a talking shot grew to fit its line: \(doc.movie.shots[1].duration) s")
+
+        doc.stage = .video
         // Shots: a clip per shot (Wan 2.2 image to video), the continuing one from the clip before's last frame.
         model.requestClips(doc)
         await waitForGate(doc)
         guard let clipGate = doc.pendingGate else { say("FAIL no cost gate for the clips: \(doc.error ?? "")"); return false }
-        check(clipGate.estimate.lines.map(\.count) == [4] && clipGate.estimate.lines[0].gpu == "H100"
-              && clipGate.estimate.usd > 0, "the clip gate counts four Wan jobs on an H100, with a price")
-        check(clipGate.estimate.notes.contains { $0.contains("continue") } && clipGate.estimate.notes.contains { $0.contains("lip-sync") },
-              "it says a shot continues the one before, and that lip-sync comes later")
+        // A server that runs jobs in parallel (AISTUDIO_PARALLEL_JOBS on the fake one) gets each kind's two jobs at once.
+        let parallel = model.movieParallelJobs(conn.id)
+        let gpus = parallel > 1 ? "2× H100" : "H100"
+        check(clipGate.estimate.lines.map(\.count) == [2, 2] && clipGate.estimate.lines.allSatisfy { $0.gpu == gpus }
+              && clipGate.estimate.usd > 0,
+              "the clip gate counts two Wan I2V and two lip-synced S2V jobs on \(gpus), with a price: "
+              + "\(clipGate.estimate.lines.map(\.gpu))")
+        check(clipGate.estimate.lines[1].usd > clipGate.estimate.lines[0].usd * 2,
+              "a talking clip is priced far above a plain one: \(clipGate.estimate.lines.map(\.usd))")
+        if parallel > 1 {
+            check(clipGate.estimate.notes.contains { $0.contains("at once") }, "it says jobs run at once")
+        }
+        check(clipGate.estimate.notes.contains { $0.contains("continue") } && clipGate.estimate.notes.contains { $0.contains("S2V") },
+              "it says a shot continues the one before, and that talking shots are lip-synced")
         check(doc.job == nil && doc.movie.shots.allSatisfy { $0.videos.isEmpty }, "no clip before Run")
         doc.pendingGate = nil
         clipGate.run()
-        await waitForJob(doc)
+        let together = await waitForJob(doc)
         check(doc.error == nil, "the clips were made\(doc.error.map { ": \($0)" } ?? "")")
+        // Shot 2 continues shot 1, so those two render in order; shots 3 and 4 alongside.
+        if parallel > 1 { check(together > 1, "the clips rendered \(together) at a time") }
         check(doc.movie.videosAreReady, "every shot has a chosen clip")
         guard doc.movie.videosAreReady else { say("FAILED"); return false }
         let folder = store.folder(doc.id)
         let clipURLs = doc.movie.shots.map { folder.appendingPathComponent($0.selectedVideoFile!) }
         var lengths: [Double] = []
         for u in clipURLs { lengths.append(await MovieComposer.duration(of: u) ?? 0) }
-        check(zip(lengths, [4.0625, 3.0625, 4.0625, 3.0625]).allSatisfy { abs($0 - $1) < 0.07 },
-              "the clips are 65 and 49 frames at 16 fps (4 s and 3 s shots): \(lengths)")
+        let talkLength = (doc.movie.shots[1].duration * 16).rounded(.up) / 16
+        check(zip(lengths, [4.0625, talkLength, 4.0625, talkLength]).allSatisfy { abs($0 - $1) < 0.07 },
+              "the clips are 65 frames (4 s shots) and, lip-synced, as long as their voice tracks: \(lengths)")
+        let talkAudio = try? await AVURLAsset(url: clipURLs[1]).loadTracks(withMediaType: .audio)
+        check(talkAudio?.isEmpty == false, "the lip-synced clip carries its voice")
+        check(FileManager.default.fileExists(atPath: folder.appendingPathComponent(MovieShots.voiceTrackFile(
+            for: doc.movie.shots[1])).path), "its voice track was written for the server")
         check(doc.movie.shots.allSatisfy { $0.selectedVideoTake?.poster.map { FileManager.default.fileExists(
             atPath: folder.appendingPathComponent($0).path) } ?? false }, "each clip has a poster")
         // The fake server: frame 0 is the start picture, the last frame the end picture.
@@ -169,13 +234,41 @@ extension SmokeTest {
         let end2 = try? await MovieComposer.frame(of: clipURLs[1], at: .last)
         let key2 = doc.movie.shots[1].selectedKeyframeFile.flatMap { loadImage(folder.appendingPathComponent($0)) }
         check(close(end1, start2), "shot 2 starts on shot 1's last frame")
-        check(close(end2, key2), "and ends on its own keyframe")
+        _ = (end2, key2)  // a lip-synced shot has no end frame: it follows its voice
         let start3 = try? await MovieComposer.frame(of: clipURLs[2], at: .first)
         let key3 = doc.movie.shots[2].selectedKeyframeFile.flatMap { loadImage(folder.appendingPathComponent($0)) }
         check(close(start3, key3), "a new scene's shot starts on its keyframe")
-        check(GPUTimings.load(model.gpuTimingsURL).jobs.keys.contains { $0.hasPrefix("wan22-i2v@") }, "clip times were learned")
+        let learned = GPUTimings.load(model.gpuTimingsURL).jobs.keys
+        check(learned.contains { $0.hasPrefix("wan22-i2v@") } && learned.contains { $0.hasPrefix("wan22-s2v@") },
+              "clip times were learned")
         doc.movie.approve(.video)
 
+        doc.stage = .sound
+        // Sound: effects per shot (Stable Audio 3), music per scene (ACE-Step), both behind their gates.
+        check(doc.movie.currentStage == .sound, "Sound comes next: \(doc.movie.currentStage)")
+        doc.movie.music = MovieSound.cues(for: doc.movie)
+        model.requestEffects(doc)
+        await waitForGate(doc)
+        guard let fxGate = doc.pendingGate else { say("FAIL no cost gate for the effects: \(doc.error ?? "")"); return false }
+        check(fxGate.estimate.lines.map(\.count) == [4], "the effects gate counts four shots")
+        doc.pendingGate = nil
+        fxGate.run()
+        await waitForJob(doc)
+        check(doc.error == nil && doc.movie.shots.allSatisfy { $0.selectedSound != nil },
+              "every shot has its effects\(doc.error.map { ": \($0)" } ?? "")")
+        model.requestMusic(doc)
+        await waitForGate(doc)
+        guard let musicGate = doc.pendingGate else { say("FAIL no cost gate for the music: \(doc.error ?? "")"); return false }
+        check(musicGate.estimate.lines.map(\.count) == [2], "the music gate counts two scenes")
+        doc.pendingGate = nil
+        musicGate.run()
+        await waitForJob(doc)
+        check(doc.error == nil && doc.movie.music.count == 2 && doc.movie.music.allSatisfy { ($0.selectedTake?.seconds ?? 0) >= 10 },
+              "each scene has its music, at least 10 s\(doc.error.map { ": \($0)" } ?? "")")
+        doc.movie.approve(.sound)
+        check(doc.movie.currentStage == .edit, "then the edit")
+
+        doc.stage = .edit
         // Edit: the timeline, a reorder, and the MP4 (free: on this Mac).
         let timeline = await model.movieTimeline(doc)
         check(timeline.clips.count == 4 && abs(timeline.duration - lengths.reduce(0, +)) < 0.01
@@ -188,8 +281,27 @@ extension SmokeTest {
         doc.movie.shots[1].trimEnd = 1
         let trimmed = await model.movieTimeline(doc)
         check(abs(trimmed.duration - (timeline.duration - 1)) < 0.01, "a trim shortens the film")
+        check(trimmed.sounds.filter { $0.kind == .dialogue }.count == 2 && trimmed.sounds.filter { $0.kind == .effects }.count == 4
+              && trimmed.sounds.filter { $0.kind == .music }.count == 2 && trimmed.subtitles.count == 2,
+              "the timeline has both lines, four effects, two pieces of music and two subtitles")
+        if let music = trimmed.sounds.first(where: { $0.kind == .music }),
+           let line = trimmed.sounds.first(where: { $0.kind == .dialogue }) {
+            let points = trimmed.volume(for: music)
+            let under = points.filter { $0.time >= line.start && $0.time <= line.end }.map(\.gain)
+            check(!under.isEmpty && under.allSatisfy { $0 < music.gain * 0.5 }, "the music dips under the line")
+        }
         let film = await model.exportMovie(doc)
         check(doc.error == nil && film != nil, "the film was exported\(doc.error.map { ": \($0)" } ?? "")")
+        if let film {
+            let audio = (try? await AVURLAsset(url: film).loadTracks(withMediaType: .audio)) ?? []
+            check(!audio.isEmpty, "with sound")
+            let srt = (try? String(contentsOf: film.deletingPathExtension().appendingPathExtension("srt"), encoding: .utf8)) ?? ""
+            check(srt.hasPrefix("1\n00:00:") && srt.contains("Grandpa, the light!"), "and an .srt beside it")
+        }
+        doc.movie.mix.burnSubtitles = true
+        let burned = await model.exportMovie(doc, to: store.folder(doc.id, .renders).appendingPathComponent("burned.mp4"))
+        check(doc.error == nil && burned != nil, "an export with burned-in subtitles works\(doc.error.map { ": \($0)" } ?? "")")
+        doc.movie.mix.burnSubtitles = false
         if let film {
             let asset = AVURLAsset(url: film)
             let track = try? await asset.loadTracks(withMediaType: .video).first
@@ -222,8 +334,8 @@ extension SmokeTest {
     private static func close(_ a: CGImage?, _ b: CGImage?) -> Bool {
         guard let a, let b, let x = tiny(a), let y = tiny(b) else { return false }
         let diff = zip(x, y).map { abs($0 - $1) }.reduce(0, +) / Double(x.count)
-        if diff >= 0.06 { print("[smoke-movie]      pictures differ by \(diff)") }
-        return diff < 0.06
+        if diff >= 0.08 { print("[smoke-movie]      pictures differ by \(diff)") }
+        return diff < 0.08  // H.264 noise on a first frame reaches about 0.065; another picture is 0.25 or more
     }
 
     private static func tiny(_ image: CGImage) -> [Double]? {

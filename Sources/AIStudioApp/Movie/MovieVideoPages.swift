@@ -27,18 +27,29 @@ struct MovieClipsPage: View {
             .mgHelp(missing > 0 ? "One clip for each shot without one (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-clips")
+            Toggle("Lip-sync", isOn: $doc.movie.lipSync)
+                .toggleStyle(.switch).controlSize(.small)
+                .disabled(doc.isBusy)
+                .mgHelp("Talking shots with spoken lines are animated from their voices by Wan 2.2 S2V, lips in sync "
+                        + "(slower and dearer); off: like every other shot")
+                .mgTestAnchor("movie-lip-sync")
             Button("Edit Template") {
                 model.editMovieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
             }
             .buttonStyle(.mg(.borderless))
             .mgHelp("Opens the graph clips are made with as a workflow; this movie uses your edited copy")
+            .mgContextMenu {
+                MGMenuItem.button("Edit Talking-Shot Template") {
+                    model.editMovieTemplate(MovieShots.TemplateName.talking, for: doc) { MovieShots.talkingTemplate() }
+                }
+            }
             Button(approved ? "Approved" : "Approve Shots") {
                 doc.movie.approve(.video)
-                doc.stage = .edit
+                doc.stage = .sound
             }
             .buttonStyle(.mg(.prominent))
             .disabled(approved || doc.isBusy || !doc.movie.videosAreReady)
-            .mgHelp(doc.movie.videosAreReady ? "Locks the clips in; they're cut together next"
+            .mgHelp(doc.movie.videosAreReady ? "Locks the clips in; their sound effects and music come next"
                     : "Every shot needs a chosen clip first")
             .mgTestAnchor("movie-approve-clips")
         } content: {
@@ -114,8 +125,12 @@ private struct ClipCard: View {
                 Text(startsFromClip(ends) ? "From shot \(number - 1)'s last frame to its keyframe" : "From its keyframe")
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 if shot.talking {
-                    Text("lip-sync later").font(.mg(size: 9.5, weight: .medium)).foregroundStyle(MG.tertiaryLabel)
-                        .mgHelp("A talking shot: animated without lip-sync until Voices arrive in a later update")
+                    let synced = MovieShots.usesLipSync(shot, in: doc.movie)
+                    Text(synced ? "lip-synced" : "no lip-sync").font(.mg(size: 9.5, weight: .medium))
+                        .foregroundStyle(MG.tertiaryLabel)
+                        .mgHelp(synced ? "A talking shot: animated from its lines by Wan 2.2 S2V, the lips in sync"
+                                : doc.movie.lipSync ? "A talking shot with no spoken lines yet (Voices): animated like the others"
+                                : "Lip-sync is off on this page: animated like the others")
                 }
             }
             .mgHelp(startsFromClip(ends) ? "Continues the shot before without a cut, ending where this shot was planned"
@@ -191,9 +206,17 @@ struct MovieEditPage: View {
 
     /// What the composition depends on: rebuilt when it changes.
     private var editKey: [String] {
-        doc.movie.shots.map { s in
-            "\(s.id)|\(s.selectedVideo?.uuidString ?? "-")|\(s.trimStart)|\(s.trimEnd)|\(s.transition.rawValue)"
-        }
+        let m = doc.movie.mix
+        return doc.movie.shots.map { s in
+            "\(s.id)|\(s.selectedVideo?.uuidString ?? "-")|\(s.trimStart)|\(s.trimEnd)|\(s.transition.rawValue)|"
+                + "\(s.selectedSound?.uuidString ?? "-")|" + s.dialogue.map { $0.selectedTake?.uuidString ?? "-" }.joined(separator: ",")
+        } + doc.movie.music.map { "\($0.id)|\($0.selected?.uuidString ?? "-")" }
+            + ["mix|\(m.dialogue)|\(m.effects)|\(m.music)|\(m.duck)"]
+    }
+
+    /// The line being spoken at the playhead.
+    private var subtitle: String? {
+        timeline?.subtitles.last { $0.start <= position && position < $0.end }?.text
     }
 
     var body: some View {
@@ -203,6 +226,10 @@ struct MovieEditPage: View {
             MGSegmentedPicker(selection: $codec, options: MovieComposer.Codec.allCases.map { ($0, $0.title) })
                 .frame(width: 140)
                 .mgHelp("H.264 plays everywhere; HEVC is smaller")
+            Toggle("Burn In Subtitles", isOn: $doc.movie.mix.burnSubtitles)
+                .toggleStyle(.checkbox)
+                .mgHelp("Draws the lines into the exported picture; an .srt file is written beside the MP4 either way")
+                .mgTestAnchor("movie-burn-subtitles")
             Button("Export…") { model.exportMovieAs(doc, codec: codec) }
                 .buttonStyle(.mg(.prominent))
                 .disabled(doc.isBusy || (timeline?.clips.isEmpty ?? true))
@@ -224,6 +251,15 @@ struct MovieEditPage: View {
                     .frame(maxHeight: 460)
                     .frame(maxWidth: .infinity)
                     .background(.black)
+                    .overlay(alignment: .bottom) {
+                        if let subtitle {
+                            Text(subtitle).font(.mg(size: 15, weight: .semibold)).foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .shadow(color: .black, radius: 3)
+                                .padding(.horizontal, 24).padding(.bottom, 18)
+                                .allowsHitTesting(false)
+                        }
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous))
                     .mgTestAnchor("movie-edit-player")
                 if let buildError {
@@ -279,6 +315,7 @@ struct MovieEditPage: View {
             let c = try await MovieComposer.build(t, folder: model.movieStore.folder(doc.id), size: doc.movie.aspect.videoSize)
             let item = AVPlayerItem(asset: c.asset)
             item.videoComposition = c.video
+            item.audioMix = c.audioMix
             let at = min(position, max(0, t.duration - 0.05))
             player.replaceCurrentItem(with: item)
             await player.seek(to: CMTime(seconds: at, preferredTimescale: 9600), toleranceBefore: .zero, toleranceAfter: .zero)
@@ -314,9 +351,21 @@ private struct MovieTimelineView: View {
 
     private let laneHeight: CGFloat = 64
     private let rulerHeight: CGFloat = 18
+    private let soundHeight: CGFloat = 18
+
+    /// The sound lanes under the picture: dialogue, effects, music, each as many rows as it has overlaps.
+    private var soundRows: [(kind: MovieTimeline.SoundKind, track: Int)] {
+        MovieTimeline.SoundKind.allCases.flatMap { kind -> [(kind: MovieTimeline.SoundKind, track: Int)] in
+            let n = (timeline.sounds.filter { $0.kind == kind }.map(\.track).max() ?? -1) + 1
+            return (0..<n).map { (kind: kind, track: $0) }
+        }
+    }
+
+    private var soundsHeight: CGFloat { soundRows.isEmpty ? 0 : CGFloat(soundRows.count) * (soundHeight + 4) + 6 }
 
     var body: some View {
         let width = max(CGFloat(timeline.duration * scale) + 80, 300)
+        let rows = soundRows
         ScrollView(.horizontal, showsIndicators: true) {
             ZStack(alignment: .topLeading) {
                 ruler(width: width)
@@ -341,12 +390,19 @@ private struct MovieTimelineView: View {
                         model.moveShot(doc, id, before: nil)
                         return true
                     }
-                Rectangle().fill(MG.accent).frame(width: 2, height: laneHeight + rulerHeight + 12)
+                ForEach(timeline.sounds) { sound in
+                    if let row = rows.firstIndex(where: { $0.kind == sound.kind && $0.track == sound.track }) {
+                        TimelineSoundView(sound: sound, scale: scale, height: soundHeight)
+                            .offset(x: CGFloat(sound.start * scale),
+                                    y: rulerHeight + 6 + laneHeight + 10 + CGFloat(row) * (soundHeight + 4))
+                    }
+                }
+                Rectangle().fill(MG.accent).frame(width: 2, height: laneHeight + rulerHeight + 12 + soundsHeight)
                     .offset(x: CGFloat(position * scale) - 1)
                     .allowsHitTesting(false)
                     .zIndex(1000)
             }
-            .frame(width: width, height: laneHeight + rulerHeight + 14, alignment: .topLeading)
+            .frame(width: width, height: laneHeight + rulerHeight + 14 + soundsHeight, alignment: .topLeading)
             .padding(.bottom, 6)
         }
         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
@@ -366,6 +422,38 @@ private struct MovieTimelineView: View {
             }
         }
         .frame(width: width, height: laneHeight + rulerHeight + 12)
+    }
+}
+
+/// A sound on the timeline: a line (with its speaker), a shot's effects or a scene's music.
+private struct TimelineSoundView: View {
+    let sound: MovieTimeline.Sound
+    let scale: Double
+    let height: CGFloat
+
+    var body: some View {
+        let tint: Color = switch sound.kind {
+        case .dialogue: MG.accent
+        case .effects: MG.warning
+        case .music: .purple
+        }
+        let symbol = switch sound.kind {
+        case .dialogue: "person.wave.2"
+        case .effects: "speaker.wave.2"
+        case .music: "music.note"
+        }
+        HStack(spacing: 4) {
+            Image(systemName: symbol).font(.mg(size: 9))
+            Text(sound.label).font(.mg(size: 10)).lineLimit(1)
+        }
+        .padding(.horizontal, 5)
+        .frame(width: max(CGFloat(sound.duration * scale), 6), height: height, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(tint.opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(tint.opacity(0.6)))
+        .foregroundStyle(tint)
+        .clipped()
+        .mgHelp("\(sound.kind == .dialogue ? "Line" : sound.kind == .effects ? "Sound effects" : "Music"): \(sound.label) · "
+                + String(format: "%.1f s", sound.duration))
     }
 }
 

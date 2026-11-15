@@ -3,6 +3,7 @@
 import hashlib
 import json
 import struct
+import subprocess
 import time
 from pathlib import Path
 
@@ -44,12 +45,16 @@ def test_auth_and_info(client):
     assert client.get("/v1/info", headers={"Authorization": "Bearer nope"}).status_code == 401
     info = client.get("/v1/info", headers=AUTH).json()
     assert info["api"] == 1 and info["runner"] == "local"
+    assert info["parallelJobs"] == 1  # one GPU thread here (Modal reports its containers per model)
     tasks = {t["id"]: t for t in info["tasks"]}
     assert tasks["test-video"]["installed"] and not tasks["wan22-t2v"]["installed"]
+    assert tasks["test-video"]["activeJobs"] == 0 and tasks["wan22-i2v"]["activeJobs"] == 0  # nothing queued or running
     assert tasks["wan22-t2v"]["gpu"] == "H100" and tasks["wan22-t2v"]["pricePerSecond"] > 0
     assert tasks["wan22-i2v"]["inputs"] == ["image"] and tasks["wan22-i2v"]["optionalInputs"][0] == "last_image"
     assert tasks["qwen-image-edit"]["inputs"] == ["image1"] and tasks["qwen-image-edit"]["gpu"] == "H100"
     assert tasks["qwen-image-edit"]["optionalInputs"][:2] == ["image2", "image3"]
+    assert tasks["wan22-s2v"]["inputs"] == ["image", "audio"] and tasks["wan22-s2v"]["gpu"] == "H100"
+    assert tasks["wan22-s2v"]["params"]["max_seconds"]["default"] == 15.0
 
 
 def test_video_job_streams_status_progress_previews_and_result(client):
@@ -292,6 +297,55 @@ def test_fake_models_image_to_video_starts_and_ends_on_its_pictures(tmp_path, mo
     assert frames[0][24, 32, 2] > 200 and frames[-1][24, 32, 1] > 200  # blue first, green last
 
 
+def _s2v_run(tmp_path, monkeypatch, seconds, **params):
+    """The fake speech-to-video worker with a blue picture and a tone of the given length."""
+    from PIL import Image
+
+    from aistudio_gpu.media import tone, write_wav
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+
+    class Sink:
+        def status(self, t): pass
+        def progress(self, s, t): pass
+        def preview(self, *a): pass
+        def check(self): pass
+
+    spec = TASKS["wan22-s2v"]
+    pic, wav = tmp_path / "face.png", tmp_path / "speech.wav"
+    Image.new("RGB", (64, 64), (0, 0, 255)).save(pic)
+    write_wav(tone(seconds, 16000, 1, 3), 16000, wav)
+    # Past the size limits: a tiny clip is quicker.
+    p = {**spec.normalize({}), "width": 64, "height": 64, **params}
+    return make_worker(spec.family).run(spec, p, {"image": pic, "audio": wav}, Sink(), tmp_path)
+
+
+def test_fake_models_speech_to_video_follows_the_audio(tmp_path, monkeypatch):
+    """A talking shot against the fake server: 16 frames per second of audio, the first one the picture, and the
+    audio in the MP4."""
+    import imageio_ffmpeg
+    import numpy as np
+
+    out = _s2v_run(tmp_path, monkeypatch, 1.5)
+    assert out.kind == "video" and out.content_type == "video/mp4"
+    frames, secs = imageio_ffmpeg.count_frames_and_secs(str(out.path))
+    assert frames == 24  # ceil(1.5 * 16)
+    assert abs(secs - 1.5) < 0.1
+    info = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(out.path)], capture_output=True, text=True)
+    assert "Audio:" in info.stderr and "aac" in info.stderr and "Video: h264" in info.stderr
+    reader = imageio_ffmpeg.read_frames(str(out.path))
+    meta = next(reader)
+    first = np.frombuffer(next(reader), np.uint8).reshape(meta["size"][1], meta["size"][0], 3)
+    assert first[32, 32, 2] > 200 and first[32, 32, 0] < 60  # the blue picture
+    assert out.extra["frames"] == 24 and out.extra["audioSeconds"] == 1.5
+
+
+def test_fake_models_speech_to_video_refuses_audio_past_max_seconds(tmp_path, monkeypatch):
+    with pytest.raises(ValueError, match=r"the audio is 2\.5 s; at most 2 s per clip"):
+        _s2v_run(tmp_path, monkeypatch, 2.5, max_seconds=2.0)
+
+
 def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):
     import asyncio
     import os
@@ -319,3 +373,27 @@ def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):
     assert asyncio.run(store.receive(third, 0, len(data), body(data)))
     assert store.exists(names[0]) and not store.exists(names[1]) and store.exists(third)
     assert not stale.exists() and stored == [1, 1, 1]
+
+
+def test_two_uploads_of_the_same_bytes_at_once_both_succeed(tmp_path):
+    # Two jobs sharing an input (both lines clone one voice sample) upload it together: the second must not write
+    # over the first's partial file, and both see it stored.
+    import asyncio
+    import hashlib
+
+    from aistudio_gpu.files import FileStore
+
+    data = bytes(range(256)) * 4096  # 1 MB
+    name = hashlib.sha256(data).hexdigest() + ".wav"
+    store = FileStore(tmp_path)
+
+    async def body():
+        for i in range(0, len(data), 65536):
+            await asyncio.sleep(0)  # yield between chunks, so the two uploads interleave without the lock
+            yield data[i:i + 65536]
+
+    async def both():
+        return await asyncio.gather(store.receive(name, 0, len(data), body()), store.receive(name, 0, len(data), body()))
+
+    assert asyncio.run(both()) == [True, True]
+    assert store.path(name).read_bytes() == data and not store._receiving

@@ -92,10 +92,19 @@ class JobManager:
     # MARK: info and submission
 
     def info(self) -> dict:
+        busy: dict[str, int] = {}
+        for j in self.jobs.values():
+            if j.state in ("queued", "running"):
+                busy[j.spec.family] = busy.get(j.spec.family, 0) + 1
         return {
             "server": "aistudio-gpu", "version": VERSION, "api": API_VERSION, "runner": self.runner.name,
             "idleSeconds": self.idle_seconds,
-            "tasks": [t.describe(self.runner.installed(t)) for t in TASKS.values()],
+            # How many jobs of one task can run at once (Modal: containers per model); more just wait their turn.
+            "parallelJobs": getattr(self.runner, "parallel_jobs", 1),
+            # Each task with `activeJobs`: its model's jobs queued or running now, from every client (on Modal they
+            # hold its containers), so a client can tell how many of `parallelJobs` are free.
+            "tasks": [{**t.describe(self.runner.installed(t)), "activeJobs": busy.get(t.family, 0)}
+                      for t in TASKS.values()],
             # Fine-tunes installed from links, per family ({"flux.1": [{"id", "name", "bytes"}]}): a task's `model`.
             "variants": list_variants(self.runner.models_root) if getattr(self.runner, "models_root", None) else {},
             "jobs": {s: sum(1 for j in self.jobs.values() if j.state == s) for s in ("queued", "running")},

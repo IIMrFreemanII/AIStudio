@@ -1,29 +1,36 @@
 import Foundation
 import GraphRuntime
 import MovieCore
+import NodesRemote
 
 /// Runs a movie's graphs (a template with a shot's values bound in) on this Mac's engine, whose cloud GPU nodes reach
-/// the server. It works outside the workflow queue, which would put the results into whichever tab is in front, and
-/// runs one graph at a time so jobs for one GPU family don't race for its single container.
+/// the server. It works outside the workflow queue, which would put the results into whichever tab is in front.
+///
+/// Several graphs can run at once (the movie sends as many jobs together as the server runs in parallel), but they
+/// take turns with this Mac's side of the work, which isn't safe to run side by side: a graph holds `gate` while it
+/// runs, and its GPU nodes let go of it while they wait on the server, so only the GPU jobs overlap.
 @MainActor
 final class MovieRenderer {
-    private var last: Task<Void, Never>?
+    /// The most renders the movie runs at once, whatever the server allows.
+    static let maxParallel = 4
+
+    private let gate = AsyncGate()
 
     func run(_ graph: Graph, on backend: ExecutionBackend, title: String,
              onEvent: @escaping @MainActor (EngineEvent) -> Void = { _ in }) async throws -> [EngineOutput] {
-        let previous = last
-        let job = Task<[EngineOutput], Error> { @MainActor in
-            await previous?.value
+        await gate.acquire()
+        do {
             try Task.checkCancellation()
-            return try await backend.run(graph, workflow: title) { event in
-                Task { @MainActor in onEvent(event) }
+            let outputs = try await RemoteWait.$gate.withValue(gate) {
+                try await backend.run(graph, workflow: title) { event in
+                    Task { @MainActor in onEvent(event) }
+                }
             }
-        }
-        last = Task { _ = try? await job.value }
-        return try await withTaskCancellationHandler {
-            try await job.value
-        } onCancel: {
-            job.cancel()
+            await gate.release()
+            return outputs
+        } catch {
+            await gate.release()
+            throw error
         }
     }
 }
