@@ -7,6 +7,7 @@ metadata is read (the tokenizer's arrays are skipped value by value); the tensor
 
 from __future__ import annotations
 
+import os
 import re
 import struct
 from typing import BinaryIO
@@ -90,9 +91,24 @@ def quant_of(name: str) -> str | None:
     return found[-1].upper() if found else None
 
 
+def _before_quant(name: str) -> str:
+    """A file's name (no folder, shard suffix or extension) up to its quantization: what tells variants apart."""
+    base = SPLIT.sub("", name.rsplit("/", 1)[-1]).removesuffix(".gguf").removesuffix(".GGUF")
+    found = list(QUANT.finditer(base))
+    return base[:found[-1].start()] if found else base
+
+
+def _variant_rank(variant: str | None) -> int:
+    """Which of a quantization's variants to offer first: one with the model's MTP layers (faster replies), then the
+    plain one, then others (``LOW-MTP``, ``UD``…)."""
+    return 0 if variant and variant.upper() == "MTP" else 1 if not variant else 2
+
+
 def group(files: dict[str, int]) -> list[dict]:
-    """GGUF files of a repo → one entry per quantization: {"quant", "bytes", "files" (shards in order)}. Projector
-    files (``mmproj``) are left out (see ``mmproj``)."""
+    """GGUF files of a repo → one entry per quantization: {"quant", "variant", "choice", "bytes", "files" (shards in
+    order)}. ``variant`` is what the file names add before the quantization when a repo has several kinds of files
+    ("MTP", "LOW-MTP": ``x-Q4_K_M.gguf`` and ``x-MTP-Q4_K_M.gguf``), else None; ``choice`` names the entry uniquely
+    ("Q4_K_M", "Q4_K_M MTP"). Projector files (``mmproj``) are left out (see ``mmproj``)."""
     groups: dict[str, dict] = {}
     for name, size in sorted(files.items()):
         if not name.lower().endswith(".gguf") or "mmproj" in name.lower():
@@ -100,13 +116,30 @@ def group(files: dict[str, int]) -> list[dict]:
         q = quant_of(name) or name.rsplit("/", 1)[-1].removesuffix(".gguf")
         m = SPLIT.search(name)
         key = f"{q}|{SPLIT.sub('', name) if m else name}"
-        g = groups.setdefault(key, {"quant": q, "bytes": 0, "files": []})
+        g = groups.setdefault(key, {"quant": q, "bytes": 0, "files": [], "before": _before_quant(name),
+                                    "named": quant_of(name) is not None})
         g["bytes"] += size
         g["files"].append(name)
     out = list(groups.values())
+    named = [g["before"] for g in out if g["named"]]
+    common = os.path.commonprefix(named) if len(named) > 1 else (named[0] if named else "")
+    common = common[:max(common.rfind(c) for c in "-_. ") + 1] if any(c in common for c in "-_. ") else ""
     for g in out:
         g["files"].sort()
-    return sorted(out, key=lambda g: (PREFERENCE.index(g["quant"]) if g["quant"] in PREFERENCE else 99, g["bytes"]))
+        rest = g.pop("before")[len(common):].strip("-_. ") if g.pop("named") else ""
+        g["variant"] = rest if rest and len(rest) <= 24 else None
+        g["choice"] = f"{g['quant']} {g['variant']}" if g["variant"] else g["quant"]
+    seen: dict[str, int] = {}
+    for g in out:
+        seen[g["choice"]] = seen.get(g["choice"], 0) + 1
+    for g in out:  # still the same name (long or odd file names): the file's own name tells them apart
+        if seen[g["choice"]] > 1:
+            g["choice"] = SPLIT.sub("", g["files"][0].rsplit("/", 1)[-1]).removesuffix(".gguf")
+    smallest: dict[str, int] = {}  # a quantization's variants stay together, by its smallest file
+    for g in out:
+        smallest[g["quant"]] = min(smallest.get(g["quant"], g["bytes"]), g["bytes"])
+    return sorted(out, key=lambda g: (PREFERENCE.index(g["quant"]) if g["quant"] in PREFERENCE else 99,
+                                      smallest[g["quant"]], g["quant"], _variant_rank(g["variant"]), g["bytes"]))
 
 
 def mmproj(files: dict[str, int]) -> str | None:
@@ -130,15 +163,18 @@ def arch_facts(meta: dict) -> dict:
             return max(nums) if nums else default
         return v if v is not None else default
 
-    layers = int(get("block_count"))
+    # Multi-token-prediction (NextN) layers come after the model's own in ``block_count``; each has full attention.
+    mtp = int(get("nextn_predict_layers"))
+    layers = int(get("block_count")) - mtp
     heads = int(get("attention.head_count"))
     kv_list = meta.get(f"{arch}.attention.head_count_kv")
     kv = int(get("attention.head_count_kv", heads))
     attn = layers
     if isinstance(kv_list, list):
-        attn = sum(1 for x in kv_list if x)  # layers without KV heads are linear-attention ones
+        attn = sum(1 for x in kv_list[:layers] if x)  # layers without KV heads are linear-attention ones
     elif get("full_attention_interval"):
         attn = layers // int(get("full_attention_interval"))
+    attn += mtp
     embed = int(get("embedding_length"))
     head_dim = int(get("attention.key_length") or (embed // heads if heads else 0))
     return {
@@ -148,5 +184,5 @@ def arch_facts(meta: dict) -> dict:
         "rope_head_dim": int(get("rope.dimension_count") if get("attention.kv_lora_rank") else 0),
         "sliding_window": int(get("attention.sliding_window")),
         "chat_template": str(meta.get("tokenizer.chat_template") or ""),
-        "name": str(meta.get("general.name") or ""),
+        "name": str(meta.get("general.name") or ""), "mtp_layers": mtp,
     }

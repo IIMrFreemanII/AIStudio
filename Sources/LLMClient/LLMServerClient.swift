@@ -35,9 +35,11 @@ public struct LLMModel: Codable, Identifiable, Equatable, Sendable {
     /// Thinking levels the model takes ("low"/"medium"/"high", or "off"/"on"); [] can't be controlled; nil: older server.
     public var efforts: [String]?
 
-    /// Served by vLLM (fast loaders, GPU snapshots and the MTP switch are vLLM's).
+    /// Served by vLLM (fast loaders and GPU snapshots are vLLM's).
     public var isVLLM: Bool { engine == nil || engine == "vllm" }
-    public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && isVLLM }
+    /// Has MTP layers it can draft with, under a switch (vLLM, and llama.cpp for "MTP" GGUF files; Edge0's engine
+    /// always drafts).
+    public var hasMTP: Bool { (mtpLayers ?? 0) > 0 && engine != "edge0" }
     public var gpuLabel: String { count > 1 ? "\(count)× \(gpu)" : gpu }
 }
 
@@ -184,6 +186,7 @@ public struct LLMInspection: Codable, Equatable, Sendable {
     }
 
     public struct GGUFOption: Codable, Equatable, Hashable, Sendable {
+        /// The choice's name, sent back to pick it: "Q4_K_M", or "Q4_K_M MTP" when a repo has several kinds of files.
         public var quant: String
         public var bytes: Int
     }

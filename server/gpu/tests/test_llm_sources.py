@@ -66,6 +66,23 @@ QWEN_GGUF = gguf_bytes({
     "tokenizer.chat_template": "{% for m in messages %}<think></think><tool_call>{% endfor %}",
 }, pad=4096)
 
+# A Qwen3.8-27B-like "MTP" GGUF (as DavidAU's NEO-CODER quants): 64 layers plus one NextN layer in block_count, full
+# attention every 4th layer.
+QWEN35_MTP_GGUF = gguf_bytes({
+    "general.architecture": "qwen35", "general.name": "Qwen3.8 27B",
+    "qwen35.block_count": 65, "qwen35.nextn_predict_layers": 1, "qwen35.full_attention_interval": 4,
+    "qwen35.attention.head_count": 24, "qwen35.attention.head_count_kv": 4, "qwen35.attention.key_length": 256,
+    "qwen35.embedding_length": 5120, "qwen35.context_length": 262144,
+    "tokenizer.chat_template": "{% for m in messages %}<think></think><tool_call>{% endfor %}",
+}, pad=4096)
+# The same repo's file names (regular and MTP quants of the same quantizations, two "LOW-MTP" ones).
+STEM = "Qwen3.8-27B-TurboFCFusion-735-882-Here-Uncen-NEO-CODER-MAX-"
+MTP_REPO = {f"{STEM}{v}{q}.gguf": (gb + (0.45 if "MTP" in v else 0)) * 1e9
+            for q, gb in (("IQ4_XS", 16.6), ("Q4_K_M", 18.0), ("Q6_K", 23.6), ("Q8_0", 29.8))
+            for v in ("", "MTP-")} | {f"{STEM}LOW-MTP-IQ4_XS.gguf": 15.3e9, "mmproj-F16.gguf": 0.9e9,
+                                      "mmproj-BF16.gguf": 0.9e9, "README.md": 1}
+MTP_REPO = {k: int(v) for k, v in MTP_REPO.items()}
+
 
 def test_gguf_header_and_groups():
     meta = gguf.metadata(io.BytesIO(QWEN_GGUF))
@@ -119,6 +136,11 @@ def fake_sites(request: httpx.Request) -> httpx.Response:
                 {"rfilename": "mmproj-Qwen3-f16.gguf", "size": GIB}]})
         if path.startswith(f"/o/qwen-gguf/resolve/{SHA}/") and path.endswith(".gguf"):
             return ranged(QWEN_GGUF, request)
+        if path == "/api/models/o/mtp-gguf/revision/main":
+            return httpx.Response(200, json={"id": "o/mtp-gguf", "sha": SHA, "siblings": [
+                {"rfilename": n, "size": b} for n, b in MTP_REPO.items()]})
+        if path.startswith(f"/o/mtp-gguf/resolve/{SHA}/") and path.endswith(".gguf"):
+            return ranged(QWEN35_MTP_GGUF if "MTP" in path else QWEN_GGUF, request)
     if host == "civitai.com":
         if path == "/api/v1/models/42":
             return httpx.Response(200, json={"name": "Story Writer 8B", "modelVersions": [{"id": 7, "files": [
@@ -248,6 +270,66 @@ def test_plan_and_changing_gpus(client):
     assert ok.status_code == 200 and ok.json()["count"] == 2
     too_long = client.patch(f"/v1/llm/models/{mid}", json={"context": 10_000_000}, headers=AUTH)
     assert too_long.status_code == 400
+
+
+def test_gguf_variants_mtp_and_regular():
+    groups = gguf.group(MTP_REPO)
+    # MTP files first within a quantization (faster replies), then the plain one, then "LOW-MTP".
+    assert [g["choice"] for g in groups] == ["Q4_K_M MTP", "Q4_K_M", "Q6_K MTP", "Q6_K", "Q8_0 MTP", "Q8_0",
+                                             "IQ4_XS MTP", "IQ4_XS", "IQ4_XS LOW-MTP"]
+    assert groups[0]["quant"] == "Q4_K_M" and groups[0]["variant"] == "MTP"
+    assert groups[0]["files"] == [f"{STEM}MTP-Q4_K_M.gguf"] and groups[1]["variant"] is None
+    # A repo with one kind of file has no variants; the names stay as they were.
+    plain = gguf.group({"x-Q4_K_M.gguf": 1, "Q8_0/x-Q8_0-00001-of-00002.gguf": 2, "Q8_0/x-Q8_0-00002-of-00002.gguf": 2})
+    assert [(g["choice"], g["variant"]) for g in plain] == [("Q4_K_M", None), ("Q8_0", None)]
+    # Same quantization, names that differ too much to make a short label: the file names tell them apart.
+    odd = gguf.group({"a" * 30 + "-Q4_K_M.gguf": 1, "b" * 30 + "-Q4_K_M.gguf": 2})
+    assert len({g["choice"] for g in odd}) == 2
+
+    a = gguf.arch_facts(gguf.metadata(io.BytesIO(QWEN35_MTP_GGUF)))
+    assert a["mtp_layers"] == 1 and a["layers"] == 64 and a["attention_layers"] == 64 // 4 + 1
+    assert gguf.arch_facts(gguf.metadata(io.BytesIO(QWEN_GGUF)))["mtp_layers"] == 0
+
+
+def test_mtp_gguf_inspect_install_and_command(client, tmp_path):
+    d = client.post("/v1/llm/inspect", json={"url": "o/mtp-gguf"}, headers=AUTH).json()
+    f = d["facts"]
+    assert f["quant"]["type"] == "Q4_K_M" and f["quant"]["choice"] == "Q4_K_M MTP" and f["mtpLayers"] == 1
+    assert [o["quant"] for o in f["ggufOptions"]][:2] == ["Q4_K_M MTP", "Q4_K_M"]
+    assert f["ggufOptions"][0]["type"] == "Q4_K_M" and f["vision"] and f["mmproj"] == "mmproj-F16.gguf"
+    plain = client.post("/v1/llm/inspect", json={"url": "o/mtp-gguf", "quant": "Q4_K_M"}, headers=AUTH).json()
+    assert plain["facts"]["quant"]["choice"] == "Q4_K_M" and plain["facts"]["mtpLayers"] == 0
+    low = client.post("/v1/llm/inspect", json={"url": "o/mtp-gguf", "quant": "iq4_xs low-mtp"}, headers=AUTH).json()
+    assert low["facts"]["weightBytes"] == MTP_REPO[f"{STEM}LOW-MTP-IQ4_XS.gguf"]
+    bad = client.post("/v1/llm/inspect", json={"url": "o/mtp-gguf", "quant": "Q2_K"}, headers=AUTH)
+    assert bad.status_code == 400 and "Q4_K_M MTP" in bad.json()["error"]
+
+    r = client.post("/v1/llm/install", json={"url": "o/mtp-gguf", "quant": "Q4_K_M MTP"}, headers=AUTH)
+    assert r.status_code == 202, r.text
+    m = wait_installed(client, r.json()["id"])
+    assert m["ggufFile"] == f"{STEM}MTP-Q4_K_M.gguf" and m["mtpLayers"] == 1
+    weights = tmp_path / "models" / "llm" / m["id"] / "weights"
+    cmd = " ".join(llama_command(m, weights, 8000))
+    assert "--spec-type draft-mtp --spec-draft-n-max 2" in cmd
+    assert "--spec-type" not in llama_command({**m, "mtp": False}, weights, 8000)
+    assert "--spec-type" not in llama_command({**m, "mtpLayers": 0}, weights, 8000)
+    own = llama_command({**m, "engineArgs": ["--spec-type", "ngram-mod"]}, weights, 8000)
+    assert own.count("--spec-type") == 1 and own[-1] == "ngram-mod"
+    # The switch can be turned off like a vLLM model's.
+    off = client.patch(f"/v1/llm/models/{m['id']}", json={"mtp": False}, headers=AUTH)
+    assert off.status_code == 200 and off.json()["mtp"] is False
+
+
+def test_gguf_installed_before_mtp_layers_reads_the_header(tmp_path):
+    from aistudio_gpu.llm import store
+    weights = tmp_path / "llm" / "old" / "weights"
+    weights.mkdir(parents=True)
+    (weights / "m-MTP-Q4_K_M.gguf").write_bytes(QWEN35_MTP_GGUF)
+    (weights / ".complete").write_text("")
+    m = {"id": "old", "engine": "llamacpp", "ggufFile": "m-MTP-Q4_K_M.gguf", "context": 8192}
+    store.write(tmp_path, m)
+    assert store.listing(tmp_path)[0]["mtpLayers"] == 1
+    assert "draft-mtp" in llama_command(m, weights, 8000)  # the manifest without the field: read from the file
 
 
 def test_llamacpp_sizing_ignores_head_split():

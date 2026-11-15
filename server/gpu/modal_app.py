@@ -52,7 +52,9 @@ FLASHINFER_VERSION = os.environ.get("AISTUDIO_FLASHINFER", "0.7.2.post1")  # the
 FLASHINFER_CUDA = os.environ.get("AISTUDIO_FLASHINFER_CUDA", "cu129")  # matches the CUDA 12.9 base image
 LLM_BOOT_TIMEOUT = int(os.environ.get("AISTUDIO_LLM_BOOT_TIMEOUT", "1800"))  # a start that takes longer is given up
 CUDA_BASE = os.environ.get("AISTUDIO_CUDA_IMAGE", "nvidia/cuda:12.9.1-devel-ubuntu24.04")
-LLAMA_IMAGE = os.environ.get("AISTUDIO_LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda")
+# Pinned: Modal keeps an image built from a moving tag, so "server-cuda" would stay whatever build it first pulled.
+# b12407 (2026-11-15) drafts with a GGUF's MTP layers (--spec-type draft-mtp).
+LLAMA_IMAGE = os.environ.get("AISTUDIO_LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda-b12407")
 # Edge0's engine (edge0-strata, github.com/Edge0-AI/Edge0) for Edge0 strata packs: built from a pinned commit with
 # the llama.cpp (ggml) commit its EDGE0.md names (the archive's SHA-256 computed here; the doc records none), for
 # A100, L40S, H100/H200 and B200. Its default NVFP4 path (w4a8)

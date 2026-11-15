@@ -215,7 +215,7 @@ struct LLMAddSheet: View {
                 MGSection {
                     if let opts = f.facts.ggufOptions, opts.count > 1 {
                         MGFormRow("Quantization") {
-                            MGPicker(selection: Binding(get: { quant ?? f.facts.quant?["type"]?.string ?? opts[0].quant },
+                            MGPicker(selection: Binding(get: { quant ?? f.facts.quant?["choice"]?.string ?? f.facts.quant?["type"]?.string ?? opts[0].quant },
                                                         set: { q in quant = q; Task { await lookUp() } }),
                                      options: opts.map { ($0.quant, String(format: "%@ · %.0f GB", $0.quant, Double($0.bytes) / 1e9)) })
                                 .disabled(busy)
@@ -330,7 +330,9 @@ struct LLMAddSheet: View {
             _ = try await client.install(LLMInstallRequest(
                 url: link.trimmingCharacters(in: .whitespaces), id: modelID.isEmpty ? nil : modelID,
                 name: name.isEmpty ? nil : name, gpu: o.gpu, count: o.count, context: context,
-                quant: found?.facts.engine == "llamacpp" ? found?.facts.quant?["type"]?.string : nil,
+                // The choice as named in the picker ("Q4_K_M MTP"): the bare type would pick that type's plain file.
+                quant: found?.facts.engine == "llamacpp"
+                    ? (found?.facts.quant?["choice"]?.string ?? found?.facts.quant?["type"]?.string) : nil,
                 hfToken: LinkLogins.hf, civitaiToken: LinkLogins.civitai))
             await model.llm.refresh(serverID)
             dismiss()
@@ -440,7 +442,11 @@ struct LLMSettingsSheet: View {
                         MGFormRow("Faster replies (MTP)") {
                             Toggle("", isOn: $mtp).labelsHidden()
                         }
-                        .mgHelp("The model's own multi-token-prediction layer guesses the next 2 tokens and the model checks "
+                        .mgHelp(m?.engine == "llamacpp"
+                                ? "The model's own multi-token-prediction layer guesses the next 2 tokens and llama.cpp checks "
+                                  + "them in one step: the same replies, faster when most guesses are right (temperature 1 or "
+                                  + "less helps)."
+                                : "The model's own multi-token-prediction layer guesses the next 2 tokens and the model checks "
                                 + "them in one step: the same replies, faster. Qwen3.8-Flash-Next on a B200 went from 191 to "
                                 + "298 tokens/s. Each start takes about 40 s longer, and the KV cache is about a quarter smaller.")
                     }
