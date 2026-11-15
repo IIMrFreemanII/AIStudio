@@ -93,6 +93,18 @@ struct GraphEditorView: View {
                     nodeView(node, level).offset(x: toView(NodeLayout.origin(node)).x, y: toView(NodeLayout.origin(node)).y)
                 }
 
+                // The Studio agent's targets, one per node on the canvas. They're plain rectangles in view
+                // coordinates: the cards above are zoomed with scaleEffect, which AppKit-backed anchors don't follow.
+                ForEach(level.nodes) { node in
+                    let r = viewRect(targetFrame(node))
+                    if targetVisible(r) {
+                        Color.clear.frame(width: r.width, height: r.height)
+                            .mgTarget("graph-node:\(node.id)")
+                            .position(x: r.midX, y: r.midY)
+                            .allowsHitTesting(false)
+                    }
+                }
+
                 if let marquee {
                     Rectangle().fill(MG.accent.opacity(0.12))
                         .overlay(Rectangle().strokeBorder(MG.accent, lineWidth: 1))
@@ -154,6 +166,15 @@ struct GraphEditorView: View {
                 model.nodeAddRequest = nil
             }
             .onChange(of: model.selection) { _, s in if !s.isEmpty { selectedWire = nil } }
+            .onChange(of: model.studio.scrollRequest?.id) { _, _ in
+                // The Studio agent is about to act on a node outside the canvas: bring it to the middle.
+                guard let t = model.studio.scrollRequest?.target, t.hasPrefix("graph-node:"),
+                      let node = level[String(t.dropFirst("graph-node:".count))] else { return }
+                let f = targetFrame(node)
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    pan = CGSize(width: viewSize.width / 2 - f.midX * zoom, height: viewSize.height / 2 - f.midY * zoom)
+                }
+            }
             .onChange(of: geo.size) { old, s in
                 // Resizing (panels opening and closing) keeps the middle of the view where it was.
                 let from = old.width > 0 && old.height > 0 ? old : doc.viewportSize
@@ -466,6 +487,21 @@ struct GraphEditorView: View {
 
     func toGraph(_ p: CGPoint) -> GraphPoint {
         GraphPoint(x: Double((p.x - pan.width) / zoom), y: Double((p.y - pan.height) / zoom))
+    }
+
+    /// A node's frame in graph coordinates, for the Studio agent's target (reroutes and notes too).
+    func targetFrame(_ node: GraphNode) -> CGRect {
+        if let f = model.frame(of: node) { return f }
+        let o = NodeLayout.origin(node)
+        if NodeLayout.isReroute(node) { return CGRect(origin: o, size: NodeLayout.rerouteSize) }
+        if NodeLayout.isNote(node) { return CGRect(x: o.x, y: o.y, width: NodeLayout.width, height: NodeLayout.noteHeight) }
+        return CGRect(x: o.x, y: o.y, width: NodeLayout.width, height: NodeLayout.header + 12)
+    }
+
+    /// Whether a node (its view rectangle) is on the canvas enough to point at: its middle inside the canvas. One
+    /// that isn't has no target, so the agent asks the canvas to pan to it.
+    func targetVisible(_ r: CGRect) -> Bool {
+        viewSize.width > 0 && CGRect(origin: .zero, size: viewSize).insetBy(dx: 16, dy: 16).contains(CGPoint(x: r.midX, y: r.midY))
     }
 
     func viewRect(_ f: CGRect) -> CGRect {
