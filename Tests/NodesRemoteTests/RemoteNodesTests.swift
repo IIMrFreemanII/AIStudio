@@ -184,6 +184,44 @@ struct RemoteNodesTests {
         #expect(first[0].item(Float.self) > 0.7 && first[1].item(Float.self) < 0.3)
     }
 
+    @Test(.enabled(if: hasServer)) func wanImageToVideoEndsOnTheLastImageAndLastFrameChainsClips() async throws {
+        // Clip 1 starts red and ends green (the fake server puts the end picture in the last frame); Last Frame
+        // hands its green end to clip 2, which starts from it.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let red = out.appendingPathComponent("red.png"), green = out.appendingPathComponent("green.png")
+        try ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.9, 0.1, 0.1, 1.0] as [Float]), to: red)
+        try ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.1, 0.9, 0.1, 1.0] as [Float]), to: green)
+        let size: [String: NodeInput] = ["width": .value(.int(256)), "height": .value(.int(256)), "length": .value(.int(5))]
+        func previewURL(_ result: RunResult) -> URL? {
+            if case .object(let u)? = result.outputs["show"]?["video_url"] { return u as? URL }; return nil
+        }
+        let (first, _) = try await run([
+            GraphNode(id: "start", type: "LoadImage", inputs: ["path": .value(.string(red.path))]),
+            GraphNode(id: "end", type: "LoadImage", inputs: ["path": .value(.string(green.path))]),
+            GraphNode(id: "one", type: "RemoteWanImageToVideo", inputs: size.merging([
+                "image": .link(node: "start", output: "image"), "last_image": .link(node: "end", output: "image"),
+            ]) { $1 }),
+            GraphNode(id: "show", type: "PreviewVideo", inputs: ["video": .link(node: "one", output: "video")]),
+        ])
+        let oneURL = try #require(previewURL(first))
+        let (second, _) = try await run([
+            GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(oneURL.path))]),
+            GraphNode(id: "last", type: "LastFrame", inputs: ["video": .link(node: "clip", output: "video")]),
+            GraphNode(id: "two", type: "RemoteWanImageToVideo", inputs: size.merging([
+                "image": .link(node: "last", output: "image"), "seed": .value(.int(7)),
+            ]) { $1 }),
+            GraphNode(id: "show", type: "PreviewVideo", inputs: ["video": .link(node: "two", output: "video")]),
+        ])
+        let one = try await MediaIO.readVideo(oneURL)
+        let two = try await MediaIO.readVideo(try #require(previewURL(second)))
+        func rgb(_ clip: VideoClip, _ i: Int) -> (Float, Float) {
+            let m = clip.frames[i].mean(axes: [0, 1])
+            return (m[0].item(Float.self), m[1].item(Float.self))
+        }
+        #expect(rgb(one, 0).0 > 0.7 && rgb(one, one.frameCount - 1).1 > 0.7, "clip 1: red to green")
+        #expect(rgb(two, 0).1 > 0.7 && rgb(two, 0).0 < 0.3, "clip 2 starts where clip 1 ended")
+    }
+
     @Test(.enabled(if: hasServer)) func fluxReturnsAnImage() async throws {
         let (result, _) = try await run([
             GraphNode(id: "flux", type: "RemoteFlux", inputs: [

@@ -19,17 +19,29 @@ extension AppModel {
         return RemoteEndpoints.resolve("")
     }
 
-    /// One kind of image job in a batch, for the cost sheet.
+    /// One kind of GPU job in a batch, for the cost sheet.
     struct ImageWork {
         var label: String
         var task: String
         var jobs: Int
+        /// A job's size: megapixels for a picture, megapixels × frames for a clip (`MovieShots.work`).
         var megapixels: Double
+    }
+
+    /// The download step that installs a task's models on the server.
+    private static func downloadGroup(_ task: String) -> String {
+        switch task {
+        case "qwen-image-edit": "qwen-edit"
+        case "qwen-image": "qwen"
+        case "wan22-i2v", "wan22-t2v": "wan22"
+        default: task
+        }
     }
 
     /// Shows the cost sheet for a batch of image jobs, after asking the server for its tasks (installed? which GPU,
     /// what price?) and its idle window.
-    private func gateImages(_ doc: MovieDocument, title: String, work: [ImageWork], run: @escaping @MainActor () -> Void) {
+    func gateImages(_ doc: MovieDocument, title: String, work: [ImageWork], extraNotes: [String] = [],
+                    run: @escaping @MainActor () -> Void) {
         doc.error = nil
         let work = work.filter { $0.jobs > 0 }
         guard doc.job == nil, !work.isEmpty else { return }
@@ -52,7 +64,7 @@ extension AppModel {
             for w in work {
                 guard let task = info.task(w.task), task.installed else {
                     doc.error = "\(server.name) can't run \(w.task) yet: run its download step (see docs/remote-server.md: "
-                        + "`--models \(w.task == "qwen-image-edit" ? "qwen-edit" : "qwen")`)."
+                        + "`--models \(Self.downloadGroup(w.task))`)."
                     return
                 }
                 let price = task.pricePerSecond ?? MovieCost.price(gpu: task.gpu) ?? 0
@@ -71,6 +83,7 @@ extension AppModel {
             if work.contains(where: { $0.task == "qwen-image-edit" }) {
                 notes.append("Keyframes are made from the characters' chosen sheets, so faces and clothes stay the same.")
             }
+            notes += extraNotes
             doc.pendingGate = CostGate(estimate: CostEstimate(title: title, lines: lines, notes: notes), run: run)
         }
     }
@@ -173,7 +186,7 @@ extension AppModel {
 
     /// Runs `count` renders one after another as the movie's job; each saves the movie, so a stop or a failure
     /// keeps what's done.
-    private func runImageJob(_ doc: MovieDocument, title: String, count: Int,
+    func runImageJob(_ doc: MovieDocument, title: String, count: Int,
                              _ step: @escaping @MainActor (MovieDocument, Int, String) async throws -> Void) {
         guard doc.job == nil, count > 0 else { return }
         guard let server = movieGPUServer(doc) else {
@@ -203,12 +216,26 @@ extension AppModel {
     /// (also added to the movie's spend, and the job's time to the learned timings).
     private func renderStill(_ doc: MovieDocument, template: MovieTemplate, render: MovieArt.Render, to file: String,
                              title: String) async throws -> Double? {
+        // What it's making ("Mara (1 of 2)"), then the node's step or status.
+        let (outputs, jobs) = try await runMovieGraph(doc, template: template, render: render, title: title)
+        guard let image = outputs.first(where: { $0.kind == .image })?.image else {
+            throw MovieArtError.noImage
+        }
+        try MovieComposer.writePNG(image, to: movieStore.url(doc.id, relative: file))
+        return recordJobs(jobs, doc: doc)
+    }
+
+    /// Runs a template, reporting what it's doing in the job bar, and returns its outputs and the Cloud GPU jobs
+    /// it ran.
+    func runMovieGraph(_ doc: MovieDocument, template: MovieTemplate, render: MovieArt.Render, title: String)
+        async throws -> (outputs: [EngineOutput], jobs: [RemoteJobRecord])
+    {
         let graph = try template.bind(render.values, optional: Set(render.values.keys), remove: render.unusedPictures)
         let jobs = JobRecords()
         let token = RemoteJobLog.observe { jobs.append($0) }
         defer { RemoteJobLog.remove(token) }
-        // What it's making ("Mara (1 of 2)"), then the node's step or status. (Read first: assigning through
-        // `doc.job?` while reading it in the same statement is an exclusive-access conflict.)
+        // (Read first: assigning through `doc.job?` while reading it in the same statement is an exclusive-access
+        // conflict.)
         let what = doc.job?.detail ?? ""
         let outputs = try await movieRenderer.run(graph, on: localBackend, title: title) { event in
             if case .progress(_, let step, let total, _) = event, total > 0 {
@@ -217,30 +244,22 @@ extension AppModel {
                 doc.job?.detail = what + " · \(text)"
             }
         }
-        guard let image = outputs.first(where: { $0.kind == .image })?.image else {
-            throw MovieArtError.noImage
-        }
-        let url = movieStore.url(doc.id, relative: file)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try writePNG(image, to: url)
+        return (outputs, jobs.all)
+    }
+
+    /// Adds the jobs' cost to the movie's spend and their times to the learned timings; returns the cost. `work`
+    /// is a job's size for the timings when it isn't its picture's megapixels (a clip's megapixels × frames).
+    func recordJobs(_ records: [RemoteJobRecord], doc: MovieDocument, work: Double? = nil) -> Double? {
         var cost: Double?
         var timings = GPUTimings.load(gpuTimingsURL)
-        for r in jobs.all {
+        for r in records {
             if let c = r.costUSD { cost = (cost ?? 0) + c }
-            let mp = Double((r.width ?? 0) * (r.height ?? 0)) / 1e6
+            let mp = work ?? Double((r.width ?? 0) * (r.height ?? 0)) / 1e6
             timings.record(task: r.task, megapixels: mp > 0 ? mp : 1, gpuSeconds: r.gpuSeconds, loadSeconds: r.loadSeconds)
         }
         try? timings.save(gpuTimingsURL)
         if let cost { doc.movie.costSpent += cost }
         return cost
-    }
-
-    private func writePNG(_ image: CGImage, to url: URL) throws {
-        guard let dest = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        CGImageDestinationAddImage(dest, image, nil)
-        guard CGImageDestinationFinalize(dest) else { throw CocoaError(.fileWriteUnknown) }
     }
 
     // MARK: choosing takes
@@ -272,16 +291,28 @@ extension AppModel {
                 doc.movie.reopen(.cast)
             }
         }
+        var poster: String?
+        var lastFrame: String?
         if let shot, let j = doc.movie.shots.firstIndex(where: { $0.id == shot }) {
-            file = doc.movie.shots[j].keyframes.first { $0.id == take }?.file
-            doc.movie.shots[j].keyframes.removeAll { $0.id == take }
-            if doc.movie.shots[j].selectedKeyframe == take {
-                doc.movie.shots[j].selectedKeyframe = doc.movie.shots[j].keyframes.last?.id
-                doc.movie.reopen(.keyframes)
+            if let k = doc.movie.shots[j].keyframes.first(where: { $0.id == take }) {
+                file = k.file
+                doc.movie.shots[j].keyframes.removeAll { $0.id == take }
+                if doc.movie.shots[j].selectedKeyframe == take {
+                    doc.movie.shots[j].selectedKeyframe = doc.movie.shots[j].keyframes.last?.id
+                    doc.movie.reopen(.keyframes)
+                }
+            } else if let v = doc.movie.shots[j].videos.first(where: { $0.id == take }) {
+                (file, poster) = (v.file, v.poster)
+                lastFrame = MovieShots.lastFrameFile(of: v.file)
+                doc.movie.shots[j].videos.removeAll { $0.id == take }
+                if doc.movie.shots[j].selectedVideo == take {
+                    doc.movie.shots[j].selectedVideo = doc.movie.shots[j].videos.last?.id
+                    doc.movie.reopen(.video)
+                }
             }
         }
-        if let file {
-            let url = movieStore.url(doc.id, relative: file)
+        for f in [file, poster, lastFrame].compactMap({ $0 }) {
+            let url = movieStore.url(doc.id, relative: f)
             if Self.isAutomatedRun { try? FileManager.default.removeItem(at: url) }
             else { try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }
         }
@@ -295,7 +326,7 @@ enum MovieArtError: Error, CustomStringConvertible {
 }
 
 /// Finished Cloud GPU jobs heard while one render runs.
-private final class JobRecords: @unchecked Sendable {
+final class JobRecords: @unchecked Sendable {
     private let lock = NSLock()
     private var records: [RemoteJobRecord] = []
     func append(_ r: RemoteJobRecord) { lock.withLock { records.append(r) } }

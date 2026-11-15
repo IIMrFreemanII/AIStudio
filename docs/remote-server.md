@@ -252,6 +252,9 @@ Then open a Cloud GPU preset (Presets panel or gallery, marked with a cloud): *W
 cloud Wan clip into Save Video, a cloud FLUX image into a local inpaint, a cloud song into Mix Audio. A node's server
 input picks the GPU server (empty: the first one).
 
+*Wan 2.2 Image to Video* also takes an optional **last image**: the frame the clip should end on (the pipeline
+conditions on both ends). Wire **Last Frame** from one clip into the next node's image to continue a shot without a cut.
+
 **LoRAs on cloud FLUX and Qwen-Image:** LoRAs live in the app's library: **Models window › LoRAs › Add from Link…** (or **Add
 File…**), where you choose where each one is installed: this Mac, each GPU server, or both, with a status chip per
 place. Open *FLUX.1 dev + LoRA · Cloud GPU* (or **Add to Workflow › LoRA** on any graph with the cloud FLUX or

@@ -146,6 +146,39 @@ public struct AddAudioToVideoNode: NodeImplementation {
     }
 }
 
+/// One frame of a video as an image: the last by default (to start the next clip where this one ends), or any frame
+/// counted from the start (negative: from the end).
+public struct LastFrameNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "LastFrame", displayName: "Last Frame", category: "video",
+        inputs: [
+            InputSpec("video", .video),
+            // -1 = the last frame, 0 = the first.
+            InputSpec("frame", .int, default: .int(-1), widget: .number(min: -10000, max: 10000, step: 1)),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public static func frame(_ video: VideoClip, at index: Int, node: String = "") throws -> MLXArray {
+        let n = video.frameCount
+        let i = index < 0 ? n + index : index
+        guard (0..<n).contains(i) else {
+            throw GraphError.nodeFailed(node: node, message: n == 0 ? "the video has no frames"
+                                        : "frame \(index) is outside the video's \(n) frames")
+        }
+        let rgb = video.frames[i].asType(.float32)  // [H, W, 3]
+        // Images are RGBA: an opaque alpha channel.
+        return concatenated([rgb, MLXArray.ones([rgb.dim(0), rgb.dim(1), 1])], axis: 2)
+    }
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let video: VideoClip = try inputs.object("video")
+        let image = try Self.frame(video, at: try inputs.int("frame"), node: inputs.nodeID)
+        eval(image)
+        return ["image": .object(image)]
+    }
+}
+
 // MARK: save & preview
 
 public struct SaveVideoNode: NodeImplementation {
@@ -217,7 +250,12 @@ public struct PreviewVideoNode: NodeImplementation {
         let folder = try StandardNodes.previewFolder()
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let url = folder.appendingPathComponent(UUID().uuidString + ".mp4")
-        try await MediaIO.writeVideo(video, to: url, metadata: mediaMetadata(context))
+        if let source = video.sourceURL {
+            // An unchanged download: its own encoding (and the file a movie keeps), no second encode.
+            try await MediaIO.remuxVideo(source, to: url, metadata: mediaMetadata(context))
+        } else {
+            try await MediaIO.writeVideo(video, to: url, metadata: mediaMetadata(context))
+        }
         return ["video_url": .object(url), "preview": .bool(true)]
     }
 }

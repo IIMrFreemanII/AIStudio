@@ -320,7 +320,8 @@ func loadVideo(_ url: URL) async throws -> VideoClip {
 // MARK: nodes
 
 private func wanInputs(image: Bool) -> [InputSpec] {
-    (image ? [InputSpec("image", .image)] : []) + [
+    // Image to video: the first frame, and optionally the frame to end on.
+    (image ? [InputSpec("image", .image), InputSpec("last_image", .image, optional: true)] : []) + [
         InputSpec("loras", .cloudLoRAs, optional: true),
         RemoteNodes.serverInput,
         InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
@@ -378,9 +379,10 @@ public struct RemoteWanImageToVideoNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let image: MLXArray = try inputs.object("image")
+        var images: [String: MLXArray] = ["image": try inputs.object("image")]
+        images["last_image"] = inputs.optionalObject("last_image", as: MLXArray.self)
         let job = try wanJob(inputs, family: "wan-2.2-i2v")
-        let (url, _) = try await runRemoteJob(task: "wan22-i2v", params: job.params, images: ["image": image],
+        let (url, _) = try await runRemoteJob(task: "wan22-i2v", params: job.params, images: images,
                                               files: job.files, links: job.links, inputs: inputs, context: context)
         return ["video": .object(try await loadVideo(url))]
     }

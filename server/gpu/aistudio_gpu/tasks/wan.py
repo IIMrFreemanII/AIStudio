@@ -8,6 +8,10 @@ The negative prompt: with guidance above 1 (the full model's default) classifier
 the cost per step. Without guidance (``fast``'s default) Normalized Attention Guidance (``nag.py``) applies it inside
 the cross-attention instead, for a few percent more.
 
+Image-to-video can also be given the frame to end on (``last_image``): the pipeline conditions on both ends, as
+Wan's first-last-frame models do. The movie studio uses it for a shot that continues the one before: it starts from
+that clip's last frame and ends on its own keyframe.
+
 Fine-tunes from links and up to four LoRAs per job (``adapters.py``): a LoRA goes to both experts, to one, or comes
 as a high/low pair; a fine-tune replaces one expert's weights or both.
 """
@@ -134,8 +138,11 @@ class WanWorker(AdapterSlots):
                                               do_classifier_free_guidance=True, max_sequence_length=nag.TEXT_LEN,
                                               device=self.device)
             args["prompt_embeds"], how = torch.cat([pos, neg], dim=1), "nag"  # split again in each cross-attention
+        ends = self.task_family == "wan22-i2v" and "last_image" in inputs
         if self.task_family == "wan22-i2v":
             args["image"] = fit_image(inputs["image"], width, height)
+            if ends:  # the pipeline conditions on both ends (the first and last latent frames)
+                args["last_image"] = fit_image(inputs["last_image"], width, height)
         sink.status("Sampling" + (" (fast)" if fast else ""))
         start = time.monotonic()
         with torch.inference_mode():
@@ -145,7 +152,7 @@ class WanWorker(AdapterSlots):
         write_mp4(frames, path, fps=FPS)
         return Output(path, "video", "video/mp4",
                       extra={"steps": steps, "fast": fast, "frames": int(len(frames)), "negative": how, "loras": loras,
-                             "sampleSeconds": round(time.monotonic() - start, 2)})
+                             "lastImage": ends, "sampleSeconds": round(time.monotonic() - start, 2)})
 
     def _preview(self, latents) -> np.ndarray:
         """The first frame of the current latents through the VAE (Wan's VAE decodes one latent frame to one

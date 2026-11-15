@@ -187,6 +187,8 @@ extension Shot {
         s.selectedKeyframe = nil
         s.videos = []
         s.selectedVideo = nil
+        s.trimStart = 0
+        s.trimEnd = 0
         return s
     }
 }

@@ -34,11 +34,13 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
         }
     }
 
-    /// Stages built so far (the rest show "coming in a later phase").
-    public var isAvailable: Bool { [.idea, .script, .shots, .cast, .keyframes].contains(self) }
+    /// Stages built so far (the rest show "coming in a later phase", and are skipped: the film goes on without
+    /// them, silent until Voices and Sound arrive).
+    public var isAvailable: Bool { [.idea, .script, .shots, .cast, .keyframes, .video, .edit].contains(self) }
 
+    /// The available stage before this one: the one that must be approved first.
     public var previous: MovieStage? {
-        let all = Self.allCases
+        let all = Self.allCases.filter(\.isAvailable)
         return all.firstIndex(of: self).flatMap { $0 > 0 ? all[$0 - 1] : nil }
     }
 }
@@ -87,13 +89,17 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
     /// Relative to the movie's folder ("keyframes/…png").
     public var file: String
+    /// A still that stands for it in lists, for a clip (relative too); nil for a picture, which is its own.
+    public var poster: String?
     public var seed: Int?
     public var costUSD: Double?
     public var date: Date
 
-    public init(id: UUID = UUID(), file: String, seed: Int? = nil, costUSD: Double? = nil, date: Date = Date()) {
+    public init(id: UUID = UUID(), file: String, poster: String? = nil, seed: Int? = nil, costUSD: Double? = nil,
+                date: Date = Date()) {
         self.id = id
         self.file = file
+        self.poster = poster
         self.seed = seed
         self.costUSD = costUSD
         self.date = date
@@ -202,12 +208,15 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
     public var selectedKeyframe: UUID?
     public var videos: [Take]
     public var selectedVideo: UUID?
+    /// Seconds cut from the start and the end of the chosen clip in the edit.
+    public var trimStart: Double
+    public var trimEnd: Double
 
     public init(id: UUID = UUID(), scene: String, duration: Double = 5, framing: String = "", camera: String = "",
                 keyframePrompt: String = "", motionPrompt: String = "", characters: [String] = [],
                 dialogue: [DialogueLine] = [], sfx: String = "", talking: Bool = false, continuesPrevious: Bool = false,
                 transition: ShotTransition = .cut, keyframes: [Take] = [], selectedKeyframe: UUID? = nil,
-                videos: [Take] = [], selectedVideo: UUID? = nil) {
+                videos: [Take] = [], selectedVideo: UUID? = nil, trimStart: Double = 0, trimEnd: Double = 0) {
         self.id = id
         self.scene = scene
         self.duration = duration
@@ -225,10 +234,41 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
         self.selectedKeyframe = selectedKeyframe
         self.videos = videos
         self.selectedVideo = selectedVideo
+        self.trimStart = trimStart
+        self.trimEnd = trimEnd
     }
 
     /// Wan clips are 1–7.5 s.
     public static let durationRange: ClosedRange<Double> = 1...7.5
+
+    private enum CodingKeys: String, CodingKey {
+        case id, scene, duration, framing, camera, keyframePrompt, motionPrompt, characters, dialogue, sfx, talking,
+             continuesPrevious, transition, keyframes, selectedKeyframe, videos, selectedVideo, trimStart, trimEnd
+    }
+
+    /// Movies saved before the edit stage have no trims.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        scene = try c.decode(String.self, forKey: .scene)
+        duration = try c.decode(Double.self, forKey: .duration)
+        framing = try c.decode(String.self, forKey: .framing)
+        camera = try c.decode(String.self, forKey: .camera)
+        keyframePrompt = try c.decode(String.self, forKey: .keyframePrompt)
+        motionPrompt = try c.decode(String.self, forKey: .motionPrompt)
+        characters = try c.decode([String].self, forKey: .characters)
+        dialogue = try c.decode([DialogueLine].self, forKey: .dialogue)
+        sfx = try c.decode(String.self, forKey: .sfx)
+        talking = try c.decode(Bool.self, forKey: .talking)
+        continuesPrevious = try c.decode(Bool.self, forKey: .continuesPrevious)
+        transition = try c.decode(ShotTransition.self, forKey: .transition)
+        keyframes = try c.decode([Take].self, forKey: .keyframes)
+        selectedKeyframe = try c.decodeIfPresent(UUID.self, forKey: .selectedKeyframe)
+        videos = try c.decode([Take].self, forKey: .videos)
+        selectedVideo = try c.decodeIfPresent(UUID.self, forKey: .selectedVideo)
+        trimStart = try c.decodeIfPresent(Double.self, forKey: .trimStart) ?? 0
+        trimEnd = try c.decodeIfPresent(Double.self, forKey: .trimEnd) ?? 0
+    }
 }
 
 /// A movie: the idea, script, cast and shots, what was generated for them, and which stages the user approved.
@@ -285,9 +325,9 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
 
     public func shots(in scene: String) -> [Shot] { shots.filter { $0.scene == scene } }
 
-    /// The stage to show: the first one not approved yet.
+    /// The stage to show: the first available one not approved yet.
     public var currentStage: MovieStage {
-        MovieStage.allCases.first { !approved.contains($0) } ?? .edit
+        MovieStage.allCases.first { $0.isAvailable && !approved.contains($0) } ?? .edit
     }
 
     /// A stage can be worked on once the one before it is approved.

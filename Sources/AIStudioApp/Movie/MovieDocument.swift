@@ -21,6 +21,9 @@ final class MovieDocument: Identifiable {
     /// A stage's work waiting for the user's OK on its cost.
     var pendingGate: CostGate?
 
+    /// Where the film was last exported (this session).
+    var lastExport: URL?
+
     init(movie: MovieProject, saved: MovieProject? = nil) {
         id = movie.id
         self.movie = movie

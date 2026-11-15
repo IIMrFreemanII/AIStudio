@@ -235,7 +235,8 @@ struct TakeStrip: View {
                 ForEach(takes) { take in
                     let url = model.movieStore.url(doc.id, relative: take.file)
                     Button { select(take.id) } label: {
-                        MovieStill(url: url, maxPixels: Int(height * 4))
+                        MovieStill(url: model.movieStore.url(doc.id, relative: take.poster ?? take.file),
+                                   maxPixels: Int(height * 4))
                             .frame(height: height)
                             .overlay(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
                                 .strokeBorder(take.id == selected ? MG.accent : MG.separator,
