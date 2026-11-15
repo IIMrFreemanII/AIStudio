@@ -47,6 +47,23 @@ let package = Package(
         // The coding chat's terminal (a terminal emulator on a pseudo-terminal). 1.19 is the last release before the
         // 2.0 I/O rework (the 1.99 previews).
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", .upToNextMinor(from: "1.19.0")),
+        // Syntax highlighting (CodeEditing): tree-sitter and its grammars, pinned exactly. swift-tree-sitter has a stray
+        // 0.25.0 tag that sorts above 0.10.0, so never use `from:` for it.
+        .package(url: "https://github.com/tree-sitter/swift-tree-sitter", exact: "0.10.0"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter", exact: "0.25.10"),
+        .package(url: "https://github.com/alex-pinkus/tree-sitter-swift", exact: "0.7.4-with-generated-files"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-typescript", exact: "0.23.2"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-json", exact: "0.24.8"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-bash", exact: "0.25.1"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-c", exact: "0.24.2"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-cpp", exact: "0.23.4"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-rust", exact: "0.24.2"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-go", exact: "0.25.0"),
+        .package(url: "https://github.com/tree-sitter/tree-sitter-html", exact: "0.23.2"),
+        .package(url: "https://github.com/tree-sitter-grammars/tree-sitter-toml", exact: "0.7.0"),
+        .package(url: "https://github.com/tree-sitter-grammars/tree-sitter-markdown", exact: "0.5.4"),
+        // python, javascript, css and yaml, vendored: see Packages/TreeSitterGrammars/Package.swift for why.
+        .package(path: "Packages/TreeSitterGrammars"),
     ],
     targets: [
         .target(
@@ -364,6 +381,30 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
+        // Tree-sitter syntax highlighting: a grammar registry and a highlighter that returns coloured spans.
+        .target(
+            name: "CodeEditing",
+            dependencies: [
+                .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
+                .product(name: "SwiftTreeSitterLayer", package: "swift-tree-sitter"),
+                .product(name: "TreeSitter", package: "tree-sitter"),
+                .product(name: "TreeSitterSwift", package: "tree-sitter-swift"),
+                .product(name: "TreeSitterPython", package: "TreeSitterGrammars"),
+                .product(name: "TreeSitterJavaScript", package: "TreeSitterGrammars"),
+                .product(name: "TreeSitterTypeScript", package: "tree-sitter-typescript"),
+                .product(name: "TreeSitterJSON", package: "tree-sitter-json"),
+                .product(name: "TreeSitterBash", package: "tree-sitter-bash"),
+                .product(name: "TreeSitterC", package: "tree-sitter-c"),
+                .product(name: "TreeSitterCPP", package: "tree-sitter-cpp"),
+                .product(name: "TreeSitterRust", package: "tree-sitter-rust"),
+                .product(name: "TreeSitterGo", package: "tree-sitter-go"),
+                .product(name: "TreeSitterHTML", package: "tree-sitter-html"),
+                .product(name: "TreeSitterCSS", package: "TreeSitterGrammars"),
+                .product(name: "TreeSitterYAML", package: "TreeSitterGrammars"),
+                .product(name: "TreeSitterTOML", package: "tree-sitter-toml"),
+                .product(name: "TreeSitterMarkdown", package: "tree-sitter-markdown"),
+            ]
+        ),
         .executableTarget(
             name: "AIStudioApp",
             dependencies: [
@@ -377,6 +418,7 @@ let package = Package(
                 "LLMClient",
                 "Agent",
                 "UIControl",
+                "CodeEditing",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
@@ -386,6 +428,10 @@ let package = Package(
             // explicitly in a SwiftPM executable.
             linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation"), .linkedFramework("WebKit"),
                              .linkedFramework("PDFKit"), .linkedFramework("QuickLookUI")]
+        ),
+        .testTarget(
+            name: "CodeEditingTests",
+            dependencies: ["CodeEditing"]
         ),
         .testTarget(
             name: "MLXDiffusionCoreTests",

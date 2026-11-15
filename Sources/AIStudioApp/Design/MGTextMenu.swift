@@ -81,13 +81,21 @@ enum MGTextMenu {
             .button("Delete", enabled: editable && sel) { tv.delete(nil) },
             .divider,
             .button("Select All", shortcut: KeyboardShortcut("a"), enabled: !tv.string.isEmpty) { tv.selectAll(nil) },
-        ] + (sel && !editable && ChatQuoting.active ? [
+        ] + ((tv as? MGTextReplying)?.mgExtraItems ?? []) + (sel && !editable && ChatQuoting.active && (tv as? MGTextReplying)?.canReply != true ? [
             .divider,
             .button("Reply with Selection") {
                 ChatQuoting.post((tv.string as NSString).substring(with: tv.selectedRange()))
             },
         ] : [])
     }
+}
+
+/// A text view that replies with its selection itself (a project file's editor: the quote names the file and lines),
+/// and adds its own items to the edit menu.
+@MainActor protocol MGTextReplying: AnyObject {
+    var canReply: Bool { get }
+    var mgExtraItems: [MGMenuItem] { get }
+    func mgReplyWithSelection(_ sender: Any?)
 }
 
 /// Replies to a passage of a chat: text views and code blocks post it, the chat on screen puts it in its quote bar.
@@ -99,5 +107,17 @@ enum ChatQuoting {
 
     @MainActor static func post(_ text: String) {
         NotificationCenter.default.post(name: notification, object: text)
+    }
+
+    /// ⌘L: replies with the selection of the focused text: a file's lines from the editor, or a passage of the chat.
+    @MainActor static func replyToFocusedSelection() {
+        guard let tv = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
+        if let r = tv as? MGTextReplying, r.canReply {
+            r.mgReplyWithSelection(nil)
+            return
+        }
+        let sel = tv.selectedRange()
+        guard active, sel.length > 0, !tv.isEditable else { return }
+        post((tv.string as NSString).substring(with: sel))
     }
 }

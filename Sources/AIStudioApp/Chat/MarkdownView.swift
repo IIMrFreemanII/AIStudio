@@ -1,5 +1,6 @@
 import AIStudioLibrary
 import AppKit
+import CodeEditing
 import SwiftUI
 
 /// A model's reply as Markdown: the blocks from `Markdown.blocks`, inline styles from `AttributedString(markdown:)`,
@@ -271,6 +272,8 @@ struct CodeBlockView: View {
     @Environment(\.chatRunCommand) private var runCommand
     @State private var copied = false
     @State private var sent = false
+    /// The code in syntax colours, once highlighted (a finished block in a known language, up to 20 KB).
+    @State private var colored: AttributedString?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -316,10 +319,42 @@ struct CodeBlockView: View {
             .padding(.vertical, 5)
             MGDivider()
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code).font(.mgMono).fixedSize(horizontal: true, vertical: true).padding(10)
+                Group { if let colored { Text(colored) } else { Text(code) } }
+                    .font(.mgMono).fixedSize(horizontal: true, vertical: true).padding(10)
             }
         }
         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.controlBackground))
         .mgHairline(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous), color: MG.border)
+        .task(id: closed ? code : "") {
+            guard closed else { colored = nil; return }
+            colored = await CodeBlockColors.colored(code, fence: language)
+        }
+    }
+}
+
+/// Chat code blocks in syntax colours (the editor's tree-sitter grammars), cached by language and code: a long chat
+/// lays its blocks out again as it scrolls.
+@MainActor
+enum CodeBlockColors {
+    static let maxLength = 20_000
+    private static var cache: [String: AttributedString] = [:]
+    private static var order: [String] = []
+
+    static func colored(_ code: String, fence: String) async -> AttributedString? {
+        guard code.utf16.count <= maxLength, let lang = CodeLanguage.fromFence(fence) else { return nil }
+        let key = lang.rawValue + "\u{0}" + code
+        if let hit = cache[key] { return hit }
+        let spans = await SyntaxHighlighter.highlight(code, language: lang)
+        guard !spans.isEmpty else { return nil }
+        var out = AttributedString(code)
+        for span in spans {
+            guard let r = Range(span.range, in: out) else { continue }
+            out[r].foregroundColor = Color(nsColor: SyntaxTheme.color(span.token))
+            if span.token == .strikethrough { out[r].strikethroughStyle = .single }
+        }
+        cache[key] = out
+        order.append(key)
+        if order.count > 300 { cache[order.removeFirst()] = nil }
+        return out
     }
 }

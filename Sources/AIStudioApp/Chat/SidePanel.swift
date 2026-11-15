@@ -258,23 +258,17 @@ struct FilesPane: View {
         // under a tall tree got a sliver.
         GeometryReader { geo in
             let maxTree = max(100, geo.size.height - 200)
+            let editing = doc.openFiles.list.active != nil && !doc.editorExpanded
             VStack(spacing: 0) {
-                tree.frame(height: previewURL == nil ? nil : min(max(treeHeight, 100), maxTree))
-                    .frame(maxHeight: previewURL == nil ? .infinity : nil)
-                if let url = previewURL, let rel = doc.previewPath {
+                tree.frame(height: editing ? min(max(treeHeight, 100), maxTree) : nil)
+                    .frame(maxHeight: editing ? nil : .infinity)
+                if editing {
                     MGRowResizeHandle(height: $treeHeight, range: 100...maxTree)
-                    FilePreview(url: url, line: doc.previewLine, revision: doc.filesRevision,
-                                onMention: { model.mentionInDraft(doc, rel) },
-                                onClose: { doc.previewPath = nil; doc.previewLine = nil })
+                    FileEditorArea(doc: doc)
                         .frame(maxHeight: .infinity)
                 }
             }
         }
-    }
-
-    private var previewURL: URL? {
-        guard let rel = doc.previewPath, let root = doc.projectURL else { return nil }
-        return root.appendingPathComponent(rel)
     }
 
     @ViewBuilder var tree: some View {
@@ -297,7 +291,7 @@ struct FilesPane: View {
                         LazyVStack(spacing: 0) {
                             ForEach(rows) { row in
                                 FileTreeRow(doc: doc, row: row, mark: status.mark(row),
-                                            selected: row.path == (cursor ?? doc.previewPath)) { click(row) }
+                                            selected: row.path == (cursor ?? doc.openFiles.list.active)) { click(row) }
                                     .id(row.path)
                             }
                         }
@@ -316,11 +310,13 @@ struct FilesPane: View {
                         return .handled
                     }
                     .onAppear {
-                        if let p = doc.previewPath { proxy.scrollTo(p, anchor: .center) }
+                        if let p = doc.openFiles.list.active { proxy.scrollTo(p, anchor: .center) }
                     }
-                    .onChange(of: doc.previewPath) { _, p in
+                    .onChange(of: doc.openFiles.list.active) { _, p in
                         cursor = nil
-                        if let p { withAnimation { proxy.scrollTo(p, anchor: .center) } }
+                        // No anchor: only scrolls when the row is out of view. Centring it moved a row clicked in
+                        // the tree out from under the pointer, so a double-click's second click hit another row.
+                        if let p { withAnimation { proxy.scrollTo(p) } }
                     }
                 }
             }
@@ -337,8 +333,7 @@ struct FilesPane: View {
             cursor = row.path
             toggle(row.path)
         } else {
-            doc.previewPath = row.path
-            doc.previewLine = nil
+            model.openFile(doc, row.path)
             cursor = nil
         }
     }
@@ -348,20 +343,19 @@ struct FilesPane: View {
     }
 
     func move(_ rows: [FileTree.Row], _ d: Int, _ proxy: ScrollViewProxy) {
-        let cur = cursor ?? doc.previewPath
+        let cur = cursor ?? doc.openFiles.list.active
         let i = rows.firstIndex { $0.path == cur }.map { $0 + d } ?? (d > 0 ? 0 : rows.count - 1)
         guard rows.indices.contains(i) else { return }
         let r = rows[i]
         if r.isFolder { cursor = r.path } else {
-            doc.previewPath = r.path
-            doc.previewLine = nil
+            model.openFile(doc, r.path)
             cursor = nil
         }
         proxy.scrollTo(r.path)
     }
 
     func fold(_ rows: [FileTree.Row], open: Bool) {
-        guard let cur = cursor ?? doc.previewPath, let r = rows.first(where: { $0.path == cur }) else { return }
+        guard let cur = cursor ?? doc.openFiles.list.active, let r = rows.first(where: { $0.path == cur }) else { return }
         if r.isFolder {
             if open != r.open { toggle(r.path) } else if !open, let parent = FileTree.parents(of: r.path).last {
                 cursor = parent
@@ -413,7 +407,9 @@ struct FileTreeRow: View {
             }
         }
         .mgRow(selected: selected, height: 24, indent: CGFloat(row.depth) * 14)
-        .onTapGesture(perform: action)
+        // The first click of a double-click opens the temporary tab at once, the second keeps it.
+        .mgClick(single: action,
+                 double: row.isFolder ? nil : { model.openFile(doc, row.path, pin: true) })
         .mgTestAnchor("file-row:\(row.path)")
         .mgContextMenu {
             if let root = doc.projectURL {

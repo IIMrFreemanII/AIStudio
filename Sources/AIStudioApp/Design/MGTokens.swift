@@ -379,6 +379,55 @@ enum MG {
     static let glassBarFallback = Color(nsColor: MGColor.glassBarFallback)
 }
 
+/// The code editor's colours (background, caret, selection, gutter…).
+enum MGEditorColor {
+    static let background = MGColor.dynamic("mg-editor-background", light: (1.0000, 1.0000, 1.0000, 1.0000), dark: (0.1216, 0.1216, 0.1412, 1.0000))
+    static let foreground = MGColor.dynamic("mg-editor-foreground", light: (0.1137, 0.1137, 0.1216, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let caret = MGColor.dynamic("mg-editor-caret", light: (0.0392, 0.3922, 0.8471, 1.0000), dark: (1.0000, 1.0000, 1.0000, 1.0000))
+    static let selection = MGColor.dynamic("mg-editor-selection", light: (0.7059, 0.8471, 0.9922, 1.0000), dark: (0.3176, 0.3569, 0.4392, 1.0000))
+    static let inactiveSelection = MGColor.dynamic("mg-editor-inactive-selection", light: (0.8627, 0.8627, 0.8627, 1.0000), dark: (0.2431, 0.2431, 0.2667, 1.0000))
+    static let currentLine = MGColor.dynamic("mg-editor-current-line", light: (0.9255, 0.9608, 1.0000, 1.0000), dark: (0.1373, 0.1451, 0.1686, 1.0000))
+    static let gutterBackground = MGColor.dynamic("mg-editor-gutter-background", light: (0.9686, 0.9686, 0.9686, 1.0000), dark: (0.1216, 0.1216, 0.1412, 1.0000))
+    static let gutterForeground = MGColor.dynamic("mg-editor-gutter-foreground", light: (0.6275, 0.6275, 0.6471, 1.0000), dark: (0.4549, 0.4549, 0.4706, 1.0000))
+    static let gutterCurrentLine = MGColor.dynamic("mg-editor-gutter-current-line", light: (0.1137, 0.1137, 0.1216, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let gutterSeparator = MGColor.dynamic("mg-editor-gutter-separator", light: (0.0000, 0.0000, 0.0000, 0.0784), dark: (1.0000, 1.0000, 1.0000, 0.0784))
+    static let markedText = MGColor.dynamic("mg-editor-marked-text", light: (0.1137, 0.1137, 0.1216, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let searchMatch = MGColor.dynamic("mg-editor-search-match", light: (1.0000, 0.8902, 0.4314, 0.6000), dark: (0.4314, 0.3529, 0.1176, 0.8000))
+    static let currentSearchMatch = MGColor.dynamic("mg-editor-current-search-match", light: (0.9608, 0.7216, 0.0000, 1.0000), dark: (0.7216, 0.5412, 0.0000, 1.0000))
+    static let bracketMatch = MGColor.dynamic("mg-editor-bracket-match", light: (0.5020, 0.5020, 0.5490, 0.2784), dark: (0.5020, 0.5020, 0.5490, 0.2784))
+    static let diagnosticHint = MGColor.dynamic("mg-editor-diagnostic-hint", light: (0.5569, 0.5569, 0.5765, 1.0000), dark: (0.5569, 0.5569, 0.5765, 1.0000))
+    static let diagnosticInfo = MGColor.dynamic("mg-editor-diagnostic-info", light: (0.0549, 0.3725, 0.8471, 1.0000), dark: (0.4000, 0.6000, 1.0000, 1.0000))
+    static let diagnosticWarning = MGColor.dynamic("mg-editor-diagnostic-warning", light: (0.9098, 0.6353, 0.0000, 1.0000), dark: (1.0000, 0.7608, 0.2471, 1.0000))
+    static let diagnosticError = MGColor.dynamic("mg-editor-diagnostic-error", light: (0.8784, 0.1922, 0.1765, 1.0000), dark: (1.0000, 0.3725, 0.3412, 1.0000))
+}
+
+/// Syntax highlighting colours, one per `SyntaxToken` (keyword, string, comment…).
+enum MGSyntaxColor {
+    static let keyword = MGColor.dynamic("mg-syntax-keyword", light: (0.6078, 0.1373, 0.5765, 1.0000), dark: (1.0000, 0.4784, 0.6980, 1.0000))
+    static let type = MGColor.dynamic("mg-syntax-type", light: (0.0431, 0.3098, 0.4745, 1.0000), dark: (0.4196, 0.8745, 1.0000, 1.0000))
+    static let function = MGColor.dynamic("mg-syntax-function", light: (0.1961, 0.4275, 0.4549, 1.0000), dark: (0.4039, 0.7176, 0.6431, 1.0000))
+    static let string = MGColor.dynamic("mg-syntax-string", light: (0.7686, 0.1020, 0.0863, 1.0000), dark: (1.0000, 0.5059, 0.4392, 1.0000))
+    static let number = MGColor.dynamic("mg-syntax-number", light: (0.1098, 0.0000, 0.8118, 1.0000), dark: (0.8510, 0.7882, 0.4863, 1.0000))
+    static let comment = MGColor.dynamic("mg-syntax-comment", light: (0.3647, 0.4235, 0.4745, 1.0000), dark: (0.4980, 0.5490, 0.5961, 1.0000))
+    static let attribute = MGColor.dynamic("mg-syntax-attribute", light: (0.5059, 0.3725, 0.0118, 1.0000), dark: (0.8000, 0.5922, 0.4078, 1.0000))
+    static let directive = MGColor.dynamic("mg-syntax-directive", light: (0.3922, 0.2196, 0.1255, 1.0000), dark: (0.9922, 0.5608, 0.2471, 1.0000))
+    static let operatorSymbol = MGColor.dynamic("mg-syntax-operator-symbol", light: (0.1490, 0.1490, 0.1490, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let punctuation = MGColor.dynamic("mg-syntax-punctuation", light: (0.1490, 0.1490, 0.1490, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let variable = MGColor.dynamic("mg-syntax-variable", light: (0.2431, 0.5020, 0.5294, 1.0000), dark: (0.3059, 0.6902, 0.8000, 1.0000))
+    static let constant = MGColor.dynamic("mg-syntax-constant", light: (0.1098, 0.0000, 0.8118, 1.0000), dark: (0.8510, 0.7882, 0.4863, 1.0000))
+    static let heading1 = MGColor.dynamic("mg-syntax-heading-1", light: (0.1137, 0.1137, 0.1216, 1.0000), dark: (0.9490, 0.9490, 0.9686, 1.0000))
+    static let code = MGColor.dynamic("mg-syntax-code", light: (0.7686, 0.1020, 0.0863, 1.0000), dark: (1.0000, 0.5059, 0.4392, 1.0000))
+    static let link = MGColor.dynamic("mg-syntax-link", light: (0.0549, 0.3725, 0.8471, 1.0000), dark: (0.4000, 0.6000, 1.0000, 1.0000))
+    static let markup = MGColor.dynamic("mg-syntax-markup", light: (0.5569, 0.5569, 0.5765, 1.0000), dark: (0.4980, 0.5490, 0.5961, 1.0000))
+    static let quote = MGColor.dynamic("mg-syntax-quote", light: (0.3647, 0.4235, 0.4745, 1.0000), dark: (0.6157, 0.6471, 0.6784, 1.0000))
+    static let listMarker = MGColor.dynamic("mg-syntax-list-marker", light: (0.6078, 0.1373, 0.5765, 1.0000), dark: (1.0000, 0.4784, 0.6980, 1.0000))
+    static let strikethrough = MGColor.dynamic("mg-syntax-strikethrough", light: (0.5569, 0.5569, 0.5765, 1.0000), dark: (0.4980, 0.5490, 0.5961, 1.0000))
+    static let output = MGColor.dynamic("mg-syntax-output", light: (0.1490, 0.1490, 0.1490, 1.0000), dark: (0.8745, 0.8745, 0.8784, 1.0000))
+    static let error = MGColor.dynamic("mg-syntax-error", light: (0.8196, 0.1843, 0.1059, 1.0000), dark: (1.0000, 0.4196, 0.3686, 1.0000))
+    static let prompt = MGColor.dynamic("mg-syntax-prompt", light: (0.0549, 0.3725, 0.8471, 1.0000), dark: (0.4000, 0.6000, 1.0000, 1.0000))
+    static let success = MGColor.dynamic("mg-syntax-success", light: (0.1176, 0.5412, 0.2039, 1.0000), dark: (0.4902, 0.8588, 0.4902, 1.0000))
+}
+
 /// The design system's text styles (JetBrains Mono): `MGType.body.font`, `MGType.headline.nsFont`…
 enum MGType {
     /// Page titles.

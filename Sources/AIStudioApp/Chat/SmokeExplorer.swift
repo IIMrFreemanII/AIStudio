@@ -1,6 +1,7 @@
 import AIStudioLibrary
 import AppKit
 import Agent
+import CodeEditing
 import Foundation
 import LLMClient
 import SwiftUI
@@ -25,6 +26,12 @@ extension SmokeTest {
             }
             return true
         }
+
+        // The tree-sitter grammars and their query bundles load inside the built app.
+        let missing = CodeLanguage.allCases.filter { GrammarRegistry.configuration(for: $0) == nil }.map(\.rawValue)
+        let swiftSpans = await SyntaxHighlighter.highlight("let x = 1 // hi", language: .swift)
+        check(missing.isEmpty && swiftSpans.contains { $0.token == .keyword } && swiftSpans.contains { $0.token == .comment },
+              "every grammar loads (missing: \(missing)) and Swift highlights a keyword and a comment (\(swiftSpans.map(\.token)))")
 
         // A project: sources, a README, an image, an ignored build folder.
         let repo = FileManager.default.temporaryDirectory.appendingPathComponent("smoke-explorer-\(UUID().uuidString.prefix(8))")
@@ -290,11 +297,216 @@ extension SmokeTest {
         check(MGTestAnchors.frame("composer-suggestions") == nil, "the list goes with the @word")
         if let link { _ = model.openChatLink(link, in: doc) }
         await settle()
-        check(doc.previewPath == "Sources/App/main.swift" && doc.previewLine == 3, "the link previews the file at line 3")
-        check(MGTestAnchors.frame("file-row:Sources/App/main.swift") != nil, "the previewed file's folders open")
-        let (chunks, _) = TextPreview.load(repo.appendingPathComponent("Sources/App/main.swift"), highlight: 3)
-        check(chunks.first { $0.highlighted }?.id == 3 && chunks.map(\.id) == [1, 3, 4],
-              "the text preview marks line 3 (chunks \(chunks.map(\.id)))")
+        let mainRel = "Sources/App/main.swift", readmeRel = "README.md"
+        let tabs = doc.openFiles
+        check(tabs.list.active == mainRel && tabs.list.isTransient(mainRel) && doc.sidePanel == .files,
+              "the link opens the file as a transient tab in the Files pane (\(tabs.list.tabs), active \(tabs.list.active ?? "-"))")
+        let mainBuffer = tabs.buffers[mainRel]
+        await mainBuffer?.load()
+        check(mainBuffer != nil && mainBuffer?.loaded == true
+              && TextLines(mainBuffer!.text).lineSpan(of: mainBuffer!.textView.selectedRange()) == 3...3,
+              "the tab's buffer has line 3 selected")
+        // Reply from a file: the selected lines go in the quote bar with their path and numbers.
+        if let b = mainBuffer {
+            b.textView.mgReplyWithSelection(nil)
+            check(doc.replyTo?.path == mainRel && doc.replyTo?.startLine == 3 && doc.replyTo?.endLine == 3,
+                  "Reply quotes the caret's line (\(doc.replyTo?.title ?? "no quote"))")
+            b.textView.setSelectedRange(TextLines(b.text).range(ofLines: 2...3))
+            let items = b.textView.mgExtraItems.map(\.title)
+            check(items.contains("Reply to Lines 2–3") && items.contains("Copy Path and Lines 2–3"),
+                  "the editor's menu offers Reply to Lines and Copy Path (\(items))")
+            b.textView.mgReplyWithSelection(nil)
+            let lines = TextLines(b.text)
+            let quoted = (b.text as NSString).substring(with: lines.range(ofLines: 2...3))
+            var turn = ChatTurn(role: .user, text: "why?")
+            turn.quote = doc.replyTo
+            check(doc.replyTo?.title == "lines 2–3 of \(mainRel)" && doc.replyTo?.text == quoted
+                  && turn.textForModel.hasPrefix("Replying to lines 2–3 of `\(mainRel)`:\n```swift\n" + quoted + "\n```"),
+                  "the model gets the path, the lines and their text (\(turn.textForModel.prefix(80)))")
+            doc.replyTo = nil
+        }
+        check(MGTestAnchors.frame("file-row:Sources/App/main.swift") != nil, "the opened file's folders open")
+        check(MGTestAnchors.frame("file-tab:\(mainRel)") != nil && MGTestAnchors.frame("files-expand") != nil
+              && MGTestAnchors.frame("files-widen") != nil, "the tab strip shows the tab, Widen and Expand")
+
+        // Tabs: a click replaces the transient tab; typing pins; closing activates the neighbour.
+        model.openFile(doc, readmeRel)
+        check(tabs.list.tabs == [readmeRel] && tabs.list.active == readmeRel && tabs.buffers[mainRel] == nil,
+              "opening another file replaces the transient tab (\(tabs.list.tabs))")
+        let readme = model.fileBuffer(doc, readmeRel)
+        await readme?.load()
+        let tabWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled],
+                                 backing: .buffered, defer: true)
+        if let readme {
+            tabWindow.contentView = readme.scrollView
+            tabWindow.makeFirstResponder(readme.textView)
+            readme.textView.insertText("x", replacementRange: NSRange(location: 0, length: 0))
+        }
+        check(readme?.isDirty == true && !tabs.list.isTransient(readmeRel), "typing pins the tab")
+        model.flushOpenFiles(doc)
+        let readmeDisk = (try? String(contentsOf: repo.appendingPathComponent(readmeRel), encoding: .utf8)) ?? ""
+        check(readme != nil && readmeDisk == readme!.text && readmeDisk.hasPrefix("x# Smoke") && readme?.isDirty == false,
+              "flushOpenFiles writes a dirty buffer")
+        model.openFile(doc, mainRel)
+        check(tabs.list.tabs == [readmeRel, mainRel] && tabs.list.active == mainRel && tabs.list.isTransient(mainRel),
+              "a new click opens a second, transient tab (\(tabs.list.tabs))")
+        check(doc.transcript.openFiles == [readmeRel, mainRel] && doc.transcript.activeFile == mainRel,
+              "the transcript mirrors the tabs")
+        if let data = try? JSONEncoder().encode(doc.transcript), let back = try? JSONDecoder().decode(ChatTranscript.self, from: data) {
+            let restored = ChatDocument(transcript: back)
+            check(back.openFiles == [readmeRel, mainRel] && back.activeFile == mainRel
+                  && restored.openFiles.list.tabs == tabs.list.tabs && restored.openFiles.list.active == mainRel,
+                  "the tabs survive a JSON round trip and restore in a new document")
+        } else {
+            check(false, "the transcript encodes and decodes")
+        }
+        doc.editorExpanded = true
+        model.closeFile(doc, mainRel)
+        check(tabs.list.tabs == [readmeRel] && tabs.list.active == readmeRel && tabs.buffers[mainRel] == nil
+              && doc.transcript.openFiles == [readmeRel] && doc.editorExpanded,
+              "closing the active tab activates its neighbour and closes its buffer (\(tabs.list.active ?? "-"))")
+        model.closeFile(doc, readmeRel)
+        check(tabs.list.tabs.isEmpty && tabs.list.active == nil && !doc.editorExpanded && doc.transcript.openFiles == nil
+              && doc.transcript.activeFile == nil, "closing the last tab collapses the expanded editor")
+        tabWindow.contentView = nil
+        try? "# Smoke\n\nA **project**.\n".write(to: repo.appendingPathComponent(readmeRel), atomically: true, encoding: .utf8)
+        // The code editor: a read-only buffer, then an editable watched one against edits made on disk.
+        let mainURL = repo.appendingPathComponent("Sources/App/main.swift")
+        let ro = FileBuffer(url: mainURL, relPath: "Sources/App/main.swift", editable: false, watch: false)
+        ro.scrollView.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        await ro.load()
+        ro.reveal(lines: 3...3)
+        check(ro.loaded && !ro.textView.isEditable && !ro.editable
+              && TextLines(ro.text).lineSpan(of: ro.textView.selectedRange()) == 3...3,
+              "a read-only buffer loads and reveal selects line 3 (\(ro.textView.selectedRange()))")
+        let keyword = (ro.text as NSString).range(of: "let").location
+        let colored = await wait(2) {
+            var r = NSRange()
+            let c = ro.textView.layoutManager?.temporaryAttribute(.foregroundColor, atCharacterIndex: keyword, effectiveRange: &r) as? NSColor
+            return c == MGSyntaxColor.keyword
+        }
+        check(colored, "the styler colours a keyword")
+        ro.close()
+
+        try? fm.createDirectory(at: repo.appendingPathComponent("Notes"), withIntermediateDirectories: true)
+        let editURL = repo.appendingPathComponent("Notes/edit.swift")
+        try? "let a = 1\nlet b = 2\nlet c = 3\n".write(to: editURL, atomically: true, encoding: .utf8)
+        func disk() -> String { (try? String(contentsOf: editURL, encoding: .utf8)) ?? "" }
+        let eb = FileBuffer(url: editURL, relPath: "Notes/edit.swift", editable: true, watch: true)
+        eb.scrollView.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        await eb.load()
+        let inode = FileStamp.of(editURL)?.inode
+        // In a window with the text view first responder, as when the user types (a change in a view that isn't
+        // makes AppKit end editing, which saves).
+        let editWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled],
+                                  backing: .buffered, defer: true)
+        editWindow.contentView = eb.scrollView
+        editWindow.makeFirstResponder(eb.textView)
+        eb.textView.insertText("// hi\n", replacementRange: NSRange(location: 0, length: 0))
+        let typed = eb.isDirty
+        eb.save()
+        check(eb.editable && typed && disk() == "// hi\nlet a = 1\nlet b = 2\nlet c = 3\n" && eb.state == .clean
+              && FileStamp.of(editURL)?.inode == inode,
+              "an edit is saved in place (inode kept, state \(eb.state))")
+
+        // Clean: an atomic external write is taken, the caret stays on its line.
+        let lines = TextLines(eb.text)
+        eb.textView.setSelectedRange(NSRange(location: lines.offset(line: 3, column: 2), length: 0))
+        try? "// hi\nlet a = 1\nlet b = 2\nlet c = 3\nlet d = 4\n".write(to: editURL, atomically: true, encoding: .utf8)
+        let reloaded = await wait(2) { eb.text == disk() && eb.text.hasSuffix("let d = 4\n") }
+        check(reloaded && eb.state == .clean && TextLines(eb.text).line(at: eb.textView.selectedRange().location) == 3,
+              "a clean buffer reloads an external write and keeps the caret's line")
+
+        // Dirty, a different line changed on disk: merged and saved.
+        eb.textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        try? "// hi\nlet a = 1\nlet b = 2\nlet c = 3\nlet d = 40\n".write(to: editURL, atomically: true, encoding: .utf8)
+        let merged = await wait(2) { eb.text.contains("// hi!") && eb.text.contains("let d = 40") }
+        eb.save()
+        check(merged && disk().contains("// hi!") && disk().contains("let d = 40"),
+              "disjoint edits merge and the result is saved (state \(eb.state))")
+
+        // Dirty, the same line changed on disk: a conflict; Use Disk Version takes the disk.
+        eb.textView.insertText("?", replacementRange: NSRange(location: 6, length: 0))
+        try? "// theirs\nlet a = 1\nlet b = 2\nlet c = 3\nlet d = 40\n".write(to: editURL, atomically: true, encoding: .utf8)
+        let conflicted = await wait(2) { if case .conflict = eb.state { true } else { false } }
+        check(conflicted, "overlapping edits are a conflict (state \(eb.state))")
+        eb.useDisk()
+        check(eb.text == disk() && eb.state == .clean && eb.text.hasPrefix("// theirs"), "Use Disk Version takes the disk text")
+
+        // Deleted, then written again.
+        try? fm.removeItem(at: editURL)
+        let gone = await wait(2) { eb.state == .deleted }
+        check(gone, "a deleted file is noticed")
+        eb.saveAgain()
+        check(disk() == eb.text && eb.state == .clean, "Save Again recreates the file")
+        eb.close()
+        editWindow.contentView = nil
+
+        // A wrapped file (Markdown) in a narrow pane: its first column shows beside the gutter, not under it.
+        let mdURL = repo.appendingPathComponent("Notes/wrap.md")
+        try? "# Heading\n\nSome text that is long enough to wrap in a narrow pane, several times over.\n"
+            .write(to: mdURL, atomically: true, encoding: .utf8)
+        let wb = FileBuffer(url: mdURL, relPath: "Notes/wrap.md", editable: true, watch: false)
+        await wb.load()
+        let wrapWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300), styleMask: [.titled],
+                                  backing: .buffered, defer: true)
+        let wrapBox = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 300))
+        wrapWindow.contentView = wrapBox
+        wb.scrollView.translatesAutoresizingMaskIntoConstraints = false
+        wrapBox.addSubview(wb.scrollView)
+        NSLayoutConstraint.activate([
+            wb.scrollView.leadingAnchor.constraint(equalTo: wrapBox.leadingAnchor),
+            wb.scrollView.trailingAnchor.constraint(equalTo: wrapBox.trailingAnchor),
+            wb.scrollView.topAnchor.constraint(equalTo: wrapBox.topAnchor),
+            wb.scrollView.bottomAnchor.constraint(equalTo: wrapBox.bottomAnchor),
+        ])
+        wrapBox.layoutSubtreeIfNeeded()
+        _ = await wait(1) { false }
+        if let lm = wb.textView.layoutManager, let tc = wb.textView.textContainer, lm.numberOfGlyphs > 0 {
+            let first = lm.boundingRect(forGlyphRange: NSRange(location: 0, length: 1), in: tc)
+                .offsetBy(dx: wb.textView.textContainerOrigin.x, dy: wb.textView.textContainerOrigin.y)
+            let inWindow = wb.textView.convert(first, to: nil)
+            let clip = wb.scrollView.contentView
+            let gutterEnd = wb.scrollView.verticalRulerView.map { $0.convert($0.bounds, to: nil).maxX } ?? 0
+            let shown = clip.bounds.width - clip.contentInsets.left - clip.contentInsets.right
+            check(wb.textView.wraps && gutterEnd > 0 && inWindow.minX >= gutterEnd - 0.5
+                  && wb.textView.frame.width <= shown + 0.5,
+                  "a wrapped file's first column shows beside the gutter (glyph x \(inWindow.minX), gutter ends \(gutterEnd), "
+                  + "clip bounds \(clip.bounds), insets \(clip.contentInsets.left), text frame \(wb.textView.frame))")
+        } else {
+            check(false, "a wrapped file's first column shows beside the gutter (no layout)")
+        }
+        // The reply chip's anchor sits under the selection's last line, inside the host.
+        wb.onReply = { _ in }
+        wrapWindow.makeFirstResponder(wb.textView)
+        let third = TextLines(wb.text).range(ofLines: 3...3)
+        wb.textView.setSelectedRange(NSRange(location: third.location, length: 4))
+        wb.updateReplyAnchor()
+        let anchor = wb.replyAnchor ?? .zero
+        check(anchor.y > 40 && anchor.y < 120 && anchor.x > 52 && anchor.x < 248,
+              "the reply chip sits under the selection (anchor \(anchor), host \(wrapBox.bounds), flipped \(wrapBox.isFlipped))")
+        wb.onReply = nil
+        wb.close()
+        wrapWindow.contentView = nil
+
+        // Big and binary files.
+        let bigURL = repo.appendingPathComponent("Notes/big.txt")
+        try? String(repeating: "line of text\n", count: 200_000).write(to: bigURL, atomically: true, encoding: .utf8)
+        let big = FileBuffer(url: bigURL, relPath: nil, editable: true, watch: true)
+        await big.load()
+        var bigReadOnly = false
+        if case .readOnly = big.mode { bigReadOnly = true }
+        check(bigReadOnly && !big.editable && !big.textView.isEditable, "a file over 2 MB opens read-only")
+        big.close()
+        try? fm.removeItem(at: bigURL)  // (the Changes pane would list its 200 000 lines)
+        let binURL = repo.appendingPathComponent("Notes/blob.dat")
+        try? Data([0x61, 0, 0x62]).write(to: binURL)
+        let bin = FileBuffer(url: binURL, relPath: nil, editable: true, watch: true)
+        await bin.load()
+        check(bin.mode == .binary && bin.loadError != nil && !bin.editable, "a file with a NUL byte is binary")
+        bin.close()
+        try? fm.removeItem(at: binURL)
+
 
         // Preview kinds.
         let kinds: [(String, PreviewKind)] = [("a.swift", .text), ("README.md", .markdown), ("c.png", .image),
@@ -302,6 +514,14 @@ extension SmokeTest {
         for (name, kind) in kinds {
             check(PreviewKind.of(URL(fileURLWithPath: "/tmp/\(name)")) == kind, "\(name) previews as \(kind)")
         }
+        // .ts is TypeScript when it's text, a video (MPEG transport stream) when it isn't.
+        let tsCode = repo.appendingPathComponent("Notes/util.ts"), tsVideo = repo.appendingPathComponent("Notes/clip.ts")
+        try? "export const x = 1\n".write(to: tsCode, atomically: true, encoding: .utf8)
+        try? Data([0x47, 0x40, 0x00, 0x10, 0x00, 0x00]).write(to: tsVideo)
+        check(PreviewKind.of(tsCode) == .text && PreviewKind.of(tsVideo) == .video,
+              "a .ts file previews as code when it's text, as video when it isn't")
+        try? fm.removeItem(at: tsCode)
+        try? fm.removeItem(at: tsVideo)
 
         // An image in the reply.
         check(Markdown.blocks(reply).contains(.media(alt: "chart", src: "assets/chart.png")), "the reply's image is a media block")
@@ -547,7 +767,7 @@ extension SmokeTest {
 
         if CommandLine.arguments.contains("--hold") {
             model.showSidePanel(doc, .files)
-            model.showProjectFile(doc, path: "Sources/App/main.swift", line: 3)
+            model.openFile(doc, "Sources/App/main.swift", lines: 3...3)
             if let i = CommandLine.arguments.firstIndex(of: "--hold-url"), i + 1 < CommandLine.arguments.count,
                let u = URL(string: CommandLine.arguments[i + 1]) {
                 model.openWebPage(doc, u)
