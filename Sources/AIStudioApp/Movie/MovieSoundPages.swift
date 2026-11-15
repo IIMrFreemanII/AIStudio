@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import MLXDiffusionCore
 import MovieCore
 import SwiftUI
 
@@ -93,6 +94,7 @@ private struct VoiceCard: View {
                 Text("No voice yet").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
             } else {
                 SoundTakeStrip(doc: doc, takes: character.voiceSamples, selected: character.selectedVoiceSample,
+                               name: "\(character.name)'s voice",
                                select: { model.selectVoiceSample(doc, character: character.id, take: $0) })
             }
         }
@@ -144,6 +146,7 @@ private struct ShotLinesCard: View {
                     }
                     if !line.takes.isEmpty {
                         SoundTakeStrip(doc: doc, takes: line.takes, selected: line.selectedTake,
+                                       name: "Shot \(number) · \(doc.movie.character(line.character)?.name ?? line.character)",
                                        select: { model.selectLine(doc, shot: shot.id, line: line.id, take: $0) })
                     }
                 }
@@ -268,7 +271,7 @@ private struct MusicCueCard: View {
             TextField("Style: genre, instruments, mood", text: $cue.prompt, axis: .vertical)
                 .lineLimit(1...3).font(.mgCallout)
             if !cue.takes.isEmpty {
-                SoundTakeStrip(doc: doc, takes: cue.takes, selected: cue.selected,
+                SoundTakeStrip(doc: doc, takes: cue.takes, selected: cue.selected, name: "Music · \(heading)",
                                select: { model.selectMusic(doc, scene: cue.id, take: $0) })
             }
         }
@@ -301,7 +304,7 @@ private struct EffectsCard: View {
                             : "Another take of this shot's sound effects (you see the cost first)")
             }
             if !shot.sounds.isEmpty {
-                SoundTakeStrip(doc: doc, takes: shot.sounds, selected: shot.selectedSound,
+                SoundTakeStrip(doc: doc, takes: shot.sounds, selected: shot.selectedSound, name: "Shot \(number) effects",
                                select: { model.selectSound(doc, shot: shot.id, take: $0) })
             }
         }
@@ -314,14 +317,16 @@ private struct EffectsCard: View {
 
 // MARK: shared
 
-/// A row of sound takes: play one, choose one; its menu reveals or deletes it.
+/// A row of sound takes: each with its waveform (click to play from there), play/pause and replay; click "Take N" to
+/// choose it; its menu opens it in the viewer, reveals or deletes it.
 struct SoundTakeStrip: View {
     @Environment(AppModel.self) private var model
     let doc: MovieDocument
     let takes: [Take]
     let selected: UUID?
+    /// What the takes are of, for the viewer's titles ("Maya's voice", "Shot 3 effects").
+    var name = "Sound"
     let select: (UUID) -> Void
-    @State private var player = MovieSoundPlayer.shared
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -330,30 +335,26 @@ struct SoundTakeStrip: View {
                     let url = model.movieStore.url(doc.id, relative: take.file)
                     let chosen = take.id == selected
                     HStack(spacing: 6) {
-                        Button { player.toggle(url) } label: {
-                            Image(systemName: player.playing == url ? "stop.fill" : "play.fill")
-                        }
-                        .buttonStyle(.mg(.icon))
-                        .mgHelp(player.playing == url ? "Stop" : "Play this take")
+                        SoundTakeBar(url: url, seconds: take.seconds)
                         Button { select(take.id) } label: {
                             HStack(spacing: 4) {
                                 Text("Take \(i + 1)").font(.mgFootnote)
-                                if let s = take.seconds {
-                                    Text(String(format: "%.1f s", s)).font(.mgFootnote).monospacedDigit()
-                                        .foregroundStyle(MG.secondaryLabel)
-                                }
                                 if chosen { Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.accent) }
                             }
                         }
                         .buttonStyle(.plain)
                         .disabled(doc.isBusy)
                         .mgHelp(chosen ? "Chosen" + costText(take) : "Choose this take" + costText(take))
+                        Button { open(take.id) } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
+                            .buttonStyle(.mg(.icon)).controlSize(.small)
+                            .mgHelp("Open in the viewer")
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Capsule().fill(chosen ? MG.accent.opacity(0.12) : MG.fill))
                     .overlay(Capsule().strokeBorder(chosen ? MG.accent : MG.separator, lineWidth: chosen ? 1.5 : 1))
                     .mgContextMenu {
                         MGMenuItem.button("Choose") { select(take.id) }
+                        MGMenuItem.button("Open in Viewer") { open(take.id) }
                         MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                         MGMenuItem.divider
                         MGMenuItem.button("Move to Trash", destructive: true) { model.deleteSoundTake(doc, take: take.id) }
@@ -364,35 +365,179 @@ struct SoundTakeStrip: View {
         }
     }
 
+    private func open(_ id: UUID) {
+        model.openMovieViewer(doc, takes: takes, name: name, take: id)
+    }
+
     private func costText(_ take: Take) -> String {
         take.costUSD.map { " · " + CostEstimate.format($0) } ?? ""
     }
 }
 
-/// Plays one take at a time (starting another stops the first).
+/// One take's sound as a small waveform with its play progress. Click or drag to move the playhead (while it plays,
+/// it plays on from there; stopped, play starts from there); play/pause, replay. Clicked, it takes the keyboard:
+/// Space plays or pauses it.
+struct SoundTakeBar: View {
+    let url: URL
+    /// The take's length as measured when it was made (nil: the file's, once loaded).
+    var seconds: Double?
+    @State private var player = MovieSoundPlayer.shared
+    @State private var peaks: [Float] = []
+    /// Where the playhead is being dragged to (a fraction of the take), until it's let go.
+    @State private var scrub: Double?
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let current = player.current == url
+        let length = current && player.duration > 0 ? player.duration : (seconds ?? 0)
+        let position = scrub.map { $0 * length } ?? (current ? player.position : 0)
+        HStack(spacing: 6) {
+            Button { focused = true; player.toggle(url) } label: {
+                Image(systemName: current && player.isPlaying ? "pause.fill" : "play.fill")
+            }
+            .buttonStyle(.mg(.icon))
+            .mgHelp(current && player.isPlaying ? "Pause (Space)" : "Play (Space)")
+            GeometryReader { geo in
+                let at = { (x: CGFloat) in Double(min(max(x / max(geo.size.width, 1), 0), 1)) }
+                Waveform(peaks: peaks, progress: length > 0 ? position / length : 0)
+                    .overlay(alignment: .leading) {
+                        if current || scrub != nil {
+                            Rectangle().fill(MG.accent).frame(width: 2)
+                                .offset(x: geo.size.width * (length > 0 ? position / length : 0) - 1)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { v in focused = true; scrub = at(v.location.x) }
+                        .onEnded { v in
+                            player.seek(url, fraction: at(v.location.x))
+                            scrub = nil
+                        })
+            }
+            .frame(width: 150, height: 22)
+            .mgHelp("Click or drag to move the playhead; Space plays or pauses")
+            Text("\(MoviePlayback.clock(position)) / \(MoviePlayback.clock(length))")
+                .font(.mgFootnote).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+            Button { focused = true; player.restart(url) } label: { Image(systemName: "arrow.counterclockwise") }
+                .buttonStyle(.mg(.icon))
+                .mgHelp("Play from the start")
+        }
+        .padding(.horizontal, 3).padding(.vertical, 1)
+        .overlay(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
+            .strokeBorder(MG.accent.opacity(focused ? 0.8 : 0), lineWidth: 1.5))
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onKeyPress(.space) { player.toggle(url); return .handled }
+        .task(id: url) { peaks = await player.peaks(url) }
+    }
+}
+
+/// Plays one take at a time (starting another stops the first), from any point, with its position for the bars.
 @MainActor @Observable
 final class MovieSoundPlayer: NSObject, AVAudioPlayerDelegate {
     static let shared = MovieSoundPlayer()
-    private(set) var playing: URL?
+    /// The take loaded (playing, paused, or played to its end).
+    private(set) var current: URL?
+    private(set) var isPlaying = false
+    private(set) var position: Double = 0
+    private(set) var duration: Double = 0
     @ObservationIgnored private var player: AVAudioPlayer?
+    @ObservationIgnored private var clock: Timer?
+    @ObservationIgnored private var waveforms: [URL: [Float]] = [:]
 
-    func toggle(_ url: URL) {
-        if playing == url { stop(); return }
+    /// Loads `url` unless it's the take loaded (stopping another); false when it can't be read.
+    @discardableResult
+    private func load(_ url: URL) -> Bool {
+        if current == url, player != nil { return true }
         stop()
-        guard let p = try? AVAudioPlayer(contentsOf: url) else { return }
+        guard let p = try? AVAudioPlayer(contentsOf: url) else { return false }
         p.delegate = self
-        p.play()
+        p.prepareToPlay()
         player = p
-        playing = url
+        current = url
+        duration = p.duration
+        return true
+    }
+
+    /// Plays `url` from `seconds` (loading it if another take was loaded).
+    func play(_ url: URL, from seconds: Double = 0) {
+        guard load(url), let player else { return }
+        player.currentTime = seconds >= duration ? 0 : seconds
+        player.play()
+        isPlaying = true
+        position = player.currentTime
+        startClock()
+    }
+
+    /// Play or pause `url`; a take played to its end starts over.
+    func toggle(_ url: URL) {
+        guard current == url, let player else { play(url); return }
+        if isPlaying {
+            player.pause()
+            isPlaying = false
+            position = player.currentTime
+            stopClock()
+        } else {
+            play(url, from: MoviePlayback.resume(at: position, of: duration))
+        }
+    }
+
+    func restart(_ url: URL) { play(url, from: 0) }
+
+    /// Moves `url`'s playhead to `fraction` of the way through: playing on from there if it was playing, else
+    /// only placed there (play starts from it).
+    func seek(_ url: URL, fraction: Double) {
+        let wasPlaying = current == url && isPlaying
+        guard load(url), let player else { return }
+        let t = MoviePlayback.time(at: fraction, of: duration)
+        if wasPlaying {
+            play(url, from: t)
+        } else {
+            player.currentTime = min(t, duration)
+            position = t
+        }
     }
 
     func stop() {
         player?.stop()
         player = nil
-        playing = nil
+        current = nil
+        isPlaying = false
+        position = 0
+        duration = 0
+        stopClock()
+    }
+
+    /// A take's waveform for its bar, read once.
+    func peaks(_ url: URL) async -> [Float] {
+        if let p = waveforms[url] { return p }
+        let p = await MediaIO.waveform(url, buckets: 60)
+        waveforms[url] = p
+        return p
+    }
+
+    private func startClock() {
+        stopClock()
+        clock = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let player = self.player, self.isPlaying else { return }
+                self.position = player.currentTime
+            }
+        }
+    }
+
+    private func stopClock() {
+        clock?.invalidate()
+        clock = nil
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in self.stop() }
+        Task { @MainActor in
+            // Played to its end: the bar stays full; play again starts over.
+            self.isPlaying = false
+            self.position = self.duration
+            self.stopClock()
+        }
     }
 }

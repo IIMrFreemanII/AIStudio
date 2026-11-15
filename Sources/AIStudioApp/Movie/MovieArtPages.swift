@@ -84,7 +84,8 @@ private struct CastCard: View {
             } else {
                 TakeStrip(doc: doc, takes: character.sheets, selected: character.selectedSheet, height: 150,
                           select: { model.selectSheet(doc, character: character.id, take: $0) },
-                          delete: { model.deleteTake(doc, character: character.id, take: $0) })
+                          delete: { model.deleteTake(doc, character: character.id, take: $0) },
+                          open: { model.viewSheets(doc, character: character.id, take: $0) })
             }
         }
         .padding(14)
@@ -184,6 +185,11 @@ private struct KeyframeCard: View {
             if let file = shot.selectedKeyframeFile {
                 MovieStill(url: model.movieStore.url(doc.id, relative: file), maxPixels: 840)
                     .aspectRatio(doc.movie.aspect.ratio, contentMode: .fit)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { model.viewKeyframes(doc, shot: shot.id) }
+                    .overlay(alignment: .topTrailing) {
+                        MovieExpandButton { model.viewKeyframes(doc, shot: shot.id) }.padding(6)
+                    }
             } else {
                 RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous).fill(MG.fill)
                     .aspectRatio(doc.movie.aspect.ratio, contentMode: .fit)
@@ -194,7 +200,8 @@ private struct KeyframeCard: View {
             if shot.keyframes.count > 1 {
                 TakeStrip(doc: doc, takes: shot.keyframes, selected: shot.selectedKeyframe, height: 54,
                           select: { model.selectKeyframe(doc, shot: shot.id, take: $0) },
-                          delete: { model.deleteTake(doc, shot: shot.id, take: $0) })
+                          delete: { model.deleteTake(doc, shot: shot.id, take: $0) },
+                          open: { model.viewKeyframes(doc, shot: shot.id, take: $0) })
             }
             TextField("The first frame: who, where, light, composition", text: $shot.keyframePrompt, axis: .vertical)
                 .lineLimit(2...6).font(.mgCallout)
@@ -219,7 +226,8 @@ private struct KeyframeCard: View {
 
 // MARK: shared
 
-/// A row of takes (sheets, keyframes): click one to choose it; its menu reveals or deletes it.
+/// A row of takes (sheets, keyframes, clips): click one to choose it; double-click (or its hover button) opens it in
+/// the viewer; its menu opens, reveals or deletes it.
 struct TakeStrip: View {
     @Environment(AppModel.self) private var model
     let doc: MovieDocument
@@ -228,6 +236,9 @@ struct TakeStrip: View {
     let height: CGFloat
     let select: (UUID) -> Void
     let delete: (UUID) -> Void
+    /// Opens the take in the viewer (nil: no viewer).
+    var open: ((UUID) -> Void)? = nil
+    @State private var hovered: UUID?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -250,9 +261,20 @@ struct TakeStrip: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(doc.isBusy)
-                    .mgHelp(take.id == selected ? "Chosen" + costText(take) : "Choose this take" + costText(take))
+                    .mgHelp((take.id == selected ? "Chosen" : "Choose this take") + costText(take)
+                            + (open == nil ? "" : " · double-click to open it"))
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { open?(take.id) })
+                    .overlay(alignment: .bottomTrailing) {
+                        if let open, hovered == take.id {
+                            MovieExpandButton(small: height < 100) { open(take.id) }.padding(4)
+                        }
+                    }
+                    .onHover { inside in
+                        if inside { hovered = take.id } else if hovered == take.id { hovered = nil }
+                    }
                     .mgContextMenu {
                         MGMenuItem.button("Choose") { select(take.id) }
+                        if let open { MGMenuItem.button("Open in Viewer") { open(take.id) } }
                         MGMenuItem.button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
                         MGMenuItem.divider
                         MGMenuItem.button("Move to Trash", destructive: true) { delete(take.id) }
@@ -300,5 +322,23 @@ extension MovieAspect {
     var ratio: CGFloat {
         let s = keyframeSize
         return CGFloat(s.width) / CGFloat(s.height)
+    }
+}
+
+/// The button that opens a still, clip or sound in the full-window viewer.
+struct MovieExpandButton: View {
+    var small = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .font(.system(size: small ? 9 : 11, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: small ? 18 : 24, height: small ? 18 : 24)
+                .background(Circle().fill(.black.opacity(0.55)))
+        }
+        .buttonStyle(.plain)
+        .mgHelp("Open in the viewer")
     }
 }

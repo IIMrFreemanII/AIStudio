@@ -37,7 +37,7 @@ struct VideoResultView: View {
     }
 }
 
-/// Waveform with a playhead; click to play or pause, click elsewhere on the waveform to seek.
+/// Waveform with a playhead; click or drag on the waveform to seek, the button (or Space) plays or pauses.
 struct AudioResultView: View {
     let url: URL
     @State private var peaks: [Float] = []
@@ -53,7 +53,8 @@ struct AudioResultView: View {
             GeometryReader { geo in
                 Waveform(peaks: peaks, progress: duration > 0 ? position / duration : 0)
                     .contentShape(Rectangle())
-                    .onTapGesture { loc in seek(to: loc.x / geo.size.width) }
+                    .gesture(DragGesture(minimumDistance: 0)
+                        .onChanged { v in seek(to: v.location.x / max(geo.size.width, 1)) })
             }
             .frame(height: 160)
             .padding(.horizontal, 32)
