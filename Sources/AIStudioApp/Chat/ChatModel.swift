@@ -2,6 +2,7 @@ import AIStudioLibrary
 import AIStudioProtocol
 import Agent
 import AppKit
+import CodeEditing
 import Foundation
 import GraphRuntime
 import LLMClient
@@ -226,9 +227,14 @@ final class ChatDocument: Identifiable {
         if openRuns.contains(key) { openRuns.remove(key) } else { openRuns.insert(key) }
     }
     var fileFilter = ""
-    /// The file previewed under the tree (relative to the project) and a line to show.
-    var previewPath: String?
-    var previewLine: Int?
+    /// The files open under the tree (tabs, saved with the chat) and their editors.
+    let openFiles = OpenFiles()
+    /// The editor takes the chat column (Expand).
+    var editorExpanded = false
+    /// The Files pane's width before Widen (nil: not widened).
+    var filesWideRestore: Double?
+    /// The tabs restored from the transcript are checked against the tree once, after its first listing.
+    var restoredTabsChecked = false
     /// Bumped when the agent may have changed files: an open preview reads its file again.
     var filesRevision = 0
     /// The plan selected in the Plans tab (its call id; nil: the newest).
@@ -284,6 +290,11 @@ final class ChatDocument: Identifiable {
     init(transcript: ChatTranscript) {
         id = transcript.id
         self.transcript = transcript
+        if let files = transcript.openFiles, !files.isEmpty {
+            openFiles.list = FileTabList(tabs: files, active: transcript.activeFile.flatMap { files.contains($0) ? $0 : nil } ?? files.first)
+        } else {
+            restoredTabsChecked = true
+        }
     }
 
     var title: String { transcript.title }

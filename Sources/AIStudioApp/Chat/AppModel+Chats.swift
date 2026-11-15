@@ -119,8 +119,10 @@ extension AppModel {
         guard let doc = chats.first(where: { $0.id == id }) else { return }
         doc.isRecent = false
         leaveFront(.chat(id))
+        flushOpenFiles(doc)
         saveChat(doc)
         if !doc.isBusy {
+            closeOpenFiles(doc)
             doc.task?.cancel()
             doc.jobs.stopAll()
             closeTerminals(doc)
@@ -132,6 +134,7 @@ extension AppModel {
     func unloadIfHidden(_ doc: ChatDocument) {
         guard !doc.isRecent, !doc.isBusy, !doc.compacting, doc.task == nil, activeChatID != doc.id,
               doc.terminals.isEmpty else { return }  // a shell running in a terminal keeps its chat
+        closeOpenFiles(doc)
         saveChat(doc)
         chats.removeAll { $0 === doc }
     }
@@ -177,6 +180,7 @@ extension AppModel {
 
     /// Sends the draft as a user message and streams the reply.
     func send(_ doc: ChatDocument) {
+        flushOpenFiles(doc)
         let text = doc.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         // A question card is open: what's typed answers it ("Other" for each question), and the reply goes on.
         if let q = doc.question {
@@ -265,6 +269,12 @@ extension AppModel {
 
     /// Shows the turn a quote came from: its branch, scrolled to and flashed.
     func showQuoted(_ doc: ChatDocument, _ quote: ChatQuote) {
+        // A file's lines: the file in the Files tab with them selected.
+        if let path = quote.path, let start = quote.startLine {
+            showProjectFile(doc, path: path, line: start)
+            fileBuffer(doc, path)?.reveal(lines: start...max(start, quote.endLine ?? start))
+            return
+        }
         guard let id = quote.turnID, doc.transcript.turn(id) != nil else { return }
         if !doc.transcript.turns.contains(where: { $0.id == id }) { doc.transcript.select(id) }
         // A tool result is shown on the card of the assistant turn that made the call.

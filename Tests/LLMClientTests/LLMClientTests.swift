@@ -213,6 +213,27 @@ struct LLMClientTests {
         #expect(sys.messages().count == 2 && sys.messages(system: false).count == 1)
     }
 
+    @Test func fileQuotesNameTheLines() throws {
+        let q = ChatQuote(file: "Sources/App/main.swift", startLine: 2, endLine: 3, text: "let a = 1\nlet b = 2\n")
+        #expect(q.title == "lines 2–3 of Sources/App/main.swift" && q.text == "let a = 1\nlet b = 2" && q.truncated == nil)
+        var turn = ChatTurn(role: .user, text: "why?")
+        turn.quote = q
+        #expect(turn.textForModel == "Replying to lines 2–3 of `Sources/App/main.swift`:\n```swift\nlet a = 1\nlet b = 2\n```\n\nwhy?")
+        // One line; a fence longer than the backticks inside.
+        let one = ChatQuote(file: "README.md", startLine: 7, endLine: 7, text: "Run ```make```")
+        #expect(one.title == "line 7 of README.md" && one.forModel == "Replying to line 7 of `README.md`:\n````md\nRun ```make```\n````")
+        // Cut after the last whole line that fits, and said so.
+        let long = (1...100).map { "line \($0) " + String(repeating: "x", count: 30) }.joined(separator: "\n")
+        let cut = ChatQuote(file: "a.txt", startLine: 1, endLine: 100, text: long)
+        #expect(cut.truncated == true && cut.text.count <= ChatQuote.maxLength && cut.text.hasSuffix(String(repeating: "x", count: 30)))
+        #expect(cut.forModel.hasPrefix("Replying to lines 1–100 of `a.txt` (the first 2000 characters, up to line \(cut.lastLineShown!); read the file for the rest):"))
+        // Saved and read back; a quote saved before files could be quoted still reads.
+        let back = try JSONDecoder().decode(ChatQuote.self, from: JSONEncoder().encode(q))
+        #expect(back == q)
+        let old = try JSONDecoder().decode(ChatQuote.self, from: Data(#"{"role":"assistant","text":"hi"}"#.utf8))
+        #expect(old.path == nil && old.title == nil && old.forModel == "Replying to this part of your reply:\n> hi")
+    }
+
     @Test func editsAndRetriesBranch() {
         var t = ChatTranscript()
         let q1 = ChatTurn(role: .user, text: "q1")

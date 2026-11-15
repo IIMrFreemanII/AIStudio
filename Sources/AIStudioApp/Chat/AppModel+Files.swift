@@ -1,6 +1,7 @@
 import AIStudioLibrary
 import Agent
 import AppKit
+import CodeEditing
 import Foundation
 import LLMClient
 import UniformTypeIdentifiers
@@ -29,6 +30,14 @@ extension AppModel {
                     doc.fileTree = tree
                     doc.fileIndex = index
                 }
+                // Tabs restored from the chat whose files are gone are dropped, once (a file deleted while open
+                // keeps its tab and shows the "deleted" bar).
+                if !doc.restoredTabsChecked, doc.fileTree != nil {
+                    doc.restoredTabsChecked = true
+                    let before = doc.openFiles.list.tabs
+                    doc.openFiles.list.keepOnly(doc.fileTree?.files ?? [])
+                    if doc.openFiles.list.tabs != before { persistOpenFiles(doc) }
+                }
             } while doc?.filesRefreshAgain == true
             doc?.filesRefreshing = false
         }
@@ -38,17 +47,86 @@ extension AppModel {
     func projectFilesChanged(_ doc: ChatDocument) {
         doc.filesRevision += 1
         if doc.fileTree != nil { refreshProjectFiles(doc) }
+        checkOpenFiles(doc)
     }
 
     /// Opens the Files tab on a project file (a path relative to the project, or absolute inside it), its folders
     /// open, at a line.
     func showProjectFile(_ doc: ChatDocument, path: String, line: Int? = nil) {
         guard let rel = relativeProjectPath(doc, path) else { return }
-        doc.previewPath = rel
-        doc.previewLine = line
+        openFile(doc, rel, lines: line.map { $0...$0 }, pin: false)
         doc.fileFilter = ""
         doc.expandedFolders.formUnion(FileTree.parents(of: rel))
         if doc.sidePanel != .files { showSidePanel(doc, .files) } else if doc.fileTree == nil { refreshProjectFiles(doc) }
+    }
+
+    // MARK: open files
+
+    /// The editable buffer for an open file, made and wired on first use (nil for images, PDFs…).
+    func fileBuffer(_ doc: ChatDocument, _ rel: String) -> FileBuffer? {
+        guard let root = doc.projectURL else { return nil }
+        if doc.openFiles.wire == nil {
+            doc.openFiles.wire = { [weak self, weak doc] rel, buffer in
+                buffer.onEdited = { [weak doc] in doc?.openFiles.list.pin(rel) }
+                buffer.textView.filePath = rel
+                buffer.onReply = { [weak self, weak doc, weak buffer] range in
+                    if let self, let doc, let buffer { self.quoteFile(doc, rel, buffer, range) }
+                }
+                buffer.onSaved = { [weak self, weak doc] in
+                    if let self, let doc { self.refreshGitSoon(doc) }
+                }
+            }
+        }
+        return doc.openFiles.buffer(rel, root: root)
+    }
+
+    /// Reply from a file: the selected lines (whole lines; the caret's line when nothing is selected) go in the quote
+    /// bar with their path and numbers, and the message field gets the focus. The file is saved first, so the agent
+    /// reads what the quote shows.
+    func quoteFile(_ doc: ChatDocument, _ rel: String, _ buffer: FileBuffer, _ range: NSRange) {
+        buffer.save()
+        let lines = TextLines(buffer.text)
+        let span = lines.lineSpan(of: range)
+        let text = (buffer.text as NSString).substring(with: lines.range(ofLines: span))
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        doc.replyTo = ChatQuote(file: rel, startLine: span.lowerBound, endLine: span.upperBound, text: text)
+        doc.composerFocusRequest += 1
+    }
+
+    /// Shows a file as the active tab (a click replaces the transient tab; `pin` keeps it), at lines. Switching tabs
+    /// saves the one left.
+    func openFile(_ doc: ChatDocument, _ rel: String, lines: ClosedRange<Int>? = nil, pin: Bool = false) {
+        if let a = doc.openFiles.list.active { doc.openFiles.buffers[a]?.save() }
+        let old = doc.openFiles.list.transient
+        doc.openFiles.list.open(rel, pin: pin)
+        if let old, old != rel, !doc.openFiles.list.tabs.contains(old) { doc.openFiles.remove(old) }
+        if let buffer = fileBuffer(doc, rel), let lines { buffer.reveal(lines: lines) }
+        persistOpenFiles(doc)
+    }
+
+    /// Closes a tab (saving the file).
+    func closeFile(_ doc: ChatDocument, _ rel: String) {
+        doc.openFiles.remove(rel)
+        doc.openFiles.list.close(rel)
+        if doc.openFiles.list.tabs.isEmpty { doc.editorExpanded = false }
+        persistOpenFiles(doc)
+    }
+
+    /// Writes every open file's unsaved edits (before a message is sent, on closing the chat, on quit).
+    func flushOpenFiles(_ doc: ChatDocument) { doc.openFiles.all.forEach { $0.save() } }
+
+    /// Looks at the disk for every open file (the app became active, the agent ran a tool).
+    func checkOpenFiles(_ doc: ChatDocument) { doc.openFiles.all.forEach { $0.checkDisk() } }
+
+    /// Saves and closes every buffer when the chat is unloaded; the tabs stay.
+    func closeOpenFiles(_ doc: ChatDocument) { doc.openFiles.removeAll() }
+
+    /// Saves the tabs with the chat.
+    func persistOpenFiles(_ doc: ChatDocument) {
+        let tabs = doc.openFiles.list.tabs
+        doc.transcript.openFiles = tabs.isEmpty ? nil : tabs
+        doc.transcript.activeFile = doc.openFiles.list.active
+        saveChat(doc)
     }
 
     /// A path as the project's relative path, when it's inside the project.

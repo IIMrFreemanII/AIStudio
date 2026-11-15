@@ -13,12 +13,15 @@ struct TerminalPane: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 2) {
                         ForEach(Array(doc.terminals.enumerated()), id: \.element.id) { i, t in
-                            TerminalTab(session: t, index: i + 1, selected: t === doc.activeTerminal,
-                                        select: {
-                                            doc.activeTerminalID = t.id
-                                            model.focusTerminal(doc)
-                                        },
-                                        close: { model.closeTerminal(doc, t.id) })
+                            MGTab(title: t.shortTitle, selected: t === doc.activeTerminal, help: t.title,
+                                  closeHelp: "Close this terminal (its shell ends)", closeLabel: "Close Terminal",
+                                  anchor: "terminal-tab:\(i + 1)",
+                                  leading: { Circle().fill(t.running ? MG.success : MG.tertiaryLabel).frame(width: 6, height: 6) },
+                                  select: {
+                                      doc.activeTerminalID = t.id
+                                      model.focusTerminal(doc)
+                                  },
+                                  close: { model.closeTerminal(doc, t.id) })
                         }
                     }
                 }
@@ -79,40 +82,6 @@ struct TerminalPane: View {
         }
         .onAppear { model.focusTerminal(doc) }
         .mgTestAnchor("terminal-pane")
-    }
-}
-
-/// A terminal's tab: its title (the shell's, or what it set), a dot while the shell runs, × to close.
-private struct TerminalTab: View {
-    let session: TerminalSession
-    let index: Int
-    let selected: Bool
-    let select: () -> Void
-    let close: () -> Void
-    @State private var hover = false
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(session.running ? MG.success : MG.tertiaryLabel).frame(width: 6, height: 6)
-            Text(session.shortTitle).font(.mgFootnote.weight(selected ? .semibold : .regular))
-                .foregroundStyle(selected ? MG.label : MG.secondaryLabel)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(maxWidth: 140)
-            Button(action: close) { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
-                .buttonStyle(.plain).foregroundStyle(MG.tertiaryLabel)
-                .opacity(hover || selected ? 1 : 0.001)
-                .accessibilityLabel("Close Terminal")
-                .mgHelp("Close this terminal (its shell ends)")
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 24)
-        .background(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous)
-            .fill(selected ? MG.selection : hover ? MG.hover : .clear))
-        .contentShape(Rectangle())
-        .onTapGesture(perform: select)
-        .onHover { hover = $0 }
-        .mgHelp(session.title)
-        .mgTestAnchor("terminal-tab:\(index)")
     }
 }
 

@@ -28,7 +28,8 @@ public struct ChatFile: Codable, Equatable, Sendable, Hashable {
     }
 }
 
-/// What a message replies to: a passage of an earlier message (its role, and its id when it's known).
+/// What a message replies to: a passage of an earlier message (its role, and its id when it's known), or lines of a
+/// project file.
 public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
     public static let maxLength = 2000
     public var turnID: UUID?
@@ -36,6 +37,12 @@ public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
     public var text: String
     /// Where it came from when it isn't a message ("terminal output"); nil: the turn's role says.
     public var source: String?
+    /// A file's lines: its path in the project and the range quoted (1-based, inclusive).
+    public var path: String?
+    public var startLine: Int?
+    public var endLine: Int?
+    /// The lines went past `maxLength`: `text` holds the first whole lines only.
+    public var truncated: Bool?
     public init(turnID: UUID?, role: ChatTurn.Role, text: String, source: String? = nil) {
         self.turnID = turnID
         self.role = role
@@ -44,9 +51,59 @@ public struct ChatQuote: Codable, Equatable, Sendable, Hashable {
         self.text = t.count > Self.maxLength ? String(t.prefix(Self.maxLength - 1)) + "…" : t
     }
 
+    /// Lines `startLine…endLine` of the file at `path` (relative to the project). The text is kept whole up to
+    /// `maxLength`, then cut after the last whole line (a single longer line is cut at `maxLength`).
+    public init(file path: String, startLine: Int, endLine: Int, text: String) {
+        self.turnID = nil
+        self.role = .user
+        self.path = path
+        self.startLine = startLine
+        self.endLine = max(startLine, endLine)
+        var t = text
+        if t.hasSuffix("\n") { t.removeLast() }
+        if t.count > Self.maxLength {
+            let head = t.prefix(Self.maxLength)
+            if let nl = head.lastIndex(of: "\n") { t = String(head[..<nl]) } else { t = String(head) }
+            self.truncated = true
+        }
+        self.text = t
+    }
+
+    /// "lines 12–18 of Sources/App.swift", "line 12 of …"; nil for a quote of a message.
+    public var title: String? {
+        guard let path, let startLine else { return nil }
+        let end = endLine ?? startLine
+        return end > startLine ? "lines \(startLine)–\(end) of \(path)" : "line \(startLine) of \(path)"
+    }
+
+    /// The last line `text` holds (less than `endLine` when it was cut).
+    public var lastLineShown: Int? {
+        guard let startLine else { return nil }
+        return startLine + text.reduce(0) { $1 == "\n" ? $0 + 1 : $0 }
+    }
+
     /// As Markdown, for the model: each line behind `> `.
     public var markdown: String {
         text.split(separator: "\n", omittingEmptySubsequences: false).map { "> " + $0 }.joined(separator: "\n")
+    }
+
+    /// What the model gets for this quote, in front of the message.
+    public var forModel: String {
+        guard let path, let startLine else {
+            return "Replying to this part of \(role == .user ? "my earlier message" : role == .tool ? "a tool result" : "your reply"):\n" + markdown
+        }
+        let end = endLine ?? startLine
+        let lines = end > startLine ? "lines \(startLine)–\(end)" : "line \(startLine)"
+        var head = "Replying to \(lines) of `\(path)`"
+        if truncated == true, let shown = lastLineShown {
+            head += " (the first \(Self.maxLength) characters, up to line \(shown); read the file for the rest)"
+        }
+        // The fence is longer than any run of backticks in the text, so the text can't close it.
+        var longest = 0, run = 0
+        for ch in text { if ch == "`" { run += 1; longest = max(longest, run) } else { run = 0 } }
+        let fence = String(repeating: "`", count: max(3, longest + 1))
+        let ext = (path as NSString).pathExtension.lowercased()
+        return head + ":\n" + fence + ext + "\n" + text + "\n" + fence
     }
 }
 
@@ -188,7 +245,7 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     /// hidden context.
     public var textForModel: String {
         var parts: [String] = []
-        if let quote { parts.append("Replying to this part of \(quote.role == .user ? "my earlier message" : quote.role == .tool ? "a tool result" : "your reply"):\n" + quote.markdown) }
+        if let quote { parts.append(quote.forModel) }
         parts.append(textWithFiles)
         if let context, !context.isEmpty { parts.append(context) }
         return parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -243,6 +300,9 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var sidePanel: String?
     /// The user closed the side panel (it is shown unless they did).
     public var sidePanelClosed: Bool?
+    /// The files open in the Files tab (project-relative paths, in tab order) and the one shown.
+    public var openFiles: [String]?
+    public var activeFile: String?
     /// The page the side panel's Browser tab last showed.
     public var browserURL: String?
     /// The task it was started with.
@@ -470,6 +530,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
         case allowObserveApps, allowControlApps
         case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen, sidePanel, sidePanelClosed, browserURL
+        case openFiles, activeFile
     }
 
     public init(from decoder: Decoder) throws {
@@ -499,6 +560,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         sidePanel = try c.decodeIfPresent(String.self, forKey: .sidePanel)
             ?? (try c.decodeIfPresent(Bool.self, forKey: .changesOpen) == true ? "changes" : nil)
         sidePanelClosed = try c.decodeIfPresent(Bool.self, forKey: .sidePanelClosed)
+        openFiles = try c.decodeIfPresent([String].self, forKey: .openFiles)
+        activeFile = try c.decodeIfPresent(String.self, forKey: .activeFile)
         browserURL = try c.decodeIfPresent(String.self, forKey: .browserURL)
         brief = try c.decodeIfPresent(String.self, forKey: .brief)
         depth = try c.decodeIfPresent(Int.self, forKey: .depth)
@@ -539,6 +602,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(worktree, forKey: .worktree)
         try c.encodeIfPresent(sidePanel, forKey: .sidePanel)
         try c.encodeIfPresent(sidePanelClosed, forKey: .sidePanelClosed)
+        try c.encodeIfPresent(openFiles, forKey: .openFiles)
+        try c.encodeIfPresent(activeFile, forKey: .activeFile)
         try c.encodeIfPresent(browserURL, forKey: .browserURL)
         try c.encodeIfPresent(brief, forKey: .brief)
         try c.encodeIfPresent(depth, forKey: .depth)

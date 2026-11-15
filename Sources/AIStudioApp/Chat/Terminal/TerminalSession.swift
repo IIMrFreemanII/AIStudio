@@ -15,6 +15,8 @@ final class TerminalSession: Identifiable {
     private(set) var directory: String?
     private(set) var running = false
     private(set) var exitCode: Int32?
+    /// Counts starts, so a late exit notice of an earlier shell doesn't end a restarted one.
+    private(set) var starts = 0
 
     @ObservationIgnored let view: AppTerminalView
     @ObservationIgnored private var events: Events?
@@ -67,6 +69,7 @@ final class TerminalSession: Identifiable {
         title = (shell as NSString).lastPathComponent
         running = true
         exitCode = nil
+        starts += 1
     }
 
     /// Before a (re)start: undo what a program that died mid-way may have left on (mouse reporting, which stops you
@@ -186,7 +189,8 @@ final class TerminalSession: Identifiable {
         func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
             let t = title.trimmingCharacters(in: .whitespaces)
             DispatchQueue.main.async { [weak self] in
-                if !t.isEmpty { self?.session?.title = t }
+                // Not after the shell exited: the tab is named after the shell again then.
+                if !t.isEmpty, self?.session?.running == true { self?.session?.title = t }
             }
         }
 
@@ -199,12 +203,17 @@ final class TerminalSession: Identifiable {
         func processTerminated(source: TerminalView, exitCode: Int32?) {
             // SwiftTerm passes the raw wait status (130 << 8 for "exit 130"): the exit code, or 128 + the signal.
             let code = exitCode.map { s in (s & 0x7F) == 0 ? (s >> 8) & 0xFF : 128 + (s & 0x7F) }
+            // A moment later: the exit can be seen before the shell's last output (a title, mouse reporting turned
+            // on) has been read and shown, and that output belongs before it.
             DispatchQueue.main.async { [weak self] in
-                guard let session = self?.session else { return }
-                session.running = false
-                session.exitCode = code
-                // The title was the shell's last (often the "exit" it ran); name the tab after the shell again.
-                session.title = (TerminalSession.shell as NSString).lastPathComponent
+                guard let started = self?.session?.starts else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let session = self?.session, session.starts == started else { return }
+                    session.running = false
+                    session.exitCode = code
+                    // The title was the shell's last (often the "exit" it ran); name the tab after the shell again.
+                    session.title = (TerminalSession.shell as NSString).lastPathComponent
+                }
             }
         }
     }

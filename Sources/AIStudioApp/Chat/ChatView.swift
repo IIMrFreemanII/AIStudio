@@ -38,7 +38,9 @@ struct ChatView: View {
                         .background(MG.warning.opacity(0.12))
                 }
                 if doc.isGraphHelper { HelperUndoBar(doc: doc) }
-                if doc.transcript.turns.isEmpty {
+                if doc.isCoding && doc.editorExpanded && doc.openFiles.list.active != nil {
+                    FileEditorArea(doc: doc, expanded: true)
+                } else if doc.transcript.turns.isEmpty {
                     ChatEmptyState(doc: doc)
                 } else {
                     ChatTranscriptView(doc: doc)
@@ -103,6 +105,7 @@ struct ChatView: View {
             model.refreshGitSoon(doc)
             model.refreshCodeGraph(doc)  // picks up edits made in other apps
             model.refreshProjectFiles(doc)
+            model.checkOpenFiles(doc)
             doc.filesRevision += 1
         }
         .task(id: doc.git?.pr.map { "\($0.number)-\($0.pending)" }) {
@@ -555,10 +558,12 @@ struct QuoteBlock: View {
         HStack(alignment: .top, spacing: 8) {
             RoundedRectangle(cornerRadius: 1).fill(MG.accent).frame(width: 2)
             VStack(alignment: .leading, spacing: 2) {
-                Label("Replying to \(quote.source ?? (quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply"))",
+                Label("Replying to \(quote.title ?? quote.source ?? (quote.role == .user ? "your message" : quote.role == .tool ? "a tool result" : "the reply"))",
                       systemImage: "arrowshape.turn.up.left")
                     .font(.mgFootnote.weight(.medium)).foregroundStyle(MG.secondaryLabel)
-                Text(shown).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(2).truncationMode(.tail)
+                    .lineLimit(1).truncationMode(.middle)
+                Text(shown).font(quote.path != nil ? MGType.monoSmall.font : .mgFootnote).foregroundStyle(MG.label)
+                    .lineLimit(2).truncationMode(.tail)
             }
             Spacer(minLength: 0)
             if let onRemove {
@@ -571,7 +576,8 @@ struct QuoteBlock: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
         .contentShape(Rectangle())
         .onTapGesture { onTap?() }
-        .mgHelp(onTap != nil && quote.turnID != nil ? "Show the original" : "")
+        .mgHelp(onTap != nil && quote.path != nil ? "Show these lines in the file"
+                : onTap != nil && quote.turnID != nil ? "Show the original" : "")
     }
 }
 

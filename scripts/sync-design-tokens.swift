@@ -5,7 +5,8 @@
 //
 // To re-sync: copy the design system's `project/tokens.json` over design/metalgraphics/tokens.json, run this, rebuild.
 // Colours become dynamic NSColors (light and dark), text styles, spacing, radii, shadows and glass parameters Swift
-// constants. The code-editor and syntax colours aren't used by the app and are skipped.
+// constants. The code editor's colours (mg-editor-*) and syntax colours (mg-syntax-*) go into MGEditorColor and
+// MGSyntaxColor, AppKit only (the editor is an NSTextView).
 import Foundation
 
 let args = CommandLine.arguments
@@ -71,9 +72,19 @@ func resolve(_ value: Any, theme: String, depth: Int = 0) -> (Double, Double, Do
 
 var colorLines: [String] = []
 var nsLines: [String] = []
+var editorLines: [String] = []
+var syntaxLines: [String] = []
 for t in tokens {
     let name = t["name"] as! String
-    guard !name.hasPrefix("mg-editor-"), !name.hasPrefix("mg-syntax-") else { continue }
+    if name.hasPrefix("mg-editor-") || name.hasPrefix("mg-syntax-") {
+        let editor = name.hasPrefix("mg-editor-")
+        let id = camel(name, dropping: editor ? "mg-editor-" : "mg-syntax-")
+        guard let light = resolve(t["value"]!, theme: "light") else { continue }
+        let dark = resolve(t["value"]!, theme: "dark") ?? light
+        let line = "    static let \(id) = MGColor.dynamic(\"\(name)\", light: \(literal(light)), dark: \(literal(dark)))"
+        if editor { editorLines.append(line) } else { syntaxLines.append(line) }
+        continue
+    }
     let prefix = name.hasPrefix("mg-color-") ? "mg-color-" : "mg-"
     let id = camel(name, dropping: prefix)
     guard let light = resolve(t["value"]!, theme: "light") else { continue }
@@ -98,6 +109,16 @@ enum MGColor {
 /// The design system's colours for SwiftUI: `MG.label`, `MG.accent`, `MG.hueFolder`…
 enum MG {
 \(colorLines.joined(separator: "\n"))
+}
+
+/// The code editor's colours (background, caret, selection, gutter…).
+enum MGEditorColor {
+\(editorLines.joined(separator: "\n"))
+}
+
+/// Syntax highlighting colours, one per `SyntaxToken` (keyword, string, comment…).
+enum MGSyntaxColor {
+\(syntaxLines.joined(separator: "\n"))
 }
 
 

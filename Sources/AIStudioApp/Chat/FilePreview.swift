@@ -1,5 +1,6 @@
 import AVKit
 import AppKit
+import CodeEditing
 import PDFKit
 import QuickLookUI
 import SwiftUI
@@ -16,6 +17,8 @@ enum PreviewKind: Equatable {
         let ext = url.pathExtension.lowercased()
         if ["md", "markdown", "mdown"].contains(ext) { return .markdown }
         if videoExtensions.contains(ext) { return .video }
+        // Extensions TypeScript shares with MPEG transport streams (which the system calls video): text is code.
+        if ["ts", "mts", "cts"].contains(ext), looksLikeText(url) { return .text }
         if let t = UTType(filenameExtension: ext) {
             if t.conforms(to: .pdf) { return .pdf }
             if t.conforms(to: .image) { return .image }
@@ -54,6 +57,8 @@ struct FilePreview: View {
     var onClose: (() -> Void)?
     /// The full-window viewer draws its own dark backdrop: no header background there.
     var dark = false
+    /// An editable buffer for the file (the Files pane's tabs); without one the preview makes a read-only buffer.
+    var buffer: FileBuffer?
     @State private var source = false
 
     var body: some View {
@@ -71,10 +76,14 @@ struct FilePreview: View {
                     case .audio: AudioResultView(url: url)
                     case .pdf: PDFPreview(url: url, revision: revision)
                     case .markdown:
-                        if source { TextPreview(url: url, line: line, revision: revision) } else {
+                        if source { TextFilePreview(url: url, line: line, revision: revision, external: buffer) } else if let buffer {
+                            // The buffer's text, so the rendering follows what is typed (`edits` is what changes).
+                            MarkdownFilePreview(url: url, revision: revision, text: buffer.loaded ? { _ = buffer.edits; return buffer.text }() : nil)
+                                .task { await buffer.load() }
+                        } else {
                             MarkdownFilePreview(url: url, revision: revision)
                         }
-                    case .text: TextPreview(url: url, line: line, revision: revision)
+                    case .text: TextFilePreview(url: url, line: line, revision: revision, external: buffer)
                     case .other: QuickLookPreview(url: url, revision: revision)
                     }
                 }
@@ -123,104 +132,34 @@ struct FilePreview: View {
 
 // MARK: text
 
-/// Text or code: monospaced, with line numbers, selectable; lazily laid out in chunks so a long file opens fast.
-/// At most the first 2 MB are shown.
-struct TextPreview: View {
+/// Text or code in the code editor (line numbers, syntax colours, find). Uses the given buffer, or makes a read-only
+/// one for the file; it is read again when `revision` changes.
+private struct TextFilePreview: View {
     let url: URL
     var line: Int?
     var revision = 0
-    @State private var chunks: [Chunk] = []
-    @State private var note: String?
-    @State private var loaded = false
-
-    nonisolated static let limit = 2 << 20
-    nonisolated static let chunkLines = 200
-
-    struct Chunk: Identifiable {
-        let id: Int  // the first line's number
-        let numbers: String
-        let text: String
-        let highlighted: Bool
-    }
+    var external: FileBuffer?
+    @State private var own: FileBuffer?
+    @State private var seenRevision: Int?
 
     var body: some View {
-        GeometryReader { geo in
-        ScrollViewReader { proxy in
-            ScrollView([.vertical, .horizontal]) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    if let note {
-                        Text(note).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).padding(8)
+        let buffer = external ?? own
+        Group {
+            if let buffer {
+                CodeEditorView(buffer: buffer)
+                    .task(id: line) { if let line { buffer.reveal(lines: line...line) } }
+                    .task(id: revision) {
+                        if let seen = seenRevision, seen != revision { await buffer.reloadFromDisk() }
+                        seenRevision = revision
                     }
-                    ForEach(chunks) { c in
-                        HStack(alignment: .top, spacing: 10) {
-                            Text(c.numbers).foregroundStyle(MG.tertiaryLabel).multilineTextAlignment(.trailing)
-                                .frame(minWidth: 28, alignment: .trailing)
-                                .textSelection(.disabled)
-                            Text(c.text).textSelection(.enabled)
-                        }
-                        .font(.mgMono)
-                        .fixedSize(horizontal: true, vertical: true)
-                        .padding(.horizontal, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(c.highlighted ? MG.accent.opacity(0.18) : .clear)
-                        .id(c.id)
-                    }
-                }
-                .padding(.vertical, 6)
-                // At least as wide as the pane: short lines start at its left edge (not centred).
-                .frame(minWidth: geo.size.width, alignment: .leading)
-            }
-            .mgScrollIndicators()
-            .overlay { if !loaded { MGSpinner() } }
-            .task(id: "\(url.path)|\(revision)|\(line ?? 0)") {
-                let (c, n) = await Task.detached { [url, line] in Self.load(url, highlight: line) }.value
-                chunks = c
-                note = n
-                loaded = true
-                if let line {
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    proxy.scrollTo(line, anchor: .center)
-                } else if let first = c.first?.id {
-                    // The start: a two-way scroll view whose content arrives late otherwise opened partway down.
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                    proxy.scrollTo(first, anchor: .topLeading)
-                }
+            } else {
+                Color.clear
             }
         }
+        .task {
+            if external == nil, own == nil { own = FileBuffer(url: url, relPath: nil, editable: false, watch: false) }
         }
-    }
-
-    /// The file's lines in chunks; the highlighted line is a chunk of its own (so it can be marked and scrolled to).
-    nonisolated static func load(_ url: URL, highlight: Int?) -> ([Chunk], String?) {
-        guard let h = try? FileHandle(forReadingFrom: url) else { return ([], "Couldn't read the file.") }
-        defer { try? h.close() }
-        let data = (try? h.read(upToCount: limit + 1)) ?? Data()
-        let cut = data.count > limit
-        let text = String(decoding: cut ? data.prefix(limit) : data, as: UTF8.self)
-        var lines = text.components(separatedBy: "\n")
-        if lines.last == "" && lines.count > 1 { lines.removeLast() }
-        var out: [Chunk] = []
-        var i = 0
-        func add(_ from: Int, _ to: Int, _ hl: Bool) {
-            guard from < to else { return }
-            out.append(Chunk(id: from + 1, numbers: (from + 1...to).map(String.init).joined(separator: "\n"),
-                             text: lines[from..<to].joined(separator: "\n"), highlighted: hl))
-        }
-        let target = highlight.map { min(max($0, 1), lines.count) - 1 }
-        while i < lines.count {
-            var end = min(i + chunkLines, lines.count)
-            if let t = target, t >= i, t < end {
-                add(i, t, false)
-                add(t, t + 1, true)
-                i = t + 1
-                end = min(i + chunkLines, lines.count)
-            }
-            add(i, end, false)
-            i = end
-        }
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? data.count
-        let note = cut ? "Showing the first 2 MB of \(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))." : nil
-        return (out, note)
+        .onDisappear { if external == nil { own?.close() } }
     }
 }
 
@@ -228,17 +167,20 @@ struct TextPreview: View {
 struct MarkdownFilePreview: View {
     let url: URL
     var revision = 0
-    @State private var text = ""
+    /// Rendered instead of reading the file (an editor buffer's text).
+    var text: String?
+    @State private var read = ""
 
     var body: some View {
         ScrollView {
-            MarkdownView(text: text).padding(14)
+            MarkdownView(text: text ?? read).padding(14)
         }
         .mgScrollIndicators()
         .task(id: "\(url.path)|\(revision)") {
-            text = await Task.detached { [url] in
+            guard text == nil else { return }
+            read = await Task.detached { [url] in
                 guard let d = try? Data(contentsOf: url) else { return "" }
-                return String(decoding: d.prefix(TextPreview.limit), as: UTF8.self)
+                return String(decoding: d.prefix(EditorLimits.editableBytes), as: UTF8.self)
             }.value
         }
     }

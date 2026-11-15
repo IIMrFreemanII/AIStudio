@@ -255,6 +255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             if let model = AppDelegate.model {
+                for doc in model.chats + model.helperChats { model.flushOpenFiles(doc) }
                 // A reply streaming in the background is stopped and saved (the tab's text stays).
                 for doc in model.chats + model.helperChats {
                     if doc.isStreaming || doc.permission != nil || doc.question != nil || doc.plan != nil {
@@ -386,6 +387,13 @@ struct AppCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(!model.activeUndoManager.canRedo)
             }
+        }
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            // A file's selected lines (with their path and numbers) or a passage of the chat, into the quote bar.
+            Button("Reply with Selection") { ChatQuoting.replyToFocusedSelection() }
+                .keyboardShortcut("l")
+                .disabled(model.activeChat == nil)
         }
         CommandMenu("Generate") {
             Button("Queue Workflow") { model.enqueue(undoManager: model.activeUndoManager) }
