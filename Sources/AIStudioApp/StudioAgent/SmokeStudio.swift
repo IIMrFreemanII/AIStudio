@@ -76,7 +76,10 @@ extension SmokeTest {
 
         // The tools, called as the model would.
         let session = StudioSession(app: model, vision: true)
-        let tools = Dictionary(uniqueKeysWithValues: StudioTools.all(session).map { ($0.name, $0) })
+        var tools = Dictionary(uniqueKeysWithValues: StudioTools.all(session).map { ($0.name, $0) })
+        // The architect's tools, with workers on a scripted model (the test plays it).
+        let workers = StudioWorkers(session: session, client: SmokeWorkerModel(), model: mid, effort: nil, inlineThinking: false, vision: true)
+        for t in StudioTools.architect(workers) { tools[t.name] = t }
         let ctx = ToolContext(root: model.library.root)
         var n = 0
         func call(_ name: String, _ args: [String: Any] = [:]) async -> ToolOutput {
@@ -273,6 +276,137 @@ extension SmokeTest {
         check(await runner.value, "the workflow's cost sheet came up before the run")
         check(out.text.hasPrefix("Finished"), "run_workflow waited for the run (\(out.text.prefix(80)))")
 
+        // The architect: a plan the user approves, then workers side by side, each with its own pointer.
+        let title = doc.movie.title
+        let planTasks: [[String: Any]] = [
+            ["id": "k1", "title": "Keyframe for shot 1", "brief": "RUN keyframes shot 1 of \(title)", "paid": ["keyframes"], "estimate": 0.03],
+            ["id": "k2", "title": "Keyframe for shot 2", "brief": "RUN keyframes shot 2 of \(title)", "paid": ["keyframes"], "estimate": 0.03],
+            ["id": "rev", "title": "Review shot 1", "brief": "LOOK shot 1 of \(title)", "kind": "review", "depends_on": ["k1", "k2"]],
+        ]
+        func whenPlanShows(_ answer: StudioPlanAnswer) -> Task<Bool, Never> {
+            Task { @MainActor in
+                for _ in 0..<100 {
+                    if studio.pendingPlan != nil {
+                        await settle(0.3)
+                        let shown = MGTestAnchors.frame("studio-plan-approve") != nil
+                        studio.answerPlan(answer)
+                        return shown
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                return false
+            }
+        }
+        var answerer = whenPlanShows(.change("Fewer tasks, please"))
+        out = await call("studio_plan", ["tasks": planTasks])
+        check(await answerer.value, "the plan card waits in the panel with Approve")
+        check(out.text.contains("Fewer tasks, please") && studio.plan == nil, "Change… sends the note back to the architect")
+        answerer = whenPlanShows(.approved)
+        out = await call("studio_plan", ["tasks": planTasks])
+        _ = await answerer.value
+        check(out.text.contains("approved") && studio.plan?.tasks.count == 3, "Approve: the plan is the panel's checklist (\(out.text.prefix(50)))")
+        out = await call("delegate", ["task": "rev"])
+        check(out.isError && out.text.contains("waits for"), "a task waiting on others can't start yet")
+
+        // Two workers at once: two pointers, the second waits for the movie, cost sheets one at a time with the worker's name.
+        final class Watch { var pointers = 0; var captions: [String] = []; var waited = false; var sheets = 0 }
+        let watch = Watch()
+        /// With AISTUDIO_SMOKE_SNAPSHOTS=<folder>, a picture of the overlay and the panel (to look at the icons).
+        func snapshot(_ w: NSWindow, _ name: String) {
+            guard let dir = ProcessInfo.processInfo.environment["AISTUDIO_SMOKE_SNAPSHOTS"], let v = w.contentView,
+                  let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+            v.cacheDisplay(in: v.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
+        }
+        var snapped = false
+        let watcher = Task { @MainActor in
+            while !Task.isCancelled {
+                let on = studio.cursors.filter { !$0.actor.isArchitect && $0.position != nil }.count
+                watch.pointers = max(watch.pointers, on)
+                if on >= 2, !snapped, studio.cursors.contains(where: { !$0.actor.isArchitect && $0.caption != nil }) {
+                    snapped = true
+                    try? await Task.sleep(for: .milliseconds(250))
+                    snapshot(studio.overlay, "studio-overlay")
+                    snapshot(studio.panel, "studio-panel")
+                }
+                for c in studio.cursors where !c.actor.isArchitect {
+                    if let cap = c.caption, cap.contains("Waiting for") { watch.waited = true }
+                }
+                if let w = studio.waitingOnUser, !watch.captions.contains(w) { watch.captions.append(w) }
+                if let g = doc.pendingGate {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    if let w = studio.waitingOnUser, !watch.captions.contains(w) { watch.captions.append(w) }
+                    doc.pendingGate = nil
+                    g.run()
+                    watch.sheets += 1
+                }
+                try? await Task.sleep(for: .milliseconds(30))
+            }
+        }
+        let keysBefore = doc.movie.shots.prefix(2).map(\.keyframes.count)
+        n += 1
+        // One delegate call with both tasks: they run side by side whether or not the model batches its calls.
+        let r1 = await call("delegate", ["tasks": ["k1", "k2"]])
+        await settle(0.4)
+        check(r1.text.contains("Worker 1 on") && r1.text.contains("Worker 2 on") && r1.text.components(separatedBy: "Result: done").count == 3,
+              "one delegate call ran both tasks and brought both reports (\(r1.text.prefix(80)))")
+        check(studio.plan?.task("k1")?.status == .done && studio.plan?.task("k2")?.status == .done, "their tasks are ticked off")
+        check(zip(doc.movie.shots.prefix(2).map(\.keyframes.count), keysBefore).allSatisfy { $0 > $1 }, "each made its shot's keyframe")
+        check(watch.pointers >= 2, "two worker pointers were on screen at once (\(watch.pointers))")
+        check(watch.waited, "the second worker waited for the movie to be free")
+        check(watch.sheets == 2 && watch.captions.contains { $0.hasPrefix("Worker 1 · ") } && watch.captions.contains { $0.hasPrefix("Worker 2 · ") },
+              "two cost sheets, one at a time, each labelled with its worker (\(watch.captions))")
+        check(r1.text.contains("Steps:\n✓ ") && studio.workerSteps["k1"]?.isEmpty == false, "the worker's steps are in its row and saved with the chat")
+        check(studio.panelFrame("studio-task-icon:k1") != nil, "the task row is the worker's dock, outside the main window")
+        await settle(1.2)
+        check(studio.cursor(.worker(1)).position == nil && studio.cursor(.worker(1)).state == .idle, "the finished worker flew home and docked")
+
+        // Off screen: while the architect holds the workflow page, the reviewer looks at shot 1 without navigating.
+        let wfID = model.active.id
+        await studio.go(.workflow(wfID))
+        let front = model.frontItem
+        try? await studio.holdScreen(.workflow(wfID))
+        var offscreen = false
+        let offWatch = Task { @MainActor in
+            while !Task.isCancelled {
+                if studio.cursors.contains(where: { !$0.actor.isArchitect && $0.offscreen }) { offscreen = true }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        out = await call("delegate", ["task": "rev"])
+        offWatch.cancel()
+        studio.releaseScreen()
+        check(out.text.contains("Result: done") && offscreen && model.frontItem == front && model.chatViewer == nil,
+              "a worker on another page acted off screen: the page in front stayed (off \(offscreen), front kept \(model.frontItem == front), viewer \(model.chatViewer == nil ? "shut" : "open"): \(out.text.prefix(160)))")
+        _ = await call("delegate", ["task": "rev", "feedback": "Look again"])
+        _ = await call("delegate", ["task": "rev", "feedback": "And once more"])
+        out = await call("delegate", ["task": "rev", "feedback": "A third time"])
+        check(out.isError && out.text.contains("do it yourself"), "a third retry is refused")
+        watcher.cancel()
+
+        // A pause stops every actor; Resume lets them all go.
+        studio.gate.pauseByUser()
+        final class Ran { var count = 0 }
+        let ran = Ran()
+        let acts = [StudioActor.architect, .worker(1), .worker(2)].map { a in
+            Task { @MainActor in
+                try? await StudioActorScope.$actor.withValue(a) {
+                    try await studio.act(StudioStep(doing: "Waiting", done: "Waited")) { ran.count += 1 }
+                }
+            }
+        }
+        await settle(0.3)
+        check(ran.count == 0, "a pause holds the architect and every worker")
+        studio.gate.resume()
+        for t in acts { await t.value }
+        check(ran.count == 3, "Resume lets them all go")
+
+        // The overlay: the whole display, above the panel, and it hides when another app is in front.
+        check(studio.overlay.frame == studio.displayFrame, "the overlay covers the main window's display")
+        check(studio.overlay.level.rawValue > studio.panel.level.rawValue && studio.overlay.ignoresMouseEvents,
+              "it sits above the panel and never takes a click")
+        check(studio.overlay.hidesOnDeactivate, "it hides while another app is in front")
+
         // The fallback: the window's controls, and a click on one.
         let lookStart = Date()
         let looked = await call("app_look", ["query": "sidebar-tab"])
@@ -292,5 +426,38 @@ extension SmokeTest {
         model.deleteMovie(doc.id)
         say(ok ? "PASS" : "FAILED")
         return ok
+    }
+}
+
+/// The workers' model in the smoke test: a brief "RUN keyframes shot N of T" runs them, "LOOK shot N of T" looks at
+/// them; after a tool result it reports.
+final class SmokeWorkerModel: ChatStreaming, @unchecked Sendable {
+    func stream(_ request: ChatRequest) -> AsyncThrowingStream<ChatEvent, Error> {
+        let lastIsTool = request.messages.contains { $0.role == .tool }  // (look_at's images follow as a user message)
+        let brief = request.messages.first { $0.role == .user }?.text ?? ""
+        return AsyncThrowingStream { c in
+            Task {
+                try? await Task.sleep(for: .milliseconds(80))
+                if lastIsTool {
+                    c.yield(.content("Did it.\nResult: done"))
+                } else {
+                    let parts = brief.components(separatedBy: " of ")
+                    let movie = parts.count > 1 ? parts[1] : ""
+                    let shot = Int(parts[0].split(separator: " ").last ?? "") ?? 1
+                    let json: [String: Any]
+                    let name: String
+                    if brief.hasPrefix("RUN") {
+                        name = "movie_run"
+                        json = ["movie": movie, "work": "keyframes", "shots": [shot]]
+                    } else {
+                        name = "look_at"
+                        json = ["movie": movie, "kind": "keyframe", "shot": shot]
+                    }
+                    let args = String(data: (try? JSONSerialization.data(withJSONObject: json)) ?? Data(), encoding: .utf8) ?? "{}"
+                    c.yield(.toolCall(index: 0, id: "w\(UUID().uuidString.prefix(6))", name: name, arguments: args))
+                }
+                c.finish()
+            }
+        }
     }
 }

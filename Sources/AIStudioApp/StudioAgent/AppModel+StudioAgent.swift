@@ -76,7 +76,12 @@ extension AppModel {
         studio.model = self
         let vision = llm.model(key)?.vision == true
         let session = StudioSession(app: self, vision: vision)
-        var setup = AgentSetup(tools: StudioTools.all(session), root: library.root) { [weak self] in
+        // Workers: the same model and GPU with less thinking ("low", or "off" for on/off thinking).
+        let efforts = llm.model(key)?.efforts ?? []
+        let effort = efforts.contains("low") ? "low" : efforts.contains("off") ? "off" : nil
+        let workers = StudioWorkers(session: session, client: studioWorkerClient ?? client.chat, model: key.modelID, effort: effort,
+                                    inlineThinking: llm.model(key)?.reasoningParser == nil, vision: vision)
+        var setup = AgentSetup(tools: StudioTools.all(session) + StudioTools.architect(workers), root: library.root) { [weak self] in
             self.map { StudioTools.systemPrompt($0, vision: vision) } ?? ""
         }
         setup.saveImages = true
@@ -260,6 +265,19 @@ enum StudioTools {
         - The app_* tools click and type in the window like a person. Use them only when no other tool does the step \
         (look first with app_look).
         - Keep your messages short: say what you're about to do and what you found. Use todo_write for longer jobs.
+
+        You're the architect, with up to \(StudioPlan.maxWorkers) workers (the same model, thinking less, each with its own pointer):
+        - A job with two or more parts that can go on side by side (keyframes for different shots, reviewing many \
+        takes, voices and music) goes through studio_plan: tasks with complete briefs (a worker sees only its brief: \
+        say which movie, shots, what to write or check, and what a good result looks like), their paid stages and a \
+        rough cost. Wait for the user's answer; on a change note, plan again.
+        - Then delegate every ready task in one call (tasks: [ids]) so they run at the same time. Workers can read, edit \
+        prompts, run stages (the user still presses Run on each cost sheet), choose takes and look_at results; they \
+        can't navigate on their own, approve, export, delete or ask the user. Workflow tasks need the screen: give \
+        them to one worker at a time, or do them yourself.
+        - Check each report (look_at, movie_get) before going on. If it's wrong, delegate the same task again with \
+        specific feedback, at most twice; then do it yourself, or ask the user when the fix needs another paid run.
+        - Small requests (one step or two): just do them yourself, without a plan.
 
         The app now:
         \(state)
