@@ -396,6 +396,8 @@ struct PermissionCard: View {
         case .orchestrate: return "Run this flow?"
         case .observe: return "Let the agent look at \(request.preview.appName ?? "this app")?"
         case .control: return "Let the agent use the mouse and keyboard in \(request.preview.appName ?? "this app")?"
+        case .studio: return "\(request.preview.title)?"
+        case .destructive: return "\(request.preview.title)? This can't be undone in the app."
         }
     }
 
@@ -610,7 +612,8 @@ struct PermissionModeMenu: View {
     }
 
     var body: some View {
-        if doc.isAgent {
+        // The Studio agent has no modes: deletes ask, paid runs wait on the cost sheet, the rest just happens.
+        if doc.isAgent && !doc.isStudio {
             MGMenuButton(kind: .plain) {
                 // Auto mode needs a reviewer, which only coding chats set up.
                 for m in PermissionMode.allCases where m != .auto || doc.isCoding {

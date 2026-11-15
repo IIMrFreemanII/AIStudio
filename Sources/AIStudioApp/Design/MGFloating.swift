@@ -318,26 +318,41 @@ extension View {
     }
 }
 
-/// Named anchors for the chrome smoke test (only placed in automated runs), so it can click real controls.
+/// Named anchors on controls: where the Studio agent's pointer goes (`StudioFocusOverlay`) and what the chrome smoke
+/// test clicks. A name is registered while its view is on screen; several views with one name: the latest to appear.
 @MainActor
 enum MGTestAnchors {
     static var anchors: [String: MGScreenAnchor] = [:]
-    static func frame(_ name: String) -> CGRect? { anchors[name]?.screenFrame }
+    static func frame(_ name: String) -> CGRect? {
+        guard let a = anchors[name], let f = a.screenFrame, f.width > 0, f.height > 0 else { return nil }
+        return f
+    }
+    /// The anchor's window (to tell the main window's controls from a sheet's or the panel's).
+    static func window(_ name: String) -> NSWindow? { anchors[name]?.window }
+    /// Names registered now that start with `prefix`.
+    static func names(prefix: String) -> [String] { anchors.keys.filter { $0.hasPrefix(prefix) }.sorted() }
 }
 
-private struct MGTestAnchorModifier: ViewModifier {
+private struct MGTargetModifier: ViewModifier {
     let name: String
     @State private var anchor = MGScreenAnchor()
 
     func body(content: Content) -> some View {
-        if AppModel.isAutomatedRun {
-            content.mgAnchor(anchor).onAppear { MGTestAnchors.anchors[name] = anchor }
-        } else {
-            content
-        }
+        content.mgAnchor(anchor)
+            .onAppear { MGTestAnchors.anchors[name] = anchor }
+            .onChange(of: name) { old, new in
+                if MGTestAnchors.anchors[old] === anchor { MGTestAnchors.anchors[old] = nil }
+                MGTestAnchors.anchors[new] = anchor
+            }
+            .onDisappear { if MGTestAnchors.anchors[name] === anchor { MGTestAnchors.anchors[name] = nil } }
     }
 }
 
 extension View {
-    func mgTestAnchor(_ name: String) -> some View { modifier(MGTestAnchorModifier(name: name)) }
+    /// Names this control for the Studio agent's pointer (and the smoke tests).
+    func mgTarget(_ name: String) -> some View { modifier(MGTargetModifier(name: name)) }
+    /// `mgTarget` for a card in a scrolling page: also its scroll id, so the page can bring it into view.
+    func mgScrollTarget(_ name: String) -> some View { id(name).mgTarget(name) }
+    /// The smoke tests' name for `mgTarget`.
+    func mgTestAnchor(_ name: String) -> some View { mgTarget(name) }
 }

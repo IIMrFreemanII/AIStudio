@@ -260,11 +260,17 @@ public struct LLMInstallRequest: Encodable, Sendable {
 /// The GPU server's LLM routes (`v1/llm/…`): installs, warmth and status. Chats go through ``OpenAIChatClient``.
 public struct LLMServerClient: Sendable {
     public let http: HTTPService
+    /// What chats do when their model waits too long for a GPU (nil: they wait).
+    public var gpuWait: GPUWaitPolicy?
 
     public init(http: HTTPService) { self.http = http }
     public init(baseURL: URL, token: String) { http = HTTPService(baseURL: baseURL, token: token) }
 
-    public var chat: OpenAIChatClient { OpenAIChatClient(http: http) }
+    public var chat: OpenAIChatClient {
+        var c = OpenAIChatClient(http: http)
+        c.gpuWait = gpuWait
+        return c
+    }
 
     /// Uploads a chat's video unless the server has it (resumable) and returns the URL a message uses for it:
     /// `upload:<name>`. The server stores files by content, `<sha256>.<ext>`: the composer saves attachments under

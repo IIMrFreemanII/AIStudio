@@ -156,6 +156,7 @@ private struct MovieErrorBar: View {
 
 /// A stage page: a scrolling column with the stage's title and actions on top.
 struct MoviePage<Actions: View, Content: View>: View {
+    @Environment(AppModel.self) private var model
     let title: String
     let subtitle: String
     @ViewBuilder var actions: Actions
@@ -174,11 +175,18 @@ struct MoviePage<Actions: View, Content: View>: View {
             }
             .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 14)
             MGDivider()
-            ScrollView {
-                content
-                    .padding(.horizontal, 24).padding(.vertical, 18)
-                    .frame(maxWidth: 1100, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content
+                        .padding(.horizontal, 24).padding(.vertical, 18)
+                        .frame(maxWidth: 1100, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                // The Studio agent's pointer is going to a card below the fold: bring it into view first.
+                .onChange(of: model.studio.scrollRequest?.id) { _, _ in
+                    guard let target = model.studio.scrollRequest?.target else { return }
+                    withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(target, anchor: .center) }
+                }
             }
         }
     }

@@ -113,6 +113,10 @@ final class AppModel {
     var workflowInFront: Bool { activeChat == nil && activeMovie == nil }
     /// The graph helpers of workflow tabs, while open (docked, not tabs).
     var helperChats: [ChatDocument] = []
+    /// The Studio agent: its floating panel, the focus it shows in this window, and its gate.
+    @ObservationIgnored let studio = StudioController()
+    /// The cost sheet of a workflow run the Studio agent started on the cloud GPU (Run or Cancel is the user's).
+    var studioRunGate: CostGate?
     /// The graph helper panel next to the graph.
     var showHelper = UserDefaults.standard.bool(forKey: "showHelper") {
         didSet {

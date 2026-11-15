@@ -89,6 +89,11 @@ extension AppModel {
 
     /// Opens a saved chat (or brings it to the front if it's loaded).
     func openChat(_ id: UUID) {
+        // The Studio agent's sessions open in its floating panel.
+        if studio.chat?.id == id || chatSummaries.first(where: { $0.id == id })?.studio == true {
+            openStudioAgent(id)
+            return
+        }
         if let doc = chats.first(where: { $0.id == id }) {
             doc.isRecent = true
             activeChatID = id
@@ -358,6 +363,10 @@ extension AppModel {
             runAgent(doc, key: key, client: client, setup: setup, add: add)
             return
         }
+        if doc.isStudio {
+            studioReply(doc, key: key, client: client, add: add)
+            return
+        }
         if doc.isGraphHelper {
             guard let workflow = document(id: doc.workflowID) ?? (doc.workflowID == nil ? active : nil) else {
                 var t = ChatTurn(role: .assistant, text: "")
@@ -603,6 +612,7 @@ extension AppModel {
         doc.todoStepStarted = nil
         doc.requestStarted = Date()
         doc.engine = nil
+        if llm.fallbackRuns[key] == nil, llm.switchTasks[key] == nil { llm.gpuNotes[key] = nil }
         llm.lastActivity = Date()
         // The first assistant message takes the reply's place (a retry's sibling); the rest follow it.
         var start = ChatTurn(role: .assistant, text: "", model: key.modelID)
@@ -738,7 +748,7 @@ extension AppModel {
                                     self?.refreshGitSoon(doc)
                                     self?.codeGraphToolFinished(doc, callID: id)
                                 }
-                                let shots = setup.uiTools ? self?.saveToolImages(output, doc: doc) : nil
+                                let shots = setup.uiTools || setup.saveImages ? self?.saveToolImages(output, doc: doc) : nil
                                 if let t = doc.transcript.turns.last(where: { $0.toolCallID == id }) {
                                     doc.transcript.update(t.id) {
                                         $0.text = output.text
@@ -907,6 +917,8 @@ struct AgentSetup {
     var coding = false
     /// The `ui_*` tools are in `tools`: the run gives them a driver.
     var uiTools = false
+    /// Tool results' images are saved with the chat (their step rows show them).
+    var saveImages = false
 
     init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
         self.tools = tools

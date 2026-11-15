@@ -280,6 +280,9 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     public var allowCommands: [String]?
     /// A graph helper chat: its tools edit and run a workflow tab (the one it's docked on, saved by that tab).
     public var graphHelper: Bool?
+    /// The Studio agent: its tools use AIStudio itself (movies, workflows, the viewer), and it lives in the floating
+    /// Studio Agent panel.
+    public var studioAgent: Bool?
     /// "Always allow" for a graph helper's workflow runs.
     public var allowRuns: Bool?
     /// "Always allow" for web domains (`web_fetch`).
@@ -495,6 +498,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         copy.allowObserveApps = allowObserveApps
         copy.allowControlApps = allowControlApps
         copy.graphHelper = graphHelper
+        copy.studioAgent = studioAgent
         copy.allowRuns = allowRuns
         copy.brief = brief
         copy.parentID = id
@@ -527,7 +531,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
-        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, allowRuns, allowDomains
+        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, studioAgent, allowRuns, allowDomains
         case allowObserveApps, allowControlApps
         case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen, sidePanel, sidePanelClosed, browserURL
         case openFiles, activeFile
@@ -548,6 +552,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         allowEdits = try c.decodeIfPresent(Bool.self, forKey: .allowEdits)
         allowCommands = try c.decodeIfPresent([String].self, forKey: .allowCommands)
         graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
+        studioAgent = try c.decodeIfPresent(Bool.self, forKey: .studioAgent)
         allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
         allowDomains = try c.decodeIfPresent([String].self, forKey: .allowDomains)
         allowObserveApps = try c.decodeIfPresent([String].self, forKey: .allowObserveApps)
@@ -591,6 +596,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(allowEdits, forKey: .allowEdits)
         try c.encodeIfPresent(allowCommands, forKey: .allowCommands)
         try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
+        try c.encodeIfPresent(studioAgent, forKey: .studioAgent)
         try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
         try c.encodeIfPresent(allowDomains, forKey: .allowDomains)
         try c.encodeIfPresent(allowObserveApps, forKey: .allowObserveApps)

@@ -19,6 +19,11 @@ public enum ToolEffect: String, Codable, Sendable {
     /// Uses the mouse and keyboard in another app (`ui_click`, `ui_type`…): asks per app unless always-allowed for
     /// it, also in Auto-accept Edits; refused in plan mode.
     case control
+    /// Uses AIStudio itself for the Studio agent (navigating, typing prompts, choosing takes, starting work that
+    /// waits on the app's own cost sheet): free except in plan mode.
+    case studio
+    /// Deletes, overwrites or installs something (a take, a movie, a model): asks every time, free only in Bypass.
+    case destructive
 }
 
 /// How much the agent may do without asking, as in Claude Code.
@@ -209,6 +214,12 @@ public enum PermissionEngine {
             if mode == .plan { return .deny("Plan mode is read only: the agent may look at apps but not click or type in them.") }
             guard let app else { return .ask }
             return rules.controlApps.contains(app) ? .allow : .ask
+        case .studio:
+            if mode == .plan { return .deny("Plan mode is read only: look around the app, but don't change anything.") }
+            return .allow
+        case .destructive:
+            if mode == .plan { return .deny("Plan mode is read only: nothing is deleted.") }
+            return .ask
         }
     }
 }
@@ -240,6 +251,10 @@ extension PermissionEngine {
         case .control:
             guard let app else { return .review }
             return rules.controlApps.contains(app) ? .allow : .review
+        case .studio:
+            return .allow
+        case .destructive:
+            return .ask
         }
     }
 }

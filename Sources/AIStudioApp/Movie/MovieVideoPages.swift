@@ -145,6 +145,7 @@ private struct ClipCard: View {
             if doc.movie.approved.contains(.video), !doc.isBusy { doc.movie.reopen(.video) }
         }
         .mgTestAnchor("movie-clip-card")
+        .mgScrollTarget("movie-clip:\(shot.id.uuidString)")
     }
 
     private func startsFromClip(_ ends: MovieShots.Ends?) -> Bool {

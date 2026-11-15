@@ -95,6 +95,7 @@ private struct CastCard: View {
             if doc.movie.approved.contains(.cast), !doc.isBusy { doc.movie.reopen(.cast) }
         }
         .mgTestAnchor("movie-cast-card")
+        .mgScrollTarget("movie-cast:\(character.id)")
     }
 
     private var shotCount: String {
@@ -221,6 +222,7 @@ private struct KeyframeCard: View {
             if doc.movie.approved.contains(.keyframes), !doc.isBusy { doc.movie.reopen(.keyframes) }
         }
         .mgTestAnchor("movie-keyframe-card")
+        .mgScrollTarget("movie-keyframe:\(shot.id.uuidString)")
     }
 }
 
