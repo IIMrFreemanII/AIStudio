@@ -266,6 +266,43 @@ extension SmokeTest {
         await waitForJob(doc)
         check(doc.error == nil && doc.movie.music.count == 2 && doc.movie.music.allSatisfy { ($0.selectedTake?.seconds ?? 0) >= 10 },
               "each scene has its music, at least 10 s\(doc.error.map { ": \($0)" } ?? "")")
+        // A take's bar: stopped, a click halfway only moves the playhead; play starts there; a click while it plays
+        // plays on from the new place; pause keeps the place.
+        if let fx = doc.movie.shots[0].sounds.first(where: { $0.id == doc.movie.shots[0].selectedSound })?.file {
+            let url = store.folder(doc.id).appendingPathComponent(fx)
+            let player = MovieSoundPlayer.shared
+            player.seek(url, fraction: 0.5)
+            check(player.current == url && !player.isPlaying && abs(player.position - player.duration / 2) < 0.01,
+                  "stopped, a click halfway moves the playhead without playing: \(player.position) of \(player.duration) s")
+            player.toggle(url)
+            check(player.isPlaying && abs(player.position - player.duration / 2) < 0.2, "play starts from there")
+            player.seek(url, fraction: 0.25)
+            check(player.isPlaying && abs(player.position - player.duration / 4) < 0.2, "a click while playing plays on from there")
+            player.toggle(url)
+            let paused = player.position
+            check(!player.isPlaying && paused >= player.duration / 4 - 0.2, "pause keeps the place")
+            player.restart(url)
+            check(player.isPlaying && player.position < 0.2, "replay starts from the top")
+            // The viewer: a shot's takes, titled, at the one asked for; opening it stops the bar's sound.
+            model.openMovieViewer(doc, takes: doc.movie.shots[0].sounds, name: "Shot 1 effects",
+                                  take: doc.movie.shots[0].selectedSound)
+            check(model.chatViewer?.urls.first == url && model.chatViewer?.titles?.first == "Shot 1 effects · Take 1"
+                  && player.current == nil, "a sound take opens in the viewer and the bar stops")
+            model.chatViewer = nil
+        }
+        model.viewShotClips(doc, shot: doc.movie.shots[0].id)
+        let clips = doc.movie.shots[0].videos
+        check(model.chatViewer?.urls.count == clips.count && model.chatViewer?.titles?.last == "Shot 1 · Take \(clips.count)"
+              && model.chatViewer.map { $0.urls[$0.index].lastPathComponent }
+                == doc.movie.shots[0].selectedVideoFile.map { ($0 as NSString).lastPathComponent },
+              "shot 1's clips open in the viewer at the chosen take: \(String(describing: model.chatViewer?.titles))")
+        model.viewKeyframes(doc, shot: doc.movie.shots[0].id)
+        check(model.chatViewer?.titles?.first == "Shot 1 keyframe · Take 1", "and its keyframes")
+        if let c = doc.movie.characters.first {
+            model.viewSheets(doc, character: c.id)
+            check(model.chatViewer?.titles?.first == "\(c.name) sheet · Take 1", "and a character's sheets")
+        }
+        model.chatViewer = nil
         doc.movie.approve(.sound)
         check(doc.movie.currentStage == .edit, "then the edit")
 

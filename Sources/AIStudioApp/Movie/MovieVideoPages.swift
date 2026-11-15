@@ -100,7 +100,8 @@ private struct ClipCard: View {
             }
             if let take = shot.selectedVideoTake {
                 MovieClipPlayer(url: model.movieStore.url(doc.id, relative: take.file),
-                                poster: take.poster.map { model.movieStore.url(doc.id, relative: $0) })
+                                poster: take.poster.map { model.movieStore.url(doc.id, relative: $0) },
+                                open: { model.viewShotClips(doc, shot: shot.id) })
                     .aspectRatio(doc.movie.aspect.videoRatio, contentMode: .fit)
             } else if let file = shot.selectedKeyframeFile {
                 MovieStill(url: model.movieStore.url(doc.id, relative: file), maxPixels: 840)
@@ -115,7 +116,8 @@ private struct ClipCard: View {
             if shot.videos.count > 1 {
                 TakeStrip(doc: doc, takes: shot.videos, selected: shot.selectedVideo, height: 54,
                           select: { model.selectClip(doc, shot: shot.id, take: $0) },
-                          delete: { model.deleteTake(doc, shot: shot.id, take: $0) })
+                          delete: { model.deleteTake(doc, shot: shot.id, take: $0) },
+                          open: { model.viewShotClips(doc, shot: shot.id, take: $0) })
             }
             TextField("What moves: people, camera, the place", text: $shot.motionPrompt, axis: .vertical)
                 .lineLimit(2...5).font(.mgCallout)
@@ -151,10 +153,13 @@ private struct ClipCard: View {
     }
 }
 
-/// A clip's poster with a play button; plays inline once clicked.
+/// A clip's poster with a play button; plays inline once clicked. Its corner button opens it in the viewer (and it
+/// pauses while the viewer is open).
 struct MovieClipPlayer: View {
+    @Environment(AppModel.self) private var model
     let url: URL
     let poster: URL?
+    var open: (() -> Void)? = nil
     @State private var player: AVPlayer?
 
     var body: some View {
@@ -176,6 +181,10 @@ struct MovieClipPlayer: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if let open { MovieExpandButton { player?.pause(); open() }.padding(6) }
+        }
+        .onChange(of: model.chatViewer != nil) { _, viewing in if viewing { player?.pause() } }
         .onChange(of: url) { _, _ in player?.pause(); player = nil }
         .onDisappear { player?.pause() }
     }
@@ -300,6 +309,7 @@ struct MovieEditPage: View {
             let now = player.timeControlStatus == .playing
             if now != playing { playing = now }
         }
+        .onChange(of: model.chatViewer != nil) { _, viewing in if viewing { player.pause() } }
         .onDisappear { player.pause() }
     }
 
@@ -374,7 +384,8 @@ private struct MovieTimelineView: View {
                 ForEach(Array(timeline.clips.enumerated()), id: \.element.id) { i, clip in
                     if let n = doc.movie.shots.firstIndex(where: { $0.id == clip.shot }) {
                         TimelineClipView(doc: doc, clip: clip, number: n + 1, scale: scale, height: laneHeight,
-                                         selected: selected == clip.shot) {
+                                         selected: selected == clip.shot,
+                                         open: { model.viewShotClips(doc, shot: clip.shot) }) {
                             selected = clip.shot
                             seek(clip.start)
                         }
@@ -392,7 +403,9 @@ private struct MovieTimelineView: View {
                     }
                 ForEach(timeline.sounds) { sound in
                     if let row = rows.firstIndex(where: { $0.kind == sound.kind && $0.track == sound.track }) {
-                        TimelineSoundView(sound: sound, scale: scale, height: soundHeight)
+                        TimelineSoundView(sound: sound, scale: scale, height: soundHeight) {
+                            model.openMovieViewer(doc, files: [sound.file], titles: [sound.label], index: 0)
+                        }
                             .offset(x: CGFloat(sound.start * scale),
                                     y: rulerHeight + 6 + laneHeight + 10 + CGFloat(row) * (soundHeight + 4))
                     }
@@ -430,6 +443,8 @@ private struct TimelineSoundView: View {
     let sound: MovieTimeline.Sound
     let scale: Double
     let height: CGFloat
+    /// Opens its take in the viewer (double-click).
+    let open: () -> Void
 
     var body: some View {
         let tint: Color = switch sound.kind {
@@ -452,8 +467,11 @@ private struct TimelineSoundView: View {
         .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(tint.opacity(0.6)))
         .foregroundStyle(tint)
         .clipped()
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: open)
+        .mgContextMenu { MGMenuItem.button("Open in Viewer", action: open) }
         .mgHelp("\(sound.kind == .dialogue ? "Line" : sound.kind == .effects ? "Sound effects" : "Music"): \(sound.label) · "
-                + String(format: "%.1f s", sound.duration))
+                + String(format: "%.1f s", sound.duration) + " · double-click to open it")
     }
 }
 
@@ -466,6 +484,8 @@ private struct TimelineClipView: View {
     let scale: Double
     let height: CGFloat
     let selected: Bool
+    /// Opens the shot's clips in the viewer (double-click).
+    let open: () -> Void
     let tap: () -> Void
     /// Seconds trimmed while a handle is dragged (committed on release).
     @State private var dragStart: Double = 0
@@ -504,6 +524,7 @@ private struct TimelineClipView: View {
         .overlay(alignment: .trailing) { handle(leading: false) }
         .offset(x: CGFloat(dragStart * scale))
         .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: open)
         .onTapGesture(perform: tap)
         .draggable(clip.shot.uuidString) {
             Text("Shot \(number)").font(.mgFootnote).padding(6).background(MG.card)
@@ -514,13 +535,15 @@ private struct TimelineClipView: View {
             return true
         }
         .mgContextMenu {
+            MGMenuItem.button("Open in Viewer", action: open)
+            MGMenuItem.divider
             for t in ShotTransition.allCases {
                 MGMenuItem.button(t.title, checked: clip.transition == t) { setTransition(t) }
             }
             MGMenuItem.divider
             MGMenuItem.button("Reset Trim") { setTrim(start: 0, end: 0) }
         }
-        .mgHelp("Shot \(number): click to select, drag to move, drag an edge to trim")
+        .mgHelp("Shot \(number): click to select, double-click to open, drag to move, drag an edge to trim")
     }
 
     private var transitionSymbol: String {
