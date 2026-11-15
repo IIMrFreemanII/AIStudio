@@ -17,6 +17,7 @@ struct SessionItem: Identifiable, Equatable {
     var projectPath: String?
     var coding: Bool
     var helper: Bool
+    var studio = false
     var open: Bool
     var snippet: String?
     var depth = 0
@@ -81,15 +82,15 @@ struct SessionsPanel: View {
 
     /// Every saved session plus loaded ones that aren't saved yet; loaded ones show their live title and status.
     private func allItems() -> [SessionItem] {
-        let docs = model.chats + model.helperChats
+        let docs = model.chats + model.helperChats + (model.studio.chat.map { [$0] } ?? [])
         var items: [SessionItem] = model.chatSummaries.map { s in
             if let d = docs.first(where: { $0.id == s.id }) {
                 return item(of: d, date: s.updated)
             }
             return SessionItem(id: s.id, title: s.title, modelID: s.modelID ?? "", date: s.updated, status: s.status,
                                pinned: s.pinned, archived: s.archived, parentID: s.parentID, branch: s.branch,
-                               projectName: s.projectName, projectPath: s.projectPath, coding: s.coding, helper: s.helper, open: false,
-                               todoDone: s.todoDone, todoTotal: s.todoTotal)
+                               projectName: s.projectName, projectPath: s.projectPath, coding: s.coding, helper: s.helper,
+                               studio: s.studio, open: false, todoDone: s.todoDone, todoTotal: s.todoTotal)
         }
         let saved = Set(model.chatSummaries.map(\.id))
         for d in model.chats where !saved.contains(d.id) { items.append(item(of: d, date: nil)) }
@@ -105,7 +106,7 @@ struct SessionsPanel: View {
                            branch: t.worktree?.branch,
                            projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
                            projectPath: t.worktree?.repo ?? t.projectPath,
-                           coding: d.isCoding, helper: d.isGraphHelper, open: d.isRecent,
+                           coding: d.isCoding, helper: d.isGraphHelper, studio: d.isStudio, open: d.isRecent,
                            todoDone: progress?.0, todoTotal: progress?.1)
     }
 
@@ -370,7 +371,7 @@ struct SessionRow: View {
     @State private var hover = false
 
     private var kindIcon: String {
-        item.helper ? "wand.and.sparkles" : item.coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left"
+        item.studio ? "sparkles" : item.helper ? "wand.and.sparkles" : item.coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left"
     }
 
     var body: some View {

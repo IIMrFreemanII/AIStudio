@@ -32,6 +32,11 @@ struct ContentView: View {
                 }
                 .buttonStyle(.mg(.icon))
                 .mgHelp(panelOpen ? "Hide the sidebar (⌃⌘S)" : "Show the sidebar (⌃⌘S)")
+                Button { model.toggleStudioAgent() } label: { Image(systemName: "sparkles") }
+                    .buttonStyle(.mg(.icon))
+                    .mgHelp("Studio Agent: a chat that uses AIStudio for you while you watch (⌥⌘A)")
+                    .accessibilityLabel("Studio Agent")
+                    .mgTarget("studio-agent-button")
             } trailing: {
                 if model.workflowInFront { toolbarContent }
             }
@@ -140,6 +145,7 @@ struct ContentView: View {
         .mgSheet("save-preset", isPresented: $model.showSavePresetSheet) { SavePresetSheet() }
         .mgSheet("llm-add", item: $model.llmAddRequest) { r in LLMAddSheet(request: r) }
         .mgSheet("llm-settings", item: $model.llmSettingsRequest) { r in LLMSettingsSheet(request: r) }
+        .mgSheet("studio-run-gate", item: $model.studioRunGate) { gate in CostGateSheet(gate: gate) }
         .task { model.llm.start() }
         .mgPresentationHost(model.presenter)
     }
@@ -168,6 +174,7 @@ struct ContentView: View {
             }
             .buttonStyle(.mg(.prominent))
             .mgHelp("Queue the current workflow (⌘↩)")
+            .mgTarget("generate-button")
             Button { withAnimation { model.showResultsPane.toggle() } } label: {
                 Image(systemName: "rectangle.bottomhalf.inset.filled")
             }

@@ -113,6 +113,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-studio-agent") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runStudioAgent(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-movie") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -538,6 +545,9 @@ struct AppCommands: Commands {
         }
         // The open workflows and recent chats, ⌘1–⌘9, as the sidebar has no tabs.
         CommandGroup(before: .windowList) {
+            Button("Studio Agent") { model.toggleStudioAgent() }
+                .keyboardShortcut("a", modifiers: [.command, .option])
+            Divider()
             let items = model.openItems
             ForEach(Array(items.prefix(9).enumerated()), id: \.offset) { i, item in
                 Toggle(model.title(of: item), isOn: Binding(get: { item == model.frontItem }, set: { _ in model.show(item) }))

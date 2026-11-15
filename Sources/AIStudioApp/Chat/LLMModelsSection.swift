@@ -364,6 +364,8 @@ struct LLMSettingsSheet: View {
     @State private var replanTask: Task<Void, Never>?
     /// The context the model had saved when the sheet opened: always a choice, even if it isn't a standard step.
     @State private var savedContext = 0
+    /// GPU presets to try, in order, when the chosen GPU doesn't come within 30 s (kept by the app, not the server).
+    @State private var fallbackList: [GPUPreset] = []
 
     /// Fast start needs one GPU: on several it shows (and saves) Standard.
     var fastStartAllowed: Bool { (option?.count ?? model.llm.model(request.key)?.count ?? 1) == 1 }
@@ -411,6 +413,7 @@ struct LLMSettingsSheet: View {
                         }
                     }
                 }
+                fallbackSection(plan)
                 if hiddenSmaller(plan) {
                     Text("Smaller GPUs can't hold \(contextLabel(context)) of context.")
                         .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
@@ -498,6 +501,50 @@ struct LLMSettingsSheet: View {
         return min(native, 1_048_576)
     }
 
+    /// "If the GPU doesn't come within 30 s": other presets to try in order, for that start only.
+    @ViewBuilder func fallbackSection(_ plan: LLMPlan) -> some View {
+        let current = option.map(GPUPreset.init)
+        let addable = gpuChoices(plan).filter { $0.maxContext >= context && GPUPreset($0) != current && !fallbackList.contains(GPUPreset($0)) }
+        MGSection("If the GPU doesn't come within 30 s") {
+            VStack(alignment: .leading, spacing: 6) {
+                if fallbackList.isEmpty {
+                    Text("Keep waiting for \(current?.label ?? "it").").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
+                ForEach(Array(fallbackList.enumerated()), id: \.element) { i, p in
+                    HStack(spacing: 6) {
+                        Text("\(i + 1). Try \(p.label)").font(.mgCallout)
+                        if let o = plan.options.first(where: { GPUPreset($0) == p }) {
+                            Text(String(format: "$%.2f/h", o.usdPerHour)).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                            if o.maxContext < context {
+                                Text("too small for \(contextLabel(context))").font(.mgFootnote).foregroundStyle(MG.warning)
+                            }
+                        }
+                        if p.count > 1, loadFormatShown == "processed" || snapshot {
+                            Text("no fast start or snapshot there").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        }
+                        Spacer()
+                        Button { fallbackList.swapAt(i, i - 1) } label: { Image(systemName: "arrow.up") }
+                            .buttonStyle(.mg(.icon)).controlSize(.small).disabled(i == 0)
+                            .mgHelp("Try it earlier")
+                        Button { fallbackList.remove(at: i) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.mg(.icon)).controlSize(.small)
+                            .mgHelp("Don't try this GPU")
+                    }
+                }
+                MGMenuButton(kind: .bordered) {
+                    for o in addable {
+                        MGMenuItem.button(gpuTitle(o)) { fallbackList.append(GPUPreset(o)) }
+                    }
+                    if addable.isEmpty { MGMenuItem.header("No other GPU fits this model and context") }
+                } label: {
+                    Label("Add a GPU to Try", systemImage: "plus").font(.mgFootnote)
+                }
+                .fixedSize()
+                .mgHelp("When a start has waited 30 s for its GPU, it's cancelled (nothing was billed) and the next GPU here is tried. The model goes back to its own GPU for the start after.")
+            }
+        }
+    }
+
     /// Every context up to the window (not tied to a GPU: the GPU follows the context), plus the saved one.
     var choices: [Int] {
         let native = nativeWindow
@@ -570,6 +617,7 @@ struct LLMSettingsSheet: View {
             loadFormat = model.llm.model(request.key)?.loadFormat ?? "auto"
             snapshot = model.llm.model(request.key)?.snapshot == true
             mtp = model.llm.model(request.key)?.mtp != false
+            fallbackList = model.llm.fallbacks(request.key)
         } catch {
             self.error = error.localizedDescription
         }
@@ -585,6 +633,7 @@ struct LLMSettingsSheet: View {
             if model.llm.model(request.key)?.isVLLM != false { changes["loadFormat"] = .string(loadFormatShown) }
             if model.llm.model(request.key)?.hasMTP == true { changes["mtp"] = .bool(mtp) }
             _ = try await client.update(request.key.modelID, changes)
+            model.llm.setFallbacks(fallbackList.filter { $0 != GPUPreset(o) }, for: request.key)
             if restart { await model.llm.stop(request.key) }
             await model.llm.refresh(request.key.serverID)
             dismiss()

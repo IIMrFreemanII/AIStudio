@@ -102,6 +102,7 @@ private struct VoiceCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-voice-card")
+        .mgScrollTarget("movie-voice:\(character.id)")
     }
 }
 
@@ -156,6 +157,7 @@ private struct ShotLinesCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-lines-card")
+        .mgScrollTarget("movie-lines:\(shot.id.uuidString)")
     }
 }
 
@@ -279,6 +281,7 @@ private struct MusicCueCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-music-card")
+        .mgScrollTarget("movie-music:\(cue.id)")
     }
 }
 
@@ -312,6 +315,7 @@ private struct EffectsCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-effects-card")
+        .mgScrollTarget("movie-effects:\(shot.id.uuidString)")
     }
 }
 

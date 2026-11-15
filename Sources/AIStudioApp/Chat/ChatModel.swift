@@ -244,7 +244,9 @@ final class ChatDocument: Identifiable {
     /// A graph helper: its tools work on a workflow tab (`workflowID`, else the active one).
     var isGraphHelper: Bool { transcript.graphHelper == true }
     /// Uses tools (and so permission modes).
-    var isAgent: Bool { isCoding || isGraphHelper }
+    var isAgent: Bool { isCoding || isGraphHelper || isStudio }
+    /// The Studio agent (it drives AIStudio from the floating panel).
+    var isStudio: Bool { transcript.studioAgent == true }
     /// The workflow tab a docked helper belongs to.
     var workflowID: UUID?
     /// The graph before and after the helper's last reply that changed it (for its Undo button).
@@ -348,6 +350,7 @@ struct ChatSummary: Identifiable, Hashable {
     var modelID: String?
     var coding = false
     var helper = false
+    var studio = false
     var status: SessionStatus = .idle
     var pinned = false
     var archived = false
@@ -397,7 +400,7 @@ struct ChatStore {
             else { return nil }
             let progress = t.todoProgress
             return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil,
-                               helper: t.graphHelper == true, status: t.savedStatus, pinned: t.pinned == true,
+                               helper: t.graphHelper == true, studio: t.studioAgent == true, status: t.savedStatus, pinned: t.pinned == true,
                                archived: t.archived == true, parentID: t.parentID, branch: t.worktree?.branch,
                                projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
                                projectPath: t.worktree?.repo ?? t.projectPath,
@@ -450,6 +453,16 @@ final class LLMCatalog {
     }
     /// The highest "so far" cost seen in the model's current warm period.
     @ObservationIgnored private var peakCost: [LLMKey: Double] = [:]
+
+    // GPU fallback (LLMGPUFallback.swift): each model's presets to try when its GPU doesn't come within 30 s, saved
+    // by "serverID|modelID"; the model's own settings while a start runs on another preset, and what the chip says.
+    var gpuFallbacks: [String: [GPUPreset]] = GPUFallback.decode(UserDefaults.standard.string(forKey: "gpuFallbacks")) {
+        didSet { if !AppModel.isAutomatedRun { UserDefaults.standard.set(GPUFallback.encode(gpuFallbacks), forKey: "gpuFallbacks") } }
+    }
+    var gpuNotes: [LLMKey: String] = [:]
+    @ObservationIgnored var fallbackRuns: [LLMKey: (original: LLMModel, tried: Set<GPUPreset>)] = [:]
+    @ObservationIgnored var switchTasks: [LLMKey: Task<String?, Never>] = [:]
+    @ObservationIgnored var lastSwitch: [LLMKey: Date] = [:]
     var refreshing: Set<String> = []
     /// What the user asked a model's server to do and it hasn't finished: one at a time per model. Menus show it
     /// greyed out ("Starting…"), and polls don't overwrite the status while it runs.
@@ -472,7 +485,9 @@ final class LLMCatalog {
 
     func client(_ serverID: String) -> LLMServerClient? {
         guard let c = connections.connection(serverID), c.kind == .gpu, let url = c.url else { return nil }
-        return LLMServerClient(baseURL: url, token: ConnectionToken.read(serverID) ?? "")
+        var client = LLMServerClient(baseURL: url, token: ConnectionToken.read(serverID) ?? "")
+        client.gpuWait = gpuWaitPolicy(serverID)
+        return client
     }
 
     var servers: [ServerConnection] { connections.gpuServers }

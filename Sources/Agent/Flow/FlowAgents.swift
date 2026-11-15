@@ -10,7 +10,7 @@ public enum FlowPolicy {
         case .edit, .read: return r.inProject ? .allow : .deny
         case .network: return .allow
         // Flow agents run unattended: they never look at or drive other apps.
-        case .run, .orchestrate, .graphEdit, .observe, .control: return .deny
+        case .run, .orchestrate, .graphEdit, .observe, .control, .studio, .destructive: return .deny
         }
     }
 }

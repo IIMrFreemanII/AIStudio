@@ -16,6 +16,12 @@ public struct OpenAIChatClient: Sendable {
     /// Seconds to wait before each new attempt after the connection dropped (see `stream`); its count is the number of
     /// retries.
     public var retryDelays: [Double] = [1, 2, 4, 8, 15]
+    /// Moves the model to another GPU when its own doesn't come in time (nil: the stream waits).
+    public var gpuWait: GPUWaitPolicy?
+
+    /// Thrown inside an attempt when its start has waited past `gpuWait.limit`: the attempt ends, the model moves to
+    /// another GPU, and the request goes again.
+    struct WaitedTooLong: Error {}
 
     /// The reply as events. Cancel the consuming task (or stop iterating) to stop generation.
     ///
@@ -27,24 +33,77 @@ public struct OpenAIChatClient: Sendable {
             let task = Task {
                 var lastStatus: EngineStatus?
                 var attempt = 0
+                // GPU fallback: when the start began waiting for a GPU, whether this stream moved the model (its own
+                // GPU goes back once the reply begins), and whether there's nothing left to move it to.
+                var waitingSince: Date?
+                var switched = false
+                var settled = false
+                var noMoreGPUs = false
+                let policy = gpuWait
+                func settle() {
+                    guard switched, !settled, let policy else { return }
+                    settled = true
+                    let model = request.model
+                    Task { await policy.settle(model) }
+                }
                 while true {
                     var began = false
                     do {
-                        try await once(request) { e in
+                        // Checked on every line (the server's pings come every few seconds; a status only when
+                        // the phase changes).
+                        func checkWait() throws {
+                            guard let policy, !noMoreGPUs, !began, lastStatus?.state == "starting" else { return }
+                            if waitingSince == nil { waitingSince = Date() }
+                            if GPUFallback.overdue(since: waitingSince, now: Date(), limit: policy.limit) { throw WaitedTooLong() }
+                        }
+                        try await once(request, tick: checkWait) { e in
                             switch e {
-                            case .status(let s): lastStatus = s
-                            default: began = true
+                            case .status(let s):
+                                lastStatus = s
+                                if s.state != "starting" { waitingSince = nil }
+                                try checkWait()
+                            default:
+                                began = true
+                                settle()
                             }
                             continuation.yield(e)
                         }
+                        settle()
                         continuation.finish()
                         return
-                    } catch {
-                        if error is CancellationError || Task.isCancelled {
+                    } catch is WaitedTooLong {
+                        let from = lastStatus?.gpu.map { GPUPreset(gpu: $0, count: lastStatus?.count ?? 1).label }
+                        continuation.yield(.status(EngineStatus(state: "starting", phase: "Switching GPUs",
+                                                                gpu: lastStatus?.gpu, count: lastStatus?.count)))
+                        if let label = await policy?.switchGPU(request.model) {
+                            switched = true
+                            continuation.yield(.status(EngineStatus(
+                                state: "starting",
+                                phase: "\(from ?? "Its GPU") didn't come in \(Int(policy?.limit ?? 30)) s: waiting for \(label)")))
+                        } else {
+                            noMoreGPUs = true  // keep waiting where it is
+                        }
+                        // The next attempt's wait counts from the server's own status for it.
+                        waitingSince = nil
+                        lastStatus = nil
+                        if Task.isCancelled {
+                            settle()
                             continuation.finish(throwing: CancellationError())
                             return
                         }
+                    } catch {
+                        if error is CancellationError || Task.isCancelled {
+                            settle()
+                            continuation.finish(throwing: CancellationError())
+                            return
+                        }
+                        // Another chat moved the model to another GPU while this one waited for it: wait again.
+                        if !began, let policy, GPUWaitPolicy.isStoppedStart(error), await policy.switchedRecently(request.model) {
+                            waitingSince = nil
+                            continue
+                        }
                         guard !began, attempt < retryDelays.count, Self.isTransient(error) else {
+                            settle()
                             continuation.finish(throwing: error)
                             return
                         }
@@ -73,7 +132,7 @@ public struct OpenAIChatClient: Sendable {
     }
 
     /// One request: its events, until `[DONE]` or the end of the stream.
-    private func once(_ request: ChatRequest, yield: (ChatEvent) -> Void) async throws {
+    private func once(_ request: ChatRequest, tick: () throws -> Void = {}, yield: (ChatEvent) throws -> Void) async throws {
         var request = request
         request.stream = true
         var r = http.request("\(apiPath)/chat/completions", method: "POST")
@@ -96,6 +155,7 @@ public struct OpenAIChatClient: Sendable {
         line.reserveCapacity(4096)
         for try await b in bytes {
             if b == 10 {
+                try tick()
                 if let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try Self.handle(e, yield: yield) { return }
                 line.removeAll(keepingCapacity: true)
             } else {
@@ -107,13 +167,13 @@ public struct OpenAIChatClient: Sendable {
     }
 
     /// Yields the event's chat events; true at `[DONE]`.
-    static func handle(_ e: SSEEvent, yield: (ChatEvent) -> Void) throws -> Bool {
+    static func handle(_ e: SSEEvent, yield: (ChatEvent) throws -> Void) throws -> Bool {
         switch e.event {
         case "aistudio.status":
-            if let s = try? JSONDecoder().decode(EngineStatus.self, from: Data(e.data.utf8)) { yield(.status(s)) }
+            if let s = try? JSONDecoder().decode(EngineStatus.self, from: Data(e.data.utf8)) { try yield(.status(s)) }
             return false
         case "aistudio.usage":
-            if let s = try? JSONDecoder().decode(RequestStats.self, from: Data(e.data.utf8)) { yield(.stats(s)) }
+            if let s = try? JSONDecoder().decode(RequestStats.self, from: Data(e.data.utf8)) { try yield(.stats(s)) }
             return false
         case "aistudio.error":
             let obj = try? JSONSerialization.jsonObject(with: Data(e.data.utf8)) as? [String: Any]
@@ -123,7 +183,7 @@ public struct OpenAIChatClient: Sendable {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(e.data.utf8)) as? [String: Any] else {
                 throw LLMError.badReply(String(e.data.prefix(200)))
             }
-            for ev in try ChunkDecoder.events(obj) { yield(ev) }
+            for ev in try ChunkDecoder.events(obj) { try yield(ev) }
             return false
         default:
             return false

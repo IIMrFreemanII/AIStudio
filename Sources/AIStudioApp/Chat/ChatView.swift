@@ -399,8 +399,9 @@ struct ChatTranscriptView: View {
                     let results = Dictionary(turns.compactMap { t in t.toolCallID.map { ($0, t) } },
                                              uniquingKeysWith: { _, last in last })
                     let runs = AgentRuns(shown, transcript: doc.transcript)
-                    let folding = RunFolding(open: doc.openRuns, results: results, streaming: doc.isStreaming,
-                                             asking: doc.permission?.call.id)
+                    // The Studio agent's panel lists every step (its step list), nothing folds.
+                    let folding = doc.isStudio ? nil : RunFolding(open: doc.openRuns, results: results, streaming: doc.isStreaming,
+                                                                  asking: doc.permission?.call.id)
                     ForEach(TranscriptRow.rows(shown, live: doc.liveTurnID, files: doc.isCoding ? doc.fileIndex : nil,
                                                bare: runs.bare, folding: folding)) { row in
                         ChatTurnView(doc: doc, turn: row.turn, results: results, part: row.part,
@@ -416,7 +417,7 @@ struct ChatTranscriptView: View {
                     }
                     Color.clear.frame(height: 1).padding(.top, 18).id("bottom")
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, doc.isStudio ? 12 : 24)
                 .padding(.vertical, 18)
                 .frame(maxWidth: 808)
                 .frame(maxWidth: .infinity)
@@ -880,7 +881,9 @@ struct ChatTurnView: View {
             case "show_widget": WidgetCard(doc: doc, call: call, result: result, live: live)
             case "todo_write": TodoUpdateRow(call: call)
             case "propose_session": SessionProposalCard(doc: doc, call: call, result: result)
-            default: ToolCard(doc: doc, call: call, result: result)
+            default:
+                if doc.isStudio { StudioStepRow(doc: doc, call: call, result: result) }
+                else { ToolCard(doc: doc, call: call, result: result) }
             }
         }
         .mgContextMenu {
@@ -1153,19 +1156,32 @@ struct ThinkingDisclosure: View {
 
 /// While a reply hasn't started: what the request waits for (a GPU, the weights loading), and for how long.
 struct WaitingLine: View {
+    @Environment(AppModel.self) private var model
     let doc: ChatDocument
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { ctx in
-            HStack(spacing: 8) {
-                MGSpinner().controlSize(.small)
-                let elapsed = Int(ctx.date.timeIntervalSince(doc.requestStarted ?? ctx.date))
-                let phase = doc.engine.map { e -> String in
-                    if let p = e.progress, p < 1, e.state == "loading" { return "\(e.phase ?? "Loading") \(Int(p * 100))%" }
-                    return e.phase ?? (e.state == "starting" ? "Waiting for a GPU" : "Starting the model")
-                } ?? "Waiting for the model"
-                Text(elapsed >= 3 ? "\(phase) · \(elapsed / 60):\(String(format: "%02d", elapsed % 60))" : phase)
-                    .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    MGSpinner().controlSize(.small)
+                    let elapsed = Int(ctx.date.timeIntervalSince(doc.requestStarted ?? ctx.date))
+                    let phase = doc.engine.map { e -> String in
+                        if let p = e.progress, p < 1, e.state == "loading" { return "\(e.phase ?? "Loading") \(Int(p * 100))%" }
+                        return e.phase ?? (e.state == "starting" ? "Waiting for a GPU" : "Starting the model")
+                    } ?? "Waiting for the model"
+                    Text(elapsed >= 3 ? "\(phase) · \(elapsed / 60):\(String(format: "%02d", elapsed % 60))" : phase)
+                        .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                }
+                // A start moved to another GPU because its own didn't come (see LLMGPUFallback).
+                if let key = doc.modelKey, let note = model.llm.gpuNotes[key] {
+                    Label(note, systemImage: "arrow.triangle.swap").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if let key = doc.modelKey, model.llm.fallbacks(key).isEmpty, doc.engine?.state == "starting",
+                          ctx.date.timeIntervalSince(doc.requestStarted ?? ctx.date) > LLMCatalog.gpuWaitLimit {
+                    Text("Tip: add other GPUs to try in the model's settings (GPUs, Context and Start-up) and a slow start switches to them after 30 s.")
+                        .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
     }
@@ -1472,7 +1488,7 @@ struct ChatComposer: View {
                 ColdModelHint(doc: doc)
             }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, doc.isStudio ? 10 : 24)
         .padding(.vertical, 12)
         .frame(maxWidth: 808)
         .frame(maxWidth: .infinity)

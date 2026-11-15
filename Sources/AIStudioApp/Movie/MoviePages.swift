@@ -366,6 +366,7 @@ private struct ShotCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-shot-card")
+        .mgScrollTarget("movie-shot:\(shot.id.uuidString)")
     }
 }
 
