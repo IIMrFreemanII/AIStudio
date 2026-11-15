@@ -98,9 +98,16 @@ final class LinkLibrary {
 
     // MARK: adding
 
-    /// Adds a resolved link and starts installing it on the chosen targets.
+    /// Adds a resolved link and starts installing it on the chosen targets. A link whose file is already in the library
+    /// isn't added twice (a second entry would install a second copy on a server): the existing entry is installed on
+    /// the targets it's missing from, and its id returned.
     @discardableResult
     func add(_ remote: LoRARemote, link: String, title: String, family: String?, mac: Bool, servers: [String]) -> String {
+        if let existing = Library.duplicate(of: remote, in: items) {
+            if mac, macState(existing) != .installed { installOnMac(existing.id) }
+            for s in servers where serverState(existing, s) != .installed { installOnServer(existing.id, s) }
+            return existing.id
+        }
         let id = Library.newID(for: title, existing: items)
         let item = LibraryEntry(id: id, kind: remote.kind, family: family, title: title, link: link, source: remote,
                                fileName: remote.fileName, sha256: remote.sha256, bytes: remote.totalBytes,

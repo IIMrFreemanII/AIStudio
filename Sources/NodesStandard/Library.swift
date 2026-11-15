@@ -99,6 +99,24 @@ public enum Library {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
+    /// The entry already holding this link's file, if any: the same SHA-256 (and the same companion, for a Wan 2.2
+    /// pair), or the same download URL when either side has no hash.
+    public static func duplicate(of remote: LoRARemote, in items: [LibraryEntry]) -> LibraryEntry? {
+        func same(_ a: String?, _ b: String?) -> Bool? {
+            guard let a, let b else { return nil }
+            return a.caseInsensitiveCompare(b) == .orderedSame
+        }
+        return items.first { item in
+            guard let s = item.source else { return false }
+            let file = same(s.sha256, remote.sha256) ?? (s.downloadURL == remote.downloadURL)
+            let companion = s.companion == nil && remote.companion == nil
+                || (s.companion != nil && remote.companion != nil
+                    && (same(s.companion?.sha256, remote.companion?.sha256)
+                        ?? (s.companion?.downloadURL == remote.companion?.downloadURL)))
+            return file && companion
+        }
+    }
+
     /// A new id: the title as a slug, unique among `existing`.
     public static func newID(for title: String, existing: [LibraryEntry]) -> String {
         let base = String(title.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })

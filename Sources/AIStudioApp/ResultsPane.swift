@@ -155,14 +155,12 @@ struct ResultThumb: View {
 
 // MARK: - viewer
 
-/// Full-window viewer: zoom and pan, video and audio playback, A/B compare, ← → through the tab's results (or the
-/// history), Esc to close.
+/// Full-window viewer: zoom and pan (pinch, scroll wheel, ⌘+ ⌘− ⌘0, 1 for actual size since ⌘1 switches workflows,
+/// the bar's buttons), video and audio playback, A/B compare, ← → through the tab's results (or the history), Esc to
+/// close.
 struct ResultViewer: View {
     @Environment(AppModel.self) private var model
-    @State private var zoom: CGFloat = 1
-    @State private var zoomStart: CGFloat?
-    @State private var offset: CGSize = .zero
-    @State private var offsetStart: CGSize?
+    @State private var zoom = ImageZoom()
     @State private var image: CGImage?
     @FocusState private var focused: Bool
 
@@ -181,10 +179,19 @@ struct ResultViewer: View {
                     Text(current?.url?.lastPathComponent ?? "Preview").font(.mgHeadline).lineLimit(1)
                     if let index { Text("\(index + 1) of \(items.count)").foregroundStyle(MG.secondaryLabel) }
                     Spacer()
-                    if current?.kind == .image {
-                        Text("\(Int(zoom * 100))%").font(.mgSubheadline.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
-                        Button { withAnimation { zoom = 1; offset = .zero } } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
-                            .mgHelp("Fit (double-click)")
+                    if current?.kind == .image, image != nil, !showsCompare(current) {
+                        if let image { Text(verbatim: "\(image.width) × \(image.height)").foregroundStyle(MG.secondaryLabel) }
+                        Button { withAnimation(.easeOut(duration: 0.12)) { zoom.step(-1) } } label: { Image(systemName: "minus.magnifyingglass") }
+                            .mgHelp("Zoom out (⌘−, scroll)")
+                        Text("\(zoom.percent)%").font(.mgSubheadline.monospacedDigit()).foregroundStyle(MG.secondaryLabel)
+                            .frame(minWidth: 44)
+                        Button { withAnimation(.easeOut(duration: 0.12)) { zoom.step(1) } } label: { Image(systemName: "plus.magnifyingglass") }
+                            .mgHelp("Zoom in (⌘+, scroll or pinch)")
+                        Button { withAnimation(.easeOut(duration: 0.15)) { zoom.actualSize() } } label: { Image(systemName: "1.magnifyingglass") }
+                            .mgHelp("Actual size (1)")
+                        Button { withAnimation(.easeOut(duration: 0.15)) { zoom.fitToBox() } } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
+                            .mgHelp("Fit (⌘0, double-click)")
+                            .disabled(zoom.isFitted)
                     }
                     if let url = current?.url {
                         Button { NSWorkspace.shared.activateFileViewerSelecting([url]) } label: { Image(systemName: "folder") }
@@ -215,9 +222,20 @@ struct ResultViewer: View {
         .onKeyPress(.escape) { close(); return .handled }
         .onKeyPress(.leftArrow) { step(-1, items, index); return .handled }
         .onKeyPress(.rightArrow) { step(1, items, index); return .handled }
+        .onKeyPress(characters: CharacterSet(charactersIn: "=+-_01"), phases: .down) { press in
+            guard current?.kind == .image, image != nil else { return .ignored }
+            withAnimation(.easeOut(duration: 0.12)) {
+                switch press.characters {
+                case "=", "+": zoom.step(1)
+                case "-", "_": zoom.step(-1)
+                case "0": zoom.fitToBox()
+                default: zoom.actualSize()
+                }
+            }
+            return .handled
+        }
         .task(id: current?.id) {
-            zoom = 1
-            offset = .zero
+            zoom.fitToBox()
             image = current?.image
             if image == nil, current?.kind == .image, let url = current?.url {
                 image = await Task.detached { () -> CGImage? in
@@ -233,34 +251,20 @@ struct ResultViewer: View {
         case .video, .audio:
             if let url = r.url { MediaCanvas(url: url, kind: r.kind).id(url).padding(40) }
         case .image:
-            if let a = image, let b = model.compareImage, r.url == model.displayedURL {
+            if let a = image, let b = model.compareImage, showsCompare(r) {
                 CompareView(a: a, b: b).padding(40)
             } else if let image {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .interpolation(zoom > 2 ? .none : .high)
-                    .aspectRatio(contentMode: .fit)
-                    .scaleEffect(zoom)
-                    .offset(offset)
-                    .padding(40)
-                    .gesture(MagnifyGesture()
-                        .onChanged { v in
-                            if zoomStart == nil { zoomStart = zoom }
-                            zoom = min(max(zoomStart! * v.magnification, 0.25), 16)
-                        }
-                        .onEnded { _ in zoomStart = nil })
-                    .simultaneousGesture(DragGesture()
-                        .onChanged { v in
-                            if offsetStart == nil { offsetStart = offset }
-                            offset = CGSize(width: offsetStart!.width + v.translation.width,
-                                            height: offsetStart!.height + v.translation.height)
-                        }
-                        .onEnded { _ in offsetStart = nil })
-                    .onTapGesture(count: 2) { withAnimation { if zoom == 1 { zoom = 2 } else { zoom = 1; offset = .zero } } }
+                // Below the bar: the image is fitted to the space under it.
+                ZoomableImage(image: image, state: $zoom, padding: 28, onBackgroundTap: close)
+                    .padding(.top, 52)
             } else {
                 MGSpinner(tint: .white)
             }
         }
+    }
+
+    func showsCompare(_ r: NodeResult?) -> Bool {
+        model.compareImage != nil && r?.url != nil && r?.url == model.displayedURL
     }
 
     func navButton(_ symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
