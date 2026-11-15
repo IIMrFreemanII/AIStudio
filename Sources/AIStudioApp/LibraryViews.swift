@@ -283,6 +283,12 @@ struct LibraryAddSheet: View {
                         .fixedSize(horizontal: false, vertical: true)
                 case .found(let r):
                     LinkCard(remote: r, thumbnail: r.previewImage)
+                    if let existing {
+                        Label("Already in your library as \u{201C}\(existing.title)\u{201D}. Adding it again installs that entry on the targets you pick, without a second copy.",
+                              systemImage: "checkmark.circle")
+                            .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             if canChooseDetails {
@@ -346,7 +352,7 @@ struct LibraryAddSheet: View {
                         .disabled(link.trimmingCharacters(in: .whitespaces).isEmpty || lookup == .looking)
                 }
                 if canChooseDetails {
-                    Button("Add") { add() }.keyboardShortcut(.defaultAction)
+                    Button(existing == nil ? "Add" : "Use Existing") { add() }.keyboardShortcut(.defaultAction)
                         .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty || !modelFamilyOK
                                   || (!installsOnMac && chosenServers.isEmpty))
                 }
@@ -369,6 +375,12 @@ struct LibraryAddSheet: View {
     }
 
     var isModel: Bool { if case .found(let r) = lookup { return r.kind == .model }; return false }
+
+    /// The library entry that already holds the looked-up link's file.
+    var existing: LibraryEntry? {
+        if case .found(let r) = lookup { return Library.duplicate(of: r, in: library.items) }
+        return nil
+    }
 
     /// A fine-tune needs a family some target runs.
     var modelFamilyOK: Bool { !isModel || macRefusal == nil || serverRefusal == nil }

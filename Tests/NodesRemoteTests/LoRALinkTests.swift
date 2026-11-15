@@ -339,6 +339,33 @@ extension RemoteNodesTests {
         #expect(throws: LibraryError.missing("nope")) { try LibraryError.missing("nope").throwIt() }
     }
 
+    @Test func libraryFindsALinkItAlreadyHolds() {
+        let url = URL(string: "https://civitai.com/api/download/models/798204?fileId=711904")!
+        let remote = LoRARemote(host: .civitai, kind: .model, downloadURL: url, fileName: "RealVisXL.safetensors",
+                                bytes: 1, sha256: "fabc", title: nil, baseModel: "SDXL Lightning", triggerWords: [],
+                                previewImage: nil, cacheName: "civitai-798204-RealVisXL.safetensors")
+        func entry(_ id: String, _ source: LoRARemote?) -> LibraryEntry {
+            LibraryEntry(id: id, kind: .model, family: "sdxl", title: id, link: nil, source: source, fileName: "f",
+                         sha256: source?.sha256, bytes: 1, baseModel: nil, triggerWords: [])
+        }
+        // The same file by hash (whatever the case), or by URL when a side has no hash.
+        var upper = remote; upper.sha256 = "FABC"
+        #expect(Library.duplicate(of: remote, in: [entry("a", upper)])?.id == "a")
+        var noHash = remote; noHash.sha256 = nil
+        #expect(Library.duplicate(of: noHash, in: [entry("a", remote)])?.id == "a")
+        // Another file at the same URL, another URL, a file from disk: not the same.
+        var other = remote; other.sha256 = "0000"
+        #expect(Library.duplicate(of: remote, in: [entry("a", other), entry("b", nil)]) == nil)
+        var elsewhere = noHash; elsewhere.downloadURL = URL(string: "https://civitai.com/api/download/models/1")!
+        #expect(Library.duplicate(of: noHash, in: [entry("a", elsewhere)]) == nil)
+        // A Wan 2.2 pair matches only with the same low-noise file.
+        var pair = remote
+        pair.companion = LoRAFileRef(downloadURL: url, fileName: "low", bytes: 1, sha256: "low1", cacheName: "low")
+        var otherPair = pair; otherPair.companion?.sha256 = "low2"
+        #expect(Library.duplicate(of: pair, in: [entry("a", remote), entry("b", otherPair)]) == nil)
+        #expect(Library.duplicate(of: pair, in: [entry("a", pair)])?.id == "a")
+    }
+
     @Test(.enabled(if: hasServer)) func libraryInstallsALinkOnThisMacOnce() async throws {
         let data = safetensorsData(bytes: 300_000, seed: UInt8.random(in: 0...255))
         try data.write(to: server.files.appendingPathComponent("libmac.safetensors"))
