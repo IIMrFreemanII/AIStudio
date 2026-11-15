@@ -291,6 +291,25 @@ def test_wan_image_to_video(models, tmp_path):
     assert read_mp4_frames(out.path) == (5, (64, 48))
 
 
+def test_wan_image_to_video_with_an_end_frame(models, tmp_path):
+    """``last_image`` reaches the pipeline (it conditions on both ends): the same seed gives another clip."""
+    from PIL import Image
+
+    start, end = tmp_path / "start.png", tmp_path / "end.png"
+    Image.fromarray((np.random.rand(48, 64, 3) * 255).astype(np.uint8)).save(start)
+    Image.fromarray((np.random.rand(48, 64, 3) * 255).astype(np.uint8)).save(end)
+    params = {"prompt": "waves", "width": 64, "height": 48, "length": 9, "seed": 3}
+    for d in ("a", "b"):
+        (tmp_path / d).mkdir()
+    worker, _, plain = run(models, "wan22-i2v", params, {"image": start}, tmp=tmp_path / "a")
+    spec = TASKS["wan22-i2v"]
+    ended = worker.run(spec, {**spec.normalize({}), **params}, {"image": start, "last_image": end}, Sink(),
+                       tmp_path / "b")
+    assert plain.extra["lastImage"] is False and ended.extra["lastImage"] is True
+    assert read_mp4_frames(ended.path) == (9, (64, 48))
+    assert plain.path.read_bytes() != ended.path.read_bytes()
+
+
 def test_wan_cancel(models, tmp_path):
     with pytest.raises(JobCancelled):
         run(models, "wan22-t2v", {"width": 64, "height": 48, "length": 5}, sink=Sink(cancel_at=2), tmp=tmp_path)

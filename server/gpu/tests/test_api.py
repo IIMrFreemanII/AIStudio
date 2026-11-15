@@ -47,7 +47,7 @@ def test_auth_and_info(client):
     tasks = {t["id"]: t for t in info["tasks"]}
     assert tasks["test-video"]["installed"] and not tasks["wan22-t2v"]["installed"]
     assert tasks["wan22-t2v"]["gpu"] == "H100" and tasks["wan22-t2v"]["pricePerSecond"] > 0
-    assert tasks["wan22-i2v"]["inputs"] == ["image"]
+    assert tasks["wan22-i2v"]["inputs"] == ["image"] and tasks["wan22-i2v"]["optionalInputs"][0] == "last_image"
     assert tasks["qwen-image-edit"]["inputs"] == ["image1"] and tasks["qwen-image-edit"]["gpu"] == "H100"
     assert tasks["qwen-image-edit"]["optionalInputs"][:2] == ["image2", "image3"]
 
@@ -259,6 +259,37 @@ def test_fake_models_edit_returns_picture_one_tinted(tmp_path, monkeypatch):
     assert abs(image[-1, 10, 0] - 0.5) < 0.02  # two pictures
     out = make_worker(spec.family).run(spec, spec.normalize({}), {"image1": pics["image1"]}, Sink(), tmp_path)
     assert Image.open(out.path).size == (40, 20)  # 0 × 0: picture 1's own size
+
+
+def test_fake_models_image_to_video_starts_and_ends_on_its_pictures(tmp_path, monkeypatch):
+    """The movie studio's shots against the fake server: the first frame is the start picture, the last frame the
+    end picture (``last_image``) when there is one."""
+    import imageio_ffmpeg
+    import numpy as np
+    from PIL import Image
+
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+
+    class Sink:
+        def status(self, t): pass
+        def progress(self, s, t): pass
+        def preview(self, *a): pass
+        def check(self): pass
+
+    spec = TASKS["wan22-i2v"]
+    start, end = tmp_path / "start.png", tmp_path / "end.png"
+    Image.new("RGB", (64, 48), (0, 0, 255)).save(start)
+    Image.new("RGB", (64, 48), (0, 255, 0)).save(end)
+    # Past the parameter limits: a tiny clip is quicker.
+    params = {**spec.normalize({}), "width": 64, "height": 48, "length": 9}
+    out = make_worker(spec.family).run(spec, params, {"image": start, "last_image": end}, Sink(), tmp_path)
+    reader = imageio_ffmpeg.read_frames(str(out.path))
+    meta = next(reader)
+    frames = [np.frombuffer(f, np.uint8).reshape(meta["size"][1], meta["size"][0], 3) for f in reader]
+    assert len(frames) == 9
+    assert frames[0][24, 32, 2] > 200 and frames[-1][24, 32, 1] > 200  # blue first, green last
 
 
 def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):

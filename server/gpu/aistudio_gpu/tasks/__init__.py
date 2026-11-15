@@ -153,7 +153,9 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     TaskSpec("wan22-t2v", "Wan 2.2 Text to Video", "video", "wan22-t2v", GPU_WAN, _wan_params(),
              optional_inputs=WAN_LORA_INPUTS, models=("wan22-t2v", "wan22-lightning")),
     TaskSpec("wan22-i2v", "Wan 2.2 Image to Video", "video", "wan22-i2v", GPU_WAN, _wan_params(),
-             inputs=("image",), optional_inputs=WAN_LORA_INPUTS, models=("wan22-i2v", "wan22-lightning")),
+             # last_image: the frame the clip should end on (first-last-frame), optional.
+             inputs=("image",), optional_inputs=("last_image",) + WAN_LORA_INPUTS,
+             models=("wan22-i2v", "wan22-lightning")),
     TaskSpec("flux1-dev", "FLUX.1 dev", "image", "flux1-dev", GPU_FLUX, {
         "prompt": Param("string", ""),
         "seed": Param("int", 0, min=0, max=2**32 - 1),

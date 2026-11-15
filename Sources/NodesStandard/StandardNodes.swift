@@ -20,7 +20,7 @@ public enum StandardNodes {
         FeatherMaskNode.self, PadImageNode.self, ImageScaleNode.self, PromptAssistantNode.self,
         NoteNode.self, RerouteNode.self,
         TestPatternNode.self, TestToneNode.self, LoadVideoNode.self, LoadAudioNode.self, MixAudioNode.self,
-        AddAudioToVideoNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
+        AddAudioToVideoNode.self, LastFrameNode.self, SaveVideoNode.self, SaveAudioNode.self, PreviewVideoNode.self, PreviewAudioNode.self,
         EmptyVideoLatentNode.self, VideoSamplerNode.self, VideoDecodeNode.self, TextToAudioNode.self,
         TextToMusicNode.self, TextToSpeechNode.self,
     ]

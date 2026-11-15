@@ -56,8 +56,9 @@ class TestPatternWorker:
 
 class FakeModelWorker:
     """Stands in for a GPU model (``AISTUDIO_FAKE_MODELS=1``): the task's own parameters, steps, previews and output
-    kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image, and an edit returns picture 1
-    tinted, so a client can check the upload arrived. For testing clients end to end without models."""
+    kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image (and ends on ``last_image``),
+    and an edit returns picture 1 tinted, so a client can check the upload arrived. For testing clients end to end
+    without models."""
 
     def load(self, models_root: Path, status) -> None:
         pass
@@ -119,6 +120,9 @@ class FakeModelWorker:
         if "image" in inputs:
             start = Image.open(inputs["image"]).convert("RGB").resize((w, h))
             frames[0] = np.asarray(start, dtype=np.float32) / 255.0
+        if "last_image" in inputs:  # the end frame, so a client can check it arrived
+            end = Image.open(inputs["last_image"]).convert("RGB").resize((w, h))
+            frames[-1] = np.asarray(end, dtype=np.float32) / 255.0
         frames = np.stack([mark(f) for f in frames])
         path = out_dir / "result.mp4"
         write_mp4(frames, path, fps=16)

@@ -23,6 +23,8 @@ struct MovieView: View {
                     case .shots: MovieShotsPage(doc: doc)
                     case .cast: MovieCastPage(doc: doc)
                     case .keyframes: MovieKeyframesPage(doc: doc)
+                    case .video: MovieClipsPage(doc: doc)
+                    case .edit: MovieEditPage(doc: doc)
                     default: MovieLaterPage(stage: doc.stage)
                     }
                 }
