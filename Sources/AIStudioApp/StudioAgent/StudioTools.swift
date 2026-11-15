@@ -779,12 +779,22 @@ final class StudioSession {
             case .add: return nil
             }
         }.first
-        return try await studio.act(StudioStep(doing: parsed.count == 1 ? "Changing the workflow" : "Making \(parsed.count) changes to the workflow",
-                                               done: parsed.count == 1 ? "Changed the workflow" : "Made \(parsed.count) changes to the workflow",
-                                               target: node.map { "graph-node:\($0)" } ?? "graph-canvas"),
-                                    at: .workflow(wf.id), callID: id) {
+        let before = Set(wf.graph.nodes.map(\.id))
+        let result = try await studio.act(StudioStep(doing: parsed.count == 1 ? "Changing the workflow" : "Making \(parsed.count) changes to the workflow",
+                                                     done: parsed.count == 1 ? "Changed the workflow" : "Made \(parsed.count) changes to the workflow",
+                                                     target: node.map { "graph-node:\($0)" } ?? "graph-canvas"),
+                                          at: .workflow(wf.id), callID: id) {
             try h.edit(parsed)
         }
+        // Only new nodes: the ring moves to the first one once it's on the canvas (and a revisit goes there).
+        if node == nil, let added = wf.graph.nodes.first(where: { !before.contains($0.id) }) {
+            let target = "graph-node:\(added.id)"
+            await studio.settle(target)
+            await studio.point(at: target, fallback: "graph-canvas", caption: "Added \(added.title ?? added.type)")
+            studio.revisits[id] = (.workflow(wf.id), target)
+            await studio.hold()
+        }
+        return result
     }
 
     func setPrompt(_ text: String, node: String?, _ id: String) async throws -> String {

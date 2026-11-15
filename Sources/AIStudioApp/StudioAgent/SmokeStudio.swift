@@ -1,6 +1,7 @@
 import Agent
 import AppKit
 import Foundation
+import GraphRuntime
 import LLMClient
 import MovieCore
 import NodesRemote
@@ -232,6 +233,41 @@ extension SmokeTest {
         check(model.workflowInFront && out.text.contains("cloud GPU"), "studio_open opened a cloud preset (\(out.text.prefix(70)))")
         out = await call("set_prompt", ["text": "A lighthouse at dawn"])
         check(!out.isError, "set_prompt wrote the prompt (\(out.text.prefix(60)))")
+
+        // Graph nodes have targets of their own: the ring goes to the node, not the whole canvas.
+        func ringIs(_ target: String) -> Bool {
+            guard let f = MGTestAnchors.frame(target), let main = studio.mainWindow, let ring = studio.ring else { return false }
+            let want = studio.local(f, in: main).insetBy(dx: -4, dy: -4)
+            return abs(ring.minX - want.minX) < 2 && abs(ring.minY - want.minY) < 2 && abs(ring.width - want.width) < 2
+        }
+        if let pid = model.active.graph.nodes.first(where: { AppModel.promptFields[$0.type] != nil })?.id {
+            let target = "graph-node:\(pid)"
+            let canvas = MGTestAnchors.frame("graph-canvas") ?? .zero
+            let f = MGTestAnchors.frame(target) ?? .zero
+            check(f.width > 0 && f.width < canvas.width && canvas.contains(CGPoint(x: f.midX, y: f.midY)),
+                  "the prompt node has its own target on the canvas (\(Int(f.width))×\(Int(f.height)))")
+            check(ringIs(target), "set_prompt's ring is on the prompt node")
+            // Off the canvas: no target, so the canvas pans to it first.
+            let home = model.active.graph[pid]?.position
+            model.active.graph[pid]?.position = GraphPoint(x: 9000, y: 9000)
+            await settle(0.3)
+            check(MGTestAnchors.frame(target) == nil, "a node off the canvas has no target")
+            out = await call("set_prompt", ["text": "A lighthouse at dawn"])
+            check(MGTestAnchors.frame(target) != nil && ringIs(target), "the canvas panned to it and ringed it")
+            model.active.graph[pid]?.position = home
+            await settle(0.2)
+        } else {
+            check(false, "the cloud preset has a prompt node")
+        }
+        let nodesBefore = Set(model.active.graph.nodes.map(\.id))
+        out = await call("edit_graph", ["operations": [["op": "add", "type": "Note", "title": "Smoke note"]]])
+        if let added = model.active.graph.nodes.first(where: { !nodesBefore.contains($0.id) }) {
+            check(ringIs("graph-node:\(added.id)") && studio.revisits["smoke_\(n)"]?.target == "graph-node:\(added.id)",
+                  "edit_graph rings the node it added, and its row goes back there")
+            _ = await call("edit_graph", ["operations": [["op": "remove", "node": added.id]]])
+        } else {
+            check(false, "edit_graph added a note (\(out.text.prefix(80)))")
+        }
         runner = pressRunWhenAsked()
         out = await call("run_workflow")
         check(await runner.value, "the workflow's cost sheet came up before the run")
