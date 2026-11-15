@@ -63,6 +63,7 @@ REMEMBER_KV = os.environ.get("AISTUDIO_VLLM_REMEMBER_KV", "1") != "0"
 # Multi-token prediction: models that ship MTP layers (Qwen3-Next and later, DeepSeek V3, GLM-4.5…) draft this many
 # tokens per step with them, which the model then checks in one pass (same output, fewer steps). Qwen3.8-Flash-Next on
 # a B200: replies 1.56× faster (191 → 298 tokens/s), starts ~40 s slower (more kernel warm-up). 0 turns it off.
+# llama.cpp does the same for GGUF files that keep the layers ("MTP" quants: ``--spec-type draft-mtp``).
 MTP_TOKENS = int(os.environ.get("AISTUDIO_VLLM_MTP_TOKENS", "2"))
 # Edge0's engine: the edge0-strata folder of github.com/Edge0-AI/Edge0, built (build/strata) with its Python (.venv).
 EDGE0_DIR = Path(os.environ.get("AISTUDIO_EDGE0_DIR", "/opt/edge0/edge0-strata"))
@@ -78,10 +79,13 @@ NOT_VLLM = store.NOT_VLLM
 
 def mtp_on(manifest: dict) -> bool:
     """Whether a start drafts with the model's MTP layers: it has them, the model's "mtp" setting isn't off, and its
-    engine arguments don't set their own speculative decoding."""
+    engine arguments don't set their own speculative decoding (Edge0's engine always drafts, on its own)."""
     extra = list(manifest.get("engineArgs") or [])
-    return bool(MTP_TOKENS and manifest.get("mtpLayers") and manifest.get("mtp", True) is not False
-                and manifest.get("engine") not in NOT_VLLM and not _has(extra, "--speculative-config", "-sc"))
+    if not (MTP_TOKENS and manifest.get("mtpLayers") and manifest.get("mtp", True) is not False):
+        return False
+    if manifest.get("engine") == "llamacpp":
+        return not _has(extra, "--spec-type", "--spec-draft-model", "-md", "--model-draft")
+    return manifest.get("engine") != "edge0" and not _has(extra, "--speculative-config", "-sc")
 
 
 def _has(extra: list[str], *flags: str) -> bool:
@@ -160,7 +164,8 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
 
 def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.1") -> list[str]:
     """llama.cpp's server for a GGUF model: every layer on the GPUs (split by layer across several), one slot with
-    the whole context, tool calls through the model's own chat template."""
+    the whole context, tool calls through the model's own chat template, drafts from the file's MTP layers when it
+    has them."""
     n = int(manifest.get("count") or 1)
     cmd = ["llama-server", "-m", str(weights / manifest["ggufFile"]), "--alias", manifest["id"], "--host", host,
            "--port", str(port), "-c", str(int(manifest["context"])), "-np", "1", "-ngl", "999", "--jinja",
@@ -171,6 +176,10 @@ def llama_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0
         cmd += ["--mmproj", str(weights / manifest["mmproj"])]
     if n > 1:
         cmd += ["--split-mode", "layer"]
+    if "mtpLayers" not in manifest:
+        manifest = {**manifest, "mtpLayers": store.gguf_mtp_layers(weights / manifest["ggufFile"])}
+    if mtp_on(manifest):
+        cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(MTP_TOKENS)]
     return cmd + list(manifest.get("engineArgs") or [])
 
 
@@ -244,8 +253,8 @@ class EngineProcess:
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, port: int = 8000,
                  env: dict | None = None):
-        if manifest.get("engine") not in NOT_VLLM and "mtpLayers" not in manifest:  # installed before the field
-            manifest = {**manifest, "mtpLayers": store.mtp_layers(store.weights_dir(models_root, manifest["id"]))}
+        if manifest.get("engine") != "edge0" and "mtpLayers" not in manifest:  # installed before the field
+            manifest = {**manifest, "mtpLayers": store.installed_mtp_layers(models_root, manifest)}
         self.manifest, self.models_root, self.on_status, self.port = manifest, models_root, on_status, port
         self.env = {**os.environ, **(edge0_env() if manifest.get("engine") == "edge0" else {}), **(env or {})}
         self.proc: subprocess.Popen | None = None

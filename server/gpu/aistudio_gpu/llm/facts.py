@@ -93,7 +93,9 @@ class Facts:
     source: str = "huggingface"  # or "civitai"
     gguf_file: str | None = None  # the first (or only) file of the chosen GGUF, as named in `download`
     mmproj: str | None = None
-    gguf_options: list[dict] = field(default_factory=list)  # [{"quant", "bytes"}] when the repo has several
+    # [{"quant" (the choice's name, "Q4_K_M MTP"), "type" ("Q4_K_M"), "variant", "bytes"}] when the repo has several
+    gguf_options: list[dict] = field(default_factory=list)
+    mtp_layers: int = 0  # a GGUF's multi-token-prediction (NextN) layers, from its header (vLLM models: see store)
     # What an install fetches: [{"name", "size", "url"?, "sha256"?, "extract"?}] ("extract": a zip's folder to unpack)
     download: list[dict] = field(default_factory=list)
     # Weights vLLM keeps in CPU memory instead of on the GPUs: the n-gram ("Engram") embedding tables of models like
@@ -371,9 +373,11 @@ async def _hf_gguf(ref: ModelRef, meta: dict, sha: str, names: dict, tokens: dic
         if chosen is None:
             raise LinkError(f"{ref.file} isn't in {ref.repo}")
     elif quant:
-        chosen = next((g for g in groups if g["quant"].upper() == quant.upper()), None)
+        # By the choice's name ("Q4_K_M MTP"), else the first of that quantization ("Q4_K_M": the order's pick).
+        chosen = next((g for g in groups if g["choice"].upper() == quant.upper()), None) \
+            or next((g for g in groups if g["quant"].upper() == quant.upper()), None)
         if chosen is None:
-            raise LinkError(f"{ref.repo} has no {quant} file (it has {', '.join(g['quant'] for g in groups)})")
+            raise LinkError(f"{ref.repo} has no {quant} file (it has {', '.join(g['choice'] for g in groups)})")
     else:
         chosen = groups[0]
     url = f"{endpoint()}/{ref.repo}/resolve/{sha}/{chosen['files'][0]}"
@@ -382,7 +386,8 @@ async def _hf_gguf(ref: ModelRef, meta: dict, sha: str, names: dict, tokens: dic
     f = facts_from_gguf(head, ref.repo, ref.revision, meta.get("sha"), chosen, bool(meta.get("gated")))
     f.mmproj = proj
     f.vision = proj is not None
-    f.gguf_options = [{"quant": g["quant"], "bytes": g["bytes"]} for g in groups]
+    f.gguf_options = [{"quant": g["choice"], "type": g["quant"], "variant": g["variant"], "bytes": g["bytes"]}
+                      for g in groups]
     f.download = [{"name": n, "size": names[n]} for n in chosen["files"]]
     if proj:
         f.download.append({"name": proj, "size": names[proj]})
@@ -402,17 +407,22 @@ def _gguf_header(url: str, tokens: dict, sync_client) -> dict:
 def facts_from_gguf(meta: dict, repo: str, revision: str, sha: str | None, chosen: dict, gated: bool) -> Facts:
     a = gguf.arch_facts(meta)
     q = chosen["quant"]
+    quant = {"method": "gguf", "type": q, "bits": None, "choice": chosen.get("choice") or q}
+    if chosen.get("variant"):
+        quant["variant"] = chosen["variant"]
     bits = {"Q2": 2, "Q3": 3, "Q4": 4, "Q5": 5, "Q6": 6, "Q8": 8, "IQ1": 1, "IQ2": 2, "IQ3": 3, "IQ4": 4,
             "BF16": 16, "F16": 16, "F32": 32, "MXFP4": 4}.get(re.split(r"_", q)[0], None)
     return Facts(
         repo=repo, revision=revision, sha=sha, architecture=a["architecture"], model_type=a["architecture"],
-        weight_bytes=chosen["bytes"], files=len(chosen["files"]), quant={"method": "gguf", "type": q, "bits": bits},
+        weight_bytes=chosen["bytes"], files=len(chosen["files"]), quant={**quant, "bits": bits},
         dtype=q, native_context=a["native_context"], vision=False, layers=a["layers"],
         attention_layers=a["attention_layers"], attention_heads=a["attention_heads"], kv_heads=a["kv_heads"],
         head_dim=a["head_dim"], kv_lora_rank=a["kv_lora_rank"], rope_head_dim=a["rope_head_dim"],
         sliding_window=a["sliding_window"], experts=a["experts"], gated=gated, chat_template=a["chat_template"],
-        engine="llamacpp", gguf_file=chosen["files"][0],
-        notes=["GGUF runs on llama.cpp: slower than vLLM on the same GPUs, but smaller files"])
+        engine="llamacpp", gguf_file=chosen["files"][0], mtp_layers=a["mtp_layers"],
+        notes=["GGUF runs on llama.cpp: slower than vLLM on the same GPUs, but smaller files"]
+        + (["Has multi-token-prediction (MTP) layers: llama.cpp drafts the next tokens with them (faster replies)"]
+           if a["mtp_layers"] else []))
 
 
 # MARK: Civitai

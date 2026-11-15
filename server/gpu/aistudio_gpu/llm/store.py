@@ -12,7 +12,7 @@ from pathlib import Path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Fields the app may change after installing (PATCH /v1/llm/models/{id}).
-NOT_VLLM = ("llamacpp", "edge0")  # engines without vLLM's extras (MTP drafts, fast loaders, snapshots)
+NOT_VLLM = ("llamacpp", "edge0")  # engines without vLLM's extras (fast loaders, snapshots, measured KV size)
 PATCHABLE = {"name", "gpu", "count", "context", "toolParser", "reasoningParser", "engineArgs", "loadFormat", "snapshot",
              "mtp"}
 # How vLLM reads the weights: its loader, Run:ai's streamer, or "processed" (AIStudio's vLLM plugin: a copy saved
@@ -127,14 +127,33 @@ def mtp_layers(weights: Path) -> int:
     return n if any(k.startswith("mtp.") or ".mtp." in k or extra in k for k in names) else 0
 
 
+def gguf_mtp_layers(path: Path) -> int:
+    """How many multi-token-prediction (NextN) layers a GGUF file has, from its header; 0 when unreadable."""
+    from . import gguf
+
+    try:
+        with open(path, "rb") as f:
+            return int(gguf.arch_facts(gguf.metadata(f))["mtp_layers"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return 0
+
+
+def installed_mtp_layers(models_root: Path, manifest: dict) -> int:
+    """``mtp_layers`` or ``gguf_mtp_layers`` of an installed model, by its engine."""
+    weights = weights_dir(models_root, manifest["id"])
+    if manifest.get("engine") == "llamacpp":
+        return gguf_mtp_layers(weights / manifest["ggufFile"]) if manifest.get("ggufFile") else 0
+    return mtp_layers(weights)
+
+
 def with_mtp_layers(models_root: Path, manifest: dict) -> dict:
-    """The manifest with ``mtpLayers`` (worked out once from the checkpoint and saved, for models installed before
-    the field existed); GGUF models have none."""
-    if "mtpLayers" in manifest or manifest.get("engine") in NOT_VLLM:
+    """The manifest with ``mtpLayers`` (worked out once from the checkpoint or the GGUF file's header and saved, for
+    models installed before the field existed); Edge0 packs have none here (their engine always drafts)."""
+    if "mtpLayers" in manifest or manifest.get("engine") == "edge0":
         return manifest
     if not installed(models_root, manifest["id"]):
         return manifest
-    out = {**manifest, "mtpLayers": mtp_layers(weights_dir(models_root, manifest["id"]))}
+    out = {**manifest, "mtpLayers": installed_mtp_layers(models_root, manifest)}
     try:
         write(models_root, out)
     except OSError:
@@ -211,4 +230,6 @@ def new_manifest(mid: str, name: str, url: str, facts, profile: dict, gpu: str, 
         "vision": facts.vision, "experts": facts.experts, "toolParser": profile["toolParser"],
         "reasoningParser": profile["reasoningParser"], "engineArgs": profile["engineArgs"], "gpu": gpu,
         "count": count, "context": context, "created": time.time(),
+        # vLLM models: worked out from the downloaded checkpoint (with_mtp_layers); GGUF: from the header now.
+        **({"mtpLayers": facts.mtp_layers} if facts.engine == "llamacpp" else {}),
     }
