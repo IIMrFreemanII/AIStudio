@@ -4,6 +4,7 @@ import Foundation
 import ImageIO
 import LLMClient
 import MovieCore
+import NodesRemote
 
 extension SmokeTest {
     /// `--smoke-movie <gpu server url>`: a movie from an idea to an approved shot list against the GPU server's
@@ -310,6 +311,35 @@ extension SmokeTest {
                 && abs($0.2.duration.seconds - trimmed.duration) < 0.1 } ?? false,
                   "an 832×480 MP4 at 24 fps, as long as the timeline: \(String(describing: info))")
             check(film.path.hasPrefix(store.folder(doc.id, .renders).path), "in the movie's renders folder")
+        }
+        // A busy server: other work holds every Wan I2V GPU, so two retakes that could run at once go one at a time
+        // (one always runs; the next waits until a GPU is free), and both still finish.
+        if parallel > 1, let png = try? Data(contentsOf: folder.appendingPathComponent(doc.movie.shots[0].selectedKeyframeFile!)) {
+            let gpu = GPUJobClient(baseURL: URL(string: url)!, token: "smoke")
+            var blockers: [String] = []
+            if let image = try? await gpu.uploadPNG(png) {
+                for _ in 0..<parallel {
+                    if let j = try? await gpu.submit(task: "wan22-i2v", params: ["steps": 60, "fast": false, "length": 5,
+                                                                                 "width": 256, "height": 256],
+                                                     inputs: ["image": image]) { blockers.append(j.id) }
+                }
+            }
+            let held = (try? await gpu.info())?.freeSlots("wan22-i2v")
+            check(blockers.count == parallel && held == 0, "other work holds every I2V GPU: \(blockers.count) jobs, \(String(describing: held)) free")
+            let retakes = [doc.movie.shots[0].id, doc.movie.shots[2].id]
+            let before = retakes.map { id in doc.movie.shots.first { $0.id == id }!.videos.count }
+            model.requestClips(doc, shots: retakes)
+            await waitForGate(doc)
+            if let g = doc.pendingGate {
+                doc.pendingGate = nil
+                g.run()
+                let together = await waitForJob(doc)
+                check(doc.error == nil && together == 1, "on a busy server the retakes ran one at a time: \(together) at once\(doc.error.map { ", \($0)" } ?? "")")
+                let after = retakes.map { id in doc.movie.shots.first { $0.id == id }!.videos.count }
+                check(after == before.map { $0 + 1 }, "and both were made: \(before) → \(after)")
+            } else {
+                check(false, "no cost gate for the retakes: \(doc.error ?? "")")
+            }
         }
         doc.movie.approve(.edit)
 
