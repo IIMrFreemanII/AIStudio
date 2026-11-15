@@ -498,7 +498,17 @@ extension SmokeTest {
         if case .readOnly = big.mode { bigReadOnly = true }
         check(bigReadOnly && !big.editable && !big.textView.isEditable, "a file over 2 MB opens read-only")
         big.close()
-        try? fm.removeItem(at: bigURL)  // (the Changes pane would list its 200 000 lines)
+        try? fm.removeItem(at: bigURL)  // (keeps the Changes pane's later checks about the small files)
+
+        // The Changes pane's diff of a huge untracked file (200 000 added lines) lays out quickly, without crashing.
+        let hugeDiff = "--- /dev/null\n+++ b/Notes/big.txt\n@@ -0,0 +1,200000 @@\n"
+            + String(repeating: "+line of text\n", count: 200_000)
+        let diffHost = NSHostingView(rootView: DiffView(diff: hugeDiff, maxHeight: nil).frame(width: 400, height: 600))
+        diffHost.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        let layoutStart = Date()
+        diffHost.layoutSubtreeIfNeeded()
+        let layoutMs = Int(Date().timeIntervalSince(layoutStart) * 1000)
+        check(layoutMs < 2000, "a 200 000-line diff lays out quickly (\(layoutMs) ms)")
         let binURL = repo.appendingPathComponent("Notes/blob.dat")
         try? Data([0x61, 0, 0x62]).write(to: binURL)
         let bin = FileBuffer(url: binURL, relPath: nil, editable: true, watch: true)
