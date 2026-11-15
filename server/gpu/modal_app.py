@@ -1,9 +1,9 @@
 """AIStudio's GPU server on Modal: pay only while a GPU works.
 
     pip install modal && modal setup                       # once, signs in
-    modal secret create huggingface HF_TOKEN=hf_…          # for FLUX.1 dev (gated); skip for Wan only
+    modal secret create huggingface HF_TOKEN=hf_…          # for FLUX.1 dev, SD 3.5 (gated); skip for Wan, SDXL only
     modal secret create civitai CIVITAI_TOKEN=…            # optional: LoRA links from Civitai (most need a key)
-    modal run server/gpu/modal_download.py --models wan22,flux,qwen,audio   # the weights, on CPUs (modal_download.py)
+    modal run server/gpu/modal_download.py --models wan22,flux,qwen,sd,audio   # the weights, on CPUs (modal_download.py)
     modal deploy server/gpu/modal_app.py                   # prints the URL of `api`; GPUs need a payment method
     # Modal dashboard › Settings › Proxy Auth Tokens → new token; in the app: Servers › + › GPU server,
     # the URL and the token as  wk-….ws-…
@@ -13,6 +13,9 @@ Layout:
   tasks never start a GPU. It scales to zero 5 min after the last request.
 - ``WanT2V`` / ``WanI2V`` and ``QwenImage`` (H100), ``Flux`` (L40S): GPU workers, one per model family, each with
   the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
+- ``SD35`` (Stable Diffusion 3.5 Large, with its Turbo mode) and ``SDXL`` (L40S): the same, for the Stable Diffusion
+  family. SD 3.5 is gated: accept the licences of both repos (``stable-diffusion-3.5-large`` and ``…-large-turbo``)
+  with the Hugging Face account of the ``huggingface`` secret.
 - ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
 - Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
@@ -24,7 +27,8 @@ Layout:
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
-fp8), ``AISTUDIO_GPU_AUDIO`` (default L40S), ``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
+fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
+``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
 they live on the models Volume).
@@ -43,6 +47,7 @@ GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
+GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
 UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
@@ -105,7 +110,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -298,6 +303,46 @@ class QwenImage:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("qwen-image", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(gpu=GPU_SD, memory=(16384, 65536))
+class SD35:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("sd35-large", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(gpu=GPU_SD, memory=(8192, 32768))
+class SDXL:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("sdxl", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1123,7 +1168,7 @@ def api():
 
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "flux1-dev": Flux, "qwen-image": QwenImage,
-                          "music": Music,
+                          "sd35-large": SD35, "sdxl": SDXL, "music": Music,
                           "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

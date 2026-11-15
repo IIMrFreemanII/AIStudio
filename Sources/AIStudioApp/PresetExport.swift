@@ -258,6 +258,23 @@ enum PresetExport {
                         "prompt": .string("A cozy bookshop window on a rainy evening, a hand-painted sign reading \"Open Late\", warm light, reflections on the wet street"),
                      ], output: "image", outputDirectory: out)
                  }),
+            Spec(id: "cloud-sd35", name: "Stable Diffusion 3.5 Large · Cloud GPU", category: .image, models: [],
+                 modelName: "SD 3.5 Large on a GPU server",
+                 summary: "Stable Diffusion 3.5 Large on an NVIDIA GPU. Fast mode runs Large Turbo in 4 steps; SD 3.5 Large LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteSD35", literals: [
+                        "prompt": .string("A lighthouse on a cliff at dusk, waves crashing below, dramatic clouds, detailed oil painting"),
+                     ], output: "image", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-sdxl", name: "SDXL · Cloud GPU", category: .image, models: [],
+                 modelName: "SDXL 1.0 on a GPU server",
+                 summary: "SDXL 1.0 on an NVIDIA GPU. SDXL fine-tunes (Juggernaut, Pony, Illustrious…) and LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteSDXL", literals: [
+                        "prompt": .string("A portrait of an old fisherman, weathered face, golden hour light, shallow depth of field, photo"),
+                        "negative": .string("blurry, low quality, watermark"),
+                     ], output: "image", outputDirectory: out)
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

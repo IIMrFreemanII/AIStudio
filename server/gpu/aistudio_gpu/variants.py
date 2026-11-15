@@ -1,6 +1,8 @@
-"""Fine-tuned models ("variants") installed from links: a FLUX.1 dev or Qwen-Image fine-tune from Civitai or
+"""Fine-tuned models ("variants") installed from links: a FLUX.1 dev, Qwen-Image or SDXL fine-tune from Civitai or
 Hugging Face becomes ``<models>/variants/<family>/<id>/transformer`` (diffusers layout, bf16), next to the base model
 it reuses for the text encoders and VAE. A job picks one with the task's ``model`` parameter; the worker swaps only the transformer.
+SDXL fine-tunes (Juggernaut, Pony, Illustrious, NoobAI…) replace the UNet and both CLIP text encoders
+(``unet``, ``text_encoder``, ``text_encoder_2``); the VAE stays the base's.
 
 Sources: a single checkpoint file (FLUX: BFL or ComfyUI names, fp8/bf16/fp16 — converted by diffusers' single-file
 loader; diffusers-named files are loaded directly. Qwen-Image: ComfyUI and diffusers files share the names, so they
@@ -27,13 +29,15 @@ from urllib.parse import urljoin, urlsplit
 from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safetensors
 
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
-FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v"}
+FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
+            "sdxl": "sdxl"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
-                 "wan22-i2v": "wan-2.2-i2v"}
+                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
-COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2")}
+COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
+              "sdxl": ("unet", "text_encoder", "text_encoder_2")}
 ROLES = {"high": "transformer", "low": "transformer_2"}
 
 
@@ -132,7 +136,21 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
             if not files:
                 raise ValueError("nothing to import: give a file link or a Hugging Face repo")
             jobs = []
-            for f in files:
+            if family == "sdxl":  # one checkpoint file holds the UNet and both text encoders
+                if len(files) != 1:
+                    raise ValueError("an SDXL fine-tune is one checkpoint file")
+                ckpt = work / "checkpoint.safetensors"
+                download_file(files[0]["url"], ckpt, files[0].get("sha256"), tokens,
+                              (lambda p: progress({**p, "file": 1, "files": 1})), extra_hosts, cancelled)
+                progress({"state": "converting", "file": 1, "files": 1})
+                if fake:
+                    (work / "unet").mkdir()
+                    os.replace(ckpt, work / "unet" / "diffusion_pytorch_model.safetensors")
+                else:
+                    convert_sdxl(ckpt, base, work)
+                    ckpt.unlink(missing_ok=True)
+                done = [c for c in parts if (work / c).exists()]
+            for f in [] if family == "sdxl" else files:
                 role = (f.get("role") or "").lower()
                 if len(parts) > 1 and role not in ROLES:
                     raise ValueError("a Wan 2.2 fine-tune file must say which expert it is (high or low noise)")
@@ -234,8 +252,16 @@ def _download_repo_transformer(repo: str, work: Path, token: str | None, progres
 
     repo_id, _, revision = repo.partition("@")
     progress({"state": "downloading"})
-    snapshot_download(repo_id, revision=revision or None, allow_patterns=[f"{c}/*" for c in parts], local_dir=work,
-                      token=token)
+    # Safetensors and their configs only: an SDXL repo also has flax, onnx and openvino copies.
+    snapshot_download(repo_id, revision=revision or None, local_dir=work, token=token,
+                      allow_patterns=[f"{c}/*.safetensors" for c in parts] + [f"{c}/*.json" for c in parts])
+    for c in parts:
+        d = work / c
+        if d.exists() and any(p for p in d.glob("*.safetensors") if ".fp16" not in p.name):
+            # fp16 copies next to the full-precision files (`x.fp16.safetensors`, shards `x.fp16-00001-of-…`, their
+            # `….index.fp16.json`): keep one set, the plain files.
+            for p in [*d.glob("*.fp16.safetensors"), *d.glob("*.fp16-*.safetensors"), *d.glob("*.fp16.json")]:
+                p.unlink()
     for c in parts:
         if (work / c).exists() and not any((work / c).glob("*.safetensors")):
             shutil.rmtree(work / c)
@@ -272,6 +298,23 @@ def convert_checkpoint(family: str, ckpt: Path, base: Path, out: Path, component
         model = FluxTransformer2DModel.from_single_file(str(ckpt), config=str(base), subfolder="transformer",
                                                         torch_dtype=torch.bfloat16, local_files_only=True)
     model.to(torch.bfloat16).save_pretrained(str(out), max_shard_size="5GB")
+
+
+def convert_sdxl(ckpt: Path, base: Path, out: Path) -> None:
+    """An SDXL single-file checkpoint (the original SGM layout Civitai serves: ``model.diffusion_model.*``,
+    ``conditioner.embedders.*``) → diffusers folders ``out/unet``, ``out/text_encoder`` and ``out/text_encoder_2``
+    (bf16), with the base's configs. The checkpoint's VAE is ignored: the base's stays."""
+    import torch
+    from diffusers import AutoencoderKL, StableDiffusionXLPipeline
+
+    try:
+        pipe = StableDiffusionXLPipeline.from_single_file(
+            str(ckpt), config=str(base), vae=AutoencoderKL.from_pretrained(base / "vae", variant="fp16"),
+            torch_dtype=torch.bfloat16, local_files_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"this file isn't a full SDXL checkpoint (UNet and both text encoders): {e}") from e
+    for component in ("unet", "text_encoder", "text_encoder_2"):
+        getattr(pipe, component).to(torch.bfloat16).save_pretrained(str(out / component), max_shard_size="5GB")
 
 
 PREFIXES = ("model.diffusion_model.", "diffusion_model.", "transformer.", "")

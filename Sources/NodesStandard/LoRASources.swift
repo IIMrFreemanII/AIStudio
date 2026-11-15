@@ -219,7 +219,9 @@ public enum LoRASources {
     }
 
     /// The app's family for a Civitai base model: "Flux.1 D" → `flux.1`, "Qwen" → `qwen-image` (the original 20B
-    /// model), "Wan Video 2.2 T2V-A14B" → `wan-2.2-t2v`, … ; nil for families the app doesn't run (SDXL, Pony…).
+    /// model), "Wan Video 2.2 T2V-A14B" → `wan-2.2-t2v`, … ; `sdxl` for SDXL and its
+    /// SDXL-based relatives (Pony, Illustrious, NoobAI), `sd3.5-large` / `sd3.5-medium` for SD 3.5; nil for families the app
+    /// doesn't run ("Pony V7" is AuraFlow-based).
     public static func family(forBaseModel base: String) -> String? {
         let b = base.lowercased()
         if b.hasPrefix("flux.1") { return "flux.1" }
@@ -228,6 +230,8 @@ public enum LoRASources {
             if b.contains("i2v") && !b.contains("ti2v") { return "wan-2.2-i2v" }
             if b.contains("t2v") && !b.contains("ti2v") { return "wan-2.2-t2v" }
         }
+        if b.hasPrefix("sdxl") || b == "pony" || b.hasPrefix("illustrious") || b.hasPrefix("noobai") { return "sdxl" }
+        if b.hasPrefix("sd 3.5") { return b.contains("medium") ? "sd3.5-medium" : "sd3.5-large" }
         return nil
     }
 
@@ -237,6 +241,9 @@ public enum LoRASources {
         case "flux.1"?: return "FLUX.1"
         case "qwen-image"?: return "Qwen-Image"
         case "qwen-image-2.1"?: return "Qwen-Image 2.1"
+        case "sdxl"?: return "SDXL"
+        case "sd3.5-large"?: return "SD 3.5 Large"
+        case "sd3.5-medium"?: return "SD 3.5 Medium"
         case "wan-2.2-t2v"?: return "Wan 2.2 T2V"
         case "wan-2.2-i2v"?: return "Wan 2.2 I2V"
         default: return "Other"

@@ -9,6 +9,11 @@ once its ``.complete`` marker exists (written last).
 The audio models: ACE-Step 1.5 XL in ACE-Step's own checkpoint layout (≈ 38 GB), Qwen3-TTS's three 1.7B checkpoints
 (≈ 14 GB), and Stable Audio 3 medium, gated, converted here to the diffusers layout with diffusers' own conversion
 script (fetched at the diffusers release the server pins, checked by its hash).
+
+The image models of the Stable Diffusion family: SD 3.5 Large (gated, ≈ 27.6 GB: bf16 transformer, three text
+encoders, VAE), its Large Turbo transformer (gated, ≈ 16.3 GB; everything else is shared with Large) and SDXL 1.0
+(≈ 7 GB, the fp16 files only). Their repos also hold fp16 duplicates, ComfyUI single files, flax, onnx and openvino
+copies; the allow lists leave those out.
 """
 
 from __future__ import annotations
@@ -68,11 +73,33 @@ MODELS: dict[str, dict] = {
     # Gated (Stability AI Community licence); its T5Gemma text encoder ships inside the repo.
     "stable-audio-3": {"repo": "stabilityai/stable-audio-3-medium", "revision": "d4d3579395a8ac0df4ab13b5b1d7138ce7290f81",
                        "gated": True, "sa3": True},
+    # SD 3.5 Large: gated, Stability AI Community licence; accept it on the model page.
+    "sd35-large": {"repo": "stabilityai/stable-diffusion-3.5-large", "revision": "ceddf0a7fdf2064ea28e2213e3b84e4afa170a0f",
+                   "gated": True, "allow": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*", "tokenizer_3/*",
+        "text_encoder/config.json", "text_encoder/model.safetensors",
+        "text_encoder_2/config.json", "text_encoder_2/model.safetensors",
+        "text_encoder_3/config.json", "text_encoder_3/model.safetensors.index.json",
+        "text_encoder_3/model-0000?-of-00002.safetensors", "transformer/*", "vae/*"]},
+    # Large Turbo (4 steps): only its transformer; text encoders, VAE and scheduler are Large's.
+    "sd35-large-turbo": {"repo": "stabilityai/stable-diffusion-3.5-large-turbo",
+                         "revision": "ec07796fc06b096cc56de9762974a28f4c632eda", "gated": True,
+                         "allow": ["transformer/*"]},
+    # SDXL 1.0 base (not gated): the fp16 files, run in bf16.
+    "sdxl": {"repo": "stabilityai/stable-diffusion-xl-base-1.0", "revision": "462165984030d82259a11f4367a4eed129e94a7b",
+             "allow": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*",
+        "text_encoder/config.json", "text_encoder/model.fp16.safetensors",
+        "text_encoder_2/config.json", "text_encoder_2/model.fp16.safetensors",
+        "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
+        "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
 }
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "flux": ["flux1-dev"],
           "qwen": ["qwen-image", "qwen-image-lightning"], "music": ["ace-step-xl"],
-          "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"]}
+          "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
+          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl"],
+          "sd": ["sd35-large", "sd35-large-turbo", "sdxl"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"
                  "convert_stable_audio_3_to_diffusers.py",
                  "ee782fa2dfacc637251d00add7cee93f6c3aafcbed6abf111ff209947d98267f")

@@ -78,7 +78,7 @@ extension AppModel {
     /// what titles a queue row. Speech text is never expanded (it's read aloud as written).
     static let promptFields: [String: String] = [
         "TextEncode": "prompt", "TextToAudio": "prompt", "TextToMusic": "tags",
-        "RemoteWanTextToVideo": "prompt", "RemoteWanImageToVideo": "prompt", "RemoteFlux": "prompt", "RemoteQwenImage": "prompt",
+        "RemoteWanTextToVideo": "prompt", "RemoteWanImageToVideo": "prompt", "RemoteFlux": "prompt", "RemoteQwenImage": "prompt", "RemoteSD35": "prompt", "RemoteSDXL": "prompt",
         "RemoteTextToSound": "prompt", "RemoteTextToMusic": "tags",
     ]
 

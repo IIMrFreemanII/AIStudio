@@ -1,4 +1,4 @@
-"""What the image workers (FLUX.1 dev, Qwen-Image) share: up to four LoRAs per job, kept loaded in a warm container,
+"""What the image workers (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL) share: up to four LoRAs per job, kept loaded in a warm container,
 and fine-tunes ("variants", ``variants.py``) swapped into the loaded transformer.
 
 LoRAs arrive as uploaded files (``lora1`` … ``lora4``, named by their SHA-256) and load through diffusers, which reads
@@ -7,7 +7,9 @@ so the next job with it only switches adapters. A worker's own adapters (Qwen-Im
 switched on by passing them as ``pinned``, and never dropped.
 
 A variant swap copies the fine-tune's weights into the transformer's parameters in place: the text encoders, the
-VAE and every loaded LoRA stay (a LoRA adds to the layer it wraps, whatever its weights are).
+VAE and every loaded LoRA stay (a LoRA adds to the layer it wraps, whatever its weights are). An SDXL fine-tune
+replaces the UNet and both text encoders (``variant_components``); LoRAs load into the UNet (the pipeline loads a
+LoRA's text-encoder parts by itself).
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ class AdapterSlots:
     family = ""
     title = ""
 
-    components: tuple[str, ...] = ("transformer",)  # Wan: ("transformer", "transformer_2"), high / low noise
+    components: tuple[str, ...] = ("transformer",)  # what LoRAs load into; Wan: ("transformer", "transformer_2")
+    variant_components: tuple[str, ...] = ()  # what a fine-tune replaces, when more than ``components`` (SDXL)
 
     def _init_slots(self) -> None:
         self.variant = "base"  # the fine-tune whose transformer weights are loaded
@@ -46,14 +49,17 @@ class AdapterSlots:
             return
         if vid != "base" and not variants.installed(self.models_root, self.family, vid):
             raise ValueError(f"the model {vid!r} isn't installed on this server: install it from the app's Models window")
-        base = {c: variants.transformer_dir(self.models_root, self.family, "base", c) for c in self.components}
-        wanted = {c: variants.transformer_dir(self.models_root, self.family, vid, c) for c in self.components}
-        changed = [c for c in self.components if self.loaded.get(c, base[c]) != wanted[c]]
+        parts = self.variant_components or self.components
+        base = {c: variants.transformer_dir(self.models_root, self.family, "base", c) for c in parts}
+        wanted = {c: variants.transformer_dir(self.models_root, self.family, vid, c) for c in parts}
+        changed = [c for c in parts if self.loaded.get(c, base[c]) != wanted[c]]
         self.variant = None  # half-loaded if this fails: the next job reloads
         if changed:
             sink.status("Loading the base model" if vid == "base" else f"Loading {vid}")
         for c in changed:
-            self.loaded.pop(c, None)
+            # Unknown until the copy finishes: if it fails, the next job copies this component again (absent would
+            # read as "the base's" and silently keep whatever weights it holds).
+            self.loaded[c] = None
             _copy_weights(getattr(self.pipe, c), wanted[c], vid)
             self.loaded[c] = wanted[c]
         self.variant = vid
@@ -155,15 +161,22 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     params = dict(module.named_parameters())
     params.update(dict(module.named_buffers()))
     wanted = {_plain(k) for k, _ in module.named_parameters() if ".lora_" not in k}
-    seen = set()
+    # Every key is matched before anything is copied, so a file that doesn't fit leaves the module as it was.
+    plan = []
     for f in files:
         with safe_open(str(f), "pt", device="cpu") as sf:
             for key in sf.keys():
-                target = _param_for(params, key)
-                if target is None:
+                name = _name_for(params, key)
+                if name is None:
                     raise ValueError(f"{vid}: unexpected weight {key}")
+                plan.append((f, key, name))
+    seen = set()
+    for f in files:
+        with safe_open(str(f), "pt", device="cpu") as sf:
+            for key, name in [(k, n) for g, k, n in plan if g == f]:
+                target = _param_for(params, name)
                 target.data.copy_(sf.get_tensor(key).to(device=target.device, dtype=target.dtype))
-                seen.add(key)
+                seen.add(name)
     missing = wanted - seen
     if missing:
         raise ValueError(f"{vid}: {len(missing)} weights missing, e.g. {sorted(missing)[0]}")
@@ -172,6 +185,19 @@ def _copy_weights(module, src: Path, vid: str) -> None:
 def _plain(name: str) -> str:
     """A parameter's name without PEFT's wrapper (``to_q.base_layer.weight`` → ``to_q.weight``)."""
     return name.replace(".base_layer.", ".")
+
+
+# Names a module's own loader renames: transformers 5's `CLIPTextModel` dropped the `text_model.` prefix that SDXL's
+# Hugging Face files (and `CLIPTextModelWithProjection`) still use.
+RENAMED_PREFIXES = ("text_model.",)
+
+
+def _name_for(params: dict, key: str) -> str | None:
+    """The module's name for a file's weight: as is, or with a prefix its loader would strip or add."""
+    candidates = [key]
+    for p in RENAMED_PREFIXES:
+        candidates.append(key[len(p):] if key.startswith(p) else p + key)
+    return next((c for c in candidates if _param_for(params, c) is not None), None)
 
 
 def _param_for(params: dict, key: str):

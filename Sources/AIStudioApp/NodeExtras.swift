@@ -30,7 +30,7 @@ struct NodeExtras: View {
             case let t where RemoteNodes.types.contains(t): gpuServerSection
             case "RemoteLoRA":
                 loraLinkPreview
-                Text("A LoRA for the Cloud GPU image node (FLUX.1 dev or Qwen-Image), picked from the library (Models window). One "
+                Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Wan 2.2), picked from the library (Models window). One "
                      + "added from a link is downloaded by the server itself; a file is uploaded with the first job. "
                      + "Chain up to four; strength 0 skips one.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
@@ -49,7 +49,7 @@ struct NodeExtras: View {
 
     /// The picked library LoRA's card.
     @ViewBuilder var loraLinkPreview: some View {
-        if case .value(.string(let id))? = node.inputs["lora"], !id.isEmpty, let item = model.store?.library.item(id) {
+        if case .value(.string(let id))? = node.inputs["lora"], !id.isEmpty, let item = store.library.item(id) {
             LibraryItemCard(node: node, item: item)
         }
     }

@@ -64,13 +64,16 @@ final class LinkLibrary {
     nonisolated static let macModelBases = ["flux.1": "flux-1-dev", "qwen-image-2.1": "qwen-turbo-mlx",
                                             "wan-2.2-t2v": "wan-2.2-t2v", "wan-2.2-i2v": "wan-2.2-i2v"]
     /// The families a GPU server runs fine-tunes of (server/gpu variants.py).
-    nonisolated static let serverModelFamilies: Set<String> = ["flux.1", "qwen-image", "wan-2.2-t2v", "wan-2.2-i2v"]
+    nonisolated static let serverModelFamilies: Set<String> = ["flux.1", "qwen-image", "sdxl", "wan-2.2-t2v", "wan-2.2-i2v"]
 
     /// Why a fine-tune of `family` can't be installed on this Mac (nil: it can).
     nonisolated static func macModelRefusal(_ family: String?) -> String? {
         guard let family else { return "pick its family" }
         if macModelBases[family] != nil { return nil }
         if family == "qwen-image" { return "Qwen-Image (20B) runs on a GPU server; this Mac runs Qwen-Image 2.1" }
+        if ["sdxl", "sd3.5-large", "sd3.5-medium"].contains(family) {
+            return "\(LoRASources.familyName(family)) runs on a GPU server, not on this Mac"
+        }
         return "\(LoRASources.familyName(family)) fine-tunes come in a later update"
     }
 
@@ -79,6 +82,7 @@ final class LinkLibrary {
         guard let family else { return "pick its family" }
         if serverModelFamilies.contains(family) { return nil }
         if family == "qwen-image-2.1" { return "GPU servers run the original Qwen-Image, not 2.1" }
+        if family == "sd3.5-medium" { return "GPU servers run SD 3.5 Large, not Medium" }
         return "\(LoRASources.familyName(family)) fine-tunes come in a later update"
     }
 

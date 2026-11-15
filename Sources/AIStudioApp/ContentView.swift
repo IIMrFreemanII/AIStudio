@@ -127,7 +127,7 @@ struct ContentView: View {
             }
             return !providers.isEmpty
         }
-        .task { if model.autoloadModel { model.preloadModel() } }
+        .task { if model.autoloadModel { model.preloadModel(atLaunch: true) } }
         .mgSheet("plot", isPresented: $showPlot) { PlotSheet() }
         .mgSheet("preset-gallery", isPresented: $model.showPresetGallery) { PresetGallery() }
         .mgSheet("mask-editor", item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }

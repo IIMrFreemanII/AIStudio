@@ -12,6 +12,7 @@ import NodesStandard
 public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
+        RemoteSD35Node.self, RemoteSDXLNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self,
     ]
 
@@ -21,13 +22,14 @@ public enum RemoteNodes {
     /// The node types that need a GPU server (the app's server picker and presets look for these).
     public static var types: Set<String> { Set(all.map { $0.schema.type }) }
 
-    /// LoRA slots on the server's FLUX and Qwen-Image tasks (`lora1` … `lora4`).
+    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large and SDXL tasks (`lora1` … `lora4`).
     public static let maxFluxLoRAs = 4
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
     public static let taskIDs: [String: String] = [
         "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v", "RemoteFlux": "flux1-dev",
-        "RemoteQwenImage": "qwen-image", "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
+        "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
+        "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
     ]
 
     public static func taskID(forNodeType type: String) -> String? { taskIDs[type] }
@@ -49,7 +51,7 @@ public enum RemoteNodes {
 
     /// The library family each cloud image node's `model` and LoRAs come from.
     public static let libraryFamilies: [String: String] = [
-        "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image",
+        "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
         "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
     ]
 
@@ -57,11 +59,16 @@ public enum RemoteNodes {
     public static func baseTitle(family: String) -> String {
         switch family {
         case "qwen-image": return "Qwen-Image (base)"
+        case "sdxl": return "SDXL 1.0 (base)"
+        case "sd3.5-large": return "SD 3.5 Large (base)"
         case "wan-2.2-t2v": return "Wan 2.2 T2V (base)"
         case "wan-2.2-i2v": return "Wan 2.2 I2V (base)"
         default: return "FLUX.1 dev (base)"
         }
     }
+
+    /// The samplers the SDXL task offers.
+    public static let sdxlSamplers = ["dpmpp-2m-karras", "euler-a", "euler"]
 
     /// The `server` input every remote node has: a GPU server's id (empty: the first one).
     static let serverInput = InputSpec("server", .string, default: .string(""))
@@ -387,7 +394,7 @@ public struct CloudLoRA: Sendable, Equatable {
     }
 }
 
-/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, Wan 2.2) uses. Chain several (up to
+/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Wan 2.2) uses. Chain several (up to
 /// four) to stack them; the model node refuses ones made for another model. A Wan 2.2 LoRA from Civitai or Hugging
 /// Face that comes as a high/low pair goes to each expert; a single file to both, or to the one its name says. `lora` picks it from the library (Models window); `path` (a file) is for graphs saved before the library.
 /// A LoRA from a link is downloaded by the GPU server itself; one that only exists on this Mac is uploaded with the
@@ -502,6 +509,81 @@ public struct RemoteQwenImageNode: NodeImplementation {
         let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
                                                   family: "qwen-image", to: &params)
         let (url, _) = try await runRemoteJob(task: "qwen-image", params: params, files: files, links: links,
+                                              inputs: inputs, context: context)
+        return ["image": .object(try loadImage(url))]
+    }
+}
+
+/// Stable Diffusion 3.5 Large on a GPU server. `fast` runs its Large Turbo (4 steps, no guidance); the negative
+/// prompt needs `guidance` above 1 (the full model's default, 3.5), which doubles the GPU time per step.
+public struct RemoteSD35Node: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteSD35", displayName: "Stable Diffusion 3.5 Large (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("loras", .cloudLoRAs, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 256, max: 2048, step: 16)),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 256, max: 2048, step: 16)),
+            // Large Turbo: 4 steps without guidance.
+            InputSpec("fast", .bool, default: .bool(true), widget: .toggle),
+            // 0 = automatic (4 with fast, else 28).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
+            // 0 = automatic (0, none, with fast, else 3.5).
+            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 20, step: 0.5), zeroLabel: "auto"),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "fast": try inputs.bool("fast"), "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+        ]
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "sd3.5-large", to: &params)
+        let (url, _) = try await runRemoteJob(task: "sd35-large", params: params, files: files, links: links,
+                                              inputs: inputs, context: context)
+        return ["image": .object(try loadImage(url))]
+    }
+}
+
+/// SDXL 1.0 on a GPU server, or an SDXL fine-tune (Juggernaut, Pony, Illustrious…) from the library.
+public struct RemoteSDXLNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteSDXL", displayName: "SDXL (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("loras", .cloudLoRAs, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 512, max: 2048, step: 8)),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 512, max: 2048, step: 8)),
+            InputSpec("steps", .int, default: .int(30), widget: .number(min: 1, max: 100, step: 1)),
+            InputSpec("guidance", .float, default: .double(6), widget: .number(min: 0, max: 20, step: 0.5)),
+            InputSpec("sampler", .string, default: .string("dpmpp-2m-karras"), widget: .choice(RemoteNodes.sdxlSamplers)),
+            // An SDXL fine-tune from the library (Juggernaut, Pony, Illustrious…), installed on the server (empty: SDXL 1.0 itself).
+            InputSpec("model", .string, default: .string(""), widget: .library("model")),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+            "sampler": try inputs.string("sampler"),
+        ]
+        let model = (try? inputs.string("model")) ?? ""
+        params["model"] = model.isEmpty ? "base" : model
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "sdxl", to: &params)
+        let (url, _) = try await runRemoteJob(task: "sdxl", params: params, files: files, links: links,
                                               inputs: inputs, context: context)
         return ["image": .object(try loadImage(url))]
     }
