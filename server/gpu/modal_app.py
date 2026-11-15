@@ -23,12 +23,12 @@ Layout:
   GGUF, on the GPUs its manifest names: ``LLM.with_options(gpu="H200:2")(model=id)``). The app keeps it warm with keepalives while a chat is open;
   it scales to zero ``AISTUDIO_LLM_IDLE`` seconds (default 180) after the last chat or keepalive.
 - Volume ``aistudio-gpu-uploads``: the clients' uploads (start images, reference clips, LoRAs), kept across sessions
-  up to ``AISTUDIO_UPLOADS_GB`` (default 20; least recently used go first). Workers copy inputs straight from it.
+  up to ``AISTUDIO_UPLOADS_GB`` (default 50; least recently used go first). Workers copy inputs straight from it.
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (default H100; on a 48 GB L40S its weights are stored in
 fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
-``AISTUDIO_UPLOADS_GB`` (default 20), ``AISTUDIO_LLM_IDLE`` (default 180),
+``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
 they live on the models Volume).
@@ -50,7 +50,7 @@ GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
-UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "20"))
+UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "50"))
 LLM_IDLE = int(os.environ.get("AISTUDIO_LLM_IDLE", "180"))
 VLLM_VERSION = os.environ.get("AISTUDIO_VLLM", "0.33.0")
 FLASHINFER_VERSION = os.environ.get("AISTUDIO_FLASHINFER", "0.7.2.post1")  # the one vLLM 0.33.0 depends on

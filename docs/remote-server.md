@@ -277,7 +277,7 @@ before anything is sent (*This LoRA is for Flux.1 D, not Qwen-Image*); one that 
   about 4½); the node counts it up: *Uploading 230 / 612 MB · 1.9 MB/s · 3 min left*. A broken upload resumes where
   it stopped. Files are named by their SHA-256 and kept on the
   `aistudio-gpu-uploads` Volume in your Modal account, so later runs, in this session or another, send nothing.
-  Start images and reference clips are kept the same way. The Volume holds up to 20 GB (`AISTUDIO_UPLOADS_GB=50
+  Start images and reference clips are kept the same way. The Volume holds up to 50 GB (`AISTUDIO_UPLOADS_GB=80
   modal deploy …` to change it); past that, the least recently used files are deleted. Delete them all with
   `modal volume rm -r aistudio-gpu-uploads /`. A GPU box keeps uploads in its `data/uploads` folder, with the same
   limit.

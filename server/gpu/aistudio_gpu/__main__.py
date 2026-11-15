@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     runner = LocalRunner(args.models.resolve(), allow_gpu_tasks=not args.cpu_only)
     # Uploads are kept across restarts, up to AISTUDIO_UPLOADS_GB (least recently used go first).
-    files = FileStore(args.data / "uploads", max_bytes=int(float(os.environ.get("AISTUDIO_UPLOADS_GB", "20")) * 1e9))
+    files = FileStore(args.data / "uploads", max_bytes=int(float(os.environ.get("AISTUDIO_UPLOADS_GB", "50")) * 1e9))
     files.prune()
     manager = JobManager(runner, files, args.data / "results")
     # LLMs from links (vLLM on this machine's GPUs, one model at a time; AISTUDIO_FAKE_LLM=1 for a fake engine).
