@@ -19,6 +19,7 @@ let package = Package(
         .library(name: "NodesRemote", targets: ["NodesRemote"]),
         .library(name: "LLMClient", targets: ["LLMClient"]),
         .library(name: "Agent", targets: ["Agent"]),
+        .library(name: "MovieCore", targets: ["MovieCore"]),
         .library(name: "AIStudioServer", targets: ["AIStudioServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
@@ -335,6 +336,11 @@ let package = Package(
             name: "Agent",
             dependencies: ["LLMClient"]
         ),
+        // Movies: script, cast and shots, the LLM planner, render templates and cost estimates (no UI).
+        .target(
+            name: "MovieCore",
+            dependencies: ["GraphRuntime", "LLMClient", "Agent"]
+        ),
         // Drives other Mac apps for the coding agent's UI testing: accessibility, CGEvent, ScreenCaptureKit, AVFoundation.
         .target(
             name: "UIControl",
@@ -417,6 +423,7 @@ let package = Package(
                 "ModelImport",
                 "LLMClient",
                 "Agent",
+                "MovieCore",
                 "UIControl",
                 "CodeEditing",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -478,6 +485,10 @@ let package = Package(
         .testTarget(
             name: "AgentTests",
             dependencies: ["Agent", "LLMClient"]
+        ),
+        .testTarget(
+            name: "MovieCoreTests",
+            dependencies: ["MovieCore", "GraphRuntime", "LLMClient", "Agent"]
         ),
         .testTarget(
             name: "UIControlTests",

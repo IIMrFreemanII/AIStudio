@@ -113,6 +113,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-movie") {
+            Task { @MainActor in
+                while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runMovie(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let url = SmokeTest.argument("--smoke-remote") {
             Task { @MainActor in
                 while AppDelegate.model == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -351,14 +358,17 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .option])
             Button("New Coding Chat…") { model.chooseProjectAndChat() }
                 .keyboardShortcut("n", modifiers: [.command, .option, .shift])
+            Button("New Movie") { model.newMovie() }
+                .keyboardShortcut("n", modifiers: [.command, .control])
             Button("Open…") { Self.openPanel(model: model) }
                 .keyboardShortcut("o")
             Divider()
-            Button(model.activeChat == nil ? "Close Workflow" : "Close Chat") {
+            Button(model.activeMovie != nil ? "Close Movie" : model.activeChat == nil ? "Close Workflow" : "Close Chat") {
                 // With another window in front (Models, Settings), ⌘W closes that window: the main window's question
                 // would open behind it.
                 if let key = NSApp.keyWindow, key.identifier?.rawValue.hasPrefix("main") != true, key.styleMask.contains(.closable) {
                     key.performClose(nil)
+                } else if let movie = model.activeMovie { model.closeMovie(movie.id)
                 } else if let chat = model.activeChat { model.closeChat(chat.id) } else { TabCommands.close(model.active, model: model) }
             }
             .keyboardShortcut("w")

@@ -24,15 +24,16 @@ struct ContentView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            MGTitleBar(bar: .unified, title: model.activeChat?.title ?? model.active.name,
-                       subtitle: model.activeChat == nil && model.active.isDirty ? "Edited" : nil) {
+            MGTitleBar(bar: .unified, title: model.activeMovie?.movie.title ?? model.activeChat?.title ?? model.active.name,
+                       subtitle: model.activeMovie.map { $0.stage.title }
+                           ?? (model.activeChat == nil && model.active.isDirty ? "Edited" : nil)) {
                 Button { withAnimation(.easeOut(duration: 0.18)) { panelOpen.toggle() } } label: {
                     Image(systemName: "sidebar.left")
                 }
                 .buttonStyle(.mg(.icon))
                 .mgHelp(panelOpen ? "Hide the sidebar (⌃⌘S)" : "Show the sidebar (⌃⌘S)")
             } trailing: {
-                if model.activeChat == nil { toolbarContent }
+                if model.workflowInFront { toolbarContent }
             }
             HStack(spacing: 0) {
                 let panel = Binding(get: { SidebarPanel(rawValue: panelRaw) ?? .workflows }, set: { panelRaw = $0.rawValue })
@@ -48,7 +49,9 @@ struct ContentView: View {
                 }
                 MGDivider(vertical: true, gap: true)
                 VStack(spacing: 0) {
-                    if model.activeChat != nil {
+                    if let movie = model.activeMovie {
+                        MovieView(doc: movie).id(movie.id)
+                    } else if model.activeChat != nil {
                         // The chat in front and the last few used stay built, hidden: going back to one shows it
                         // at once instead of building its transcript again. Hidden ones take no clicks, keys
                         // (a permission card's Return) or focus.
@@ -84,7 +87,7 @@ struct ContentView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                if model.showHelper && model.activeChat == nil {
+                if model.showHelper && model.workflowInFront {
                     MGDivider(vertical: true, gap: true)
                     HelperPanel(doc: model.active)
                         .id(model.activeTabID)
@@ -94,7 +97,7 @@ struct ContentView: View {
                             MGResizeHandle(width: $helperWidth, range: 320...600).offset(x: -3)
                         }
                 }
-                if showInspector && model.activeChat == nil {
+                if showInspector && model.workflowInFront {
                     MGDivider(vertical: true, gap: true)
                     InspectorView()
                         .frame(width: inspectorWidth)
