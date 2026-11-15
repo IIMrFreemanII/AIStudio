@@ -13,6 +13,8 @@ public struct LibraryPaths: Sendable, Equatable {
     public var input: URL { root.appendingPathComponent("input", isDirectory: true) }
     /// Saved chats: `<id>.json`, and `<id>/` for their attachments.
     public var chats: URL { root.appendingPathComponent("chats", isDirectory: true) }
+    /// Movies: `<id>/movie.json` and the files generated for it.
+    public var movies: URL { root.appendingPathComponent("movies", isDirectory: true) }
 
     public static var defaultRoot: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -35,7 +37,7 @@ public struct LibraryPaths: Sendable, Equatable {
 
     /// Creates the folders that don't exist yet.
     public func ensure() {
-        for dir in [workflows, presets, input, chats, sessionDirectory] {
+        for dir in [workflows, presets, input, chats, movies, sessionDirectory] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

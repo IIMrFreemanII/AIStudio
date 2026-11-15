@@ -405,6 +405,26 @@ FAKE_WIDGET = """<label>Strength <input id="s" type="range" min="0" max="1" step
 # The fake engine's canned drafts for the "draft a commit message" and "draft a pull request" buttons.
 FAKE_COMMIT = "Add hello.txt\n\nCreates hello.txt with a greeting from the agent."
 FAKE_PR = "Add hello.txt\n\n## Summary\n- Adds hello.txt with a greeting\n\n## Test plan\n- cat hello.txt"
+# The app's Movie Studio prompts (MoviePlanner): a two-scene script, and two shots for whichever scene is asked about.
+FAKE_MOVIE_SCRIPT = json.dumps({
+    "title": "The Last Lantern", "logline": "A girl keeps a lighthouse lit through a storm.",
+    "characters": [{"id": "mara", "name": "Mara", "look": "girl of 12, freckles, red raincoat",
+                    "voice": "young girl, bright, brave"},
+                   {"id": "tomas", "name": "Tomas", "look": "man of 70, grey beard, wool sweater",
+                    "voice": "deep, gravelly, slow"}],
+    "scenes": [{"id": "s1", "heading": "INT. LIGHTHOUSE – NIGHT", "summary": "The lamp goes dark.", "mood": "tense strings",
+                "action": "Wind howls. The lamp flickers out.",
+                "dialogue": [{"character": "mara", "text": "Grandpa, the light!", "delivery": "scared"}]},
+               {"id": "s2", "heading": "EXT. CLIFF – NIGHT", "summary": "Mara runs for oil.", "mood": "driving drums",
+                "action": "Mara runs through the rain with a can of oil.", "dialogue": []}]})
+FAKE_MOVIE_SHOTS = json.dumps({"shots": [
+    {"duration": 4, "framing": "wide", "camera": "slow push in", "keyframe": "a lighthouse lamp room at night",
+     "motion": "the lamp flickers out", "characters": ["mara"], "dialogue": [], "talking": False, "continues": False,
+     "transition": "fadeFromBlack", "sfx": "wind, rain on glass"},
+    {"duration": 3, "framing": "close-up", "camera": "static", "keyframe": "close-up of a freckled girl, scared",
+     "motion": "she turns and shouts", "characters": ["mara"],
+     "dialogue": [{"character": "mara", "text": "Grandpa, the light!", "delivery": "scared"}], "talking": True,
+     "continues": True, "transition": "cut", "sfx": "thunder"}]})
 
 
 # Scripts for "run a flow" / "run a slow flow" (the flow tool's JS), see FakeEngine.
@@ -472,7 +492,8 @@ class FakeEngine:
     in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
     "Done: " and the result. "create hello.txt with a todo list" calls todo_write (two steps, the first in progress)
     before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
-    FAKE_PR. With the ui tools offered, "test the ui" calls ui_apps, then "Done: " and the result."""
+    FAKE_PR; the Movie Studio's script and shot prompts with FAKE_MOVIE_SCRIPT / FAKE_MOVIE_SHOTS. With the ui tools
+    offered, "test the ui" calls ui_apps, then "Done: " and the result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -622,6 +643,10 @@ class FakeEngine:
             words = FAKE_COMMIT.split(" ")
         elif "write the pull request now." in last.lower():
             words = FAKE_PR.split(" ")
+        elif last.startswith("Idea:") and "Length: about" in last:
+            words = FAKE_MOVIE_SCRIPT.split(" ")
+        elif "Break down this scene" in last:
+            words = FAKE_MOVIE_SHOTS.split(" ")
         else:
             words = f"You said: {last}".split(" ")
         for i, w in enumerate(words):

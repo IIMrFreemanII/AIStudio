@@ -42,6 +42,7 @@ extension AppModel {
         // The workflow first, so the history doesn't record the one it replaces as just used.
         activeTabID = id
         activeChatID = nil
+        activeMovieID = nil
     }
 
     /// A tab name not used by another open tab: "Untitled", "Untitled 2"…
@@ -60,6 +61,7 @@ extension AppModel {
         if let i = tabs.firstIndex(where: { $0.id == activeTabID }) { tabs.insert(doc, at: i + 1) } else { tabs.append(doc) }
         activeTabID = doc.id
         activeChatID = nil
+        activeMovieID = nil
         return doc
     }
 
@@ -355,6 +357,7 @@ extension AppModel {
     func saveSession() {
         guard persistSettings else { return }
         saveOpenChats()
+        saveMovies()
         let store = sessionStore
         for doc in tabs where doc.lastDraft != doc.graph {
             do { try store.writeDraft(doc.graph, id: doc.id); doc.lastDraft = doc.graph } catch {}

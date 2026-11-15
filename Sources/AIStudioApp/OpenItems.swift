@@ -1,8 +1,9 @@
 import Foundation
 
-/// What can be in front of the main area: an open workflow or a recent chat.
+/// What can be in front of the main area: an open workflow, an open movie or a recent chat.
 enum FrontItem: Hashable {
     case workflow(UUID)
+    case movie(UUID)
     case chat(UUID)
 }
 
@@ -24,16 +25,20 @@ extension AppModel {
         return chats.filter { ids.contains($0.id) }
     }
 
-    var frontItem: FrontItem { activeChatID.map { .chat($0) } ?? .workflow(activeTabID) }
+    var frontItem: FrontItem {
+        if let m = activeMovieID { return .movie(m) }
+        return activeChatID.map { .chat($0) } ?? .workflow(activeTabID)
+    }
 
-    /// The Window menu's list: open workflows in order, then recent chats in the order they were opened.
+    /// The Window menu's list: open workflows in order, open movies, then recent chats in the order they were opened.
     var openItems: [FrontItem] {
-        tabs.map { .workflow($0.id) } + chats.filter(\.isRecent).map { .chat($0.id) }
+        tabs.map { .workflow($0.id) } + movies.map { .movie($0.id) } + chats.filter(\.isRecent).map { .chat($0.id) }
     }
 
     func isOpen(_ item: FrontItem) -> Bool {
         switch item {
         case .workflow(let id): return tabs.contains { $0.id == id }
+        case .movie(let id): return movies.contains { $0.id == id }
         case .chat(let id): return chats.contains { $0.id == id && $0.isRecent }
         }
     }
@@ -41,6 +46,7 @@ extension AppModel {
     func title(of item: FrontItem) -> String {
         switch item {
         case .workflow(let id): return tabs.first { $0.id == id }?.name ?? "Workflow"
+        case .movie(let id): return movies.first { $0.id == id }?.movie.title ?? "Movie"
         case .chat(let id): return chats.first { $0.id == id }?.title ?? "Chat"
         }
     }
@@ -48,6 +54,7 @@ extension AppModel {
     func show(_ item: FrontItem) {
         switch item {
         case .workflow(let id): activate(id)
+        case .movie(let id): activeMovieID = id
         case .chat(let id): activateChat(id)
         }
     }
@@ -96,7 +103,8 @@ extension AppModel {
     /// Takes `item` out of the front, showing what was used before it (or the active workflow).
     func leaveFront(_ item: FrontItem) {
         if frontItem == item {
-            if let before = frontHistory.first(where: { $0 != item && isOpen($0) }) { show(before) } else { activeChatID = nil }
+            if let before = frontHistory.first(where: { $0 != item && isOpen($0) }) { show(before) }
+            else { activeChatID = nil; activeMovieID = nil }
         }
         frontHistory.removeAll { $0 == item }
     }

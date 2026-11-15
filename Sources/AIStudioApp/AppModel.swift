@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MovieCore
 import GraphRuntime
 import ImageIO
 import MLXDiffusionCore
@@ -70,7 +71,12 @@ final class AppModel {
     /// The open workflows, in tab order; there is always at least one.
     var tabs: [WorkflowDocument]
     /// The active workflow; choosing one brings it in front of a chat.
-    var activeTabID: UUID { didSet { if activeTabID != oldValue { activeChatID = nil }; markFrontViewed(); noteFront() } }
+    var activeTabID: UUID {
+        didSet {
+            if activeTabID != oldValue { activeChatID = nil; activeMovieID = nil }
+            markFrontViewed(); noteFront()
+        }
+    }
     var active: WorkflowDocument { tabs.first { $0.id == activeTabID } ?? tabs[0] }
     var activeUndoManager: UndoManager { active.undoManager }
 
@@ -79,10 +85,32 @@ final class AppModel {
     /// Loaded chats: the recent ones (`isRecent`) and hidden sessions that are still working.
     var chats: [ChatDocument] = []
     /// The chat in front of the graph (nil: the active workflow is in front).
-    var activeChatID: UUID? { didSet { markFrontViewed(); noteFront() } }
+    var activeChatID: UUID? {
+        didSet {
+            if activeChatID != nil, activeMovieID != nil { activeMovieID = nil }
+            markFrontViewed(); noteFront()
+        }
+    }
     /// What was in front, most recent first (⌃Tab goes back to the one before).
     var frontHistory: [FrontItem] = []
     var activeChat: ChatDocument? { chats.first { $0.id == activeChatID } }
+
+    // MARK: movies
+
+    /// Open movies (loaded, in the Window menu's list).
+    var movies: [MovieDocument] = []
+    /// The movie in front (nil: a chat or the active workflow is).
+    var activeMovieID: UUID? {
+        didSet {
+            if activeMovieID != nil, activeChatID != nil { activeChatID = nil }
+            noteFront()
+        }
+    }
+    var activeMovie: MovieDocument? { movies.first { $0.id == activeMovieID } }
+    /// Saved movies, newest first (Movies panel).
+    var movieSummaries: [MovieSummary] = []
+    /// The active workflow is in front (no chat or movie over it): its toolbar, inspector and helper show.
+    var workflowInFront: Bool { activeChat == nil && activeMovie == nil }
     /// The graph helpers of workflow tabs, while open (docked, not tabs).
     var helperChats: [ChatDocument] = []
     /// The graph helper panel next to the graph.
@@ -307,6 +335,7 @@ final class AppModel {
         reloadAssets()
         if restoreSession ?? (persistSettings && !Self.isAutomatedRun) { restoreTabs() }
         restoreOpenChats()
+        restoreOpenMovies()
         if persistSettings { startSessionAutosave() }
         reloadHistory()
         memoryTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
