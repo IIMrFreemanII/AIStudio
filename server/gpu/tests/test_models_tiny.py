@@ -782,11 +782,38 @@ def test_sd35_fast_and_full(models, tmp_path):
     assert np.abs(full - fast).max() > 0
     _, _, out = jobs(fast=False, steps=2, negative="blurry")
     assert out.extra["negative"] == "cfg"
+    worker, preview = jobs.worker, jobs.worker._preview
+    decoded = []  # whether each preview decoded the step's estimate of the finished latents
+
+    def recording_preview(latents):
+        decoded.append(worker.x0.get("x0") is not None and latents is worker.x0["x0"])
+        return preview(latents)
+
+    worker._preview = recording_preview
     longer, sink, _ = jobs(fast=False, steps=9)
     assert [s for _, s in sink.previews] == [4, 8] and sink.previews[0][0] == (64, 64, 3)
+    assert decoded == [True, True]
     assert not any(s.startswith("Loading") for s in sink.statuses)
     again, sink, _ = jobs(negative="blurry")
     assert "Loading SD 3.5 Large Turbo" in sink.statuses and np.array_equal(again, fast)
+
+
+def test_flow_matching_preview_estimate_is_the_finished_latents_at_the_end():
+    """SD 3.5's sampler: the estimate is sample − sigma × velocity, so the last step (to sigma 0) lands exactly on it."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    from aistudio_gpu.tasks.previews import remember_x0
+
+    scheduler, slot = FlowMatchEulerDiscreteScheduler(shift=3.0), {}
+    remember_x0(scheduler, slot)
+    scheduler.set_timesteps(5)
+    torch.manual_seed(0)
+    sample, x0_true = torch.randn(1, 4, 8, 8), torch.randn(1, 4, 8, 8)
+    for t in scheduler.timesteps:
+        velocity = (sample - x0_true) / float(scheduler.sigmas[scheduler.step_index or 0])  # a perfect model
+        sample = scheduler.step(velocity, t, sample, return_dict=False)[0]
+        assert torch.allclose(slot["x0"], x0_true, atol=1e-4)
+    assert torch.allclose(sample, x0_true, atol=1e-4)
 
 
 def test_sd35_without_turbo_runs_large_only(models, tmp_path):

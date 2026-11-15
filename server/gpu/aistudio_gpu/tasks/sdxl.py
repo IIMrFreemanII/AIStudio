@@ -20,6 +20,7 @@ from ..media import to_uint8, write_png
 from . import Output, TaskSpec
 from .adapters import AdapterSlots
 from .device import generator, pick_device
+from .previews import remember_x0
 
 PREVIEW_EVERY = 5  # a VAE decode per preview: every few steps is plenty
 
@@ -33,7 +34,7 @@ class SDXLWorker(AdapterSlots):
     def __init__(self):
         self.pipe = None
         self.schedulers: dict = {}
-        self.x0: dict = {}  # the last step's estimate of the finished latents, for previews (``_remember_x0``)
+        self.x0: dict = {}  # the last step's estimate of the finished latents, for previews (``previews.remember_x0``)
         self._init_slots()
 
     def load(self, models_root: Path, status) -> None:
@@ -54,7 +55,7 @@ class SDXLWorker(AdapterSlots):
             "euler": EulerDiscreteScheduler.from_config(cfg),
         }
         for scheduler in self.schedulers.values():
-            _remember_x0(scheduler, self.x0)
+            remember_x0(scheduler, self.x0)
         self.pipe = pipe
         self.models_root = models_root
 
@@ -99,20 +100,3 @@ class SDXLWorker(AdapterSlots):
         with torch.inference_mode():
             image = vae.decode((latents / vae.config.scaling_factor).to(vae.dtype), return_dict=False)[0]
         return to_uint8((image[0].permute(1, 2, 0).float().cpu().numpy() + 1.0) / 2.0)  # -1…1 → 0…1
-
-
-def _remember_x0(scheduler, slot: dict) -> None:
-    """Wraps ``scheduler.step`` (once, at load) to keep the step's estimate of the finished latents in ``slot["x0"]``.
-    A preview decodes that: the latents mid-way through a Karras schedule are still mostly noise. Euler samplers
-    return the estimate; DPM++ (``dpmsolver++``) keeps it as its last model output."""
-    step = scheduler.step
-
-    def wrapped(*args, **kwargs):
-        out = step(*args, **kwargs)
-        x0 = out[1] if isinstance(out, tuple) and len(out) > 1 else getattr(out, "pred_original_sample", None)
-        if x0 is None and getattr(scheduler, "model_outputs", None):
-            x0 = scheduler.model_outputs[-1]
-        slot["x0"] = x0
-        return out
-
-    scheduler.step = wrapped

@@ -20,6 +20,7 @@ from ..media import to_uint8, write_png
 from . import Output, TaskSpec, adapters
 from .adapters import AdapterSlots
 from .device import generator, pick_device
+from .previews import remember_x0
 
 PREVIEW_EVERY = 4
 FAST_STEPS, FULL_STEPS, FULL_GUIDANCE = 4, 28, 3.5
@@ -34,6 +35,7 @@ class SD35Worker(AdapterSlots):
         self.pipe = None
         self.has_fast = False
         self.current: str | None = None  # "turbo" or "large": the transformer weights loaded (None: half-loaded)
+        self.x0: dict = {}  # the last step's estimate of the finished latents, for previews (``previews.remember_x0``)
         self._init_slots()
 
     def load(self, models_root: Path, status) -> None:
@@ -54,6 +56,7 @@ class SD35Worker(AdapterSlots):
         pipe = StableDiffusion3Pipeline.from_pretrained(models_root / "sd35-large", dtype=dtype, **extra)
         pipe.to(device)
         pipe.set_progress_bar_config(disable=True)
+        remember_x0(pipe.scheduler, self.x0)
         self.pipe = pipe
 
     def _use_transformer(self, which: str, sink) -> None:
@@ -79,7 +82,8 @@ class SD35Worker(AdapterSlots):
             sink.progress(i + 1, steps)
             if (i + 1) % PREVIEW_EVERY == 0 and i + 1 < steps:
                 try:
-                    sink.preview(self._preview(kwargs["latents"]), i + 1, steps)
+                    x0 = self.x0.get("x0")
+                    sink.preview(self._preview(kwargs["latents"] if x0 is None else x0), i + 1, steps)
                 except Exception:  # noqa: BLE001 — a preview never fails a job
                     pass
             return kwargs
@@ -92,6 +96,7 @@ class SD35Worker(AdapterSlots):
         if guidance > 1:  # classifier-free guidance runs only above 1
             args["negative_prompt"] = negative or None
         how = "cfg" if guidance > 1 and negative else ("ignored" if negative else "none")
+        self.x0.clear()
         sink.status("Sampling" + (" (fast)" if fast else ""))
         start = time.monotonic()
         with torch.inference_mode():

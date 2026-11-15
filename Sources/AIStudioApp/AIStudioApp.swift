@@ -355,7 +355,11 @@ struct AppCommands: Commands {
                 .keyboardShortcut("o")
             Divider()
             Button(model.activeChat == nil ? "Close Workflow" : "Close Chat") {
-                if let chat = model.activeChat { model.closeChat(chat.id) } else { TabCommands.close(model.active, model: model) }
+                // With another window in front (Models, Settings), ⌘W closes that window: the main window's question
+                // would open behind it.
+                if let key = NSApp.keyWindow, key.identifier?.rawValue.hasPrefix("main") != true, key.styleMask.contains(.closable) {
+                    key.performClose(nil)
+                } else if let chat = model.activeChat { model.closeChat(chat.id) } else { TabCommands.close(model.active, model: model) }
             }
             .keyboardShortcut("w")
         }
