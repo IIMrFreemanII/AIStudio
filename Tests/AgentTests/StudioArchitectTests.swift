@@ -224,3 +224,55 @@ struct DelegateBatchTests {
         #expect(Date().timeIntervalSince(start) < 0.55, "the two 0.3 s workers overlapped")
     }
 }
+
+struct StudioFaceTests {
+    @Test func eyesFollowTheMood() {
+        let shapes = StudioActorState.allCases.map { StudioFace.face(state: $0, pace: .watchable, reduceMotion: false).eyes }
+        #expect(shapes == [.open, .focus, .wide, .closed, .happy, .cross])
+        #expect(StudioFace.face(state: .working, talking: true, pace: .watchable, reduceMotion: false).eyes == .open)
+        let w = StudioFace.face(state: .working, talking: true, pace: .watchable, reduceMotion: false)
+        #expect(w.blinks && w.bounce && w.particles && w.orbit && w.breathe && !w.glances && w.animates)
+        let idle = StudioFace.face(state: .idle, pace: .step, reduceMotion: false)
+        #expect(idle.blinks && idle.glances && idle.particles && idle.animates, "an idle orb blinks, glances and has its sparkles")
+        for state in StudioActorState.allCases {
+            #expect(StudioFace.face(state: state, pace: .watchable, reduceMotion: false).particles, "sparkles all the time")
+        }
+    }
+
+    @Test func fastAndReduceMotionKeepMoodsOnly() {
+        for state in StudioActorState.allCases {
+            let fast = StudioFace.face(state: state, talking: true, moving: true, pace: .fast, reduceMotion: false)
+            #expect(!fast.blinks && !fast.glances && !fast.bounce && !fast.orbit && fast.particles, "Fast keeps the sparkles")
+            let still = StudioFace.face(state: state, talking: true, moving: true, pace: .watchable, reduceMotion: true)
+            #expect(!still.blinks && !still.glances && !still.bounce && !still.particles && !still.orbit && !still.breathe && !still.animates)
+            #expect(still.eyes == StudioFace.face(state: state, pace: .watchable, reduceMotion: false).eyes || state == .working)
+        }
+    }
+
+    @Test func blinksAreRepeatableAndSpaced() {
+        let a = StudioFace.blinkTimes(seed: 3), b = StudioFace.blinkTimes(seed: 3)
+        #expect(a == b && a.count > 15)
+        for (x, y) in zip(a, a.dropFirst()) { #expect(y - x >= 3 && y - x <= 6) }
+        #expect(StudioFace.isBlinking(at: a[2] + 0.05, seed: 3) && !StudioFace.isBlinking(at: a[2] + 0.5, seed: 3))
+        #expect(StudioFace.isBlinking(at: a[2] + 0.05 + 120, seed: 3), "the schedule repeats every cycle")
+        let marks = StudioFace.changes(after: 10, span: 30, seed: 3, blinks: true, glances: true)
+        #expect(!marks.isEmpty && marks.allSatisfy { $0 > 10 && $0 <= 40 } && marks == marks.sorted())
+    }
+
+    @Test func gazePointsAlongTheWayWithinItsLimit() {
+        let g = StudioFace.gaze(from: .zero, to: CGPoint(x: 300, y: 0), maxShift: 1)
+        #expect(abs(g.dx - 1) < 0.0001 && g.dy == 0)
+        let near = StudioFace.gaze(from: .zero, to: CGPoint(x: 0, y: -10), maxShift: 1)
+        #expect(near.dy < 0 && hypot(near.dx, near.dy) < 1, "a near target: a smaller look")
+        #expect(StudioFace.gaze(from: .zero, to: .zero) == .zero)
+    }
+
+    @Test func particlesStayInTheirRing() {
+        for t in stride(from: 0.0, to: 30, by: 0.7) {
+            for p in StudioFace.particles(actor: 2, time: t) {
+                let r = hypot(p.offset.dx, p.offset.dy)
+                #expect(r >= 0.59 && r <= 0.951 && p.opacity >= 0.24 && p.opacity <= 1.0001)
+            }
+        }
+    }
+}

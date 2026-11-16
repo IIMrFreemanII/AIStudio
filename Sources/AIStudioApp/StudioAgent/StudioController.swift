@@ -46,6 +46,11 @@ final class StudioCursor: Identifiable {
     var waiting: String?
     /// Acting on a page that isn't in front: no pointer, just the log.
     var offscreen = false
+    /// Its model is writing text until then (the orb's talking bounce).
+    var talkingUntil = Date.distantPast
+    /// Which way its eyes look (a unit-ish vector; zero: ahead).
+    var gaze: CGVector = .zero
+    var isTalking: Bool { Date() < talkingUntil }
     /// What its task's paid runs cost so far (a worker's, reset at each handoff).
     var spent: Double = 0
     /// Bumped to replay the done/failed moment and the pop-in.
@@ -113,6 +118,17 @@ final class StudioController {
         cursors.sort { $0.actor < $1.actor }
         return c
     }
+
+    /// `actor`'s model just streamed some text: its orb talks for a moment.
+    func talked(_ actor: StudioActor) {
+        let c = cursor(actor)
+        let was = c.isTalking
+        c.talkingUntil = Date().addingTimeInterval(0.4)
+        if !was { talkTick &+= 1 }
+    }
+
+    /// Bumped when someone starts talking (so views re-read who talks).
+    var talkTick = 0
 
     /// The cursor of the actor whose tool call is running now.
     var current: StudioCursor { cursor(StudioActorScope.actor) }
@@ -441,7 +457,10 @@ final class StudioController {
         }
         if let rect {
             // The tip just inside the control's lower half, so the caption doesn't cover it.
-            await fly(c, to: CGPoint(x: rect.minX + min(rect.width / 2, 40), y: rect.midY + min(rect.height / 4, 12)))
+            let tip = CGPoint(x: rect.minX + min(rect.width / 2, 40), y: rect.midY + min(rect.height / 4, 12))
+            await fly(c, to: tip)
+            // Landed: it looks at what it works on.
+            withAnimation(.spring(duration: 0.3)) { c.gaze = StudioFace.gaze(from: tip, to: CGPoint(x: rect.midX, y: rect.midY)) }
         } else if c.position == nil {
             await fly(c, to: CGPoint(x: local(main.frame).midX, y: local(main.frame).maxY - 80))
         }
@@ -459,6 +478,7 @@ final class StudioController {
             return
         }
         let f = StudioFlight(from: from, to: to, pace: motions.contains(.curve) ? (pace == .fast ? .watchable : pace) : .fast)
+        c.gaze = StudioFace.gaze(from: from, to: to)
         c.flight = f
         c.flightStart = now
         if c.position == nil { c.popIn += 1 }
