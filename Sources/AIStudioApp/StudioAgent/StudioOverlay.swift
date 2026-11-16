@@ -65,9 +65,11 @@ struct StudioOverlayView: View {
                 ForEach(controller.cursors) { c in
                     let motions = controller.motions(c)
                     if let p = c.displayed(at: now, drift: motions.contains(.drift)) {
-                        StudioPointer(cursor: c, motions: motions)
+                        let size: CGFloat = c.actor.isArchitect ? 36 : 32
+                        StudioPointer(cursor: c, motions: motions, pace: controller.pace, paused: controller.gate.isPaused,
+                                      moving: c.isFlying(at: now) || (c.state == .idle && c.position != nil && c.homeTarget != nil))
                             .fixedSize()
-                            .offset(x: p.x - 15, y: p.y - 15)
+                            .offset(x: p.x - size / 2 - 4, y: p.y - size / 2 - 4)
                             .transition(.scale(scale: 0.4).combined(with: .opacity))
                     }
                 }
@@ -100,12 +102,21 @@ struct StudioOverlayView: View {
 struct StudioPointer: View {
     let cursor: StudioCursor
     let motions: StudioMotions
+    var pace: StudioPace = .watchable
+    var paused = false
+    /// Flying or wandering (particles trail it).
+    var moving = false
+
+    var controllerState: StudioActorState {
+        if paused, cursor.state != .idle { return .paused }
+        return cursor.waiting != nil ? .waiting : cursor.state
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            StudioActorIcon(actor: cursor.actor, state: cursor.waiting != nil ? .waiting : cursor.state, size: 22,
-                            motions: motions, moment: cursor.moment, popIn: cursor.popIn)
-                .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            StudioOrb(actor: cursor.actor, state: controllerState, size: cursor.actor.isArchitect ? 36 : 32, pace: pace,
+                      talking: cursor.isTalking, moving: moving, gaze: cursor.gaze, moment: cursor.moment, popIn: cursor.popIn)
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
             if let caption = cursor.caption, !caption.isEmpty {
                 HStack(spacing: 5) {
                     Text(cursor.actor.isArchitect ? "Agent" : cursor.actor.label)
@@ -120,7 +131,7 @@ struct StudioPointer: View {
                 .padding(.horizontal, 8).padding(.vertical, 5)
                 .mgGlass(.floatingPanel, radius: MGRadius.lg)
                 .mgHairline(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous))
-                .offset(y: 12)
+                .offset(y: 16)
                 .transition(.opacity)
             }
         }

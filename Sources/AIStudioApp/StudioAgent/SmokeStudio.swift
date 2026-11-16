@@ -1,6 +1,7 @@
 import Agent
 import AppKit
 import Foundation
+import SwiftUI
 import GraphRuntime
 import LLMClient
 import MovieCore
@@ -318,6 +319,31 @@ extension SmokeTest {
             v.cacheDisplay(in: v.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: dir).appendingPathComponent(name + ".png"))
         }
+        // The faces: every actor in every mood at three sizes, on dark and on light (to look at, with snapshots on).
+        if let dir = ProcessInfo.processInfo.environment["AISTUDIO_SMOKE_SNAPSHOTS"] {
+            for (name, scheme, bg) in [("dark", ColorScheme.dark, Color(white: 0.06)), ("light", ColorScheme.light, Color(white: 0.97))] {
+                let grid = VStack(alignment: .leading, spacing: 18) {
+                    ForEach([20.0, 32.0, 44.0], id: \.self) { size in
+                        HStack(spacing: size * 0.9) {
+                            ForEach(0..<4, id: \.self) { n in
+                                ForEach(StudioActorState.allCases, id: \.self) { st in
+                                    StudioOrb(actor: StudioActor(n), state: st, size: size, pace: .watchable, still: true)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(40)
+                .background(bg)
+                .environment(\.colorScheme, scheme)
+                let r = ImageRenderer(content: grid)
+                r.scale = 2
+                if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("orbs-\(name).png"))
+                }
+            }
+        }
         var snapped = false
         let watcher = Task { @MainActor in
             while !Task.isCancelled {
@@ -348,16 +374,17 @@ extension SmokeTest {
         // One delegate call with both tasks: they run side by side whether or not the model batches its calls.
         let r1 = await call("delegate", ["tasks": ["k1", "k2"]])
         await settle(0.4)
-        check(r1.text.contains("Worker 1 on") && r1.text.contains("Worker 2 on") && r1.text.components(separatedBy: "Result: done").count == 3,
+        check(r1.text.contains("Mint on") && r1.text.contains("Ember on") && r1.text.components(separatedBy: "Result: done").count == 3,
               "one delegate call ran both tasks and brought both reports (\(r1.text.prefix(80)))")
         check(studio.plan?.task("k1")?.status == .done && studio.plan?.task("k2")?.status == .done, "their tasks are ticked off")
         check(zip(doc.movie.shots.prefix(2).map(\.keyframes.count), keysBefore).allSatisfy { $0 > $1 }, "each made its shot's keyframe")
         check(watch.pointers >= 2, "two worker pointers were on screen at once (\(watch.pointers))")
         check(watch.waited, "the second worker waited for the movie to be free")
-        check(watch.sheets == 2 && watch.captions.contains { $0.hasPrefix("Worker 1 · ") } && watch.captions.contains { $0.hasPrefix("Worker 2 · ") },
+        check(watch.sheets == 2 && watch.captions.contains { $0.hasPrefix("Mint · ") } && watch.captions.contains { $0.hasPrefix("Ember · ") },
               "two cost sheets, one at a time, each labelled with its worker (\(watch.captions))")
         check(r1.text.contains("Steps:\n✓ ") && studio.workerSteps["k1"]?.isEmpty == false, "the worker's steps are in its row and saved with the chat")
-        check(studio.panelFrame("studio-task-icon:k1") != nil, "the task row is the worker's dock, outside the main window")
+        check(studio.panelFrame("studio-task-icon:k1") != nil,
+              "the task row is the worker's dock, outside the main window (\(MGTestAnchors.names(prefix: "studio-task-icon")), \(String(describing: MGTestAnchors.frame("studio-task-icon:k1"))), panel \(MGTestAnchors.window("studio-task-icon:k1") === studio.panel))")
         await settle(1.2)
         check(studio.cursor(.worker(1)).position == nil && studio.cursor(.worker(1)).state == .idle, "the finished worker flew home and docked")
 

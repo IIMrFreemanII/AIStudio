@@ -710,6 +710,8 @@ extension AppModel {
                                     st.engineState("ready")
                                     if st.thinkStart != nil, st.thinkEnd == nil { st.thinkEnd = Date() }
                                     doc.engine = nil
+                                    // The Studio agent's orb "talks" while its text streams in.
+                                    if case .content = e, doc.isStudio { self?.studio.talked(.architect) }
                                 default: break
                                 }
                                 if Date().timeIntervalSince(st.lastPublish) > 0.05 {

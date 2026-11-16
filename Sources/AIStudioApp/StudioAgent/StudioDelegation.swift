@@ -149,6 +149,8 @@ final class StudioWorkers {
                             }
                         case .assistantFinished(let content, _, _):
                             report.set(content)
+                        case .delta(.content):
+                            await MainActor.run { studio.talked(actor) }
                         default: break
                         }
                     })
@@ -219,7 +221,7 @@ final class StudioWorkers {
     static func workerPrompt(_ actor: StudioActor, task: StudioPlan.Task, app: AppModel?, vision: Bool) -> String {
         let state = app.flatMap { try? StudioSession(app: $0, vision: vision).state() } ?? ""
         return """
-        You are \(actor.label), one of the Studio agent's workers in AIStudio, a Mac app for making images, video, sound \
+        You are \(actor.label), one of the Studio agent's three workers (Mint, Ember and Plum) in AIStudio, a Mac app for making images, video, sound \
         and short films with AI models. The architect planned the job and gave you one task: “\(task.title)”. Do only \
         that task, with your tools, then report.
 

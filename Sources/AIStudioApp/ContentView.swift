@@ -32,7 +32,11 @@ struct ContentView: View {
                 }
                 .buttonStyle(.mg(.icon))
                 .mgHelp(panelOpen ? "Hide the sidebar (⌃⌘S)" : "Show the sidebar (⌃⌘S)")
-                Button { model.toggleStudioAgent() } label: { Image(systemName: "sparkles") }
+                Button { model.toggleStudioAgent() } label: {
+                    StudioOrb(actor: .architect, state: model.studio.isWorking ? .working : .idle, size: 16, pace: model.studio.pace,
+                              talking: model.studio.cursor(.architect).isTalking)
+                        .frame(width: 22, height: 22)
+                }
                     .buttonStyle(.mg(.icon))
                     .mgHelp("Studio Agent: a chat that uses AIStudio for you while you watch (⌥⌘A)")
                     .accessibilityLabel("Studio Agent")

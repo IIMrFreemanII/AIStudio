@@ -21,8 +21,7 @@ struct StudioPlanCard: View {
     func card(_ plan: StudioPlan, waiting: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                StudioActorIcon(actor: .architect, state: waiting ? .waiting : .idle, size: 16,
-                                motions: studio.motions(studio.cursor(.architect)))
+                StudioOrb(actor: .architect, state: waiting ? .waiting : .idle, size: 18, pace: studio.pace, still: !waiting)
                 Text(waiting ? "Plan: waiting for you" : "Plan").font(.mgHeadline)
                 Spacer(minLength: 4)
                 if plan.estimate > 0 {
@@ -94,10 +93,18 @@ struct StudioTaskRow: View {
         let steps = studio.workerSteps[task.id] ?? []
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 7) {
-                StudioActorIcon(actor: actor, state: state, size: 18, motions: rowMotions(actor))
+                // The dock spot is a plain placeholder under the orb (an anchor around the orb drops out of the window).
+                Color.clear.frame(width: 20, height: 20)
                     .mgTarget("studio-task-icon:\(task.id)")
+                    .overlay {
+                        StudioOrb(actor: actor, state: state, size: 20, pace: studio.pace,
+                                  talking: task.status == .running && studio.cursor(actor).isTalking,
+                                  moment: studio.cursor(actor).moment, still: !(task.status == .running || task.status == .needsYou))
+                    }
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(task.title).font(.mgFootnote).foregroundStyle(MG.label).lineLimit(open ? nil : 1)
+                    (Text(actor.label + "  ").font(.mgFootnote.weight(.semibold)).foregroundColor(actor.color)
+                        + Text(task.title).font(.mgFootnote).foregroundColor(MG.label))
+                        .lineLimit(open ? nil : 1)
                     if waiting, !task.paid.isEmpty || !task.dependsOn.isEmpty {
                         Text(detail).font(.mg(size: 11)).foregroundStyle(MG.secondaryLabel).lineLimit(2)
                     }
@@ -142,12 +149,6 @@ struct StudioTaskRow: View {
         case .failed: return .failed
         case .needsYou: return .waiting
         }
-    }
-
-    /// The row's icon moves while its task runs (or waits on you); finished rows stay still.
-    func rowMotions(_ actor: StudioActor) -> StudioMotions {
-        guard task.status == .running || task.status == .needsYou else { return [] }
-        return StudioMotion.motions(state: studio.gate.isPaused ? .paused : state, pace: studio.pace, reduceMotion: studio.reduceMotion)
     }
 
     var detail: String {

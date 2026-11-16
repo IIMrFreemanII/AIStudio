@@ -13,8 +13,14 @@ public struct StudioActor: Hashable, Sendable, Codable, Comparable {
     public static func worker(_ n: Int) -> StudioActor { StudioActor(n) }
 
     public var isArchitect: Bool { number == 0 }
-    /// "Architect", "Worker 2".
-    public var label: String { isArchitect ? "Architect" : "Worker \(number)" }
+    /// The workers' names: short, and after their colours (teal, coral, violet).
+    public static let workerNames = ["Mint", "Ember", "Plum"]
+
+    /// "Architect", "Mint", "Ember", "Plum".
+    public var label: String {
+        if isArchitect { return "Architect" }
+        return number >= 1 && number <= Self.workerNames.count ? Self.workerNames[number - 1] : "Worker \(number)"
+    }
     public static func < (a: StudioActor, b: StudioActor) -> Bool { a.number < b.number }
 }
 
@@ -292,5 +298,152 @@ public struct StudioRandom: RandomNumberGenerator, Sendable {
         z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
         z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
         return z ^ (z >> 31)
+    }
+}
+
+// MARK: orb faces
+
+/// The orb characters' eyes.
+public enum StudioEyes: String, Sendable, CaseIterable {
+    /// Two upright pills.
+    case open
+    /// Slightly narrowed: concentrating on a step.
+    case focus
+    /// Taller and a little wider: waiting on the user.
+    case wide
+    /// Happy arcs (^ ^): a task done.
+    case happy
+    /// Small crosses: a task failed.
+    case cross
+    /// Flat lines: paused.
+    case closed
+}
+
+/// What an orb's face does: its eyes, and which small motions it may play (blinking, glancing, the talking bounce,
+/// particles, the architect's orbiting sparkle, the breathing glow). Particles are always on; Fast pace otherwise keeps
+/// the moods only; Reduce Motion keeps the eye shapes and nothing that moves.
+public struct StudioFace: Equatable, Sendable {
+    public var eyes: StudioEyes
+    public var blinks = false
+    public var glances = false
+    public var bounce = false
+    public var particles = false
+    public var orbit = false
+    public var breathe = false
+
+    public init(eyes: StudioEyes, blinks: Bool = false, glances: Bool = false, bounce: Bool = false, particles: Bool = false,
+                orbit: Bool = false, breathe: Bool = false) {
+        self.eyes = eyes
+        self.blinks = blinks
+        self.glances = glances
+        self.bounce = bounce
+        self.particles = particles
+        self.orbit = orbit
+        self.breathe = breathe
+    }
+
+    /// `moving`: flying or wandering (particles trail it).
+    public static func face(state: StudioActorState, talking: Bool = false, moving: Bool = false, pace: StudioPace,
+                            reduceMotion: Bool) -> StudioFace {
+        let eyes: StudioEyes
+        switch state {
+        case .idle: eyes = .open
+        case .working: eyes = talking ? .open : .focus
+        case .waiting: eyes = .wide
+        case .done: eyes = .happy
+        case .failed: eyes = .cross
+        case .paused: eyes = .closed
+        }
+        var f = StudioFace(eyes: eyes)
+        guard !reduceMotion else { return f }
+        f.breathe = state == .working
+        // Sparkles drift around every orb, all the time (the user's choice), whatever the pace or mood.
+        f.particles = true
+        guard pace != .fast else { return f }
+        let awake = state == .idle || state == .working || state == .waiting
+        f.blinks = awake
+        f.glances = state == .idle && !moving
+        f.bounce = talking && state != .paused
+        f.orbit = state == .working || moving
+        return f
+    }
+
+    /// Whether anything moves continuously (the orb redraws every frame); blinks and glances alone are discrete.
+    public var animates: Bool { bounce || particles || orbit || breathe }
+
+    static let cycle = 120.0
+    static let blinkLength = 0.12
+
+    /// Blink start times within one 120 s cycle for `seed`, 3–6 s apart.
+    public static func blinkTimes(seed: UInt64) -> [Double] {
+        var rng = StudioRandom(seed: seed &+ 0xB1)
+        var t = Double.random(in: 0.5...3, using: &rng)
+        var out: [Double] = []
+        while t < cycle - blinkLength {
+            out.append(t)
+            t += Double.random(in: 3...6, using: &rng)
+        }
+        return out
+    }
+
+    /// Whether the eyes are shut for a blink at `time` (seconds, any clock).
+    public static func isBlinking(at time: Double, seed: UInt64) -> Bool {
+        let u = time.truncatingRemainder(dividingBy: cycle)
+        return blinkTimes(seed: seed).contains { u >= $0 && u < $0 + blinkLength }
+    }
+
+    /// The idle glance at `time`: mostly straight ahead, now and then a look to one side for a second or two.
+    public static func glance(at time: Double, seed: UInt64) -> CGVector {
+        let u = time.truncatingRemainder(dividingBy: cycle)
+        for g in glanceTimes(seed: seed) where u >= g.start && u < g.start + g.length { return g.direction }
+        return .zero
+    }
+
+    static func glanceTimes(seed: UInt64) -> [(start: Double, length: Double, direction: CGVector)] {
+        var rng = StudioRandom(seed: seed &+ 0x61A)
+        let directions = [CGVector(dx: -1, dy: 0), CGVector(dx: 1, dy: 0), CGVector(dx: 0.7, dy: -0.7), CGVector(dx: -0.7, dy: 0.7),
+                          CGVector(dx: 0, dy: 1)]
+        var t = Double.random(in: 1...4, using: &rng)
+        var out: [(Double, Double, CGVector)] = []
+        while t < cycle - 2 {
+            let length = Double.random(in: 0.8...1.8, using: &rng)
+            out.append((t, length, directions[Int.random(in: 0..<directions.count, using: &rng)]))
+            t += length + Double.random(in: 2.5...6, using: &rng)
+        }
+        return out
+    }
+
+    /// The moments a still (not continuously animating) face changes in the next `span` seconds after `time`: blink
+    /// starts and ends, glance starts and ends. A view redraws only then.
+    public static func changes(after time: Double, span: Double = 120, seed: UInt64, blinks: Bool, glances: Bool) -> [Double] {
+        let base = time - time.truncatingRemainder(dividingBy: cycle)
+        var marks: [Double] = []
+        for c in [base, base + cycle] {
+            if blinks { for b in blinkTimes(seed: seed) { marks += [c + b, c + b + blinkLength] } }
+            if glances { for g in glanceTimes(seed: seed) { marks += [c + g.start, c + g.start + g.length] } }
+        }
+        return marks.filter { $0 > time && $0 <= time + span }.sorted()
+    }
+
+    /// Which way the eyes look from `from` towards `to`: a vector at most `maxShift` long (zero when they're the same).
+    public static func gaze(from: CGPoint, to: CGPoint, maxShift: Double = 1) -> CGVector {
+        let dx = Double(to.x - from.x), dy = Double(to.y - from.y)
+        let len = hypot(dx, dy)
+        guard len > 0.5 else { return .zero }
+        let k = min(1, len / 40) * maxShift / len
+        return CGVector(dx: dx * k, dy: dy * k)
+    }
+
+    /// The particles around actor `n`'s orb at `time`: offsets (as fractions of the orb's size, from its centre) and
+    /// opacities. They circle slowly between 0.6 and 0.95 of the size out, fading in and out.
+    public static func particles(actor n: Int, time: Double, count: Int = 5) -> [(offset: CGVector, opacity: Double)] {
+        (0..<count).map { i in
+            let k = Double(i) + Double(n) * 0.37
+            let speed = 0.35 + 0.12 * Double((i * 7 + n * 3) % 5)
+            let angle = k * 2.399 + time * speed * (i % 2 == 0 ? 1 : -1)
+            let r = 0.775 + 0.175 * sin(time * 0.6 + k * 1.7)
+            let opacity = 0.25 + 0.75 * (0.5 + 0.5 * sin(time * 1.3 + k * 2.1))
+            return (CGVector(dx: cos(angle) * r, dy: sin(angle) * r), opacity)
+        }
     }
 }

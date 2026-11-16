@@ -158,9 +158,12 @@ struct StudioPanelHeader: View {
     var body: some View {
         HStack(spacing: 6) {
             let architect = studio.cursor(.architect)
-            StudioActorIcon(actor: .architect, state: chat.isStreaming ? (architect.waiting != nil ? .waiting : .working) : .idle,
-                            size: 18, motions: chat.isStreaming ? studio.motions(architect) : [], moment: architect.moment)
+            Color.clear.frame(width: 36, height: 22)
                 .mgTarget("studio-header-icon")
+                .overlay {
+                StudioOrb(actor: .architect, state: chat.isStreaming ? (studio.gate.isPaused ? .paused : architect.waiting != nil ? .waiting : .working) : .idle,
+                          size: 22, pace: studio.pace, talking: architect.isTalking, moment: architect.moment)
+                }
             Text("Studio Agent").font(.mgHeadline).lineLimit(1).fixedSize()
             Spacer(minLength: 4)
             MGMenuButton(kind: .plain) {
@@ -201,7 +204,7 @@ struct StudioEmptyState: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Spacer()
-            StudioActorIcon(actor: .architect, size: 30)
+            StudioOrb(actor: .architect, size: 44)
             Text("I can use AIStudio for you").font(.mgHeadline)
             Text("Make a movie from an idea, write prompts, make images, video and sound, look at the results and fix what's wrong. You'll see where I'm working in the window; any click or key there pauses me. Paid runs wait for you to press Run on the cost sheet.")
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
