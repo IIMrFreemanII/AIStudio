@@ -454,7 +454,7 @@ final class LLMCatalog {
     /// The highest "so far" cost seen in the model's current warm period.
     @ObservationIgnored private var peakCost: [LLMKey: Double] = [:]
 
-    // GPU fallback (LLMGPUFallback.swift): each model's presets to try when its GPU doesn't come within 30 s, saved
+    // GPU fallback (LLMGPUFallback.swift): each model's presets to try when its GPU doesn't come within 2 min, saved
     // by "serverID|modelID"; the model's own settings while a start runs on another preset, and what the chip says.
     var gpuFallbacks: [String: [GPUPreset]] = GPUFallback.decode(UserDefaults.standard.string(forKey: "gpuFallbacks")) {
         didSet { if !AppModel.isAutomatedRun { UserDefaults.standard.set(GPUFallback.encode(gpuFallbacks), forKey: "gpuFallbacks") } }

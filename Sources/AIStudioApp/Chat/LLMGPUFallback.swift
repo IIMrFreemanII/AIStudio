@@ -1,11 +1,13 @@
 import Foundation
 import LLMClient
 
-/// GPU fallback: when a model's start waits more than 30 s for its GPU, the chat moves it to the next preset in the
+/// GPU fallback: when a model's start waits more than 2 min for its GPU, the chat moves it to the next preset in the
 /// model's list (Settings › GPUs, Context and Start-up › "If the GPU doesn't come"), and once the reply begins the
 /// model's own GPU is put back for its next start. Every chat stream, the agents and Movie Studio's writer use it.
 extension LLMCatalog {
-    static let gpuWaitLimit: Double = 30
+    static let gpuWaitLimit: Double = 120
+    /// The limit as people read it ("2 min").
+    static var gpuWaitText: String { let s = Int(gpuWaitLimit); return s % 60 == 0 ? "\(s / 60) min" : "\(s) s" }
 
     static func fallbackKey(_ key: LLMKey) -> String { key.serverID + "|" + key.modelID }
 
@@ -66,7 +68,7 @@ extension LLMCatalog {
         run.tried.insert(next)
         fallbackRuns[key] = run
         lastSwitch[key] = Date()
-        gpuNotes[key] = "\(current.label) didn't come within \(Int(Self.gpuWaitLimit)) s: this start uses \(next.label)"
+        gpuNotes[key] = "\(current.label) didn't come within \(Self.gpuWaitText): this start uses \(next.label)"
         await refresh(key.serverID)
         return next.label
     }

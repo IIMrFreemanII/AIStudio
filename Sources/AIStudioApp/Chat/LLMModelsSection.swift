@@ -364,7 +364,7 @@ struct LLMSettingsSheet: View {
     @State private var replanTask: Task<Void, Never>?
     /// The context the model had saved when the sheet opened: always a choice, even if it isn't a standard step.
     @State private var savedContext = 0
-    /// GPU presets to try, in order, when the chosen GPU doesn't come within 30 s (kept by the app, not the server).
+    /// GPU presets to try, in order, when the chosen GPU doesn't come within 2 min (kept by the app, not the server).
     @State private var fallbackList: [GPUPreset] = []
 
     /// Fast start needs one GPU: on several it shows (and saves) Standard.
@@ -501,11 +501,11 @@ struct LLMSettingsSheet: View {
         return min(native, 1_048_576)
     }
 
-    /// "If the GPU doesn't come within 30 s": other presets to try in order, for that start only.
+    /// "If the GPU doesn't come within 2 min": other presets to try in order, for that start only.
     @ViewBuilder func fallbackSection(_ plan: LLMPlan) -> some View {
         let current = option.map(GPUPreset.init)
         let addable = gpuChoices(plan).filter { $0.maxContext >= context && GPUPreset($0) != current && !fallbackList.contains(GPUPreset($0)) }
-        MGSection("If the GPU doesn't come within 30 s") {
+        MGSection("If the GPU doesn't come within \(LLMCatalog.gpuWaitText)") {
             VStack(alignment: .leading, spacing: 6) {
                 if fallbackList.isEmpty {
                     Text("Keep waiting for \(current?.label ?? "it").").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
@@ -540,7 +540,7 @@ struct LLMSettingsSheet: View {
                     Label("Add a GPU to Try", systemImage: "plus").font(.mgFootnote)
                 }
                 .fixedSize()
-                .mgHelp("When a start has waited 30 s for its GPU, it's cancelled (nothing was billed) and the next GPU here is tried. The model goes back to its own GPU for the start after.")
+                .mgHelp("When a start has waited \(LLMCatalog.gpuWaitText) for its GPU, it's cancelled (nothing was billed) and the next GPU here is tried. The model goes back to its own GPU for the start after.")
             }
         }
     }

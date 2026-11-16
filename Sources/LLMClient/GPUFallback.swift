@@ -27,7 +27,7 @@ public struct GPUWaitPolicy: Sendable {
     /// before it was ready" then means that move, and the request goes again.
     public var switchedRecently: @Sendable (_ model: String) async -> Bool
 
-    public init(limit: Double = 30, switchGPU: @escaping @Sendable (_ model: String) async -> String?,
+    public init(limit: Double = 120, switchGPU: @escaping @Sendable (_ model: String) async -> String?,
                 settle: @escaping @Sendable (_ model: String) async -> Void,
                 switchedRecently: @escaping @Sendable (_ model: String) async -> Bool = { _ in false }) {
         self.limit = limit
