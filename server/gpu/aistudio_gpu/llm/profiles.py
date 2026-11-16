@@ -16,6 +16,10 @@ BY_TYPE: list[tuple[str, str | None, str | None, list[str]]] = [
     ("qwen3_next", "hermes", "qwen3", []),
     ("qwen3", "hermes", "qwen3", []),
     ("qwen2", "hermes", None, []),
+    # DeepSeek V4.1 (Flash): vLLM's recipe (recipes.vllm.ai/deepseek-ai/DeepSeek-V4.1-Flash). Its tokenizer mode renders
+    # the prompt (thinking and effort included), and the n-gram ("Engram") tables stay in host memory.
+    ("deepseek_v41", "deepseek_v41", "deepseek_v41",
+     ["--tokenizer-mode", "deepseek_v41", "--kv-cache-dtype", "fp8", "--engram-config", '{"cpu_offload":true}']),
     ("deepseek_v3", "deepseek_v3", "deepseek_r1", []),
     ("deepseek", "deepseek_v3", "deepseek_r1", []),
     ("gpt_oss", "openai", "openai_gptoss", []),
@@ -26,6 +30,10 @@ BY_TYPE: list[tuple[str, str | None, str | None, list[str]]] = [
     ("gemma3", "pythonic", None, []),
 ]
 
+
+# Families whose parsers are known for sure: the chat-template guesses below don't change them (V4.1's template
+# describes its own tool-call format in prose, which could read as another's).
+FIXED = ("deepseek_v41",)
 
 # Reasoning parsers that split on <think>…</think> (gpt-oss marks its reasoning by channels instead).
 THINK_TAG_PARSERS = ("qwen3", "deepseek_r1")
@@ -47,6 +55,8 @@ def guess(f: Facts) -> dict:
         if mt.startswith(prefix):
             tool, reasoning, args = t, r, list(a)
             break
+    if mt.startswith(FIXED):
+        return {"toolParser": tool, "reasoningParser": reasoning, "engineArgs": args}
     tpl = f.chat_template
     if tpl:
         if "<function=" in tpl and "<tool_call>" in tpl:
@@ -81,6 +91,9 @@ _HYBRID = ("qwen3", "glm45", "llama.cpp")
 # what the app sent before it had levels: the template's default.
 _EDGE0 = ["off", "low", "medium", "high"]
 _EDGE0_ALIASES = {"on": "high"}
+# DeepSeek V4.1: off is its chat mode; the levels are its template's efforts (low 50, high 75 = its default, max 100).
+_DSV41 = ["off", "low", "medium", "high"]
+_DSV41_EFFORT = {"low": "low", "medium": "high", "high": "max", "on": "high"}
 
 
 def _switch_key(m: dict) -> str | None:
@@ -104,6 +117,8 @@ def efforts(m: dict) -> list[str]:
         return list(_LEVELS)
     if m.get("engine") == "edge0":
         return list(_EDGE0)
+    if m.get("reasoningParser") == "deepseek_v41":
+        return list(_DSV41)
     return list(_SWITCH) if _switch_key(m) else []
 
 
@@ -123,6 +138,16 @@ def apply_effort(body: dict, m: dict) -> dict:
             del body["reasoning_effort"]
         return body
     del body["reasoning_effort"]
+    if m.get("reasoningParser") == "deepseek_v41":
+        kwargs = dict(body.get("chat_template_kwargs") or {})
+        if effort == "off":
+            kwargs["thinking"] = False
+        elif effort in _DSV41_EFFORT:  # an unknown level: the model's default
+            kwargs["thinking"] = True
+            kwargs["reasoning_effort"] = _DSV41_EFFORT[effort]
+        if kwargs:
+            body["chat_template_kwargs"] = kwargs
+        return body
     key = _switch_key(m)
     if key:
         kwargs = dict(body.get("chat_template_kwargs") or {})

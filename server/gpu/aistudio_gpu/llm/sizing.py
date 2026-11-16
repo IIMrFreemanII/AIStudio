@@ -69,8 +69,17 @@ class Option:
                 "kvPerTokenKB": round(d["kv_per_token_kb"], 1), "note": d["note"], "kvTokens": d["kv_tokens"]}
 
 
+# DeepSeek V4.1's cache per token on each GPU, at FP8: its attention compresses most layers' KV and keeps a short
+# sliding window, so the config's heads say little. Measured on 4× H200 (2026-11-16): 46.9 GiB of KV per GPU held
+# 9,125,959 tokens. A start measures the real size, and the server remembers it for the next one
+# (EngineProcess._remember_kv).
+DSV41_KV_BYTES = 46.9 * GIB / 9_125_959
+
+
 def kv_bytes_per_token(f: Facts, count: int, kv_dtype_bytes: int = 2) -> float:
     """KV cache bytes per token on one of ``count`` GPUs."""
+    if f.model_type.lower().startswith("deepseek_v41"):
+        return DSV41_KV_BYTES * kv_dtype_bytes
     if f.engine == "llamacpp":  # layers split across GPUs, and their caches with them
         per_layer = (f.kv_lora_rank + f.rope_head_dim) if f.kv_lora_rank else 2 * f.kv_heads * f.head_dim
         return f.attention_layers * per_layer * kv_dtype_bytes / count
@@ -86,6 +95,8 @@ def unsupported(f: Facts, gpu: str) -> str | None:
         return None if gpu == "B200" else "NVFP4 needs B200"
     if "mxfp4" in method and gpu not in HOPPER_OR_NEWER:
         return "MXFP4 needs H100 or newer"
+    if f.model_type.lower().startswith("deepseek_v41") and gpu not in HOPPER_OR_NEWER:
+        return "DeepSeek V4.1 needs H100 or newer"  # FP4 experts and ue8m0-scaled FP8 kernels
     return None
 
 

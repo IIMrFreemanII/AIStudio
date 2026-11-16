@@ -161,7 +161,12 @@ vllm_base = (modal.Image.from_registry(CUDA_BASE, add_python="3.12").entrypoint(
              .env({**env, "VLLM_CACHE_ROOT": f"{LLM_ROOT}/llm/.cache/vllm",
                    "TORCHINDUCTOR_CACHE_DIR": f"{LLM_ROOT}/llm/.cache/inductor",
                    "TRITON_CACHE_DIR": f"{LLM_ROOT}/llm/.cache/triton",
-                   "FLASHINFER_WORKSPACE_BASE": f"{LLM_ROOT}/llm/.cache/flashinfer"})
+                   "FLASHINFER_WORKSPACE_BASE": f"{LLM_ROOT}/llm/.cache/flashinfer",
+                   # vLLM's CUDA 13 wheels bring NVRTC 13 (nvidia-cuda-nvrtc). Its builtins library sits beside them,
+                   # off the loader's path, and the kernels some models compile at load time need it: DeepSeek V4.1's
+                   # FP8 weight repacking (humming) failed with "failed to open libnvrtc-builtins.so.13.0". CUDA 12
+                   # and 13 libraries have different names, so both folders can be on the path.
+                   "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:/usr/local/lib/python3.12/site-packages/nvidia/cu13/lib"})
              # AIStudio's vLLM plugin: the aistudio_processed load format (weights saved after vLLM's processing).
              .add_local_dir(Path(__file__).parent / "vllm_plugin", "/opt/aistudio_vllm_plugin", copy=True)
              .run_commands("python -m pip install --no-deps --no-build-isolation /opt/aistudio_vllm_plugin"))
@@ -616,7 +621,7 @@ def _llm_boot(self, snapshot: bool = False):
     self.proc = EngineProcess(m, LLM_ROOT, on_status, env={MEDIA_ENV: str(UPLOADS)})
     try:
         self.proc.start()
-        self.proc.wait_ready(LLM_BOOT_TIMEOUT)
+        self.proc.wait_ready(_llm_boot_timeout(m))
         if snapshot:
             on_status("Warming up", None)
             self.proc.warmup()
@@ -803,6 +808,25 @@ def _llm_heartbeat_stop(self):
         self.beat_thread.join(timeout=30)
 
 
+LLM_MEMORY = (65536, 524288)  # MiB: the LLM containers' host memory request and limit
+# A model whose n-gram tables are this big asks for host memory for them (DeepSeek V4.1-Flash: ≈200 GB), so Modal
+# places it on a machine that has the room; smaller ones (Qwen3.8-Flash-Next's 51 GB) fit the default request.
+LLM_BIG_TABLES = 100 << 30
+
+
+def _llm_memory(m: dict) -> tuple[int, int] | None:
+    """The host memory (MiB request, limit) the model's container asks for, or None for the class's default."""
+    tables = int((m.get("facts") or {}).get("cpu_bytes") or 0)
+    if tables < LLM_BIG_TABLES:
+        return None
+    return min(tables // (1 << 20) + LLM_MEMORY[0], LLM_MEMORY[1]), LLM_MEMORY[1]
+
+
+def _llm_boot_timeout(m: dict) -> int:
+    """How long a start may take: longer for checkpoints over 300 GB (V4.1-Flash's 510 GB load for many minutes)."""
+    return max(LLM_BOOT_TIMEOUT, 3600) if int(m.get("weightBytes") or 0) > 300e9 else LLM_BOOT_TIMEOUT
+
+
 def _llm_obj(m: dict):
     """The container class instance that serves the model ``m``: its engine, GPUs and snapshot setting."""
     n = int(m.get("count") or 1)
@@ -813,6 +837,8 @@ def _llm_obj(m: dict):
         return LLMEdge0.with_options(gpu=m["gpu"])(model=m["id"])
     if m.get("snapshot") and n == 1:
         return LLMSnap.with_options(gpu=gpu)(model=m["id"], rev=str(m.get("updated") or ""))
+    if memory := _llm_memory(m):
+        return LLM.with_options(gpu=gpu, memory=memory)(model=m["id"])
     return LLM.with_options(gpu=gpu)(model=m["id"])
 
 
@@ -913,7 +939,7 @@ def _llm_shutdown(self):
 
 
 LLM_CLS = dict(volumes={**LLM_VOLUMES, UPLOADS: uploads}, scaledown_window=LLM_IDLE, timeout=24 * 60 * 60, max_containers=1,
-               memory=(65536, 524288), cpu=8)
+               memory=LLM_MEMORY, cpu=8)
 
 
 @app.cls(image=vllm_image, gpu="H100", **LLM_CLS)

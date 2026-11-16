@@ -1237,3 +1237,118 @@ def test_relay_bills_from_when_a_gpu_runs():
 
     warm_usage = json.loads(b"".join(asyncio.run(run_warm())).decode().split("event: aistudio.usage\ndata: ")[1].split("\n")[0])
     assert abs(warm_usage["gpuSeconds"] - warm_usage["seconds"]) < 0.002  # a running model bills the whole request
+
+
+# MARK: DeepSeek V4.1
+
+# deepseek-ai/DeepSeek-V4.1-Flash-1017's config (the parts that matter here); dealignai's FP8 re-upload shares it.
+DSV41 = {
+    "architectures": ["DeepseekV41ForCausalLM"], "model_type": "deepseek_v41", "image_token_id": 129264,
+    "quantization_config": {"quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [32, 32],
+                            "scale_fmt": "ue8m0", "expert_dtype": "fp4"},
+    "text_config": {"model_type": "deepseek_v41_text", "num_hidden_layers": 40, "num_attention_heads": 64,
+                    "num_key_value_heads": 1, "head_dim": 512, "qk_rope_head_dim": 64, "hidden_size": 5120,
+                    "n_routed_experts": 384, "max_position_embeddings": 1048576, "sliding_window": 128,
+                    "engram_layer_ids": [1, 14], "engram_num_embeddings": [384006168, 384016682],
+                    "engram_head_dim": 256, "engram_n_heads": 8, "num_nextn_predict_layers": 3,
+                    "dspark_block_size": 5},
+    "vision_config": {"model_type": "deepseek_v41_vision", "num_hidden_layers": 32},
+}
+DSV41_WEIGHTS = 510_286_023_000
+DSV41_TABLES = 203_073_000_000  # model-00047 and -00048: the two Engram layers' tables and their scales
+# Its template describes the DSML tool-call format in prose and mentions <think>.
+DSV41_TEMPLATE = 'If thinking_mode is enabled (triggered by <think>) … <tool_call> <function=x> {{ reasoning_effort }}'
+
+
+def dsv41_facts(cpu_bytes: int = DSV41_TABLES):
+    f = facts(DSV41, DSV41_WEIGHTS, DSV41_TEMPLATE, repo="dealignai/DeepSeek-V4.1-Flash-1017-UNCENSORED-FP8")
+    f.cpu_bytes = cpu_bytes
+    return f
+
+
+def test_deepseek_v41_gets_its_own_parsers_and_flags():
+    f = dsv41_facts()
+    assert f.model_type == "deepseek_v41" and f.vision and f.experts == 384 and f.quant == {"method": "fp8", "bits": 8}
+    assert "needs H100, H200 or B200" in " ".join(f.notes) and "L40S" not in " ".join(f.notes)
+    assert any("L40S" in n for n in facts(QWEN38, int(172.78 * GIB)).notes)  # other FP8 models keep the general note
+    profile = guess(f)  # the template's prose doesn't turn it into qwen3_coder or hermes
+    assert profile["toolParser"] == "deepseek_v41" and profile["reasoningParser"] == "deepseek_v41"
+    args = profile["engineArgs"]
+    assert args[args.index("--tokenizer-mode") + 1] == "deepseek_v41"
+    assert args[args.index("--kv-cache-dtype") + 1] == "fp8"
+    assert json.loads(args[args.index("--engram-config") + 1]) == {"cpu_offload": True}
+    # The older families keep theirs.
+    assert guess(facts(DEEPSEEK, 671 * 10**9))["toolParser"] == "deepseek_v3"
+
+
+def test_deepseek_v41_thinking_levels():
+    m = {"reasoningParser": "deepseek_v41"}
+    assert efforts(m) == ["off", "low", "medium", "high"]
+    assert apply_effort({"reasoning_effort": "off"}, m) == {"chat_template_kwargs": {"thinking": False}}
+    for level, theirs in (("low", "low"), ("medium", "high"), ("high", "max"), ("on", "high")):
+        body = apply_effort({"reasoning_effort": level, "chat_template_kwargs": {"x": 1}}, m)
+        assert body == {"chat_template_kwargs": {"x": 1, "thinking": True, "reasoning_effort": theirs}}
+    assert apply_effort({"reasoning_effort": "turbo"}, m) == {}  # unknown: the model's default
+    assert apply_effort({"a": 1}, m) == {"a": 1}
+
+
+def test_deepseek_v41_fits_two_b200_with_its_tables_in_host_memory():
+    plan = sizing.plan(dsv41_facts(), kv_dtype_bytes=1)
+    by = {(o["gpu"], o["count"]): o for o in plan["options"]}
+    rec = plan["recommended"]
+    assert (rec["gpu"], rec["count"]) == ("B200", 2)  # ≈$12.50/h, the cheapest that fits
+    assert 150 < by[("B200", 2)]["weightsPerGPUGB"] < 160
+    assert by[("B200", 2)]["maxContext"] == 1048576  # its compressed cache: ≈5.5 KB a token (measured)
+    assert by[("H200", 4)]["fits"] and by[("H100", 8)]["fits"] and by[("B200", 4)]["fits"]
+    assert not by[("H100", 4)]["fits"] and not by[("H200", 2)]["fits"] and not by[("B200", 1)]["fits"]
+    assert not by[("A100-80GB", 8)]["fits"] and "H100 or newer" in by[("A100-80GB", 8)]["note"]
+    # Without the tables in host memory 2× B200 wouldn't do: the cheapest would be 4× H200 ($18/h).
+    whole = sizing.plan(dsv41_facts(0), kv_dtype_bytes=1)
+    assert not {(o["gpu"], o["count"]): o for o in whole["options"]}[("B200", 2)]["fits"]
+    assert (whole["recommended"]["gpu"], whole["recommended"]["count"]) == ("H200", 4)
+
+
+def test_deepseek_v41_engram_tables_from_the_headers_or_the_config():
+    from aistudio_gpu.llm.facts import ngram_bytes, ngram_bytes_from_config
+
+    text = DSV41["text_config"]
+    assert ngram_bytes_from_config(text, 8) == (384006168 + 384016682) * 256  # ≈197 GB at a byte each
+    files = {"model-47.safetensors": safetensors_file({"layers.1.engram.embed.weight": 5000,
+                                                       "layers.1.engram.embed.scale": 40,
+                                                       "layers.1.engram.wkv.weight": 300}),
+             "model-1.safetensors": safetensors_file({"layers.0.attn.wkv.weight": 700})}
+    index = {"weight_map": {"layers.1.engram.embed.weight": "model-47.safetensors",
+                            "layers.1.engram.embed.scale": "model-47.safetensors",
+                            "layers.1.engram.wkv.weight": "model-47.safetensors",
+                            "layers.0.attn.wkv.weight": "model-1.safetensors"}}
+
+    def site(request: httpx.Request) -> httpx.Response:
+        data = files[request.url.path.rpartition("/")[2]]
+        assert request.url.path.endswith("model-47.safetensors")  # only the file that holds the tables
+        start, _, end = request.headers["range"].removeprefix("bytes=").partition("-")
+        start, end = int(start), min(int(end), len(data) - 1)
+        return httpx.Response(206, content=data[start:end + 1],
+                              headers={"content-range": f"bytes {start}-{end}/{len(data)}"})
+
+    transport = httpx.MockTransport(site)
+    got = ngram_bytes(index, lambda n: f"https://huggingface.co/o/m/resolve/{SHA}/{n}", {},
+                      lambda: httpx.Client(transport=transport), "engram.embed.")
+    assert got == 5040  # the embedding tables and their scales; the projections stay on the GPUs
+
+
+def test_vllm_command_for_deepseek_v41(tmp_path):
+    profile = guess(dsv41_facts())
+    m = {"id": "dsv41", "gpu": "B200", "count": 2, "context": 1048576, "experts": 384, "vision": True,
+         "modelType": "deepseek_v41", "mtpLayers": 3, **profile}
+    cmd = vllm_command(m, tmp_path, 8000, media="/uploads")
+    assert json.loads(cmd[cmd.index("--speculative-config") + 1]) == {"method": "dspark", "num_speculative_tokens": 5}
+    attention = json.loads(cmd[cmd.index("--attention-config") + 1])
+    assert attention["backend"] == "FLASHINFER_MLA_SPARSE_DSV41"
+    assert "--language-model-only" not in cmd and "--allowed-local-media-path" in cmd  # images stay on
+    assert "--tool-call-parser deepseek_v41" in " ".join(cmd) and "--enable-expert-parallel" in cmd
+    h200 = vllm_command({**m, "gpu": "H200", "count": 4}, tmp_path, 8000)
+    assert "--attention-config" not in h200  # vLLM picks Hopper's backend
+    assert "--speculative-config" not in vllm_command({**m, "mtp": False}, tmp_path, 8000)
+    # Other models still draft with MTP.
+    qwen = vllm_command({"id": "q", "count": 1, "context": 8192, "engineArgs": [], "mtpLayers": 1}, tmp_path, 8000)
+    assert json.loads(qwen[qwen.index("--speculative-config") + 1])["method"] == "mtp"
