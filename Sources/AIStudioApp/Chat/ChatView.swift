@@ -1178,7 +1178,7 @@ struct WaitingLine: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let key = doc.modelKey, model.llm.fallbacks(key).isEmpty, doc.engine?.state == "starting",
                           ctx.date.timeIntervalSince(doc.requestStarted ?? ctx.date) > LLMCatalog.gpuWaitLimit {
-                    Text("Tip: add other GPUs to try in the model's settings (GPUs, Context and Start-up) and a slow start switches to them after 30 s.")
+                    Text("Tip: add other GPUs to try in the model's settings (GPUs, Context and Start-up) and a slow start switches to them after \(LLMCatalog.gpuWaitText).")
                         .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
                         .fixedSize(horizontal: false, vertical: true)
                 }
