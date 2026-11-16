@@ -238,14 +238,14 @@ async def _inspect_hf(ref: ModelRef, tokens: dict, client: httpx.AsyncClient, sy
     f.download = [{"name": n, "size": b} for n, b in sorted(names.items())
                   if "/" not in n and (n in weights or any(fnmatch(n, p) for p in SIDE_FILES))]
     text_config = config.get("text_config") or config
-    if text_config.get("ngram_vocab_size_base") and INDEX in names:
+    tables = NGRAM_TENSOR if text_config.get("ngram_vocab_size_base") else \
+        ENGRAM_TENSOR if text_config.get("engram_num_embeddings") else None
+    if tables and INDEX in names:
         index = json.loads(await text(INDEX))
         f.cpu_bytes = await asyncio.to_thread(
-            ngram_bytes, index, lambda name: f"{base}/{ref.repo}/resolve/{sha}/{name}", tokens, sync_client)
-        if not f.cpu_bytes:  # the headers couldn't be read: the table's size from the config
-            per = 0.5 if f.quant.get("bits") == 4 else 1 if f.quant.get("bits") == 8 else 2
-            f.cpu_bytes = int(text_config["ngram_vocab_size_base"] * int(text_config.get("ple_embed_dim") or
-                                                                         text_config.get("hidden_size") or 0) * per)
+            ngram_bytes, index, lambda name: f"{base}/{ref.repo}/resolve/{sha}/{name}", tokens, sync_client, tables)
+        if not f.cpu_bytes:  # the headers couldn't be read: the tables' size from the config
+            f.cpu_bytes = ngram_bytes_from_config(text_config, f.quant.get("bits"))
         if f.cpu_bytes:
             f.notes.append(f"vLLM keeps the n-gram embeddings ({f.cpu_bytes / 1e9:.0f} GB) in CPU memory, so the "
                            "GPUs hold the rest")
@@ -320,14 +320,29 @@ def _params(v) -> int | None:
 
 INDEX = "model.safetensors.index.json"
 NGRAM_TENSOR = "ngram_embedding"  # vLLM's name for the tables it offloads (EngramConfig(cpu_offload=True))
+# DeepSeek V4.1's Engram tables (``layers.<n>.engram.embed.weight`` and its scales): ≈200 GB of V4.1-Flash's 510.
+ENGRAM_TENSOR = "engram.embed."
 
 
-def ngram_bytes(index: dict, url_of: Callable[[str], str], tokens: dict, sync_client) -> int:
-    """The n-gram embedding tables' size in bytes, from the safetensors headers of the files that hold them (each
-    header is read with Range requests; the tensors' data isn't). 0 when a header can't be read."""
+def ngram_bytes_from_config(text_config: dict, bits: int | None) -> int:
+    """The n-gram tables' size from the config, when their headers can't be read."""
+    per = 0.5 if bits == 4 else 1 if bits == 8 else 2
+    if text_config.get("ngram_vocab_size_base"):  # Qwen3.8-Flash-Next: one table
+        return int(text_config["ngram_vocab_size_base"] * int(text_config.get("ple_embed_dim") or
+                                                              text_config.get("hidden_size") or 0) * per)
+    rows = text_config.get("engram_num_embeddings") or []  # DeepSeek V4.1: one table per Engram layer
+    rows = rows if isinstance(rows, list) else [rows] * len(text_config.get("engram_layer_ids") or [1])
+    return int(sum(int(r) for r in rows) * int(text_config.get("engram_head_dim") or 0) * per)
+
+
+def ngram_bytes(index: dict, url_of: Callable[[str], str], tokens: dict, sync_client,
+                tensor: str = NGRAM_TENSOR) -> int:
+    """The n-gram embedding tables' size in bytes (tensors whose names contain ``tensor``), from the safetensors
+    headers of the files that hold them (each header is read with Range requests; the tensors' data isn't). 0 when a
+    header can't be read."""
     from concurrent.futures import ThreadPoolExecutor
 
-    files = sorted({file for name, file in (index.get("weight_map") or {}).items() if NGRAM_TENSOR in name})
+    files = sorted({file for name, file in (index.get("weight_map") or {}).items() if tensor in name})
 
     def size_in(file: str) -> int:
         rf = _range_file(url_of(file), tokens, sync_client)
@@ -336,7 +351,7 @@ def ngram_bytes(index: dict, url_of: Callable[[str], str], tokens: dict, sync_cl
         finally:
             rf.close()
         return sum(int(t["data_offsets"][1]) - int(t["data_offsets"][0]) for name, t in head.items()
-                   if NGRAM_TENSOR in name and isinstance(t, dict) and "data_offsets" in t)
+                   if tensor in name and isinstance(t, dict) and "data_offsets" in t)
 
     try:  # 8 at a time: Qwen3.8-Flash-Next spreads its tables over 33 files
         with ThreadPoolExecutor(8) as pool:
@@ -545,11 +560,14 @@ def facts_from_config(ref: ModelRef, meta: dict, config: dict, weights: dict[str
                   or "VL" in arch or "ConditionalGeneration" in arch and not config.get("language_model_only"))
     params = (meta.get("safetensors") or {}).get("total")
     notes = []
-    if quant.get("method") == "fp8":
+    model_type = str(config.get("model_type") or text.get("model_type") or "?")
+    if model_type.lower().startswith("deepseek_v41"):  # FP8 with FP4 experts: sizing.unsupported rules out the rest
+        notes.append("FP8 weights with FP4 experts: needs H100, H200 or B200")
+    elif quant.get("method") == "fp8":
         notes.append("FP8 weights: fastest on L40S, H100, H200 and B200 (A100 runs them slower)")
     return Facts(
         repo=ref.repo, revision=ref.revision, sha=meta.get("sha"), architecture=arch,
-        model_type=str(config.get("model_type") or text.get("model_type") or "?"),
+        model_type=model_type,
         weight_bytes=sum(weights.values()), files=len(weights), quant=quant, dtype=dtype, native_context=native,
         vision=vision, layers=layers, attention_layers=attn, attention_heads=heads, kv_heads=kv, head_dim=head_dim,
         kv_lora_rank=int(merged.get("kv_lora_rank") or 0), rope_head_dim=int(merged.get("qk_rope_head_dim") or 0),

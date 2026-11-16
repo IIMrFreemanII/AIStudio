@@ -77,6 +77,24 @@ EDGE0_ENV = {"STRATA_VERIFY_ALL_RESIDENT": "0"}
 NOT_VLLM = store.NOT_VLLM
 
 
+# DeepSeek V4.1 drafts with its bundled DSpark head (a block of 5 tokens), not with its next-token layers.
+DSV41_DRAFT_TOKENS = 5
+DSV41_B200_ATTENTION = {"backend": "FLASHINFER_MLA_SPARSE_DSV41", "indexer_kv_dtype": "mxfp4",
+                        "indexer_sparse_logits": True}
+
+
+def is_dsv41(manifest: dict) -> bool:
+    facts = manifest.get("facts") or {}
+    return str(manifest.get("modelType") or facts.get("model_type") or "").lower().startswith("deepseek_v41")
+
+
+def speculative(manifest: dict) -> dict:
+    """vLLM's ``--speculative-config`` for a model that drafts with its own layers."""
+    if is_dsv41(manifest):
+        return {"method": "dspark", "num_speculative_tokens": DSV41_DRAFT_TOKENS}
+    return {"method": "mtp", "num_speculative_tokens": MTP_TOKENS}
+
+
 def mtp_on(manifest: dict) -> bool:
     """Whether a start drafts with the model's MTP layers: it has them, the model's "mtp" setting isn't off, and its
     engine arguments don't set their own speculative decoding (Edge0's engine always drafts, on its own)."""
@@ -96,7 +114,8 @@ def _has(extra: list[str], *flags: str) -> bool:
 
 def kv_setup(manifest: dict) -> str:
     """The key the measured KV cache size is remembered under (store.kv_setup, plus this server's defaults)."""
-    return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES, MTP_TOKENS if mtp_on(manifest) else 0)
+    drafts = speculative(manifest)["num_speculative_tokens"] if mtp_on(manifest) else 0
+    return store.kv_setup(manifest, MAX_SEQS, GRAPH_SIZES, drafts)
 
 
 def parse_kv_capacity(line: str) -> dict:
@@ -156,7 +175,10 @@ def vllm_command(manifest: dict, weights: Path, port: int, host: str = "127.0.0.
     if "mtpLayers" not in manifest:
         manifest = {**manifest, "mtpLayers": store.mtp_layers(weights)}
     if mtp_on(manifest):
-        cmd += ["--speculative-config", json.dumps({"method": "mtp", "num_speculative_tokens": MTP_TOKENS})]
+        cmd += ["--speculative-config", json.dumps(speculative(manifest))]
+    if is_dsv41(manifest) and manifest.get("gpu") == "B200" and not _has(extra, "--attention-config"):
+        # Blackwell's sparse-MLA kernels for V4.1 (vLLM's recipe); on Hopper vLLM picks the backend itself.
+        cmd += ["--attention-config", json.dumps(DSV41_B200_ATTENTION)]
     if kv_bytes and not _has(extra, "--kv-cache-memory", "--gpu-memory-utilization"):
         cmd += ["--kv-cache-memory", str(int(kv_bytes))]
     return cmd + extra
@@ -257,6 +279,9 @@ class EngineProcess:
             manifest = {**manifest, "mtpLayers": store.installed_mtp_layers(models_root, manifest)}
         self.manifest, self.models_root, self.on_status, self.port = manifest, models_root, on_status, port
         self.env = {**os.environ, **(edge0_env() if manifest.get("engine") == "edge0" else {}), **(env or {})}
+        # vLLM's own wait for its engine can be shorter than loading a 500 GB checkpoint (DeepSeek V4.1-Flash; its
+        # recipe sets an hour). The container's boot timeout still bounds the start.
+        self.env.setdefault("VLLM_ENGINE_READY_TIMEOUT_S", "3600")
         self.proc: subprocess.Popen | None = None
         self.log: deque[str] = deque(maxlen=200)
         self.url = f"http://127.0.0.1:{port}"
