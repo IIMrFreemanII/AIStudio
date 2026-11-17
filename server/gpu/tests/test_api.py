@@ -541,6 +541,32 @@ def test_resample_keeps_a_tone_and_its_length():
     assert resample(x, 48000, 16000).shape == (2, 8000)
 
 
+def test_prices_count_the_containers_memory_and_cpu_and_name_h3s_fallback():
+    from aistudio_gpu.tasks import CPU_PRICE, GPU_PRICES, MEMORY_PRICE, TASKS
+    h3 = TASKS["h3-video"]
+    container = 160 * MEMORY_PRICE + 8 * CPU_PRICE  # 160 GiB and 8 cores requested
+    assert abs(h3.price_per_second - (GPU_PRICES["H200"] + container)) < 1e-12
+    d = h3.describe(installed=True)
+    assert d["fallbackGpu"] == "B200" and abs(d["fallbackPricePerSecond"] - (GPU_PRICES["B200"] + container)) < 1e-12
+    sdxl = TASKS["sdxl"].describe(installed=True)  # 8 GiB, Modal's minimum 0.125 cores; no fallback
+    assert abs(sdxl["pricePerSecond"] - (GPU_PRICES["L40S"] + 8 * MEMORY_PRICE + 0.125 * CPU_PRICE)) < 1e-12
+    assert "fallbackGpu" not in sdxl
+    assert TASKS["test-video"].price_per_second is None
+
+
+def test_h3_offload_margin_never_keeps_both_big_models_on_the_gpu():
+    from aistudio_gpu.tasks.minimax_h3 import offload_margin
+    gib = 2**30
+    transformer, conditioner, vae = 61.7 * gib, 62.1 * gib, 9.7 * gib
+    for total in (139.8 * gib, 178.4 * gib):  # H200, B200
+        margin = offload_margin(int(total))
+        # the transformer comes on with the conditioner resident only if both fit under the margin: they must not
+        assert total - conditioner - vae - margin < transformer
+        # the transformer and the VAE do fit together
+        assert total - vae - margin >= transformer
+    assert offload_margin(40 * gib) == 12 * gib
+
+
 def test_h3_snaps_frames_sizes_the_canvas_and_folds_lora_alphas():
     import numpy as np
     import pytest

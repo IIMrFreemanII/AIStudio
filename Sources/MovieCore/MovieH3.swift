@@ -1,5 +1,7 @@
+import CoreGraphics
 import Foundation
 import GraphRuntime
+import ImageIO
 
 /// MiniMax H3 shots: each clip comes with its own sound, so its lines are spoken inside the clip (in the characters'
 /// voices) rather than by the Voices stage, and its effects come with it.
@@ -7,8 +9,9 @@ import GraphRuntime
 /// - A shot without spoken lines (or whose speakers have no voice yet) is `h3-video` from its start picture (the
 ///   keyframe, or the clip before's last frame when it continues it, ending on its own keyframe), its prompt written
 ///   in the structure MiniMax's prompting guide describes, its dialogue as `<d>[English] …</d>`.
-/// - A talking shot is `h3-references`: the keyframe as `<Picture 1>`, the speakers' character sheets as the next
-///   pictures, and their voice samples as `<Audio n>`, the voice each speaks in.
+/// - A talking shot is `h3-references`: the keyframe as `<Picture 1>`, then views cut from the speakers' character
+///   sheets (the face close-up, and with one speaker the front full-body view too: a whole three-view sheet was
+///   sometimes copied into the clip), and their voice samples as `<Audio n>`, the voice each speaks in.
 ///
 /// H3 makes 5–15 s; a shorter shot plays the start of its clip (the edit trims it to the shot). Line times are
 /// estimated from the words (there are no line takes to measure), for the prompt's order, the subtitles and to make
@@ -142,16 +145,35 @@ public enum MovieH3 {
         return head + "integrated_multimodal_description: \(body)\noverall_soundscape: \(soundscape(shot))\nnon_diegetic_music: none"
     }
 
-    /// An `h3-references` prompt: `<Picture 1>` the keyframe, then a picture per character in `sheets` (their ids,
-    /// in order), and `<Audio n>` the voice of the n-th character in `voices`.
-    public static func referencePrompt(for shot: Shot, in movie: MovieProject, sheets: [String], voices: [String]) -> String {
+    /// A reference picture of a character: one view cut from their sheet, or the whole sheet when it couldn't be cut.
+    public struct SubjectPicture: Equatable, Sendable {
+        public enum View: String, Sendable { case face, body }
+        public var id: String
+        public var view: View?
+        public init(id: String, view: View? = nil) { self.id = id; self.view = view }
+    }
+
+    /// An `h3-references` prompt: `<Picture 1>` the keyframe, then `pictures` (`<Picture 2>`…, each of a character;
+    /// each character is a `<Subject n>`, in order), and `<Audio n>` the voice of the n-th character in `voices`.
+    public static func referencePrompt(for shot: Shot, in movie: MovieProject, pictures: [SubjectPicture],
+                                       voices: [String]) -> String {
         let ids = speakers(shot)
         func name(_ id: String) -> String { movie.character(id)?.name ?? id }
-        func subject(_ id: String) -> String? { sheets.firstIndex(of: id).map { "<Subject \($0 + 1)>" } }
+        var subjects: [String] = []
+        for p in pictures where !subjects.contains(p.id) { subjects.append(p.id) }
+        func subject(_ id: String) -> String? { subjects.firstIndex(of: id).map { "<Subject \($0 + 1)>" } }
         func sid(_ id: String) -> String { ids.firstIndex(of: id).map { " (S\($0 + 1))" } ?? "" }
+        func label(_ i: Int) -> String { "<Picture \(i + 2)>" }
         var defs = ["<Picture 1> is the planned opening composition of the shot: its setting, framing and light."]
-        for (i, id) in sheets.enumerated() {
-            defs.append("<Subject \(i + 1)> is \(name(id)), as shown in <Picture \(i + 2)>: their face, hair and clothing.")
+        for (k, id) in subjects.enumerated() {
+            let shown = pictures.enumerated().filter { $0.element.id == id }.map { i, p -> String in
+                switch p.view {
+                case .face: "their face and hair in \(label(i))"
+                case .body: "their whole figure and clothing in \(label(i))"
+                case nil: "their face, hair and clothing in \(label(i))"
+                }
+            }
+            defs.append("<Subject \(k + 1)> is \(name(id)): \(shown.joined(separator: ", and ")).")
         }
         for (i, id) in voices.enumerated() {
             defs.append("<Audio \(i + 1)> is the voice-timbre reference for \(subject(id) ?? name(id))\(sid(id)).")
@@ -160,14 +182,19 @@ public enum MovieH3 {
         let names = ids.map(name)
         let who = names.count <= 1 ? (names.first ?? "a character") : names.dropLast().joined(separator: ", ") + " and " + names.last!
         var retention = ["<Picture 1>: reference - the setting, composition and lighting are kept."]
-        for (i, id) in sheets.enumerated() {
-            retention.append("<Picture \(i + 2)>: reference - \(name(id))'s appearance and clothing are kept.")
+        for (i, p) in pictures.enumerated() {
+            let kept = switch p.view {
+            case .face: "\(name(p.id))'s face and hair are kept"
+            case .body: "\(name(p.id))'s clothing and build are kept"
+            case nil: "\(name(p.id))'s appearance and clothing are kept"
+            }
+            retention.append("\(label(i)): reference - \(kept), never shown as a picture of its own.")
         }
         for (i, id) in voices.enumerated() {
             retention.append("<Audio \(i + 1)>: reference - \(name(id)) speaks in this voice timbre without copying the recording.")
         }
         var body = "[Shot 1] \(MovieStyle.named(movie.style).name), a \(framing.isEmpty ? "medium" : framing) shot in the "
-            + "setting of <Picture 1>. " + sentence(MovieShots.motionPrompt(for: shot, in: movie))
+            + "setting of <Picture 1>, one continuous take. " + sentence(MovieShots.motionPrompt(for: shot, in: movie))
         let lines = dialogue(shot, in: movie, who: subject)
         if !lines.isEmpty { body += " " + lines }
         return """
@@ -178,6 +205,54 @@ public enum MovieH3 {
             overall_soundscape: \(soundscape(shot))
             non_diegetic_music: none
             """
+    }
+
+    /// A character sheet's views as separate pictures: the front full-body view (its left third) and the face
+    /// close-up (its right third), written once beside it as `<name>-body.png` and `<name>-face.png`. Empty when the
+    /// sheet can't be read or written.
+    public static func sheetPanels(_ sheet: URL) -> [SubjectPicture.View: URL] {
+        let base = sheet.deletingPathExtension().lastPathComponent
+        let dir = sheet.deletingLastPathComponent()
+        let urls: [SubjectPicture.View: URL] = [.body: dir.appendingPathComponent("\(base)-body.png"),
+                                                 .face: dir.appendingPathComponent("\(base)-face.png")]
+        if urls.values.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) { return urls }
+        guard let source = CGImageSourceCreateWithURL(sheet as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [:] }
+        let w = Double(image.width), h = Double(image.height), inset = w * 0.015  // clear of the seams between views
+        let third = w / 3
+        let rects: [SubjectPicture.View: CGRect] = [
+            .body: CGRect(x: inset, y: 0, width: third - 2 * inset, height: h),
+            .face: CGRect(x: 2 * third + inset, y: 0, width: third - 2 * inset, height: h),
+        ]
+        for (view, rect) in rects {
+            guard let crop = image.cropping(to: rect.integral), (try? MovieComposer.writePNG(crop, to: urls[view]!)) != nil
+            else { return [:] }
+        }
+        return urls
+    }
+
+    /// The pictures of a talking shot's speakers, at most `maxPictures - 1`: with one speaker their face and their
+    /// whole figure, with more each one's face; a sheet that can't be cut goes whole. `paths` holds their files.
+    public static func subjectPictures(for shot: Shot, in movie: MovieProject, folder: URL)
+        -> (pictures: [SubjectPicture], paths: [String])
+    {
+        let sheets = references(for: shot, in: movie).sheets
+        var pictures: [SubjectPicture] = [], paths: [String] = []
+        for id in sheets {
+            guard let file = movie.character(id)?.selectedSheetFile else { continue }
+            let sheet = folder.appendingPathComponent(file)
+            let panels = sheetPanels(sheet)
+            if let face = panels[.face] {
+                pictures.append(.init(id: id, view: .face)); paths.append(face.path)
+                if sheets.count == 1, let body = panels[.body] {
+                    pictures.append(.init(id: id, view: .body)); paths.append(body.path)
+                }
+            } else {
+                pictures.append(.init(id: id)); paths.append(sheet.path)
+            }
+        }
+        let n = min(pictures.count, maxPictures - 1)
+        return (Array(pictures.prefix(n)), Array(paths.prefix(n)))
     }
 
     // MARK: templates
@@ -258,16 +333,16 @@ public enum MovieH3 {
     public static func referencesRender(_ shot: Shot, movie: MovieProject, folder: URL, keyframe: URL, seed: Int,
                                         server: String) -> MovieArt.Render {
         let refs = references(for: shot, in: movie)
+        let subjects = subjectPictures(for: shot, in: movie, folder: folder)
         var values: [String: JSONValue] = [
-            "prompt": .string(referencePrompt(for: shot, in: movie, sheets: refs.sheets, voices: refs.voices)),
+            "prompt": .string(referencePrompt(for: shot, in: movie, pictures: subjects.pictures, voices: refs.voices)),
             "seed": .int(seed), "seconds": .double(clipSeconds(shot)), "aspect": .string(movie.aspect.h3Aspect),
             "server": .string(server), "picture1": .string(keyframe.path),
         ]
         var unused = Set<String>()
         for i in 2...maxPictures {
-            let id = i - 2 < refs.sheets.count ? refs.sheets[i - 2] : nil
-            if let file = id.flatMap({ movie.character($0)?.selectedSheetFile }) {
-                values["picture\(i)"] = .string(folder.appendingPathComponent(file).path)
+            if i - 2 < subjects.paths.count {
+                values["picture\(i)"] = .string(subjects.paths[i - 2])
             } else {
                 unused.insert("picture\(i)")
             }

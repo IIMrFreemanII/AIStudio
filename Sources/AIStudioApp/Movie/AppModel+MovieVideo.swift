@@ -9,10 +9,11 @@ import NodesRemote
 extension AppModel {
     // MARK: clips
 
-    /// Shots › Make Clips: one take per shot (`shots` nil: those without a clip yet, else all), in film order; a
+    /// Shots › Make Clips: one take per shot (`shots` nil: those without a clip from the movie's engine yet, else all),
+    /// in film order; a
     /// continuing shot starts from its predecessor's new clip, the others render at the same time.
     func requestClips(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
-        let missing = doc.movie.shots.filter { $0.videos.isEmpty }.map(\.id)
+        let missing = doc.movie.shots.filter { !$0.hasClip(by: doc.movie.videoEngine) }.map(\.id)
         let ids = ids ?? (missing.isEmpty ? doc.movie.shots.map(\.id) : missing)
         let shots = doc.movie.shots.filter { ids.contains($0.id) }
         guard !shots.isEmpty else { return }
@@ -218,7 +219,7 @@ extension AppModel {
                 if let c { cost = (cost ?? 0) + c }
             }
             guard let j = doc.movie.shots.firstIndex(where: { $0.id == shot.id }) else { return }
-            let take = Take(file: file, poster: poster, seed: seed, costUSD: cost)
+            let take = Take(file: file, poster: poster, seed: seed, costUSD: cost, engine: doc.movie.videoEngine.rawValue)
             doc.movie.shots[j].videos.append(take)
             if doc.movie.shots[j].selectedVideo == nil { doc.movie.shots[j].selectedVideo = take.id }
         }

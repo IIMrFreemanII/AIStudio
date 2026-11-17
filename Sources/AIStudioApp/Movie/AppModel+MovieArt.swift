@@ -67,6 +67,7 @@ extension AppModel {
             // Two ways to run it: one GPU per kind of job, or as many at once as are free (each extra one loads the
             // model and idles too). Lines and wall time for each.
             var single: [CostEstimate.Line] = [], wide: [CostEstimate.Line] = []
+            var fallbacks: [String: [Double]] = [:], fallbackFrom: [String: String] = [:]  // extra USD: one GPU, several
             var singleWall = 0.0, wideWall = 0.0, widest = 1
             for w in work {
                 guard let task = info.task(w.task), task.installed else {
@@ -89,6 +90,11 @@ extension AppModel {
                     let wall = MovieCost.wallSeconds(jobs: w.jobs, containers: k, perJob: perJob, load: load, warm: warm)
                     if into == 0 { single.append(line); singleWall = max(singleWall, wall) }
                     else { wide.append(line); wideWall = max(wideWall, wall) }
+                    // The same seconds on the dearer GPU Modal may give instead when none of this kind is free.
+                    if let fb = task.fallbackPricePerSecond, let gpu = task.fallbackGpu, price > 0, fb > price {
+                        fallbacks[gpu, default: [0, 0]][into] += line.usd * (fb / price - 1)
+                        fallbackFrom[gpu] = task.gpu
+                    }
                 }
                 widest = max(widest, gpus.count)
             }
@@ -111,6 +117,12 @@ extension AppModel {
                 notes.append("Several GPUs at once finish sooner, but each extra one loads the model and stays up "
                     + "\(Int(idle)) s too (counted in that choice).")
             }
+            for (gpu, extra) in fallbacks.sorted(by: { $0.key < $1.key }) {
+                let base = single.reduce(0) { $0 + $1.usd }
+                notes.append("When no \(fallbackFrom[gpu] ?? "GPU") is free, Modal gives a \(gpu) instead, which costs more: "
+                    + "up to \(CostEstimate.format(base + extra[0])) for one GPU each.")
+            }
+            notes.append("Prices count the GPU and its container's memory and CPU, as Modal bills them.")
             if work.contains(where: { $0.task == "qwen-image-edit" }) {
                 notes.append("Keyframes are made from the characters' chosen sheets, so faces and clothes stay the same.")
             }

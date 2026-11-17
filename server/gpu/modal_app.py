@@ -45,6 +45,7 @@ from pathlib import Path
 import modal
 
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
+from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, MIN_CPU  # noqa: E402
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
 # GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
@@ -56,7 +57,7 @@ GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")
 # Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
 GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
-H3_GPUS = [GPU_H3] + [g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3]
+H3_GPUS = [GPU_H3, *H3_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
@@ -365,12 +366,18 @@ def _breeze_imports():
     import aistudio_gpu.modal_runner  # noqa: F401
 
 
+def _container(family: str) -> dict:
+    """A family's memory (request, limit) and CPU from ``tasks.CONTAINERS``, which its price also counts."""
+    request, limit, cpu = CONTAINERS[family]
+    return {"memory": (request, limit), **({"cpu": cpu} if cpu > MIN_CPU else {})}
+
+
 def _gpu_class(image=gpu_image, **kwargs):
     return app.cls(image=image, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=IDLE, timeout=60 * 60,
                    enable_memory_snapshot=True, max_containers=GPU_CONTAINERS, **kwargs)
 
 
-@_gpu_class(gpu=GPU_WAN, memory=(16384, 98304))
+@_gpu_class(gpu=GPU_WAN, **_container("wan22-t2v"))
 class WanT2V:
     @modal.enter(snap=True)
     def imports(self):
@@ -390,7 +397,7 @@ class WanT2V:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_WAN, memory=(16384, 98304))
+@_gpu_class(gpu=GPU_WAN, **_container("wan22-i2v"))
 class WanI2V:
     @modal.enter(snap=True)
     def imports(self):
@@ -412,7 +419,7 @@ class WanI2V:
 
 # Four CPUs: the official sampling loop does more host-side work per step than diffusers (rope tables, syncs), and
 # the wav2vec2 audio encoder runs on the CPU.
-@_gpu_class(image=s2v_image, gpu=GPU_WAN, memory=(16384, 131072), cpu=4)
+@_gpu_class(image=s2v_image, gpu=GPU_WAN, **_container("wan22-s2v"))
 class WanS2V:
     @modal.enter(snap=True)
     def imports(self):
@@ -434,7 +441,7 @@ class WanS2V:
 
 # The lip-sync models: one 14–16B DiT in bf16 on an 80 GB card. Four CPUs for their host-side audio work (Whisper /
 # wav2vec2 features, loudness) and the clip's re-timing.
-@_gpu_class(image=avatar_image, gpu=GPU_AVATAR, memory=(16384, 131072), cpu=4)
+@_gpu_class(image=avatar_image, gpu=GPU_AVATAR, **_container("longcat-avatar"))
 class LongCatAvatar:
     @modal.enter(snap=True)
     def imports(self):
@@ -455,7 +462,7 @@ class LongCatAvatar:
 
 
 # Wan 2.1's fp32 checkpoint (66 GB) is read into host memory and cast to bf16 as it loads: room for that.
-@_gpu_class(image=infinitetalk_image, gpu=GPU_AVATAR, memory=(32768, 196608), cpu=4)
+@_gpu_class(image=infinitetalk_image, gpu=GPU_AVATAR, **_container("infinitetalk"))
 class InfiniteTalk:
     @modal.enter(snap=True)
     def imports(self):
@@ -475,7 +482,7 @@ class InfiniteTalk:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_FLUX, memory=(8192, 65536))
+@_gpu_class(gpu=GPU_FLUX, **_container("flux1-dev"))
 class Flux:
     @modal.enter(snap=True)
     def imports(self):
@@ -495,7 +502,7 @@ class Flux:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_QWEN, memory=(16384, 98304))
+@_gpu_class(gpu=GPU_QWEN, **_container("qwen-image"))
 class QwenImage:
     @modal.enter(snap=True)
     def imports(self):
@@ -515,7 +522,7 @@ class QwenImage:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=edit_image, gpu=GPU_QWEN, memory=(16384, 98304))
+@_gpu_class(image=edit_image, gpu=GPU_QWEN, **_container("qwen-image-edit"))
 class QwenImageEdit:
     @modal.enter(snap=True)
     def imports(self):
@@ -539,7 +546,7 @@ class QwenImageEdit:
 # 62 GB conditioner and the VAEs (≈ 140 GB in host RAM; the components manager moves each onto the GPU as it runs). On
 # the edit image for torchvision, which transformers' Qwen-VL processors need. ``H3_GPUS`` falls back to a B200 when no
 # H200 is free.
-@_gpu_class(image=edit_image, gpu=H3_GPUS, memory=(163840, 262144), cpu=8)
+@_gpu_class(image=edit_image, gpu=H3_GPUS, **_container("h3-video"))
 class H3Video:
     @modal.enter(snap=True)
     def imports(self):
@@ -559,7 +566,7 @@ class H3Video:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=edit_image, gpu=H3_GPUS, memory=(163840, 262144), cpu=8)
+@_gpu_class(image=edit_image, gpu=H3_GPUS, **_container("h3-references"))
 class H3References:
     @modal.enter(snap=True)
     def imports(self):
@@ -579,7 +586,7 @@ class H3References:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_SD, memory=(16384, 65536))
+@_gpu_class(gpu=GPU_SD, **_container("sd35-large"))
 class SD35:
     @modal.enter(snap=True)
     def imports(self):
@@ -599,7 +606,7 @@ class SD35:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_SD, memory=(8192, 32768))
+@_gpu_class(gpu=GPU_SD, **_container("sdxl"))
 class SDXL:
     @modal.enter(snap=True)
     def imports(self):
@@ -619,7 +626,7 @@ class SDXL:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=music_image, gpu=GPU_AUDIO, memory=(16384, 65536))
+@_gpu_class(image=music_image, gpu=GPU_AUDIO, **_container("music"))
 class Music:
     @modal.enter(snap=True)
     def imports(self):
@@ -639,7 +646,7 @@ class Music:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_AUDIO, memory=(8192, 32768))
+@_gpu_class(gpu=GPU_AUDIO, **_container("sound"))
 class Sound:
     @modal.enter(snap=True)
     def imports(self):
@@ -659,7 +666,7 @@ class Sound:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=speech_image, gpu=GPU_AUDIO, memory=(8192, 32768))
+@_gpu_class(image=speech_image, gpu=GPU_AUDIO, **_container("speech"))
 class Speech:
     @modal.enter(snap=True)
     def imports(self):
@@ -679,7 +686,7 @@ class Speech:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=breeze_image, gpu=GPU_AUDIO, memory=(8192, 32768))
+@_gpu_class(image=breeze_image, gpu=GPU_AUDIO, **_container("breeze"))
 class Breeze:
     @modal.enter(snap=True)
     def imports(self):

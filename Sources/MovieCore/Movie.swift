@@ -114,9 +114,12 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
     /// A sound's loudness correction in dB, measured when it was made (`MovieLoudness`), so every line and cue
     /// starts from the same level before the mix.
     public var gainDB: Double?
+    /// The video engine that made a clip (`VideoEngine` raw value); nil for clips made before engines were recorded,
+    /// which are Wan 2.2's.
+    public var engine: String?
 
     public init(id: UUID = UUID(), file: String, poster: String? = nil, seed: Int? = nil, costUSD: Double? = nil,
-                date: Date = Date(), seconds: Double? = nil, gainDB: Double? = nil) {
+                date: Date = Date(), seconds: Double? = nil, gainDB: Double? = nil, engine: String? = nil) {
         self.id = id
         self.file = file
         self.poster = poster
@@ -125,6 +128,7 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
         self.date = date
         self.seconds = seconds
         self.gainDB = gainDB
+        self.engine = engine
     }
 }
 

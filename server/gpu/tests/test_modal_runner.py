@@ -178,12 +178,13 @@ def test_relays_events_and_returns_the_result(env):
     seconds, gpu, cost = struct.unpack("<ddd", evs[-1].payload)
     assert evs[-1].kind == Kind.FINISHED and seconds >= 1.2 and 0 < gpu < 1
     # Cost: (GPU seconds + the cold container's load time) × the H100 price.
-    assert cost == pytest.approx((gpu + 7.5) * 0.001097, rel=1e-6)
+    from aistudio_gpu.tasks import TASKS
+    assert cost == pytest.approx((gpu + 7.5) * TASKS["fake-gpu"].price_per_second, rel=1e-6)  # H100 + container
     assert client.get(f"/v1/jobs/{job['id']}/result").content[:4] == b"\x89PNG"
     # The next job on the warm container doesn't pay the load again.
     job2 = client.post("/v1/jobs", json={"task": "fake-gpu"}).json()
     _, gpu2, cost2 = struct.unpack("<ddd", events_of(client, job2["id"])[-1].payload)
-    assert cost2 == pytest.approx(gpu2 * 0.001097, rel=1e-6)
+    assert cost2 == pytest.approx(gpu2 * TASKS["fake-gpu"].price_per_second, rel=1e-6)
 
 
 def test_worker_errors_come_back_readable(env):

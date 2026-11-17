@@ -16,6 +16,29 @@ GPU_PRICES = {
     "B200": 0.001736, "H200": 0.001261, "H100": 0.001097, "A100-80GB": 0.000694, "A100-40GB": 0.000583,
     "L40S": 0.000542, "A10": 0.000306, "L4": 0.000222, "T4": 0.000164,
 }
+# A container's memory and CPU are billed too, for the larger of what it requests and what it uses (modal.com/pricing,
+# checked 2026-11-17): USD per GiB-second and per physical core-second. Modal's minimum request is 0.125 cores.
+MEMORY_PRICE = 0.00000222
+CPU_PRICE = 0.0000131
+MIN_CPU = 0.125
+
+# Each worker family's Modal container: memory request and limit (MiB) and CPU cores requested. modal_app.py sizes its
+# classes from this, and a task's price per second counts the request (the least its container is billed for).
+CONTAINERS: dict[str, tuple[int, int, float]] = {
+    "wan22-t2v": (16384, 98304, MIN_CPU), "wan22-i2v": (16384, 98304, MIN_CPU), "wan22-s2v": (16384, 131072, 4),
+    "longcat-avatar": (16384, 131072, 4), "infinitetalk": (32768, 196608, 4), "flux1-dev": (8192, 65536, MIN_CPU),
+    "qwen-image": (16384, 98304, MIN_CPU), "qwen-image-edit": (16384, 98304, MIN_CPU),
+    # MiniMax H3 keeps ≈ 140 GB of weights in host RAM (its two 61.7 GB models take turns on the GPU).
+    "h3-video": (163840, 262144, 8), "h3-references": (163840, 262144, 8),
+    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "music": (16384, 65536, MIN_CPU),
+    "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
+}
+
+
+def container_price(family: str) -> float:
+    """USD per second for a family's container beyond its GPU: its memory request and CPU cores."""
+    mib, _, cpu = CONTAINERS.get(family, (0, 0, MIN_CPU))
+    return mib / 1024 * MEMORY_PRICE + max(cpu, MIN_CPU) * CPU_PRICE
 
 
 @dataclass(frozen=True)
@@ -77,6 +100,7 @@ class TaskSpec:
     optional_inputs: tuple[str, ...] = ()  # uploaded files the task can use ("reference")
     models: tuple[str, ...] = ()  # model folders under the models root (see download.MODELS)
     cpu_only: bool = False  # the test tasks
+    fallback_gpus: tuple[str, ...] = ()  # GPUs Modal may give it when none of `gpu` is free
 
     def normalize(self, params: dict[str, Any]) -> dict[str, Any]:
         unknown = set(params) - set(self.params)
@@ -86,13 +110,26 @@ class TaskSpec:
 
     @property
     def price_per_second(self) -> float | None:
-        return None if self.cpu_only else GPU_PRICES.get(self.gpu)
+        return self.price_on(self.gpu)
+
+    def price_on(self, gpu: str) -> float | None:
+        """USD per second on `gpu` (the task's own, or a fallback it got): the GPU plus its container's memory and
+        CPU; None for CPU-only tasks and unknown GPUs."""
+        if self.cpu_only or gpu not in GPU_PRICES:
+            return None
+        return GPU_PRICES[gpu] + container_price(self.family)
 
     def describe(self, installed: bool) -> dict:
-        return {"id": self.id, "title": self.title, "kind": self.kind, "gpu": "CPU" if self.cpu_only else self.gpu,
-                "pricePerSecond": self.price_per_second, "installed": installed, "inputs": list(self.inputs),
-                "optionalInputs": list(self.optional_inputs),
-                "params": {k: v.describe() for k, v in self.params.items()}}
+        d = {"id": self.id, "title": self.title, "kind": self.kind, "gpu": "CPU" if self.cpu_only else self.gpu,
+             "pricePerSecond": self.price_per_second, "installed": installed, "inputs": list(self.inputs),
+             "optionalInputs": list(self.optional_inputs),
+             "params": {k: v.describe() for k, v in self.params.items()}}
+        priced = [(g, self.price_on(g)) for g in self.fallback_gpus]
+        priced = [(g, p) for g, p in priced if p is not None]
+        if priced:  # the dearest GPU it may take instead, for the estimate's worst case
+            gpu, price = max(priced, key=lambda gp: gp[1])
+            d.update(fallbackGpu=gpu, fallbackPricePerSecond=price)
+        return d
 
 
 FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image (and Edit), SD 3.5, SDXL and Wan tasks
@@ -133,6 +170,9 @@ GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 62 GB conditioner take turns on it
+# Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
+GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
+H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3)
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
@@ -311,10 +351,11 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     # MiniMax H3 (Community Licence: not for the US, EU, UK or Korea without MiniMax's licence; above $20M revenue
     # MiniMax's written permission; products made with it show "MiniMax H3"): video with its own sound, 24 fps.
     TaskSpec("h3-video", "MiniMax H3 video with sound (licence: not US/EU/UK/Korea)", "video", "h3-video", GPU_H3,
-             _h3_params(), optional_inputs=("image", "last_image"), models=("minimax-h3",)),
+             _h3_params(), optional_inputs=("image", "last_image"), models=("minimax-h3",), fallback_gpus=H3_FALLBACKS),
     TaskSpec("h3-references", "MiniMax H3 from references, with sound (licence: not US/EU/UK/Korea)", "video",
              "h3-references", GPU_H3, _h3_params(), inputs=("image1",),
-             optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3"), models=("minimax-h3",)),
+             optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3"), models=("minimax-h3",),
+             fallback_gpus=H3_FALLBACKS),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
         "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]

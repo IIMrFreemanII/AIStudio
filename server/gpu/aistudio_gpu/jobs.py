@@ -210,7 +210,8 @@ class JobManager:
         job.result = Result(final, output.kind, output.content_type, size, etag)
         job.gpu_seconds = gpu_seconds
         job.load_seconds = output.load_seconds
-        price = job.spec.price_per_second
+        got = (getattr(output, "extra", None) or {}).get("gpu")  # a fallback GPU when the first was busy
+        price = (job.spec.price_on(got) if got else None) or job.spec.price_per_second
         # Billed GPU time we can see: this job plus the model loading of a cold container. (The idle window after
         # the last job is billed too, but isn't part of any one job.)
         job.cost = None if price is None else (gpu_seconds + output.load_seconds) * price
