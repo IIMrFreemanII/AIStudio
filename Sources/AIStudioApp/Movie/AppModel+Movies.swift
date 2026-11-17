@@ -177,11 +177,33 @@ extension AppModel {
         }
     }
 
-    /// Idea › Write Script: asks to confirm the cost, then writes the script.
-    func requestScript(_ doc: MovieDocument) {
-        gateLLM(doc, title: "Write the Script", label: "Write the script", requests: 1) { [weak self] in
-            self?.writeScript(doc)
+    /// Idea › Write Story: asks to confirm the cost, then writes the bible and the outline (two requests).
+    func requestStory(_ doc: MovieDocument) {
+        gateLLM(doc, title: "Write the Story", label: "Write the bible and outline", requests: 2) { [weak self] in
+            self?.writeStory(doc)
         }
+    }
+
+    /// Script › Write: each scene in order (`scenes` nil: all of them), then the critique of each sequence they're in
+    /// (when the movie has it on).
+    func requestScript(_ doc: MovieDocument, scenes: [String]? = nil) {
+        let ids = scenes ?? doc.movie.scenes.map(\.id)
+        guard !ids.isEmpty else { return }
+        let sequences = critiqued(doc, ids)
+        let requests = ids.count + sequences.count
+        gateLLM(doc, title: ids.count == 1 ? "Write the Scene" : "Write the Script",
+                label: (ids.count == 1 ? "Write 1 scene" : "Write \(ids.count) scenes")
+                    + (sequences.isEmpty ? "" : " + critique \(sequences.count) sequence\(sequences.count == 1 ? "" : "s")"),
+                requests: requests) { [weak self] in
+            self?.writeScript(doc, scenes: ids)
+        }
+    }
+
+    /// The sequences the scenes are in, in order, when the critique pass is on.
+    private func critiqued(_ doc: MovieDocument, _ scenes: [String]) -> [String] {
+        guard doc.movie.critique else { return [] }
+        let ids = Set(scenes.map { doc.movie.sequence(ofScene: $0) })
+        return doc.movie.sequences.map(\.id).filter { ids.contains($0) }
     }
 
     /// Shot List › Break Down: one request per scene (`scenes` nil: all of them).
@@ -235,15 +257,72 @@ extension AppModel {
         { usd in Task { @MainActor in doc.movie.costSpent += usd } }
     }
 
-    private func writeScript(_ doc: MovieDocument) {
+    private func writeStory(_ doc: MovieDocument) {
+        runLLMJob(doc, title: "Writing the story") { [weak self] doc, key, client in
+            guard let self else { return }
+            doc.job?.progress = 0
+            var (system, user) = MovieWriters.biblePrompt(for: doc.movie)
+            let bible = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
+                                                   maxTokens: 8000,
+                                                   onProgress: self.progress(doc, "The bible:"),
+                                                   onCost: self.spend(doc), parse: MovieWriters.parseBible)
+            MovieWriters.apply(bible, to: &doc.movie)
+            doc.job?.progress = 0.5
+            (system, user) = MovieWriters.outlinePrompt(for: doc.movie)
+            let cast = doc.movie.characters, places = doc.movie.locations, target = doc.movie.targetSeconds
+            let outline = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
+                                                     maxTokens: 12000,
+                                                     onProgress: self.progress(doc, "The outline:"),
+                                                     onCost: self.spend(doc)) {
+                try MovieWriters.parseOutline($0, cast: cast, locations: places, targetSeconds: target)
+            }
+            MovieWriters.apply(outline, to: &doc.movie)
+            doc.shotNotes = [:]
+            doc.movie.approve(.idea)
+            doc.sequence = doc.movie.sequences.count > 1 ? doc.movie.sequences.first?.id : nil
+            doc.stage = .story
+        }
+    }
+
+    private func writeScript(_ doc: MovieDocument, scenes: [String]) {
         runLLMJob(doc, title: "Writing the script") { [weak self] doc, key, client in
             guard let self else { return }
-            let (system, user) = MoviePlanner.scriptPrompt(for: doc.movie)
-            let draft = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
-                                                   onProgress: self.progress(doc, "Writing…"),
-                                                   onCost: self.spend(doc), parse: MoviePlanner.parseScript)
-            MoviePlanner.apply(draft, to: &doc.movie)
-            doc.movie.approve(.idea)
+            doc.movie.reopen(.script)
+            let sequences = self.critiqued(doc, scenes)
+            let total = Double(scenes.count + sequences.count)
+            for (i, id) in scenes.enumerated() {
+                try Task.checkCancellation()
+                guard let scene = doc.movie.scenes.first(where: { $0.id == id }) else { continue }
+                let prefix = "Scene \(i + 1) of \(scenes.count):"
+                doc.job?.detail = "\(prefix) asking…"
+                doc.job?.progress = Double(i) / total
+                let (system, user) = MovieWriters.scenePrompt(for: doc.movie, scene: scene)
+                let cast = doc.movie.characters
+                let draft = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
+                                                       maxTokens: 6000,
+                                                       onProgress: self.progress(doc, prefix),
+                                                       onCost: self.spend(doc)) {
+                    try MovieWriters.parseScene($0, cast: cast)
+                }
+                MovieWriters.apply(draft, scene: id, to: &doc.movie)
+                self.saveMovie(doc)
+            }
+            for (k, q) in sequences.enumerated() {
+                try Task.checkCancellation()
+                let prefix = "Critique \(k + 1) of \(sequences.count):"
+                doc.job?.detail = "\(prefix) asking…"
+                doc.job?.progress = Double(scenes.count + k) / total
+                let (system, user) = MovieWriters.critiquePrompt(for: doc.movie, sequence: q)
+                let cast = doc.movie.characters
+                let critique = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
+                                                          maxTokens: 16000,
+                                                          onProgress: self.progress(doc, prefix),
+                                                          onCost: self.spend(doc)) {
+                    try MovieWriters.parseCritique($0, cast: cast)
+                }
+                MovieWriters.apply(critique, sequence: q, to: &doc.movie)
+            }
+            doc.movie.reopen(.script)
             doc.stage = .script
         }
     }
@@ -259,12 +338,22 @@ extension AppModel {
                 doc.job?.progress = Double(i) / Double(scenes.count)
                 let (system, user) = MoviePlanner.shotPrompt(for: doc.movie, scene: scene)
                 let cast = doc.movie.characters
-                let shots = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
-                                                       onProgress: self.progress(doc, prefix),
-                                                       onCost: self.spend(doc)) {
-                    try MoviePlanner.parseShots($0, scene: id, cast: cast)
+                let cap = MoviePlanner.talkingCap(for: doc.movie)
+                let seconds = MoviePlanner.sceneSeconds(for: doc.movie)[id] ?? 15
+                var notes: [String] = []
+                let list = try await MoviePlanner.ask(client: client, model: key.modelID, system: system, user: user,
+                                                      maxTokens: 8000,
+                                                      onProgress: self.progress(doc, prefix),
+                                                      onCost: self.spend(doc),
+                                                      check: { MovieWriters.shotProblems($0.shots, scene: scene, seconds: seconds) },
+                                                      onProblems: { notes = $0 }) {
+                    try MoviePlanner.parseShotList($0, scene: id, cast: cast, talkingCap: cap)
                 }
-                MoviePlanner.replaceShots(shots, scene: id, in: &doc.movie)
+                MoviePlanner.replaceShots(list.shots, scene: id, in: &doc.movie)
+                if let j = doc.movie.scenes.firstIndex(where: { $0.id == id }), !list.blocking.isEmpty {
+                    doc.movie.scenes[j].blocking = list.blocking
+                }
+                doc.shotNotes[id] = notes.isEmpty ? nil : notes.joined(separator: "; ")
                 doc.movie.reopen(.shots, in: doc.movie.sequence(ofScene: id))
             }
             doc.stage = .shots

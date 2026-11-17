@@ -33,36 +33,35 @@ final class Spent: @unchecked Sendable {
     var total: Double { lock.withLock { sum } }
 }
 
-let scriptReply = """
-Here's the script.
+let bibleReply = """
+Here's the bible.
 ```json
 {"title": "The Last Lantern", "logline": "A lighthouse keeper's daughter keeps the light on through a storm.",
+ "premise": "The lamp fails; Mara carries oil up the cliff.", "tone": "tense", "theme": "music box",
  "characters": [
-  {"id": "Mara", "name": "Mara", "look": "girl of 12, freckles, red raincoat", "voice": "young girl, bright, brave"},
-  {"name": "Old Tomas", "look": "weathered man of 70, grey beard, wool sweater", "voice": "deep, gravelly, slow"}],
- "scenes": [
-  {"id": "s1", "heading": "INT. LIGHTHOUSE – NIGHT", "summary": "The lamp fails.", "mood": "tense strings",
-   "action": "Wind howls. The lamp flickers out.",
-   "dialogue": [{"character": "MARA", "text": "Grandpa, the light!", "delivery": "scared"},
-                {"character": "Tomas", "text": "Fetch the oil, quick."},
-                {"character": "Nobody", "text": "dropped"}]},
-  {"heading": "EXT. CLIFF – NIGHT", "action": "Mara runs through the rain."}]}
+  {"id": "Mara", "name": "Mara", "role": "protagonist", "goal": "keep the light on", "flaw": "afraid of the dark",
+   "look": "girl of 12, freckles, red raincoat", "voice": "young girl, bright, brave"},
+  {"name": "Old Tomas", "look": "weathered man of 70, grey beard, wool sweater", "voice": "deep, gravelly, slow"},
+  {"name": "Narrator", "voice": "warm, older woman", "narrator": "true"},
+  {"name": ""}],
+ "locations": [{"id": "Lighthouse", "name": "Lamp room", "look": "brass, salt glass"}, {"name": "Cliff path"}]}
 ```
 """
 
-@Test func parsesAScriptTolerantly() throws {
-    let d = try MoviePlanner.parseScript(scriptReply)
-    #expect(d.title == "The Last Lantern")
-    #expect(d.characters.map(\.id) == ["mara", "old-tomas"])
-    #expect(d.scenes.map(\.id) == ["s1", "s2"])
-    // Names and capitals resolve to ids; an unknown speaker's line is dropped.
-    #expect(d.scenes[0].dialogue.map(\.character) == ["mara", "old-tomas"])
-    #expect(d.scenes[0].dialogue[0].delivery == "scared")
+@Test func parsesABibleTolerantly() throws {
+    let b = try MovieWriters.parseBible(bibleReply)
+    #expect(b.title == "The Last Lantern" && b.premise.contains("oil") && b.theme == "music box")
+    #expect(b.characters.map(\.id) == ["mara", "old-tomas", "narrator"])
+    #expect(b.characters[0].goal == "keep the light on" && b.characters[0].flaw == "afraid of the dark")
+    #expect(b.characters[2].isNarrator && !b.characters[0].isNarrator)
+    #expect(b.locations.map(\.id) == ["lighthouse", "cliff-path"])
 }
 
 @Test func rejectsRepliesWithoutScenes() {
-    #expect(throws: MoviePlannerError.noJSON) { try MoviePlanner.parseScript("Sorry, I can't.") }
-    #expect(throws: MoviePlannerError.invalid("no scenes")) { try MoviePlanner.parseScript("{\"scenes\": []}") }
+    #expect(throws: MoviePlannerError.noJSON) { try MovieWriters.parseBible("Sorry, I can't.") }
+    #expect(throws: MoviePlannerError.invalid("no scenes")) {
+        try MovieWriters.parseOutline("{\"sequences\": []}", cast: [], locations: [], targetSeconds: 60)
+    }
 }
 
 @Test func parsesShotsAndClampsThem() throws {
@@ -108,13 +107,13 @@ Here's the script.
 }
 
 @Test func askRetriesOnceWithTheProblem() async throws {
-    let chat = ScriptedChat(["no json here", scriptReply])
+    let chat = ScriptedChat(["no json here", bibleReply])
     let spent = Spent()
-    let draft = try await MoviePlanner.ask(client: chat, model: "m", system: "sys", user: "u",
-                                           onCost: { spent.add($0) }, parse: MoviePlanner.parseScript)
-    #expect(draft.scenes.count == 2)
+    let bible = try await MoviePlanner.ask(client: chat, model: "m", system: "sys", user: "u", maxTokens: 900,
+                                           onCost: { spent.add($0) }, parse: MovieWriters.parseBible)
+    #expect(bible.characters.count == 3)
     #expect(abs(spent.total - 0.02) < 1e-9, "both requests' costs are reported")
-    #expect(chat.requests.count == 2)
+    #expect(chat.requests.count == 2 && chat.requests.allSatisfy { $0.maxTokens == 900 })
     let retry = chat.requests[1].messages
     #expect(retry.count == 4 && retry[2].role == .assistant && retry[3].text.contains("no JSON"))
 }
@@ -122,26 +121,17 @@ Here's the script.
 @Test func askGivesUpAfterTwoBadReplies() async {
     let chat = ScriptedChat(["nope", "still nope"])
     await #expect(throws: MoviePlannerError.noJSON) {
-        try await MoviePlanner.ask(client: chat, model: "m", system: "s", user: "u", parse: MoviePlanner.parseScript)
+        try await MoviePlanner.ask(client: chat, model: "m", system: "s", user: "u", parse: MovieWriters.parseBible)
     }
 }
 
-@Test func promptsCarryLengthStyleAndCast() throws {
-    var movie = MovieProject(idea: "a storm at a lighthouse", style: "noir", targetSeconds: 60)
-    let (system, user) = MoviePlanner.scriptPrompt(for: movie)
-    #expect(system.contains("\"scenes\""))
-    #expect(user.contains("about 60 seconds") && user.contains("about 12 shots") && user.contains("Film Noir"))
-    MoviePlanner.apply(try MoviePlanner.parseScript(scriptReply), to: &movie)
-    let shot = MoviePlanner.shotPrompt(for: movie, scene: movie.scenes[0])
-    #expect(shot.user.contains("mara: Mara – girl of 12") && shot.user.contains("Grandpa, the light!"))
-}
-
-@Test func applyingAScriptDropsShotsAndLaterApprovals() throws {
-    var movie = MovieProject(shots: [Shot(scene: "old")], approved: [.idea, .script, .shots, .cast])
-    MoviePlanner.apply(try MoviePlanner.parseScript(scriptReply), to: &movie)
-    #expect(movie.title == "The Last Lantern")
-    #expect(movie.shots.isEmpty)
-    #expect(movie.approved == [.idea, .script])
+@Test func applyingABibleDropsTheOutlineShotsAndLaterApprovals() throws {
+    var movie = MovieProject(scenes: [MovieScene(id: "s1", heading: "H")], shots: [Shot(scene: "old")],
+                             approved: [.idea, .story, .script, .shots, .cast])
+    MovieWriters.apply(try MovieWriters.parseBible(bibleReply), to: &movie)
+    #expect(movie.title == "The Last Lantern" && movie.premise.contains("oil") && movie.locations.count == 2)
+    #expect(movie.shots.isEmpty && movie.scenes.isEmpty && movie.sequences == [.wholeFilm])
+    #expect(movie.approved == [.idea] && movie.sequenceApproved.isEmpty)
 }
 
 @Test func replacingASceneKeepsSceneOrder() {
@@ -157,9 +147,12 @@ Here's the script.
     #expect(m.currentStage == .idea && m.isUnlocked(.idea) && !m.isUnlocked(.script))
     m.approve(.idea)
     m.approve(.script)
+    #expect(m.currentStage == .story && m.isUnlocked(.story) && !m.isUnlocked(.script))
+    m.approve(.story)
+    m.approve(.script)
     // The cast is the whole film's: it opens with the script, beside the shot list.
     #expect(m.currentStage == .shots && m.isUnlocked(.shots) && m.isUnlocked(.cast) && !m.isUnlocked(.keyframes))
-    m.reopen(.script)
+    m.reopen(.story)
     #expect(m.approved == [.idea])
 }
 
@@ -177,7 +170,7 @@ Here's the script.
     try FileManager.default.createDirectory(at: root.appendingPathComponent("not-a-movie"), withIntermediateDirectories: true)
     #expect(try store.load(a.id) == a)
     #expect(store.list().map(\.title) == ["B", "A"])
-    #expect(store.list().last?.stage == .script && store.list().last?.shots == 1)
+    #expect(store.list().last?.stage == .story && store.list().last?.shots == 1)
     try store.delete(b.id, useTrash: false)
     #expect(store.list().map(\.title) == ["A"])
 }

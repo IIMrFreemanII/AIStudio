@@ -129,12 +129,22 @@ extension SmokeTest {
         doc.movie.llm = MovieLLM(serverID: conn.id, modelID: mid)
         check(doc.movie.idea.hasPrefix("A girl keeps") && doc.stage == .idea, "movie_create typed the idea (\(out.text.prefix(60)))")
 
-        // The script: the cost sheet waits for the user's Run.
+        // The story, then the script: each cost sheet waits for the user's Run.
         var runner = pressRunWhenAsked()
-        out = await call("movie_run", ["work": "script"])
-        check(await runner.value, "the script's cost sheet came up and the test pressed Run")
-        check(out.text.hasPrefix("Finished the script") && doc.movie.scenes.count == 2, "movie_run waited for the script (\(out.text.prefix(80)))")
+        out = await call("movie_run", ["work": "story"])
+        check(await runner.value, "the story's cost sheet came up and the test pressed Run")
+        check(out.text.hasPrefix("Finished the story") && doc.movie.scenes.count == 2, "movie_run waited for the story (\(out.text.prefix(80)))")
         check(studio.waitingOnUser == nil, "the hourglass row is gone")
+        out = await call("movie_get", ["part": "story"])
+        check(out.text.contains("wants: keep the light burning") && out.text.contains("beat:"), "movie_get story reads the bible and outline")
+        out = await call("movie_edit", ["field": "beat", "scene": "s2", "value": "she wants the top / the wind / she makes it"])
+        check(doc.movie.scenes[1].beat.hasPrefix("she wants the top") && doc.stage == .story, "movie_edit typed a beat on the Story page")
+        out = await call("movie_approve", ["stage": "story"])
+        check(doc.movie.isApproved(.story), "movie_approve approved the story")
+        runner = pressRunWhenAsked()
+        out = await call("movie_run", ["work": "script"])
+        check(await runner.value && out.text.hasPrefix("Finished the script") && doc.movie.scenes.allSatisfy(\.isWritten),
+              "movie_run wrote every scene (\(out.text.prefix(80)))")
 
         // Cancelling a sheet: the tool says so and nothing runs.
         doc.movie.approve(.script)
@@ -155,8 +165,11 @@ extension SmokeTest {
         runner = pressRunWhenAsked()
         out = await call("movie_run", ["work": "shots"])
         check(await runner.value && !doc.movie.shots.isEmpty, "the shots came in after Run (\(doc.movie.shots.count))")
-        out = await call("movie_approve", ["stage": "shots"])
-        check(doc.movie.isApproved(.shots), "movie_approve approved the shots")
+        out = await call("movie_approve", ["stage": "shots", "sequence": "1"])
+        check(doc.movie.isApproved(.shots, in: "q1") && !doc.movie.isApproved(.shots, in: "q2"),
+              "movie_approve approved sequence 1's shots (\(out.text.prefix(60)))")
+        out = await call("movie_approve", ["stage": "shots", "sequence": "all"])
+        check(doc.movie.isApproved(.shots), "and with sequence all, every sequence's")
 
         // Edits: typed on its page, approval taken back, Revert puts it back.
         let before = doc.movie.shots[0].keyframePrompt

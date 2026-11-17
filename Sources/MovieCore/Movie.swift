@@ -3,12 +3,13 @@ import Foundation
 /// The stages a movie goes through, in order. Each ends at a review gate: the user approves it before the next one
 /// spends anything.
 public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
-    case idea, script, shots, cast, keyframes, voices, video, sound, edit
+    case idea, story, script, shots, cast, keyframes, voices, video, sound, edit
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
         case .idea: "Idea"
+        case .story: "Story"
         case .script: "Script"
         case .shots: "Shot List"
         case .cast: "Cast"
@@ -23,6 +24,7 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
     public var symbol: String {
         switch self {
         case .idea: "lightbulb"
+        case .story: "book"
         case .script: "doc.text"
         case .shots: "rectangle.split.3x3"
         case .cast: "person.2"
@@ -50,7 +52,8 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
     public var requires: [MovieStage] {
         switch self {
         case .idea: []
-        case .script: [.idea]
+        case .story: [.idea]
+        case .script: [.story]
         case .shots, .cast: [.script]
         case .keyframes: [.shots, .cast]
         case .voices: [.keyframes]
@@ -280,9 +283,26 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
     /// so the voice stays the same from line to line.
     public var voiceSamples: [Take]
     public var selectedVoiceSample: UUID?
+    // The story bible (written with the story, for the scenes' writer).
+    /// "protagonist", "mentor", "antagonist"…
+    public var role: String
+    /// What they want.
+    public var goal: String
+    /// What stands in their way from inside.
+    public var flaw: String
+    /// How they change from the first scene to the last.
+    public var arc: String
+    /// Who they are to the others.
+    public var relationships: String
+    /// Their musical motif ("a lone solo cello figure"), for the score.
+    public var motif: String
+    /// Only heard (narration): no look, no sheet, never on screen.
+    public var isNarrator: Bool
 
     public init(id: String, name: String, look: String, voice: String, sheets: [Take] = [], selectedSheet: UUID? = nil,
-                loraID: String? = nil, voiceSamples: [Take] = [], selectedVoiceSample: UUID? = nil) {
+                loraID: String? = nil, voiceSamples: [Take] = [], selectedVoiceSample: UUID? = nil, role: String = "",
+                goal: String = "", flaw: String = "", arc: String = "", relationships: String = "", motif: String = "",
+                isNarrator: Bool = false) {
         self.id = id
         self.name = name
         self.look = look
@@ -292,10 +312,18 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
         self.loraID = loraID
         self.voiceSamples = voiceSamples
         self.selectedVoiceSample = selectedVoiceSample
+        self.role = role
+        self.goal = goal
+        self.flaw = flaw
+        self.arc = arc
+        self.relationships = relationships
+        self.motif = motif
+        self.isNarrator = isNarrator
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, look, voice, sheets, selectedSheet, loraID, voiceSamples, selectedVoiceSample
+        case id, name, look, voice, sheets, selectedSheet, loraID, voiceSamples, selectedVoiceSample, role, goal, flaw,
+             arc, relationships, motif, isNarrator
     }
 
     /// Characters saved before the Voices stage have no voice samples.
@@ -310,7 +338,34 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
         loraID = try c.decodeIfPresent(String.self, forKey: .loraID)
         voiceSamples = try c.decodeIfPresent([Take].self, forKey: .voiceSamples) ?? []
         selectedVoiceSample = try c.decodeIfPresent(UUID.self, forKey: .selectedVoiceSample)
+        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
+        goal = try c.decodeIfPresent(String.self, forKey: .goal) ?? ""
+        flaw = try c.decodeIfPresent(String.self, forKey: .flaw) ?? ""
+        arc = try c.decodeIfPresent(String.self, forKey: .arc) ?? ""
+        relationships = try c.decodeIfPresent(String.self, forKey: .relationships) ?? ""
+        motif = try c.decodeIfPresent(String.self, forKey: .motif) ?? ""
+        isNarrator = try c.decodeIfPresent(Bool.self, forKey: .isNarrator) ?? false
     }
+}
+
+/// A place the story returns to: its look keeps it the same in every scene there.
+public struct MovieLocation: Codable, Identifiable, Sendable, Equatable {
+    /// A slug ("lighthouse").
+    public var id: String
+    public var name: String
+    /// What it looks like: architecture, light, colours, weather (the keyframes' and later its plate's prompt).
+    public var look: String
+
+    public init(id: String, name: String, look: String = "") {
+        self.id = id
+        self.name = name
+        self.look = look
+    }
+}
+
+/// Which side of the frame a character keeps in a scene (so cuts between them read as a conversation).
+public enum ScreenSide: String, Codable, Sendable, CaseIterable {
+    case left, right, center
 }
 
 /// A run of scenes made and approved together (an act's chapter of a long film): shot list, keyframes, voices,
@@ -347,9 +402,22 @@ public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
     public var dialogue: [DialogueLine]
     /// The sequence it's in (a `MovieSequence` id).
     public var sequence: String
+    // From the outline:
+    /// Where it happens (a `MovieLocation` id; empty: none named).
+    public var location: String
+    /// Who's in it (character ids).
+    public var characters: [String]
+    /// What the scene does in the story: the goal, the conflict, the turn.
+    public var beat: String
+    /// How long it should run on screen (nil: worked out from how much happens).
+    public var seconds: Double?
+    /// Who keeps which side of the frame (written with the shot list).
+    public var blocking: [String: ScreenSide]
 
     public init(id: String, heading: String, summary: String = "", mood: String = "", action: String = "",
-                dialogue: [DialogueLine] = [], sequence: String = MovieSequence.wholeFilm.id) {
+                dialogue: [DialogueLine] = [], sequence: String = MovieSequence.wholeFilm.id, location: String = "",
+                characters: [String] = [], beat: String = "", seconds: Double? = nil,
+                blocking: [String: ScreenSide] = [:]) {
         self.id = id
         self.heading = heading
         self.summary = summary
@@ -357,9 +425,19 @@ public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
         self.action = action
         self.dialogue = dialogue
         self.sequence = sequence
+        self.location = location
+        self.characters = characters
+        self.beat = beat
+        self.seconds = seconds
+        self.blocking = blocking
     }
 
-    private enum CodingKeys: String, CodingKey { case id, heading, summary, mood, action, dialogue, sequence }
+    /// Outlined but not written yet (no action or lines).
+    public var isWritten: Bool { !action.isEmpty || !dialogue.isEmpty }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, heading, summary, mood, action, dialogue, sequence, location, characters, beat, seconds, blocking
+    }
 
     /// Scenes saved before sequences are in the one sequence such movies have.
     public init(from decoder: Decoder) throws {
@@ -371,6 +449,11 @@ public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
         action = try c.decodeIfPresent(String.self, forKey: .action) ?? ""
         dialogue = try c.decodeIfPresent([DialogueLine].self, forKey: .dialogue) ?? []
         sequence = try c.decodeIfPresent(String.self, forKey: .sequence) ?? MovieSequence.wholeFilm.id
+        location = try c.decodeIfPresent(String.self, forKey: .location) ?? ""
+        characters = try c.decodeIfPresent([String].self, forKey: .characters) ?? []
+        beat = try c.decodeIfPresent(String.self, forKey: .beat) ?? ""
+        seconds = try c.decodeIfPresent(Double.self, forKey: .seconds)
+        blocking = (try? c.decodeIfPresent([String: ScreenSide].self, forKey: .blocking)) ?? [:]
     }
 }
 
@@ -382,6 +465,23 @@ public enum ShotTransition: String, Codable, CaseIterable, Sendable {
         case .crossfade: "Crossfade"
         case .fadeFromBlack: "Fade In"
         case .fadeToBlack: "Fade Out"
+        }
+    }
+}
+
+/// What a shot covers in a scene's coverage (a conversation: a master, then singles or over-the-shoulders on each
+/// speaker, and reactions).
+public enum ShotCoverage: String, Codable, Sendable, CaseIterable {
+    case establishing, master, single, ots, reaction, insert
+
+    public var title: String {
+        switch self {
+        case .establishing: "establishing"
+        case .master: "master"
+        case .single: "single"
+        case .ots: "over the shoulder"
+        case .reaction: "reaction"
+        case .insert: "insert"
         }
     }
 }
@@ -418,15 +518,18 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
     /// The shot's sound effects (from `sfx`), as long as the shot.
     public var sounds: [Take]
     public var selectedSound: UUID?
+    /// Its part in the scene's coverage, when the shot list said.
+    public var coverage: ShotCoverage?
 
     public init(id: UUID = UUID(), scene: String, duration: Double = 5, framing: String = "", camera: String = "",
                 keyframePrompt: String = "", motionPrompt: String = "", characters: [String] = [],
                 dialogue: [DialogueLine] = [], sfx: String = "", talking: Bool = false, continuesPrevious: Bool = false,
                 transition: ShotTransition = .cut, keyframes: [Take] = [], selectedKeyframe: UUID? = nil,
                 videos: [Take] = [], selectedVideo: UUID? = nil, trimStart: Double = 0, trimEnd: Double = 0,
-                sounds: [Take] = [], selectedSound: UUID? = nil) {
+                sounds: [Take] = [], selectedSound: UUID? = nil, coverage: ShotCoverage? = nil) {
         self.id = id
         self.scene = scene
+        self.coverage = coverage
         self.duration = duration
         self.framing = framing
         self.camera = camera
@@ -454,7 +557,7 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, scene, duration, framing, camera, keyframePrompt, motionPrompt, characters, dialogue, sfx, talking,
              continuesPrevious, transition, keyframes, selectedKeyframe, videos, selectedVideo, trimStart, trimEnd,
-             sounds, selectedSound
+             sounds, selectedSound, coverage
     }
 
     /// Movies saved before the edit stage have no trims, and before the sound stage no sounds.
@@ -481,6 +584,7 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
         trimEnd = try c.decodeIfPresent(Double.self, forKey: .trimEnd) ?? 0
         sounds = try c.decodeIfPresent([Take].self, forKey: .sounds) ?? []
         selectedSound = try c.decodeIfPresent(UUID.self, forKey: .selectedSound)
+        coverage = try? c.decodeIfPresent(ShotCoverage.self, forKey: .coverage)
     }
 }
 
@@ -540,8 +644,20 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var targetSeconds: Int
     public var llm: MovieLLM?
     public var logline: String
+    /// The story in a paragraph or two: beginning, middle and end.
+    public var premise: String
+    /// How it feels ("quiet, tender, then fierce").
+    public var tone: String
+    /// The score's main theme ("a simple music-box melody that grows into full strings").
+    public var theme: String
     public var characters: [MovieCharacter]
+    /// The places the story returns to.
+    public var locations: [MovieLocation]
     public var scenes: [MovieScene]
+    /// The script editor's notes on each sequence (by sequence id), from the critique pass.
+    public var critiqueNotes: [String: String]
+    /// Whether writing the script ends with a critique-and-revise pass per sequence.
+    public var critique: Bool
     public var shots: [Shot]
     /// The film's sequences, in order (at least one once there's a script).
     public var sequences: [MovieSequence]
@@ -569,7 +685,9 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
-                llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
+                llm: MovieLLM? = nil, logline: String = "", premise: String = "", tone: String = "", theme: String = "",
+                characters: [MovieCharacter] = [], locations: [MovieLocation] = [], scenes: [MovieScene] = [],
+                critiqueNotes: [String: String] = [:], critique: Bool = true,
                 shots: [Shot] = [], sequences: [MovieSequence] = [.wholeFilm], approved: Set<MovieStage> = [],
                 sequenceApproved: [String: Set<MovieStage>] = [:], budget: Double? = nil, costSpent: Double = 0,
                 created: Date = Date(),
@@ -584,8 +702,14 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.targetSeconds = targetSeconds
         self.llm = llm
         self.logline = logline
+        self.premise = premise
+        self.tone = tone
+        self.theme = theme
         self.characters = characters
+        self.locations = locations
         self.scenes = scenes
+        self.critiqueNotes = critiqueNotes
+        self.critique = critique
         self.shots = shots
         self.sequences = sequences
         self.approved = approved.filter { !$0.isPerSequence }
@@ -605,7 +729,8 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, sequences,
+        case version, id, title, idea, style, aspect, targetSeconds, llm, logline, premise, tone, theme, characters,
+             locations, scenes, critiqueNotes, critique, shots, sequences,
              approved, sequenceApproved, budget, costSpent, created, modified, music, mix, lipSync, lipSyncEngine,
              voiceEngine, videoEngine
     }
@@ -622,12 +747,22 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         targetSeconds = try c.decode(Int.self, forKey: .targetSeconds)
         llm = try c.decodeIfPresent(MovieLLM.self, forKey: .llm)
         logline = try c.decode(String.self, forKey: .logline)
+        premise = try c.decodeIfPresent(String.self, forKey: .premise) ?? ""
+        tone = try c.decodeIfPresent(String.self, forKey: .tone) ?? ""
+        theme = try c.decodeIfPresent(String.self, forKey: .theme) ?? ""
         characters = try c.decode([MovieCharacter].self, forKey: .characters)
+        locations = try c.decodeIfPresent([MovieLocation].self, forKey: .locations) ?? []
         scenes = try c.decode([MovieScene].self, forKey: .scenes)
+        critiqueNotes = try c.decodeIfPresent([String: String].self, forKey: .critiqueNotes) ?? [:]
+        critique = try c.decodeIfPresent(Bool.self, forKey: .critique) ?? true
         shots = try c.decode([Shot].self, forKey: .shots)
         sequences = try c.decodeIfPresent([MovieSequence].self, forKey: .sequences) ?? [.wholeFilm]
         if sequences.isEmpty { sequences = [.wholeFilm] }
-        let approvedAll = try c.decode(Set<MovieStage>.self, forKey: .approved)
+        // Unknown stages (from a newer version) are dropped rather than failing the whole movie.
+        let raw = try c.decode([String].self, forKey: .approved)
+        var approvedAll = Set(raw.compactMap(MovieStage.init(rawValue:)))
+        // Movies from before the Story stage wrote their script in one go: a script means the story is done.
+        if !c.contains(.premise), approvedAll.contains(.idea), !scenes.isEmpty { approvedAll.insert(.story) }
         approved = approvedAll.filter { !$0.isPerSequence }
         if let per = try c.decodeIfPresent([String: Set<MovieStage>].self, forKey: .sequenceApproved) {
             sequenceApproved = per
