@@ -45,6 +45,7 @@ extension AppModel {
     /// what price?) and its idle window.
     func gateImages(_ doc: MovieDocument, title: String, work: [ImageWork], extraNotes: [String] = [],
                     run: @escaping @MainActor () -> Void) {
+        let title = doc.stage.isPerSequence ? title + (doc.scopeTitle.map { " · " + $0 } ?? "") : title
         doc.error = nil
         let work = work.filter { $0.jobs > 0 }
         guard doc.job == nil, !work.isEmpty else { return }
@@ -179,8 +180,9 @@ extension AppModel {
     /// Keyframes › Make Keyframes: one take per shot (`shots` nil: those without a keyframe yet, else all). Shots
     /// with characters (or continuing the one before) are edits of the sheets; the rest plain pictures.
     func requestKeyframes(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
-        let missing = doc.movie.shots.filter { $0.keyframes.isEmpty }.map(\.id)
-        let ids = ids ?? (missing.isEmpty ? doc.movie.shots.map(\.id) : missing)
+        let scoped = doc.scopeShots
+        let missing = scoped.filter { $0.keyframes.isEmpty }.map(\.id)
+        let ids = ids ?? (missing.isEmpty ? scoped.map(\.id) : missing)
         let shots = ids.compactMap { id in doc.movie.shots.first { $0.id == id } }
         guard !shots.isEmpty else { return }
         let lacking = Set(shots.flatMap { MovieArt.missingSheets(for: $0, in: doc.movie) })
@@ -388,7 +390,7 @@ extension AppModel {
         guard let j = doc.movie.shots.firstIndex(where: { $0.id == id }), doc.movie.shots[j].selectedKeyframe != take
         else { return }
         doc.movie.shots[j].selectedKeyframe = take
-        doc.movie.reopen(.keyframes)
+        doc.reopen(.keyframes, shot: id)
         saveMovie(doc)
     }
 
@@ -411,7 +413,7 @@ extension AppModel {
                 doc.movie.shots[j].keyframes.removeAll { $0.id == take }
                 if doc.movie.shots[j].selectedKeyframe == take {
                     doc.movie.shots[j].selectedKeyframe = doc.movie.shots[j].keyframes.last?.id
-                    doc.movie.reopen(.keyframes)
+                    doc.reopen(.keyframes, shot: shot)
                 }
             } else if let v = doc.movie.shots[j].videos.first(where: { $0.id == take }) {
                 (file, poster) = (v.file, v.poster)
@@ -419,7 +421,7 @@ extension AppModel {
                 doc.movie.shots[j].videos.removeAll { $0.id == take }
                 if doc.movie.shots[j].selectedVideo == take {
                     doc.movie.shots[j].selectedVideo = doc.movie.shots[j].videos.last?.id
-                    doc.movie.reopen(.video)
+                    doc.reopen(.video, shot: shot)
                 }
             }
         }

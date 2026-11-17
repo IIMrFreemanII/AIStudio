@@ -37,7 +37,30 @@ public enum MovieStage: String, Codable, CaseIterable, Sendable, Identifiable {
     /// Stages built so far (any others would show "coming in a later phase" and be skipped). All of them now.
     public var isAvailable: Bool { true }
 
-    /// The available stage before this one: the one that must be approved first.
+    /// Stages made and approved once per sequence (a long film goes through them a sequence at a time); the others
+    /// are the whole film's.
+    public var isPerSequence: Bool {
+        switch self {
+        case .shots, .keyframes, .voices, .video, .sound: true
+        default: false
+        }
+    }
+
+    /// The stages that must be approved before this one can be worked on (a per-sequence one in the same sequence).
+    public var requires: [MovieStage] {
+        switch self {
+        case .idea: []
+        case .script: [.idea]
+        case .shots, .cast: [.script]
+        case .keyframes: [.shots, .cast]
+        case .voices: [.keyframes]
+        case .video: [.voices]
+        case .sound: [.video]
+        case .edit: [.video]
+        }
+    }
+
+    /// The available stage before this one in the rail.
     public var previous: MovieStage? {
         let all = Self.allCases.filter(\.isAvailable)
         return all.firstIndex(of: self).flatMap { $0 > 0 ? all[$0 - 1] : nil }
@@ -290,6 +313,27 @@ public struct MovieCharacter: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+/// A run of scenes made and approved together (an act's chapter of a long film): shot list, keyframes, voices,
+/// clips and sound go a sequence at a time.
+public struct MovieSequence: Codable, Identifiable, Sendable, Equatable, Hashable {
+    /// "q1", "q2"…
+    public var id: String
+    public var title: String
+    /// The act it belongs to (1…).
+    public var act: Int
+    public var summary: String
+
+    public init(id: String, title: String, act: Int = 1, summary: String = "") {
+        self.id = id
+        self.title = title
+        self.act = act
+        self.summary = summary
+    }
+
+    /// What movies made before sequences have: one holding every scene.
+    public static let wholeFilm = MovieSequence(id: "q1", title: "Whole film")
+}
+
 public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
     /// "s1", "s2"…
     public var id: String
@@ -301,15 +345,32 @@ public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
     /// What happens, in screenplay action lines.
     public var action: String
     public var dialogue: [DialogueLine]
+    /// The sequence it's in (a `MovieSequence` id).
+    public var sequence: String
 
     public init(id: String, heading: String, summary: String = "", mood: String = "", action: String = "",
-                dialogue: [DialogueLine] = []) {
+                dialogue: [DialogueLine] = [], sequence: String = MovieSequence.wholeFilm.id) {
         self.id = id
         self.heading = heading
         self.summary = summary
         self.mood = mood
         self.action = action
         self.dialogue = dialogue
+        self.sequence = sequence
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, heading, summary, mood, action, dialogue, sequence }
+
+    /// Scenes saved before sequences are in the one sequence such movies have.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        heading = try c.decode(String.self, forKey: .heading)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        mood = try c.decodeIfPresent(String.self, forKey: .mood) ?? ""
+        action = try c.decodeIfPresent(String.self, forKey: .action) ?? ""
+        dialogue = try c.decodeIfPresent([DialogueLine].self, forKey: .dialogue) ?? []
+        sequence = try c.decodeIfPresent(String.self, forKey: .sequence) ?? MovieSequence.wholeFilm.id
     }
 }
 
@@ -482,7 +543,14 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var characters: [MovieCharacter]
     public var scenes: [MovieScene]
     public var shots: [Shot]
+    /// The film's sequences, in order (at least one once there's a script).
+    public var sequences: [MovieSequence]
+    /// The whole-film stages approved (per-sequence ones are in `sequenceApproved`).
     public var approved: Set<MovieStage>
+    /// Per-sequence stages approved, by sequence id.
+    public var sequenceApproved: [String: Set<MovieStage>]
+    /// What the user means to spend on this movie at most (USD); nil: no budget.
+    public var budget: Double?
     /// What the GPU work for this movie has cost so far (USD, from the servers' figures).
     public var costSpent: Double
     public var created: Date
@@ -502,7 +570,9 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
                 llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
-                shots: [Shot] = [], approved: Set<MovieStage> = [], costSpent: Double = 0, created: Date = Date(),
+                shots: [Shot] = [], sequences: [MovieSequence] = [.wholeFilm], approved: Set<MovieStage> = [],
+                sequenceApproved: [String: Set<MovieStage>] = [:], budget: Double? = nil, costSpent: Double = 0,
+                created: Date = Date(),
                 modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true,
                 lipSyncEngine: LipSyncEngine = .wanS2V, voiceEngine: VoiceEngine = .qwen3,
                 videoEngine: VideoEngine = .wan22) {
@@ -517,7 +587,10 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.characters = characters
         self.scenes = scenes
         self.shots = shots
-        self.approved = approved
+        self.sequences = sequences
+        self.approved = approved.filter { !$0.isPerSequence }
+        self.sequenceApproved = sequenceApproved
+        self.budget = budget
         self.costSpent = costSpent
         self.created = created
         self.modified = modified
@@ -527,11 +600,14 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.lipSyncEngine = lipSyncEngine
         self.voiceEngine = voiceEngine
         self.videoEngine = videoEngine
+        // Per-sequence stages given in `approved` count for every sequence.
+        for stage in approved where stage.isPerSequence { approve(stage) }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, approved,
-             costSpent, created, modified, music, mix, lipSync, lipSyncEngine, voiceEngine, videoEngine
+        case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, sequences,
+             approved, sequenceApproved, budget, costSpent, created, modified, music, mix, lipSync, lipSyncEngine,
+             voiceEngine, videoEngine
     }
 
     /// Movies saved before the sound stages have no music, mix or lip-sync setting.
@@ -549,7 +625,18 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         characters = try c.decode([MovieCharacter].self, forKey: .characters)
         scenes = try c.decode([MovieScene].self, forKey: .scenes)
         shots = try c.decode([Shot].self, forKey: .shots)
-        approved = try c.decode(Set<MovieStage>.self, forKey: .approved)
+        sequences = try c.decodeIfPresent([MovieSequence].self, forKey: .sequences) ?? [.wholeFilm]
+        if sequences.isEmpty { sequences = [.wholeFilm] }
+        let approvedAll = try c.decode(Set<MovieStage>.self, forKey: .approved)
+        approved = approvedAll.filter { !$0.isPerSequence }
+        if let per = try c.decodeIfPresent([String: Set<MovieStage>].self, forKey: .sequenceApproved) {
+            sequenceApproved = per
+        } else {
+            // Movies from before sequences: their approvals were the whole film's, now its one sequence's.
+            let per = approvedAll.filter(\.isPerSequence)
+            sequenceApproved = per.isEmpty ? [:] : Dictionary(uniqueKeysWithValues: sequences.map { ($0.id, per) })
+        }
+        budget = try c.decodeIfPresent(Double.self, forKey: .budget)
         costSpent = try c.decode(Double.self, forKey: .costSpent)
         created = try c.decode(Date.self, forKey: .created)
         modified = try c.decode(Date.self, forKey: .modified)
@@ -573,24 +660,119 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
 
     public func shots(in scene: String) -> [Shot] { shots.filter { $0.scene == scene } }
 
-    /// The stage to show: the first available one not approved yet.
-    public var currentStage: MovieStage {
-        MovieStage.allCases.first { $0.isAvailable && !approved.contains($0) } ?? .edit
+    /// The sequence a scene is in (the first sequence when the scene names none that exists).
+    public func sequence(ofScene scene: String) -> String {
+        let id = scenes.first { $0.id == scene }?.sequence
+        return id.flatMap { s in sequences.contains { $0.id == s } ? s : nil } ?? sequences.first?.id ?? MovieSequence.wholeFilm.id
     }
 
-    /// A stage can be worked on once the one before it is approved.
-    public func isUnlocked(_ stage: MovieStage) -> Bool {
-        guard let prev = stage.previous else { return true }
-        return approved.contains(prev)
+    /// The sequence a shot is in (its scene's).
+    public func sequence(of shot: Shot) -> String { sequence(ofScene: shot.scene) }
+
+    /// Scene id → sequence id, for lookups over many shots.
+    public var sequenceByScene: [String: String] {
+        var out: [String: String] = [:]
+        let known = Set(sequences.map(\.id))
+        let first = sequences.first?.id ?? MovieSequence.wholeFilm.id
+        for s in scenes { out[s.id] = known.contains(s.sequence) ? s.sequence : first }
+        return out
     }
 
-    /// Approving a stage; changing an approved stage's content takes back the approval of everything after it
-    /// (the later work was made from the old version).
-    public mutating func approve(_ stage: MovieStage) { approved.insert(stage) }
+    /// The shots of one sequence (nil: the whole film), in film order.
+    public func shots(inSequence sequence: String?) -> [Shot] {
+        guard let sequence else { return shots }
+        let map = sequenceByScene
+        let first = sequences.first?.id
+        return shots.filter { (map[$0.scene] ?? first) == sequence }
+    }
 
-    public mutating func reopen(_ stage: MovieStage) {
+    /// The scenes of one sequence (nil: all).
+    public func scenes(inSequence sequence: String?) -> [MovieScene] {
+        guard let sequence else { return scenes }
+        let map = sequenceByScene
+        return scenes.filter { map[$0.id] == sequence }
+    }
+
+    /// Shot id → its index in `shots`, for lookups over many shots.
+    public var shotIndex: [UUID: Int] {
+        Dictionary(shots.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Whether `stage` is approved: a whole-film stage for the film; a per-sequence one in `sequence`, or (nil) in
+    /// every sequence.
+    public func isApproved(_ stage: MovieStage, in sequence: String? = nil) -> Bool {
+        guard stage.isPerSequence else { return approved.contains(stage) }
+        if let sequence { return sequenceApproved[sequence]?.contains(stage) ?? false }
+        return !sequences.isEmpty && sequences.allSatisfy { sequenceApproved[$0.id]?.contains(stage) ?? false }
+    }
+
+    /// Whether any sequence has `stage` approved.
+    public func isApprovedAnywhere(_ stage: MovieStage) -> Bool {
+        guard stage.isPerSequence else { return approved.contains(stage) }
+        return sequences.contains { sequenceApproved[$0.id]?.contains(stage) ?? false }
+    }
+
+    /// The stage to show for a sequence (nil: the whole film): the first not approved yet.
+    public func currentStage(in sequence: String? = nil) -> MovieStage {
+        MovieStage.allCases.first { $0.isAvailable && !isApproved($0, in: sequence) } ?? .edit
+    }
+
+    /// The stage to show for the whole film.
+    public var currentStage: MovieStage { currentStage() }
+
+    /// A stage can be worked on once the ones it needs are approved: in `sequence` for per-sequence ones (nil: in
+    /// any sequence, for the whole-film view). The edit opens once any sequence has its clips approved.
+    public func isUnlocked(_ stage: MovieStage, in sequence: String? = nil) -> Bool {
+        if stage == .edit { return isApprovedAnywhere(.video) }
+        return stage.requires.allSatisfy { need in
+            if need.isPerSequence && stage.isPerSequence {
+                if let sequence { return isApproved(need, in: sequence) }
+                return isApprovedAnywhere(need)
+            }
+            return need.isPerSequence ? isApprovedAnywhere(need) : approved.contains(need)
+        }
+    }
+
+    /// Whether the edit can be approved: every sequence's sound is.
+    public var editIsApprovable: Bool { isApproved(.sound) }
+
+    /// Approving a stage (a per-sequence one in `sequence`, or nil: in every sequence).
+    public mutating func approve(_ stage: MovieStage, in sequence: String? = nil) {
+        guard stage.isPerSequence else { approved.insert(stage); return }
+        for s in sequence.map({ [$0] }) ?? sequences.map(\.id) { sequenceApproved[s, default: []].insert(stage) }
+    }
+
+    /// Takes back a stage's approval and everything after it (the later work was made from the old version). A
+    /// per-sequence stage in `sequence` only (nil: every sequence); the film's edit goes too. A whole-film stage takes
+    /// back the later whole-film stages and the later per-sequence ones everywhere.
+    public mutating func reopen(_ stage: MovieStage, in sequence: String? = nil) {
         let all = MovieStage.allCases
         guard let i = all.firstIndex(of: stage) else { return }
-        for s in all[i...] { approved.remove(s) }
+        let later = all[i...]
+        let targets = stage.isPerSequence ? (sequence.map { [$0] } ?? Array(sequenceApproved.keys)) : Array(sequenceApproved.keys)
+        for s in later {
+            if s.isPerSequence {
+                for q in targets { sequenceApproved[q]?.remove(s) }
+            } else if !stage.isPerSequence || s == .edit {
+                approved.remove(s)
+            }
+        }
+        sequenceApproved = sequenceApproved.filter { !$0.value.isEmpty }
     }
+
+    /// Takes back one approval only (the studio agent's undo).
+    public mutating func unapprove(_ stage: MovieStage, in sequence: String? = nil) {
+        guard stage.isPerSequence else { approved.remove(stage); return }
+        for s in sequence.map({ [$0] }) ?? Array(sequenceApproved.keys) { sequenceApproved[s]?.remove(stage) }
+    }
+
+    /// Every approval as "stage" or "stage@sequence" (to compare before and after a change).
+    public var approvalKeys: Set<String> {
+        var out = Set(approved.map(\.rawValue))
+        for (q, set) in sequenceApproved { for s in set { out.insert("\(s.rawValue)@\(q)") } }
+        return out
+    }
+
+    /// The film's longest target (20 minutes).
+    public static let maxTargetSeconds = 1200
 }

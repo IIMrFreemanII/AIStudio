@@ -157,7 +157,8 @@ Here's the script.
     #expect(m.currentStage == .idea && m.isUnlocked(.idea) && !m.isUnlocked(.script))
     m.approve(.idea)
     m.approve(.script)
-    #expect(m.currentStage == .shots && m.isUnlocked(.shots) && !m.isUnlocked(.cast))
+    // The cast is the whole film's: it opens with the script, beside the shot list.
+    #expect(m.currentStage == .shots && m.isUnlocked(.shots) && m.isUnlocked(.cast) && !m.isUnlocked(.keyframes))
     m.reopen(.script)
     #expect(m.approved == [.idea])
 }

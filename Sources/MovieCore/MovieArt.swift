@@ -201,8 +201,8 @@ extension Shot {
 
 extension MovieProject {
     /// The shot just before this one in the film (any scene).
-    public func shot(before shot: Shot) -> Shot? {
-        guard let i = shots.firstIndex(where: { $0.id == shot.id }), i > 0 else { return nil }
+    public func shot(before shot: Shot, index: [UUID: Int]? = nil) -> Shot? {
+        guard let i = index?[shot.id] ?? shots.firstIndex(where: { $0.id == shot.id }), i > 0 else { return nil }
         return shots[i - 1]
     }
 
@@ -210,5 +210,11 @@ extension MovieProject {
     public var castIsReady: Bool { !characters.isEmpty && characters.allSatisfy { $0.selectedSheetFile != nil } }
 
     /// Every shot has a chosen keyframe.
-    public var keyframesAreReady: Bool { !shots.isEmpty && shots.allSatisfy { $0.selectedKeyframeFile != nil } }
+    public var keyframesAreReady: Bool { keyframesAreReady(in: nil) }
+
+    /// Every shot of a sequence (nil: the film) has a chosen keyframe.
+    public func keyframesAreReady(in sequence: String?) -> Bool {
+        let s = shots(inSequence: sequence)
+        return !s.isEmpty && s.allSatisfy { $0.selectedKeyframeFile != nil }
+    }
 }

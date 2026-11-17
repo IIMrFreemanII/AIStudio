@@ -7,6 +7,14 @@ public struct MovieSummary: Identifiable, Sendable, Equatable {
     public var stage: MovieStage
     public var shots: Int
     public var modified: Date
+
+    public init(id: UUID, title: String, stage: MovieStage, shots: Int, modified: Date) {
+        self.id = id
+        self.title = title
+        self.stage = stage
+        self.shots = shots
+        self.modified = modified
+    }
 }
 
 /// Movies on disk: `<library>/movies/<id>/movie.json`, with the generated files in folders beside it.

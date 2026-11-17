@@ -16,6 +16,7 @@ struct MovieView: View {
             VStack(spacing: 0) {
                 if let job = doc.job { MovieJobBar(job: job) { model.stopMovieJob(doc) } }
                 if let error = doc.error { MovieErrorBar(message: error) { doc.error = nil } }
+                if doc.stage.isPerSequence && doc.movie.sequences.count > 1 { MovieSequenceBar(doc: doc) }
                 Group {
                     switch doc.stage {
                     case .idea: MovieIdeaPage(doc: doc)
@@ -33,7 +34,9 @@ struct MovieView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .mgSheet("movie-cost-gate", item: $doc.pendingGate) { gate in CostGateSheet(gate: gate) }
+        .mgSheet("movie-cost-gate", item: $doc.pendingGate) { gate in
+            CostGateSheet(gate: gate, spent: doc.movie.costSpent, budget: doc.movie.budget)
+        }
         .mgTestAnchor("movie-view")
     }
 }
@@ -48,23 +51,31 @@ private struct MovieStageRail: View {
             Text("STAGES").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                 .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 6)
             ForEach(MovieStage.allCases) { stage in
-                StageRow(stage: stage, selected: doc.stage == stage, approved: doc.movie.approved.contains(stage),
-                         unlocked: doc.movie.isUnlocked(stage) && stage.isAvailable,
-                         later: !stage.isAvailable) { doc.stage = stage }
+                StageRow(stage: stage, selected: doc.stage == stage, approved: doc.isApproved(stage),
+                         unlocked: doc.isUnlocked(stage) && stage.isAvailable,
+                         later: !stage.isAvailable,
+                         sequences: stage.isPerSequence && doc.movie.sequences.count > 1
+                            ? doc.movie.sequences.map { doc.movie.isApproved(stage, in: $0.id) } : []) { doc.stage = stage }
             }
             Spacer()
             VStack(alignment: .leading, spacing: 4) {
                 summaryLine("film", "\(doc.movie.shots.count) shots · \(MovieFormat.time(doc.movie.runtime))")
+                if doc.movie.sequences.count > 1 {
+                    summaryLine("square.stack", "\(doc.movie.sequences.count) sequences")
+                }
                 summaryLine("target", "aim \(MovieFormat.time(Double(doc.movie.targetSeconds)))")
-                summaryLine("dollarsign.circle", "spent \(CostEstimate.format(doc.movie.costSpent))")
-                    .mgHelp("What this movie's GPU work has cost so far, from the servers' figures")
+                summaryLine("dollarsign.circle", "spent \(CostEstimate.format(doc.movie.costSpent))"
+                            + (doc.movie.budget.map { " of \(CostEstimate.format($0))" } ?? ""))
+                    .foregroundStyle(doc.movie.wouldExceedBudget(0) ? MG.warning : MG.secondaryLabel)
+                    .mgHelp("What this movie's GPU work has cost so far, from the servers' figures"
+                            + (doc.movie.budget == nil ? "" : ", and its budget"))
             }
             .padding(12)
         }
     }
 
     private func summaryLine(_ symbol: String, _ text: String) -> some View {
-        Label(text, systemImage: symbol).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).labelStyle(.titleAndIcon)
+        Label(text, systemImage: symbol).font(.mgFootnote).labelStyle(.titleAndIcon).foregroundStyle(MG.secondaryLabel)
     }
 }
 
@@ -74,6 +85,8 @@ private struct StageRow: View {
     let approved: Bool
     let unlocked: Bool
     let later: Bool
+    /// A per-sequence stage in a film of several: whether each sequence has it approved (a dot each).
+    var sequences: [Bool] = []
     let action: () -> Void
     @State private var hover = false
 
@@ -84,6 +97,14 @@ private struct StageRow: View {
                     .foregroundStyle(selected ? MG.accent : unlocked ? MG.label : MG.tertiaryLabel)
                 Text(stage.title).foregroundStyle(unlocked ? MG.label : MG.tertiaryLabel)
                 Spacer(minLength: 4)
+                if !sequences.isEmpty {
+                    HStack(spacing: 2) {
+                        ForEach(Array(sequences.prefix(12).enumerated()), id: \.offset) { _, done in
+                            Circle().fill(done ? MG.success : MG.tertiaryLabel.opacity(0.5)).frame(width: 4, height: 4)
+                        }
+                    }
+                    .mgHelp("\(sequences.filter { $0 }.count) of \(sequences.count) sequences approved")
+                }
                 if approved {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(MG.success)
                 } else if later {
@@ -109,6 +130,38 @@ private struct StageRow: View {
 }
 
 // MARK: bars
+
+/// Above a per-sequence page of a film in several sequences: which one the page shows and makes (or all of them),
+/// each with how far it got.
+private struct MovieSequenceBar: View {
+    @Bindable var doc: MovieDocument
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "square.stack").foregroundStyle(MG.secondaryLabel)
+            MGPicker(selection: Binding(get: { doc.sequence }, set: { doc.show(sequence: $0) }),
+                     options: [(nil, "Whole film (all \(doc.movie.sequences.count))")]
+                        + doc.movie.sequences.enumerated().map { i, q in
+                            (Optional(q.id), "\(i + 1). \(q.title.isEmpty ? q.id : q.title) · act \(q.act)")
+                        },
+                     maxWidth: 360)
+                .frame(width: 360, alignment: .leading)
+                .mgTestAnchor("movie-sequence-picker")
+            let shots = doc.scopeShots
+            Text("\(shots.count) shots · \(MovieFormat.time(shots.reduce(0) { $0 + $1.duration }))")
+                .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+            if let s = doc.sequence {
+                Text(doc.movie.isApproved(doc.stage, in: s) ? "\(doc.stage.title) approved"
+                     : "at \(doc.movie.currentStage(in: s).title)")
+                    .font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(MG.groupedBackground)
+        .overlay(alignment: .bottom) { MGDivider() }
+    }
+}
 
 private struct MovieJobBar: View {
     let job: MovieJob
@@ -193,9 +246,10 @@ struct MoviePage<Actions: View, Content: View>: View {
 }
 
 enum MovieFormat {
-    /// "1:05", "0:08".
+    /// "1:05", "0:08", "1:02:05".
     static func time(_ seconds: Double) -> String {
         let s = Int(seconds.rounded())
+        if s >= 3600 { return String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) }
         return String(format: "%d:%02d", s / 60, s % 60)
     }
 
@@ -234,6 +288,9 @@ private struct MovieLaterPage: View {
 /// What a stage will spend, before it runs: Cancel, or Run for the estimated amount.
 struct CostGateSheet: View {
     let gate: CostGate
+    /// The movie's spend so far and its budget, to warn when the run would pass it.
+    var spent: Double = 0
+    var budget: Double? = nil
     @Environment(\.mgDismiss) private var dismiss
     /// The chosen plan's `parallel`, when the estimate offers a choice.
     @State private var chosen: Int?
@@ -303,6 +360,14 @@ struct CostGateSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+            if let budget, spent + usd > budget + 0.005 {
+                Label("This run would take the movie past its \(CostEstimate.format(budget)) budget: "
+                      + "\(CostEstimate.format(spent)) spent + \(CostEstimate.format(usd)) = \(CostEstimate.format(spent + usd)).",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.mgCallout).foregroundStyle(MG.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .mgTestAnchor("movie-gate-budget")
+            }
             if !gate.estimate.notes.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(gate.estimate.notes, id: \.self) { Text("• " + $0) }

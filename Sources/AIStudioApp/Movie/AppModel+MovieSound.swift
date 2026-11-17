@@ -65,7 +65,7 @@ extension AppModel {
     /// Voices › Speak Lines: every line of the shots (nil: all shots) that has no take yet; when they all have one,
     /// a new take of each.
     func requestLines(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
-        let shots = doc.movie.shots.filter { ids?.contains($0.id) ?? true }
+        let shots = ids.map { ids in doc.movie.shots.filter { ids.contains($0.id) } } ?? doc.scopeShots
         let all = shots.flatMap { s in s.dialogue.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { (ref: LineRef(shot: s.id, line: $0.id), line: $0) } }
         let missing = all.filter { $0.line.takes.isEmpty }
@@ -148,7 +148,7 @@ extension AppModel {
               doc.movie.shots[j].dialogue[k].selectedTake != take else { return }
         doc.movie.shots[j].dialogue[k].selectedTake = take
         fitShotsToLines(doc)
-        doc.movie.reopen(.voices)
+        doc.reopen(.voices, shot: shot)
         saveMovie(doc)
     }
 
@@ -157,7 +157,7 @@ extension AppModel {
     /// Sound › Make Sound Effects: one take per shot with an effects prompt (`shots` nil: those without one yet,
     /// else all of them).
     func requestEffects(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
-        let withPrompt = doc.movie.shots.filter { MovieSound.effectsPrompt($0) != nil }
+        let withPrompt = doc.scopeShots.filter { MovieSound.effectsPrompt($0) != nil }
         let missing = withPrompt.filter { $0.sounds.isEmpty }.map(\.id)
         let ids = ids ?? (missing.isEmpty ? withPrompt.map(\.id) : missing)
         let shots = withPrompt.filter { ids.contains($0.id) }
@@ -193,8 +193,10 @@ extension AppModel {
     /// the scene.
     func requestMusic(_ doc: MovieDocument, scenes ids: [String]? = nil) {
         doc.movie.music = MovieSound.cues(for: doc.movie)
-        let missing = doc.movie.music.filter { $0.takes.isEmpty }.map(\.id)
-        let ids = ids ?? (missing.isEmpty ? doc.movie.music.map(\.id) : missing)
+        let scenes = Set(doc.scopeScenes.map(\.id))
+        let scoped = doc.movie.music.filter { scenes.contains($0.id) }
+        let missing = scoped.filter { $0.takes.isEmpty }.map(\.id)
+        let ids = ids ?? (missing.isEmpty ? scoped.map(\.id) : missing)
         let cues = doc.movie.music.filter { ids.contains($0.id) }
         guard !cues.isEmpty else { return }
         let seconds = cues.map { MovieSound.sceneSeconds($0.id, in: doc.movie) }.reduce(0, +) / Double(cues.count)
@@ -228,7 +230,7 @@ extension AppModel {
         guard let j = doc.movie.shots.firstIndex(where: { $0.id == id }), doc.movie.shots[j].selectedSound != take
         else { return }
         doc.movie.shots[j].selectedSound = take
-        doc.movie.reopen(.sound)
+        doc.reopen(.sound, shot: id)
         saveMovie(doc)
     }
 
@@ -236,7 +238,7 @@ extension AppModel {
         guard let j = doc.movie.music.firstIndex(where: { $0.id == id }), doc.movie.music[j].selected != take
         else { return }
         doc.movie.music[j].selected = take
-        doc.movie.reopen(.sound)
+        doc.movie.reopen(.sound, in: doc.movie.sequence(ofScene: id))
         saveMovie(doc)
     }
 
@@ -313,16 +315,21 @@ extension MovieCharacter {
 }
 
 extension MovieProject {
-    /// Lines that will play silent: no chosen take.
-    var silentLines: Int {
-        shots.reduce(0) { n, s in
+    /// Lines that will play silent: no chosen take (in a sequence, or nil: the film).
+    func silentLines(in sequence: String? = nil) -> Int {
+        shots(inSequence: sequence).reduce(0) { n, s in
             n + s.dialogue.filter { $0.selectedTake == nil && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count
         }
     }
 
-    var lineCount: Int {
-        shots.reduce(0) { $0 + $1.dialogue.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count }
+    func lineCount(in sequence: String? = nil) -> Int {
+        shots(inSequence: sequence).reduce(0) {
+            $0 + $1.dialogue.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        }
     }
+
+    var silentLines: Int { silentLines() }
+    var lineCount: Int { lineCount() }
 }
 
 enum MovieSoundError: Error, CustomStringConvertible {

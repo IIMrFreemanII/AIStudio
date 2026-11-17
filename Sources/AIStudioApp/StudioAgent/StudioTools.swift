@@ -179,12 +179,29 @@ final class StudioSession {
         return out.joined(separator: "\n")
     }
 
+    /// Shows the sequence `a` names (its number or id), when it names one.
+    func selectSequence(_ doc: MovieDocument, _ a: ToolArgs) throws {
+        guard let raw = a.string("sequence")?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return }
+        let qs = doc.movie.sequences
+        if ["all", "film", "whole film"].contains(raw.lowercased()) { doc.show(sequence: nil); return }
+        let q = Int(raw).flatMap { qs.indices.contains($0 - 1) ? qs[$0 - 1] : nil }
+            ?? qs.first { $0.id == raw.lowercased() || $0.title.lowercased() == raw.lowercased() }
+        guard let q else { throw ToolError("no sequence \(raw): this film has \(qs.count) (1…\(qs.count))") }
+        doc.show(sequence: q.id)
+    }
+
     func movieOverview(_ d: MovieDocument) -> String {
         let m = d.movie
-        var out = ["“\(m.title)” (\(m.aspect.title), about \(m.targetSeconds) s; spent $\(String(format: "%.2f", m.costSpent)))"]
+        var out = ["“\(m.title)” (\(m.aspect.title), about \(m.targetSeconds) s; spent $\(String(format: "%.2f", m.costSpent))"
+                   + (m.budget.map { " of a $\(String(format: "%.2f", $0)) budget" } ?? "") + ")"]
         out.append("Stages: " + MovieStage.allCases.map { s in
-            "\(s.rawValue) " + (m.approved.contains(s) ? "approved" : m.isUnlocked(s) ? "open" : "locked")
-        }.joined(separator: ", "))
+            "\(s.rawValue) " + (d.isApproved(s) ? "approved" : d.isUnlocked(s) ? "open" : "locked")
+        }.joined(separator: ", ") + (d.scopeTitle.map { " (per-sequence stages: \($0))" } ?? ""))
+        if m.sequences.count > 1 {
+            out.append("Sequences: " + m.sequences.enumerated().map { i, q in
+                "\(i + 1). \(q.title) (act \(q.act), \(m.shots(inSequence: q.id).count) shots, at \(m.currentStage(in: q.id).rawValue))"
+            }.joined(separator: "; "))
+        }
         out.append("\(m.characters.count) characters, \(m.scenes.count) scenes, \(m.shots.count) shots; "
                    + "\(m.shots.filter { !$0.keyframes.isEmpty }.count) with keyframes, \(m.shots.filter { !$0.videos.isEmpty }.count) with clips.")
         return out.joined(separator: "\n")
@@ -210,9 +227,10 @@ final class StudioSession {
                                             target: "movie-row:\(doc.movie.title)"), at: .panel(.movies), callID: id) {
                 app.openMovie(doc.id)
             }
+            try selectSequence(doc, a)
             if let s = a.string("stage") {
                 let stage = try Self.stage(s)
-                guard doc.movie.isUnlocked(stage) else { throw ToolError("the \(stage.title) page is locked until \(stage.previous?.title ?? "the stage before") is approved") }
+                guard doc.isUnlocked(stage) else { throw ToolError("the \(stage.title) page is locked until \(stage.previous?.title ?? "the stage before") is approved") }
                 try await studio.act(StudioStep(doing: "Going to \(stage.title)", done: "Went to \(stage.title)",
                                                 target: "movie-stage-\(stage.rawValue)"), at: .movie(doc.id, nil), callID: id) {
                     doc.stage = stage
@@ -309,7 +327,7 @@ final class StudioSession {
         if let asp = a.string("aspect"), let v = MovieAspect.allCases.first(where: { $0.rawValue == asp || $0.title.lowercased() == asp.lowercased() }) {
             doc.movie.aspect = v
         }
-        if let secs = a.int("seconds"), secs > 0 { doc.movie.targetSeconds = secs }
+        if let secs = a.int("seconds"), secs > 0 { doc.movie.targetSeconds = min(secs, MovieProject.maxTargetSeconds) }
         doc.stage = .idea
         try await studio.act(StudioStep(doing: "Typing the idea", done: "Typed the idea", target: "movie-idea"),
                              at: .movie(doc.id, .idea), callID: id) {
@@ -321,6 +339,7 @@ final class StudioSession {
 
     func movieGet(_ a: ToolArgs) throws -> String {
         let doc = try movie(a.string("movie"))
+        try selectSequence(doc, a)
         let m = doc.movie
         func takes(_ ts: [Take], _ chosen: UUID?) -> String {
             ts.isEmpty ? "no takes" : "\(ts.count) take(s)" + (ts.firstIndex { $0.id == chosen }.map { ", take \($0 + 1) chosen" } ?? ", none chosen")
@@ -427,22 +446,26 @@ final class StudioSession {
         let doc = try movie(a.string("movie"))
         let value = try a.required("value")
         let f = try field(doc, a)
-        guard doc.movie.isUnlocked(f.page) || f.page == .idea else {
+        guard doc.isUnlocked(f.page) || f.page == .idea else {
             throw ToolError("the \(f.page.title) page is locked until the stage before it is approved")
         }
         guard !doc.isBusy else { throw ToolError("the movie is busy (\(doc.job?.title ?? "working")): wait for it to finish") }
         let old = f.get()
-        let approvedBefore = doc.movie.approved
+        let approvedBefore = doc.movie.approvalKeys
         try await studio.act(StudioStep(doing: "Typing \(f.label)", done: "Typed \(f.label)", target: f.target),
                              at: .movie(doc.id, f.page), callID: id) {
             await studio.type(value) { f.set($0) }
         }
-        if let r = f.reopens, approvedBefore.contains(r) { doc.movie.reopen(r) }
-        let undone = MovieStage.allCases.filter { approvedBefore.contains($0) && !doc.movie.approved.contains($0) }
+        if let r = f.reopens, doc.isApproved(r) { doc.reopen(r) }
+        let after = doc.movie.approvalKeys
+        let undone = MovieStage.allCases.filter { s in
+            approvedBefore.contains { $0 == s.rawValue || $0.hasPrefix(s.rawValue + "@") }
+                && !after.contains { $0 == s.rawValue || $0.hasPrefix(s.rawValue + "@") }
+        }
         let set = f.set, reopen = f.reopens
         studio.reverts[id] = StudioRevert(title: "Put back \(f.label)") { [weak doc] in
             set(old)
-            if let doc, let reopen, doc.movie.approved.contains(reopen) { doc.movie.reopen(reopen) }
+            if let doc, let reopen, doc.isApproved(reopen) { doc.reopen(reopen) }
         }
         try appModel().saveMovie(doc)
         return "Set \(f.label)." + (undone.isEmpty ? "" : " That took back the approval of: \(undone.map(\.title).joined(separator: ", ")) (approve them again when done).")
@@ -490,8 +513,9 @@ final class StudioSession {
     /// Starts a stage's work, waits for the user's answer on the cost sheet, then for the work to finish.
     func movieRun(_ a: ToolArgs, _ id: String) async throws -> String {
         let doc = try movie(a.string("movie"))
+        try selectSequence(doc, a)
         let w = try work(doc, a)
-        guard doc.movie.isUnlocked(w.page) || w.page == .idea else {
+        guard doc.isUnlocked(w.page) || w.page == .idea else {
             throw ToolError("the \(w.page.title) page is locked until the stage before it is approved")
         }
         // One job per movie: another actor's (or the user's) run first.
@@ -648,15 +672,20 @@ final class StudioSession {
     func approve(_ a: ToolArgs, _ id: String) async throws -> String {
         let doc = try movie(a.string("movie"))
         let stage = try Self.stage(a.string("stage"))
-        guard doc.movie.isUnlocked(stage) else { throw ToolError("\(stage.title) is locked: approve \(stage.previous?.title ?? "the stage before") first") }
+        try selectSequence(doc, a)
+        guard doc.isUnlocked(stage) else { throw ToolError("\(stage.title) is locked: approve \(stage.requires.map(\.title).joined(separator: " and ")) first") }
         guard !doc.isBusy else { throw ToolError("the movie is busy: wait for it to finish") }
+        if stage == .edit && !doc.movie.editIsApprovable {
+            throw ToolError("the edit can be approved once every sequence's sound is")
+        }
+        let scope = doc.scope(stage)
         try await studio.act(StudioStep(doing: "Approving \(stage.title)", done: "Approved \(stage.title)", target: Self.approveTargets[stage]),
                              at: .movie(doc.id, stage), callID: id) {
-            doc.movie.approve(stage)
+            doc.approve(stage)
         }
-        studio.reverts[id] = StudioRevert(title: "Take back the approval") { [weak doc] in doc?.movie.approved.remove(stage) }
+        studio.reverts[id] = StudioRevert(title: "Take back the approval") { [weak doc] in doc?.movie.unapprove(stage, in: scope) }
         try appModel().saveMovie(doc)
-        return "\(stage.title) is approved; the next page is unlocked."
+        return "\(stage.title) is approved" + (doc.scopeTitle.map { " for \($0)" } ?? "") + "; the next page is unlocked."
     }
 
     func deleteTake(_ a: ToolArgs, _ id: String) async throws -> String {

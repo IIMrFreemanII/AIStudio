@@ -13,8 +13,9 @@ extension AppModel {
     /// in film order; a
     /// continuing shot starts from its predecessor's new clip, the others render at the same time.
     func requestClips(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
-        let missing = doc.movie.shots.filter { !$0.hasClip(by: doc.movie.videoEngine) }.map(\.id)
-        let ids = ids ?? (missing.isEmpty ? doc.movie.shots.map(\.id) : missing)
+        let scoped = doc.scopeShots
+        let missing = scoped.filter { !$0.hasClip(by: doc.movie.videoEngine) }.map(\.id)
+        let ids = ids ?? (missing.isEmpty ? scoped.map(\.id) : missing)
         let shots = doc.movie.shots.filter { ids.contains($0.id) }
         guard !shots.isEmpty else { return }
         let lacking = shots.filter { $0.selectedKeyframeFile == nil }.compactMap { number(of: $0, in: doc.movie) }
@@ -232,7 +233,7 @@ extension AppModel {
         doc.movie.shots[j].selectedVideo = take
         doc.movie.shots[j].trimStart = 0
         doc.movie.shots[j].trimEnd = 0
-        doc.movie.reopen(.video)
+        doc.reopen(.video, shot: id)
         saveMovie(doc)
     }
 

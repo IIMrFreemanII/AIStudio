@@ -156,7 +156,7 @@ extension SmokeTest {
         out = await call("movie_run", ["work": "shots"])
         check(await runner.value && !doc.movie.shots.isEmpty, "the shots came in after Run (\(doc.movie.shots.count))")
         out = await call("movie_approve", ["stage": "shots"])
-        check(doc.movie.approved.contains(.shots), "movie_approve approved the shots")
+        check(doc.movie.isApproved(.shots), "movie_approve approved the shots")
 
         // Edits: typed on its page, approval taken back, Revert puts it back.
         let before = doc.movie.shots[0].keyframePrompt

@@ -14,6 +14,9 @@ final class MovieDocument: Identifiable {
     /// The stage on screen (any unlocked one; defaults to the first not approved yet).
     var stage: MovieStage
 
+    /// The sequence the per-sequence pages show and make (nil: the whole film, all sequences at once).
+    var sequence: String?
+
     /// The job running for this movie, if any: one at a time.
     var job: MovieJob?
     var error: String?
@@ -30,8 +33,43 @@ final class MovieDocument: Identifiable {
         id = movie.id
         self.movie = movie
         self.saved = saved
-        stage = movie.currentStage == .edit && !movie.approved.contains(.edit) ? .edit : movie.currentStage
+        // A film in several sequences opens on the first one not finished.
+        let open = movie.sequences.count > 1
+            ? movie.sequences.first { !movie.isApproved(.sound, in: $0.id) }?.id ?? movie.sequences.first?.id : nil
+        sequence = open
+        stage = movie.currentStage(in: open)
         if !stage.isAvailable { stage = MovieStage.allCases.last(where: { $0.isAvailable && movie.isUnlocked($0) }) ?? .idea }
+    }
+
+    /// The sequence a stage is shown and made for: the chosen one for a per-sequence stage, nil (the film) otherwise.
+    func scope(_ stage: MovieStage) -> String? { stage.isPerSequence ? sequence : nil }
+
+    func isApproved(_ stage: MovieStage) -> Bool { movie.isApproved(stage, in: scope(stage)) }
+    func isUnlocked(_ stage: MovieStage) -> Bool { movie.isUnlocked(stage, in: scope(stage)) }
+    func approve(_ stage: MovieStage) { movie.approve(stage, in: scope(stage)) }
+    /// Takes back `stage` and what follows, in the chosen sequence (or the film).
+    func reopen(_ stage: MovieStage) { movie.reopen(stage, in: scope(stage)) }
+    /// Takes back `stage` and what follows in the sequence a shot is in.
+    func reopen(_ stage: MovieStage, shot id: UUID) {
+        guard stage.isPerSequence, let shot = movie.shots.first(where: { $0.id == id }) else { return reopen(stage) }
+        movie.reopen(stage, in: movie.sequence(of: shot))
+    }
+
+    /// The shots and scenes the per-sequence pages show: the chosen sequence's, or all.
+    var scopeShots: [Shot] { movie.shots(inSequence: sequence) }
+    var scopeScenes: [MovieScene] { movie.scenes(inSequence: sequence) }
+    /// The chosen sequence ("Sequence 2 · The storm"), for titles; nil for the whole film.
+    var scopeTitle: String? {
+        guard movie.sequences.count > 1, let sequence,
+              let i = movie.sequences.firstIndex(where: { $0.id == sequence }) else { return nil }
+        let q = movie.sequences[i]
+        return "Sequence \(i + 1)" + (q.title.isEmpty ? "" : " · \(q.title)")
+    }
+
+    /// Shows a sequence (nil: the film), staying on the page when it's open there.
+    func show(sequence new: String?) {
+        sequence = new
+        if !isUnlocked(stage) { stage = movie.currentStage(in: new) }
     }
 
     /// Changed since it was written (the modification date set on save doesn't count).

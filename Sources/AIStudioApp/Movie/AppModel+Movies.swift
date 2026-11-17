@@ -77,7 +77,15 @@ extension AppModel {
             doc.movie.modified = Date()
             try movieStore.save(doc.movie)
             doc.saved = doc.movie
-            reloadMovies()
+            // Just this movie's row: reading every movie back from disk after each render is slow with long films.
+            let m = doc.movie
+            let row = MovieSummary(id: m.id, title: m.title, stage: m.currentStage, shots: m.shots.count, modified: m.modified)
+            if let i = movieSummaries.firstIndex(where: { $0.id == m.id }) {
+                movieSummaries[i] = row
+                movieSummaries.sort { $0.modified > $1.modified }
+            } else {
+                reloadMovies()
+            }
         } catch {
             doc.error = "Couldn't save: \(error.localizedDescription)"
         }
@@ -257,7 +265,7 @@ extension AppModel {
                     try MoviePlanner.parseShots($0, scene: id, cast: cast)
                 }
                 MoviePlanner.replaceShots(shots, scene: id, in: &doc.movie)
-                doc.movie.reopen(.shots)
+                doc.movie.reopen(.shots, in: doc.movie.sequence(ofScene: id))
             }
             doc.stage = .shots
         }

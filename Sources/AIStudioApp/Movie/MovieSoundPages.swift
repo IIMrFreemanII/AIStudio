@@ -13,12 +13,13 @@ struct MovieVoicesPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.voices)
+        let approved = doc.isApproved(.voices)
         let speaking = model.speakingCharacters(doc.movie)
-        let lines = doc.movie.lineCount
-        let silent = doc.movie.silentLines
+        let lines = doc.movie.lineCount(in: doc.sequence)
+        let silent = doc.movie.silentLines(in: doc.sequence)
         let noVoice = speaking.filter { $0.selectedVoiceSampleFile == nil }.count
-        MoviePage(title: "Voices",
+        let index = doc.movie.shotIndex
+        MoviePage(title: "Voices" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
                   subtitle: lines == 0 ? "No one speaks in this film: nothing to voice."
                       : doc.movie.videoEngine.makesSound
                       ? "MiniMax H3 speaks the lines inside each clip, in the voice you choose for each character here."
@@ -64,7 +65,7 @@ struct MovieVoicesPage: View {
                 }
             }
             Button(approved ? "Approved" : "Approve Voices") {
-                doc.movie.approve(.voices)
+                doc.approve(.voices)
                 doc.stage = .video
             }
             .buttonStyle(.mg(.prominent))
@@ -74,7 +75,7 @@ struct MovieVoicesPage: View {
                     : "Locks the lines in; talking shots are animated from them next")
             .mgTestAnchor("movie-approve-voices")
         } content: {
-            VStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 22) {
                 if speaking.isEmpty {
                     MGEmptyState(symbol: "waveform", title: "No dialogue",
                                  message: "No shot has lines. Add them on the Shot List page, or approve and go on.")
@@ -88,8 +89,8 @@ struct MovieVoicesPage: View {
                     }
                     Text("LINES").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                         .padding(.top, 6)
-                    ForEach(Array(doc.movie.shots.enumerated()), id: \.element.id) { i, shot in
-                        if !shot.dialogue.isEmpty { ShotLinesCard(doc: doc, shot: shot, number: i + 1) }
+                    ForEach(doc.scopeShots.filter { !$0.dialogue.isEmpty }) { shot in
+                        ShotLinesCard(doc: doc, shot: shot, number: (index[shot.id] ?? 0) + 1)
                     }
                 }
             }
@@ -198,16 +199,20 @@ struct MovieSoundPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.sound)
-        let withFX = doc.movie.shots.filter { MovieSound.effectsPrompt($0) != nil }
+        let approved = doc.isApproved(.sound)
+        let shots = doc.scopeShots
+        let index = doc.movie.shotIndex
+        let withFX = shots.filter { MovieSound.effectsPrompt($0) != nil }
         let fxMissing = withFX.filter { $0.sounds.isEmpty }.count
-        let musicMissing = doc.movie.music.filter { $0.takes.isEmpty }.count
+        let sceneIDs = Set(doc.scopeScenes.map(\.id))
+        let music = doc.movie.music.filter { sceneIDs.contains($0.id) }
+        let musicMissing = music.filter { $0.takes.isEmpty }.count
         let h3 = doc.movie.videoEngine.makesSound
-        MoviePage(title: "Sound",
+        MoviePage(title: "Sound" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
                   subtitle: h3 ? "The clips carry their own effects (MiniMax H3); music for "
-                      + "\(doc.movie.music.count - musicMissing) of \(doc.movie.music.count) scenes, which is optional."
+                      + "\(music.count - musicMissing) of \(music.count) scenes, which is optional."
                       : "Effects for \(withFX.count - fxMissing) of \(withFX.count) shots, music for "
-                      + "\(doc.movie.music.count - musicMissing) of \(doc.movie.music.count) scenes. Both are optional.") {
+                      + "\(music.count - musicMissing) of \(music.count) scenes. Both are optional.") {
             if !h3 {
             Button(fxMissing > 0 ? "Make Effects…" : "Retake Effects…") { model.requestEffects(doc) }
                 .buttonStyle(.mg(fxMissing > 0 ? .prominent : .bordered))
@@ -218,11 +223,11 @@ struct MovieSoundPage: View {
             }
             Button(musicMissing > 0 ? "Make Music…" : "Retake Music…") { model.requestMusic(doc) }
                 .buttonStyle(.mg(musicMissing > 0 ? .prominent : .bordered))
-                .disabled(doc.isBusy || doc.movie.music.isEmpty)
+                .disabled(doc.isBusy || music.isEmpty)
                 .mgHelp("A piece of music for each scene without one (you see the cost first)")
                 .mgTestAnchor("movie-make-music")
             Button(approved ? "Approved" : "Approve Sound") {
-                doc.movie.approve(.sound)
+                doc.approve(.sound)
                 doc.stage = .edit
             }
             .buttonStyle(.mg(.prominent))
@@ -230,16 +235,16 @@ struct MovieSoundPage: View {
             .mgHelp("Locks the sound in; the edit mixes it with the voices under the picture")
             .mgTestAnchor("movie-approve-sound")
         } content: {
-            VStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 22) {
                 MixControls(doc: doc)
                 Text("MUSIC").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                 ForEach($doc.movie.music) { $cue in
-                    MusicCueCard(doc: doc, cue: $cue)
+                    if sceneIDs.contains(cue.id) { MusicCueCard(doc: doc, cue: $cue) }
                 }
                 Text("EFFECTS").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                     .padding(.top, 6)
-                ForEach(Array(doc.movie.shots.indices), id: \.self) { i in
-                    EffectsCard(doc: doc, shot: $doc.movie.shots[i], number: i + 1)
+                ForEach(shots.map(\.id), id: \.self) { id in
+                    if let i = index[id] { EffectsCard(doc: doc, shot: $doc.movie.shots[i], number: i + 1) }
                 }
             }
         }
@@ -269,7 +274,7 @@ struct MixControls: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .onChange(of: doc.movie.mix) { _, _ in
-            if doc.movie.approved.contains(.edit) { doc.movie.reopen(.edit) }
+            if doc.isApproved(.edit) { doc.reopen(.edit) }
         }
     }
 

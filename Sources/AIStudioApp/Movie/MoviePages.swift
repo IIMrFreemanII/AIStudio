@@ -43,17 +43,50 @@ struct MovieIdeaPage: View {
                             .frame(width: 200)
                     }
                     MovieField(label: "Length", hint: MovieFormat.time(Double(doc.movie.targetSeconds))) {
-                        MGSlider(value: Binding(get: { Double(doc.movie.targetSeconds) },
-                                                set: { doc.movie.targetSeconds = Int($0) }),
-                                 in: 30...300, step: 15)
+                        MGSlider(value: lengthBinding, in: 30...Double(MovieProject.maxTargetSeconds), step: 15)
                             .frame(width: 200)
+                            .mgTestAnchor("movie-length")
                     }
                 }
+                MovieBudgetField(doc: doc)
                 Text(MovieStyle.named(doc.movie.style).brief.capitalizedFirst)
                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 MovieField(label: "Writes with", hint: "a chat model on your GPU server") {
                     MovieLLMPicker(selection: $doc.movie.llm)
                 }
+            }
+        }
+    }
+}
+
+extension MovieIdeaPage {
+    /// The target length: 15 s steps up to 5 minutes, then whole minutes up to 20.
+    var lengthBinding: Binding<Double> {
+        Binding(get: { Double(doc.movie.targetSeconds) }, set: { (v: Double) in
+            let step: Double = v <= 300 ? 15 : 60
+            doc.movie.targetSeconds = Int((v / step).rounded() * step)
+        })
+    }
+}
+
+/// The movie's budget, and what the rest of it will roughly cost with its engines.
+struct MovieBudgetField: View {
+    @Environment(AppModel.self) private var model
+    @Bindable var doc: MovieDocument
+
+    var body: some View {
+        let estimate = FilmEstimate(movie: doc.movie, timings: GPUTimings.load(model.gpuTimingsURL))
+        MovieField(label: "Budget", hint: "cost sheets warn before a run would pass it") {
+            HStack(spacing: 10) {
+                Text("$").foregroundStyle(MG.secondaryLabel)
+                TextField("none", value: $doc.movie.budget, format: .number.precision(.fractionLength(0...2)))
+                    .frame(width: 90)
+                    .mgTestAnchor("movie-budget")
+                Text("≈ \(CostEstimate.format(estimate.usd)) to finish with these engines · \(CostEstimate.format(doc.movie.costSpent)) spent")
+                    .font(.mgFootnote)
+                    .foregroundStyle(doc.movie.wouldExceedBudget(estimate.usd) ? MG.warning : MG.secondaryLabel)
+                    .mgHelp(estimate.parts.map { "\($0.label): \(CostEstimate.format($0.usd))" }.joined(separator: "\n")
+                            + "\n\nFrom the learned GPU timings; each run's cost sheet has the real figure.")
             }
         }
     }
@@ -88,14 +121,14 @@ struct MovieScriptPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.script)
+        let approved = doc.isApproved(.script)
         MoviePage(title: "Script", subtitle: doc.movie.logline.isEmpty ? "Edit anything; the shot list is written from what's here." : doc.movie.logline) {
             Button("Rewrite…") { model.requestScript(doc) }.buttonStyle(.mg(.bordered)).disabled(doc.isBusy)
                 .mgHelp("Writes a new script from the idea: replaces the cast, the scenes and the shot list")
             Button(approved ? "Approved" : "Approve Script") {
-                doc.movie.approve(.script)
+                doc.approve(.script)
                 doc.stage = .shots
-                if doc.movie.shots.isEmpty { model.requestShots(doc) }
+                if doc.scopeShots.isEmpty { model.requestShots(doc) }
             }
             .buttonStyle(.mg(.prominent))
             .disabled(approved || doc.isBusy || doc.movie.scenes.isEmpty)
@@ -108,7 +141,12 @@ struct MovieScriptPage: View {
                 }
                 castSection
                 ForEach($doc.movie.scenes) { $scene in
-                    SceneEditor(scene: $scene, cast: doc.movie.characters) {
+                    if doc.movie.sequences.count > 1, doc.movie.sequences.first(where: { $0.id == scene.sequence }).map({ q in
+                        doc.movie.scenes.first { $0.sequence == q.id }?.id == scene.id
+                    }) == true, let i = doc.movie.sequences.firstIndex(where: { $0.id == scene.sequence }) {
+                        sequenceHeader(i)
+                    }
+                    SceneEditor(scene: $scene, cast: doc.movie.characters, sequences: doc.movie.sequences) {
                         doc.movie.scenes.removeAll { $0.id == scene.id }
                     }
                 }
@@ -116,16 +154,27 @@ struct MovieScriptPage: View {
                     let n = (doc.movie.scenes.count + 1)
                     var id = "s\(n)"
                     while doc.movie.scenes.contains(where: { $0.id == id }) { id += "b" }
-                    doc.movie.scenes.append(MovieScene(id: id, heading: "INT. NEW SCENE – DAY"))
+                    doc.movie.scenes.append(MovieScene(id: id, heading: "INT. NEW SCENE – DAY",
+                                                       sequence: doc.movie.scenes.last?.sequence ?? MovieSequence.wholeFilm.id))
                 } label: { Label("Add Scene", systemImage: "plus") }
                     .buttonStyle(.mg(.borderless))
             }
         }
-        .onChange(of: doc.movie.scenes) { _, _ in if doc.movie.approved.contains(.script) { doc.movie.reopen(.script) } }
+        .onChange(of: doc.movie.scenes) { _, _ in if doc.isApproved(.script) { doc.reopen(.script) } }
         // Names, looks and voices: a new sheet take (Cast) isn't a script edit.
         .onChange(of: doc.movie.characters.map(\.scriptPart)) { _, _ in
-            if doc.movie.approved.contains(.script), !doc.isBusy { doc.movie.reopen(.script) }
+            if doc.isApproved(.script), !doc.isBusy { doc.reopen(.script) }
         }
+    }
+
+    /// A sequence's title over its first scene (editable).
+    private func sequenceHeader(_ i: Int) -> some View {
+        HStack(spacing: 10) {
+            Text("SEQUENCE \(i + 1) · ACT \(doc.movie.sequences[i].act)")
+                .font(.mg(size: 10.5, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
+            TextField("Sequence title", text: $doc.movie.sequences[i].title).font(.mgHeadline)
+        }
+        .padding(.top, 6)
     }
 
     private var castSection: some View {
@@ -161,6 +210,7 @@ struct MovieScriptPage: View {
 private struct SceneEditor: View {
     @Binding var scene: MovieScene
     let cast: [MovieCharacter]
+    var sequences: [MovieSequence] = []
     let remove: () -> Void
 
     var body: some View {
@@ -168,6 +218,12 @@ private struct SceneEditor: View {
             HStack(spacing: 10) {
                 Text(scene.id.uppercased()).font(.mgMono).foregroundStyle(MG.tertiaryLabel)
                 TextField("INT. PLACE – TIME", text: $scene.heading).font(.mgHeadline)
+                if sequences.count > 1 {
+                    MGPicker(selection: $scene.sequence,
+                             options: sequences.enumerated().map { i, q in (q.id, "Sequence \(i + 1)") }, maxWidth: 130)
+                        .frame(width: 130)
+                        .mgHelp("The sequence this scene is made in")
+                }
                 Button(action: remove) { Image(systemName: "trash") }.buttonStyle(.mg(.icon)).mgHelp("Remove this scene")
             }
             TextField("Summary", text: $scene.summary).foregroundStyle(MG.secondaryLabel)
@@ -207,18 +263,25 @@ struct MovieShotsPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.shots)
-        let runtime = doc.movie.runtime
-        MoviePage(title: "Shot List",
-                  subtitle: doc.movie.shots.isEmpty ? "Each shot becomes one clip: a keyframe still, animated for its duration."
-                  : "\(doc.movie.shots.count) shots · \(MovieFormat.time(runtime)) of \(MovieFormat.time(Double(doc.movie.targetSeconds))) planned") {
-            Button(doc.movie.shots.isEmpty ? "Write Shot List…" : "Rewrite All…") { model.requestShots(doc) }
-                .buttonStyle(.mg(doc.movie.shots.isEmpty ? .prominent : .bordered))
-                .disabled(doc.isBusy || doc.movie.scenes.isEmpty)
+        let approved = doc.isApproved(.shots)
+        let shots = doc.scopeShots
+        let runtime = shots.reduce(0) { $0 + $1.duration }
+        let index = doc.movie.shotIndex
+        let scenes = doc.scopeScenes
+        let budgets = doc.sequence == nil ? [:] : MoviePlanner.sceneSeconds(for: doc.movie)
+        let aim = doc.sequence == nil ? Double(doc.movie.targetSeconds) : scenes.reduce(0) { $0 + (budgets[$1.id] ?? 0) }
+        MoviePage(title: "Shot List" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
+                  subtitle: shots.isEmpty ? "Each shot becomes one clip: a keyframe still, animated for its duration."
+                  : "\(shots.count) shots · \(MovieFormat.time(runtime)) of \(MovieFormat.time(aim)) planned") {
+            Button(shots.isEmpty ? "Write Shot List…" : "Rewrite All…") {
+                model.requestShots(doc, scenes: doc.sequence == nil ? nil : scenes.map(\.id))
+            }
+                .buttonStyle(.mg(shots.isEmpty ? .prominent : .bordered))
+                .disabled(doc.isBusy || scenes.isEmpty)
                 .mgTestAnchor("movie-write-shots")
-            if !doc.movie.shots.isEmpty {
+            if !shots.isEmpty {
                 Button(approved ? "Approved" : "Approve Shot List") {
-                    doc.movie.approve(.shots)
+                    doc.approve(.shots)
                 }
                 .buttonStyle(.mg(.prominent))
                 .disabled(approved || doc.isBusy)
@@ -226,19 +289,20 @@ struct MovieShotsPage: View {
                 .mgTestAnchor("movie-approve-shots")
             }
         } content: {
-            VStack(alignment: .leading, spacing: 26) {
-                if doc.movie.shots.isEmpty && !doc.isBusy {
+            LazyVStack(alignment: .leading, spacing: 26) {
+                if shots.isEmpty && !doc.isBusy {
                     MGEmptyState(symbol: "rectangle.split.3x3", title: "No shots yet",
                                  message: "Write the shot list: the model breaks each scene into shots, one request per scene.")
                         .frame(maxWidth: .infinity, minHeight: 240)
                 }
-                ForEach(doc.movie.scenes) { scene in
-                    let ids = doc.movie.shots(in: scene.id).map(\.id)
+                ForEach(scenes) { scene in
+                    let sceneShots = shots.filter { $0.scene == scene.id }
+                    let ids = sceneShots.map(\.id)
                     if !ids.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Text(scene.heading).font(.mgHeadline)
-                                Text("\(ids.count) shots · \(MovieFormat.time(doc.movie.shots(in: scene.id).reduce(0) { $0 + $1.duration }))")
+                                Text("\(ids.count) shots · \(MovieFormat.time(sceneShots.reduce(0) { $0 + $1.duration }))")
                                     .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                                 Spacer()
                                 Button("Rewrite Scene…") { model.requestShots(doc, scenes: [scene.id]) }
@@ -248,8 +312,8 @@ struct MovieShotsPage: View {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12, alignment: .top)],
                                       alignment: .leading, spacing: 12) {
                                 ForEach(ids, id: \.self) { id in
-                                    if let binding = shotBinding(id) {
-                                        ShotCard(shot: binding, number: shotNumber(id), cast: doc.movie.characters,
+                                    if let binding = shotBinding(id, index: index) {
+                                        ShotCard(shot: binding, number: (index[id] ?? 0) + 1, cast: doc.movie.characters,
                                                  keyframe: binding.wrappedValue.selectedKeyframeFile.map {
                                                      model.movieStore.url(doc.id, relative: $0)
                                                  },
@@ -263,20 +327,21 @@ struct MovieShotsPage: View {
             }
         }
         // The plan, not its takes: a keyframe made later isn't a shot list edit.
-        .onChange(of: doc.movie.shots.map(\.planPart)) { _, _ in
-            if doc.movie.approved.contains(.shots), !doc.isBusy { doc.movie.reopen(.shots) }
+        .onChange(of: shots.map(\.planPart)) { _, _ in
+            if doc.isApproved(.shots), !doc.isBusy { doc.reopen(.shots) }
         }
     }
 
-    private func shotBinding(_ id: UUID) -> Binding<Shot>? {
-        guard doc.movie.shots.contains(where: { $0.id == id }) else { return nil }
-        return Binding(get: { doc.movie.shots.first { $0.id == id } ?? Shot(scene: "") },
-                       set: { new in
-                           if let i = doc.movie.shots.firstIndex(where: { $0.id == id }) { doc.movie.shots[i] = new }
-                       })
+    /// A shot by id; `index` is where it was when the page was drawn (checked, since shots move).
+    private func shotBinding(_ id: UUID, index: [UUID: Int]) -> Binding<Shot>? {
+        guard index[id] != nil else { return nil }
+        func at() -> Int? {
+            if let i = index[id], doc.movie.shots.indices.contains(i), doc.movie.shots[i].id == id { return i }
+            return doc.movie.shots.firstIndex { $0.id == id }
+        }
+        return Binding(get: { at().map { doc.movie.shots[$0] } ?? Shot(scene: "") },
+                       set: { new in if let i = at() { doc.movie.shots[i] = new } })
     }
-
-    private func shotNumber(_ id: UUID) -> Int { (doc.movie.shots.firstIndex { $0.id == id } ?? 0) + 1 }
 
     /// Moves a shot within its scene.
     private func move(_ id: UUID, by offset: Int) {
