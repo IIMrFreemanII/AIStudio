@@ -289,5 +289,11 @@ extension Shot {
 
 extension MovieProject {
     /// Every shot has a chosen clip.
-    public var videosAreReady: Bool { !shots.isEmpty && shots.allSatisfy { $0.selectedVideoFile != nil } }
+    public var videosAreReady: Bool { videosAreReady(in: nil) }
+
+    /// Every shot of a sequence (nil: the film) has a chosen clip.
+    public func videosAreReady(in sequence: String?) -> Bool {
+        let s = shots(inSequence: sequence)
+        return !s.isEmpty && s.allSatisfy { $0.selectedVideoFile != nil }
+    }
 }

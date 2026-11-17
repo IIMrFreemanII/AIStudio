@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreGraphics
 import Foundation
@@ -44,6 +45,22 @@ extension SmokeTest {
         // Estimates from the default job times: the fake server's jobs take no time, and what earlier runs learned
         // from them would make every task look as cheap as the next.
         try? FileManager.default.removeItem(at: model.gpuTimingsURL)
+
+        /// With AISTUDIO_SMOKE_SNAPSHOTS=<folder>: the main window as it is, in dark and in light.
+        func snapshots(_ name: String) async {
+            guard let dir = ProcessInfo.processInfo.environment["AISTUDIO_SMOKE_SNAPSHOTS"],
+                  let w = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0.frame.width > 600 }) else { return }
+            let old = w.appearance
+            for (scheme, look) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+                w.appearance = NSAppearance(named: look)
+                try? await Task.sleep(for: .milliseconds(700))
+                guard let v = w.contentView, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { continue }
+                v.cacheDisplay(in: v.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: dir).appendingPathComponent("movie-\(name)-\(scheme).png"))
+            }
+            w.appearance = old
+        }
 
         func waitForGate(_ doc: MovieDocument) async {
             for _ in 0..<100 where doc.pendingGate == nil && doc.error == nil { try? await Task.sleep(for: .milliseconds(100)) }
@@ -147,7 +164,7 @@ extension SmokeTest {
               "a retake adds a take and keeps the chosen one")
         doc.movie.approve(.keyframes)
         model.selectKeyframe(doc, shot: first.id, take: doc.movie.shots[0].keyframes[1].id)
-        check(!doc.movie.approved.contains(.keyframes) && doc.movie.approved.contains(.cast),
+        check(!doc.movie.isApproved(.keyframes) && doc.movie.isApproved(.cast),
               "choosing another take reopens Keyframes only")
         doc.movie.approve(.keyframes)
         check(doc.movie.currentStage == .voices && !doc.movie.isUnlocked(.video), "Voices come next, before the shots")
@@ -499,6 +516,42 @@ extension SmokeTest {
             } else {
                 check(false, "no cost gate for the retakes: \(doc.error ?? "")")
             }
+        }
+        // A long film is made a sequence at a time: split this one in two, and each goes on by itself.
+        if doc.movie.scenes.count >= 2 {
+            let last = doc.movie.scenes[doc.movie.scenes.count - 1].id
+            doc.movie.sequences = [MovieSequence(id: "q1", title: "Opening"), MovieSequence(id: "q2", title: "Ending", act: 3)]
+            doc.movie.scenes[doc.movie.scenes.count - 1].sequence = "q2"
+            for s in MovieStage.allCases where s.isPerSequence { doc.movie.approve(s, in: "q2") }
+            check(doc.movie.isApproved(.sound) && doc.movie.editIsApprovable, "split in two sequences, both approved")
+            doc.show(sequence: "q2")
+            let q2 = doc.movie.shots(in: last).map(\.id)
+            check(doc.scopeShots.map(\.id) == q2 && !q2.isEmpty, "sequence 2 shows its own \(q2.count) shots")
+            doc.reopen(.keyframes)
+            check(doc.movie.isApproved(.keyframes, in: "q1") && !doc.movie.isApproved(.keyframes, in: "q2")
+                  && doc.movie.isApproved(.cast) && !doc.movie.isApproved(.edit) && !doc.movie.editIsApprovable
+                  && doc.movie.currentStage(in: "q2") == .keyframes,
+                  "reopening sequence 2's keyframes leaves sequence 1 and the cast: \(doc.movie.sequenceApproved)")
+            doc.stage = .keyframes
+            await snapshots("sequences")
+            model.requestKeyframes(doc)
+            await waitForGate(doc)
+            if let g = doc.pendingGate {
+                check(g.estimate.title.contains("Sequence 2") && g.estimate.lines.reduce(0) { $0 + $1.count } == q2.count,
+                      "its cost sheet covers only sequence 2: \(g.estimate.title), \(g.estimate.lines.map(\.count))")
+                doc.pendingGate = nil
+            } else {
+                check(false, "no cost gate for sequence 2's keyframes: \(doc.error ?? "")")
+            }
+            doc.job = nil
+            for s in [MovieStage.keyframes, .voices, .video, .sound] { doc.approve(s) }
+            check(doc.movie.editIsApprovable && doc.movie.isUnlocked(.edit), "approved again, the edit can be")
+            doc.movie.budget = 0.5
+            doc.stage = .idea
+            await snapshots("budget")
+            doc.movie.budget = nil
+            doc.show(sequence: nil)
+            doc.stage = .edit
         }
         doc.movie.approve(.edit)
 

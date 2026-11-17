@@ -160,7 +160,7 @@ enum StudioTools {
                        title: { _ in "Made a new movie" }) { a, id in ToolOutput(try await s.movieCreate(a, id)) },
             StudioTool("movie_get", effect: .read,
                        "Reads part of a movie: overview (stages and what's approved), script (characters, scenes, dialogue), shots (every shot's prompts, lines and takes), cast (looks, voices, sheets) or music.",
-                       p(["movie": movieArg, "part": ("string", "overview | script | shots | cast | music")]),
+                       p(["movie": movieArg, "part": ("string", "overview | script | shots | cast | music"), "sequence": ("string", "For a film in sequences: its number (1…) or id; per-sequence stages (shots, keyframes, voices, clips, sound) act on it (default: the one shown)")]),
                        title: { a in "Read the \(a.string("part") ?? "overview")" }) { a, _ in ToolOutput(try await s.movieGet(a)) },
             StudioTool("movie_edit",
                        "Types new text into a movie field, on its page: title, idea, style, logline; a shot's keyframe_prompt, motion_prompt, sfx or line (shot + line); a character's look or voice; a scene's music_prompt. Changing approved work takes back that stage's approval (and later ones); the result says which.",
@@ -172,7 +172,7 @@ enum StudioTools {
                 ToolOutput(try await s.movieEdit(a, id))
             },
             StudioTool("movie_run",
-                       "Starts a stage's work: script, shots, cast (character sheets), keyframes, voices (voice samples), lines (spoken dialogue), clips, effects or music. Pass shots / characters / scenes to make (or retake) only those. Paid work opens the app's cost sheet and waits: only the user can press Run there. Then it waits for the work to finish and says what was made.",
+                       "Starts a stage's work (a long film's per-sequence stages for one sequence at a time): script, shots, cast (character sheets), keyframes, voices (voice samples), lines (spoken dialogue), clips, effects or music. Pass shots / characters / scenes to make (or retake) only those. Paid work opens the app's cost sheet and waits: only the user can press Run there. Then it waits for the work to finish and says what was made.",
                        .object([
                            "type": .string("object"),
                            "properties": .object([
@@ -181,6 +181,7 @@ enum StudioTools {
                                "shots": .object(["type": .string("array"), "items": .object(["type": .string("integer")]), "description": .string("Shot numbers to (re)make (optional)")]),
                                "characters": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "description": .string("Character ids (optional)")]),
                                "scenes": .object(["type": .string("array"), "items": .object(["type": .string("string")]), "description": .string("Scene ids (optional)")]),
+                               "sequence": .object(["type": .string("string"), "description": .string("For a film in sequences: the sequence's number (1…) or id to make it for (default: the one shown)")]),
                            ]),
                            "required": .array([.string("work")]),
                        ]),
@@ -193,7 +194,7 @@ enum StudioTools {
                        title: { a in "Chose \(a.string("kind") ?? "a") take \(a.int("take") ?? 0)" }) { a, id in ToolOutput(try await s.chooseTake(a, id)) },
             StudioTool("movie_approve",
                        "Approves a movie stage (script, shots, cast, keyframes, voices, clips, sound, edit), which unlocks the next page. Approve only after checking the work.",
-                       p(["movie": movieArg, "stage": ("string", "The stage")], required: ["stage"]),
+                       p(["movie": movieArg, "stage": ("string", "The stage"), "sequence": ("string", "For a film in sequences: its number (1…) or id; per-sequence stages (shots, keyframes, voices, clips, sound) act on it (default: the one shown)")], required: ["stage"]),
                        title: { a in "Approved \(a.string("stage") ?? "")" }) { a, id in ToolOutput(try await s.approve(a, id)) },
             StudioTool("movie_delete_take", effect: .destructive,
                        "Deletes a take (its file goes to the Trash): kind keyframe, clip or effects (shot), or sheet (character). The user approves each delete.",

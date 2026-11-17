@@ -10,7 +10,7 @@ struct MovieCastPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.cast)
+        let approved = doc.isApproved(.cast)
         let missing = doc.movie.characters.filter { $0.sheets.isEmpty }.count
         MoviePage(title: "Cast",
                   subtitle: "One reference sheet per character, made from their look. Keyframes copy faces and clothes from the sheet you choose.") {
@@ -30,7 +30,7 @@ struct MovieCastPage: View {
             .buttonStyle(.mg(.borderless))
             .mgHelp("Opens the graph sheets are made with as a workflow; this movie uses your edited copy")
             Button(approved ? "Approved" : "Approve Cast") {
-                doc.movie.approve(.cast)
+                doc.approve(.cast)
                 doc.stage = .keyframes
             }
             .buttonStyle(.mg(.prominent))
@@ -92,7 +92,7 @@ private struct CastCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .onChange(of: character.look) { _, _ in
-            if doc.movie.approved.contains(.cast), !doc.isBusy { doc.movie.reopen(.cast) }
+            if doc.isApproved(.cast), !doc.isBusy { doc.reopen(.cast) }
         }
         .mgTestAnchor("movie-cast-card")
         .mgScrollTarget("movie-cast:\(character.id)")
@@ -112,16 +112,19 @@ struct MovieKeyframesPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.keyframes)
-        let missing = doc.movie.shots.filter { $0.keyframes.isEmpty }.count
-        let done = doc.movie.shots.count - missing
-        MoviePage(title: "Keyframes",
-                  subtitle: "\(done) of \(doc.movie.shots.count) shots have a keyframe. Each is the still its clip starts from.") {
+        let approved = doc.isApproved(.keyframes)
+        let shots = doc.scopeShots
+        let missing = shots.filter { $0.keyframes.isEmpty }.count
+        let done = shots.count - missing
+        let ready = doc.movie.keyframesAreReady(in: doc.sequence)
+        let index = doc.movie.shotIndex
+        MoviePage(title: "Keyframes" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
+                  subtitle: "\(done) of \(shots.count) shots have a keyframe. Each is the still its clip starts from.") {
             Button(missing > 0 ? (done == 0 ? "Make Keyframes…" : "Make Missing Keyframes…") : "Retake All…") {
                 model.requestKeyframes(doc)
             }
             .buttonStyle(.mg(missing > 0 ? .prominent : .bordered))
-            .disabled(doc.isBusy || doc.movie.shots.isEmpty)
+            .disabled(doc.isBusy || shots.isEmpty)
             .mgHelp(missing > 0 ? "One keyframe for each shot without one (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-keyframes")
@@ -131,24 +134,24 @@ struct MovieKeyframesPage: View {
             .buttonStyle(.mg(.borderless))
             .mgHelp("Opens the graph keyframes with characters are made with as a workflow; this movie uses your edited copy")
             Button(approved ? "Approved" : "Approve Keyframes") {
-                doc.movie.approve(.keyframes)
+                doc.approve(.keyframes)
             }
             .buttonStyle(.mg(.prominent))
-            .disabled(approved || doc.isBusy || !doc.movie.keyframesAreReady)
-            .mgHelp(doc.movie.keyframesAreReady ? "Locks the keyframes in; the shots are animated from them next"
+            .disabled(approved || doc.isBusy || !ready)
+            .mgHelp(ready ? "Locks the keyframes in; the shots are animated from them next"
                     : "Every shot needs a chosen keyframe first")
             .mgTestAnchor("movie-approve-keyframes")
         } content: {
-            VStack(alignment: .leading, spacing: 26) {
-                ForEach(doc.movie.scenes) { scene in
-                    let ids = doc.movie.shots(in: scene.id).map(\.id)
+            LazyVStack(alignment: .leading, spacing: 26) {
+                ForEach(doc.scopeScenes) { scene in
+                    let ids = shots.filter { $0.scene == scene.id }.map(\.id)
                     if !ids.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(scene.heading).font(.mgHeadline)
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12, alignment: .top)],
                                       alignment: .leading, spacing: 12) {
                                 ForEach(ids, id: \.self) { id in
-                                    if let i = doc.movie.shots.firstIndex(where: { $0.id == id }) {
+                                    if let i = index[id] {
                                         KeyframeCard(doc: doc, shot: $doc.movie.shots[i], number: i + 1)
                                     }
                                 }
@@ -219,7 +222,9 @@ private struct KeyframeCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .onChange(of: shot.keyframePrompt) { _, _ in
-            if doc.movie.approved.contains(.keyframes), !doc.isBusy { doc.movie.reopen(.keyframes) }
+            if doc.movie.isApproved(.keyframes, in: doc.movie.sequence(of: shot)), !doc.isBusy {
+                doc.reopen(.keyframes, shot: shot.id)
+            }
         }
         .mgTestAnchor("movie-keyframe-card")
         .mgScrollTarget("movie-keyframe:\(shot.id.uuidString)")

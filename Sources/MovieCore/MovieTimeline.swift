@@ -115,9 +115,17 @@ public struct MovieTimeline: Sendable, Equatable {
             }
         }
         let ramp = Self.duckRamp
+        // Only the spans near the sound matter; they're sorted and apart, so the ones around a time are found by
+        // binary search (a long film has thousands).
+        spans = spans.filter { $0.1 + ramp > sound.start && $0.0 - ramp < sound.end }
         func duckFactor(_ t: Double) -> Double {
+            var lo = 0, hi = spans.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if spans[mid].1 + ramp <= t { lo = mid + 1 } else { hi = mid }
+            }
             var f = 1.0
-            for (a, b) in spans {
+            for (a, b) in spans[lo..<min(spans.count, lo + 2)] {
                 if t >= a && t <= b { f = min(f, duck) }
                 else if t > a - ramp && t < a { f = min(f, 1 + (duck - 1) * (t - (a - ramp)) / ramp) }
                 else if t > b && t < b + ramp { f = min(f, duck + (1 - duck) * (t - b) / ramp) }
@@ -192,12 +200,14 @@ public struct MovieTimeline: Sendable, Equatable {
         func length(_ take: Take) -> Double? { take.seconds ?? durations[take.file] }
         var out: [Sound] = []
         var subs: [Subtitle] = []
+        let index = movie.shotIndex
         for c in clips {
-            guard let shot = movie.shots.first(where: { $0.id == c.shot }) else { continue }
+            guard let i = index[c.shot] else { continue }
+            let shot = movie.shots[i]
+            let n = i + 1
             if movie.videoEngine.makesSound {
                 // The clip's own sound (its lines, effects and ambience), and its lines as subtitles where the clip
                 // speaks them (estimated when its voice hasn't been looked for).
-                let n = (movie.shots.firstIndex { $0.id == shot.id } ?? 0) + 1
                 out.append(Sound(id: "clip-\(shot.id.uuidString)", kind: .clip, file: c.file, label: "Shot \(n)",
                                  start: c.start, offset: c.trimStart, duration: c.duration, gain: movie.mix.dialogue,
                                  fadeIn: max(c.fadeIn, 0.02), fadeOut: max(c.fadeOut, 0.05), track: 0))
@@ -228,7 +238,6 @@ public struct MovieTimeline: Sendable, Equatable {
             if let take = shot.sounds.first(where: { $0.id == shot.selectedSound }), let len = length(take) {
                 let d = min(c.duration, len - c.trimStart)
                 if d > 0.05 {
-                    let n = (movie.shots.firstIndex { $0.id == shot.id } ?? 0) + 1
                     out.append(Sound(id: "fx-\(shot.id.uuidString)", kind: .effects, file: take.file, label: "Shot \(n)",
                                      start: c.start, offset: c.trimStart, duration: d,
                                      gain: movie.mix.effects * Self.linear(take.gainDB), fadeIn: max(c.fadeIn, 0.05),
@@ -236,10 +245,16 @@ public struct MovieTimeline: Sendable, Equatable {
                 }
             }
         }
+        var sceneSpan: [String: (Double, Double)] = [:]
+        for c in clips {
+            guard let i = index[c.shot] else { continue }
+            let scene = movie.shots[i].scene
+            let span = sceneSpan[scene]
+            sceneSpan[scene] = (min(span?.0 ?? c.start, c.start), max(span?.1 ?? c.end, c.end))
+        }
         for cue in movie.music {
             guard let take = cue.selectedTake, let len = length(take) else { continue }
-            let sceneClips = clips.filter { c in movie.shots.first { $0.id == c.shot }?.scene == cue.id }
-            guard let first = sceneClips.map(\.start).min(), let last = sceneClips.map(\.end).max() else { continue }
+            guard let (first, last) = sceneSpan[cue.id] else { continue }
             let d = min(last - first, len)
             guard d > 0 else { continue }
             let heading = movie.scenes.first { $0.id == cue.id }?.heading ?? cue.id
@@ -285,10 +300,22 @@ public struct MovieTimeline: Sendable, Equatable {
         }
         let times = cuts.filter { $0 >= 0 && $0 <= duration }.sorted()
         var out: [Segment] = []
+        // Clips start and end in order (a crossfade overlaps only the clip before), so the clips showing at a time
+        // are a run ending at the last one started: found by binary search, then walking back.
         for (a, b) in zip(times, times.dropFirst()) where b - a > 1e-6 {
             let mid = (a + b) / 2
-            let active = clips.indices.filter { clips[$0].start <= mid && mid < clips[$0].end }
-                .sorted { clips[$0].start > clips[$1].start }
+            var lo = 0, hi = clips.count
+            while lo < hi {
+                let m = (lo + hi) / 2
+                if clips[m].start <= mid { lo = m + 1 } else { hi = m }
+            }
+            var active: [Int] = []
+            var j = lo - 1
+            while j >= 0, mid < clips[j].end {
+                active.append(j)
+                j -= 1
+            }
+            active.sort { clips[$0].start > clips[$1].start }
             out.append(Segment(start: a, end: b, layers: active.map {
                 Segment.Layer(clip: $0, opacityFrom: clips[$0].opacity(at: a), opacityTo: clips[$0].opacity(at: b))
             }))

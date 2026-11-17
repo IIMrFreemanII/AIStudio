@@ -14,19 +14,22 @@ struct MovieClipsPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.video)
+        let approved = doc.isApproved(.video)
         let engine = doc.movie.videoEngine
-        let missing = doc.movie.shots.filter { !$0.hasClip(by: engine) }.count
-        let done = doc.movie.shots.count - missing
-        MoviePage(title: "Shots",
+        let shots = doc.scopeShots
+        let index = doc.movie.shotIndex
+        let ready = doc.movie.videosAreReady(in: doc.sequence)
+        let missing = shots.filter { !$0.hasClip(by: engine) }.count
+        let done = shots.count - missing
+        MoviePage(title: "Shots" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
                   subtitle: engine == .wan22
-                      ? "\(done) of \(doc.movie.shots.count) shots have a clip. Each is animated from its keyframe."
-                      : "\(done) of \(doc.movie.shots.count) shots have a MiniMax H3 clip, with its own sound.") {
+                      ? "\(done) of \(shots.count) shots have a clip. Each is animated from its keyframe."
+                      : "\(done) of \(shots.count) shots have a MiniMax H3 clip, with its own sound.") {
             Button(missing > 0 ? (done == 0 ? "Make Clips…" : "Make Missing Clips…") : "Retake All…") {
                 model.requestClips(doc)
             }
             .buttonStyle(.mg(missing > 0 ? .prominent : .bordered))
-            .disabled(doc.isBusy || doc.movie.shots.isEmpty)
+            .disabled(doc.isBusy || shots.isEmpty)
             .mgHelp(missing > 0 ? "One clip for each shot without one from this engine (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-clips")
@@ -78,25 +81,25 @@ struct MovieClipsPage: View {
                 }
             }
             Button(approved ? "Approved" : "Approve Shots") {
-                doc.movie.approve(.video)
+                doc.approve(.video)
                 doc.stage = .sound
             }
             .buttonStyle(.mg(.prominent))
-            .disabled(approved || doc.isBusy || !doc.movie.videosAreReady)
-            .mgHelp(doc.movie.videosAreReady ? "Locks the clips in; their sound effects and music come next"
+            .disabled(approved || doc.isBusy || !ready)
+            .mgHelp(ready ? "Locks the clips in; their sound effects and music come next"
                     : "Every shot needs a chosen clip first")
             .mgTestAnchor("movie-approve-clips")
         } content: {
-            VStack(alignment: .leading, spacing: 26) {
-                ForEach(doc.movie.scenes) { scene in
-                    let ids = doc.movie.shots(in: scene.id).map(\.id)
+            LazyVStack(alignment: .leading, spacing: 26) {
+                ForEach(doc.scopeScenes) { scene in
+                    let ids = shots.filter { $0.scene == scene.id }.map(\.id)
                     if !ids.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text(scene.heading).font(.mgHeadline)
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12, alignment: .top)],
                                       alignment: .leading, spacing: 12) {
                                 ForEach(ids, id: \.self) { id in
-                                    if let i = doc.movie.shots.firstIndex(where: { $0.id == id }) {
+                                    if let i = index[id] {
                                         ClipCard(doc: doc, shot: $doc.movie.shots[i], number: i + 1)
                                     }
                                 }
@@ -176,7 +179,9 @@ private struct ClipCard: View {
         .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .onChange(of: shot.motionPrompt) { _, _ in
-            if doc.movie.approved.contains(.video), !doc.isBusy { doc.movie.reopen(.video) }
+            if doc.movie.isApproved(.video, in: doc.movie.sequence(of: shot)), !doc.isBusy {
+                doc.reopen(.video, shot: shot.id)
+            }
         }
         .mgTestAnchor("movie-clip-card")
         .mgScrollTarget("movie-clip:\(shot.id.uuidString)")
@@ -258,13 +263,24 @@ struct MovieEditPage: View {
             + ["mix|\(m.dialogue)|\(m.effects)|\(m.music)|\(m.duck)"]
     }
 
-    /// The line being spoken at the playhead.
+    /// The line being spoken at the playhead (the subtitles are in order: binary search).
     private var subtitle: String? {
-        timeline?.subtitles.last { $0.start <= position && position < $0.end }?.text
+        guard let subs = timeline?.subtitles, !subs.isEmpty else { return nil }
+        var lo = 0, hi = subs.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if subs[mid].start <= position { lo = mid + 1 } else { hi = mid }
+        }
+        var i = lo - 1
+        while i >= 0, i >= lo - 3 {
+            if position < subs[i].end { return subs[i].text }
+            i -= 1
+        }
+        return nil
     }
 
     var body: some View {
-        let approved = doc.movie.approved.contains(.edit)
+        let approved = doc.isApproved(.edit)
         MoviePage(title: "Edit",
                   subtitle: "Drag clips to reorder, drag their edges to trim, choose how each starts. Then export the film.") {
             MGSegmentedPicker(selection: $codec, options: MovieComposer.Codec.allCases.map { ($0, $0.title) })
@@ -284,10 +300,11 @@ struct MovieEditPage: View {
                     .buttonStyle(.mg(.icon))
                     .mgHelp("Show \(last.lastPathComponent) in Finder")
             }
-            Button(approved ? "Approved" : "Approve Edit") { doc.movie.approve(.edit) }
+            Button(approved ? "Approved" : "Approve Edit") { doc.approve(.edit) }
                 .buttonStyle(.mg(.bordered))
-                .disabled(approved || doc.isBusy || (timeline?.clips.isEmpty ?? true))
-                .mgHelp("Marks the cut as final")
+                .disabled(approved || doc.isBusy || (timeline?.clips.isEmpty ?? true) || !doc.movie.editIsApprovable)
+                .mgHelp(doc.movie.editIsApprovable ? "Marks the cut as final"
+                        : "Every sequence's sound must be approved first")
         } content: {
             VStack(alignment: .leading, spacing: 14) {
                 VideoPlayer(player: player)
@@ -328,7 +345,7 @@ struct MovieEditPage: View {
                     }
                     MovieTimelineView(doc: doc, timeline: timeline, scale: scale, position: position,
                                       selected: $selected, seek: seek)
-                    if let id = selected, let i = doc.movie.shots.firstIndex(where: { $0.id == id }),
+                    if let id = selected, let i = doc.movie.shotIndex[id],
                        let clip = timeline.clips.first(where: { $0.shot == id }) {
                         ClipInspector(doc: doc, shot: $doc.movie.shots[i], number: i + 1, clip: clip)
                     }
@@ -381,7 +398,11 @@ struct MovieEditPage: View {
         player.play()
     }
 
-    private func clockText(_ s: Double) -> String { String(format: "%d:%04.1f", Int(s) / 60, s.truncatingRemainder(dividingBy: 60)) }
+    private func clockText(_ s: Double) -> String {
+        let sec = s.truncatingRemainder(dividingBy: 60)
+        if s >= 3600 { return String(format: "%d:%02d:%04.1f", Int(s) / 3600, Int(s) / 60 % 60, sec) }
+        return String(format: "%d:%04.1f", Int(s) / 60, sec)
+    }
 }
 
 /// The clips on one lane, as long as they play (crossfades overlap), with a ruler and the playhead.
@@ -397,6 +418,9 @@ private struct MovieTimelineView: View {
     private let laneHeight: CGFloat = 64
     private let rulerHeight: CGFloat = 18
     private let soundHeight: CGFloat = 18
+    /// The scrolled-to part of the timeline (points): only what's in it (and a screen either side) is drawn, so a
+    /// long film's hundreds of clips don't all lay out on every playhead tick.
+    @State private var viewport: ClosedRange<CGFloat> = 0...2000
 
     /// The sound lanes under the picture: dialogue, effects, music, each as many rows as it has overlaps.
     private var soundRows: [(kind: MovieTimeline.SoundKind, track: Int)] {
@@ -411,13 +435,21 @@ private struct MovieTimelineView: View {
     var body: some View {
         let width = max(CGFloat(timeline.duration * scale) + 80, 300)
         let rows = soundRows
+        let index = doc.movie.shotIndex
+        let span = viewport.upperBound - viewport.lowerBound
+        let lo = Double(max(0, viewport.lowerBound - span)) / scale
+        let hi = Double(viewport.upperBound + span) / scale
         ScrollView(.horizontal, showsIndicators: true) {
             ZStack(alignment: .topLeading) {
-                ruler(width: width)
+                Color.clear.frame(width: width, height: rulerHeight)
                     .contentShape(Rectangle())
                     .onTapGesture { loc in seek(max(0, min(timeline.duration, loc.x / scale))) }
-                ForEach(Array(timeline.clips.enumerated()), id: \.element.id) { i, clip in
-                    if let n = doc.movie.shots.firstIndex(where: { $0.id == clip.shot }) {
+                ruler(from: lo, to: min(hi, timeline.duration + 1))
+                    .offset(x: CGFloat(lo * scale))
+                    .allowsHitTesting(false)
+                ForEach(Array(timeline.clips.enumerated()).filter { $0.element.end >= lo && $0.element.start <= hi },
+                        id: \.element.id) { i, clip in
+                    if let n = index[clip.shot] {
                         TimelineClipView(doc: doc, clip: clip, number: n + 1, scale: scale, height: laneHeight,
                                          selected: selected == clip.shot,
                                          open: { model.viewShotClips(doc, shot: clip.shot) }) {
@@ -436,7 +468,7 @@ private struct MovieTimelineView: View {
                         model.moveShot(doc, id, before: nil)
                         return true
                     }
-                ForEach(timeline.sounds) { sound in
+                ForEach(timeline.sounds.filter { $0.end >= lo && $0.start <= hi }) { sound in
                     if let row = rows.firstIndex(where: { $0.kind == sound.kind && $0.track == sound.track }) {
                         TimelineSoundView(sound: sound, scale: scale, height: soundHeight) {
                             model.openMovieViewer(doc, files: [sound.file], titles: [sound.label], index: 0)
@@ -452,25 +484,47 @@ private struct MovieTimelineView: View {
             }
             .frame(width: width, height: laneHeight + rulerHeight + 14 + soundsHeight, alignment: .topLeading)
             .padding(.bottom, 6)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: TimelineOffsetKey.self, value: -g.frame(in: .named("movie-timeline")).minX)
+            })
+        }
+        .coordinateSpace(name: "movie-timeline")
+        .background(GeometryReader { g in
+            Color.clear.onAppear { viewport = viewport.lowerBound...(viewport.lowerBound + g.size.width) }
+                .onChange(of: g.size.width) { _, w in viewport = viewport.lowerBound...(viewport.lowerBound + w) }
+        })
+        .onPreferenceChange(TimelineOffsetKey.self) { x in
+            let w = viewport.upperBound - viewport.lowerBound
+            // Redrawn only when the view moved a good part of a screen.
+            if abs(x - viewport.lowerBound) > w / 4 { viewport = max(0, x)...(max(0, x) + w) }
         }
         .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
         .mgTestAnchor("movie-timeline")
     }
 
-    private func ruler(width: CGFloat) -> some View {
-        Canvas { ctx, size in
-            let step: Double = scale >= 120 ? 1 : scale >= 50 ? 2 : 5
-            var t = 0.0
-            while t * scale <= Double(size.width) {
-                let x = CGFloat(t * scale)
+    /// The ruler's ticks from `lo` to `hi` seconds (drawn at its own offset; a 20-minute film is too wide for one
+    /// canvas).
+    private func ruler(from lo: Double, to hi: Double) -> some View {
+        let step: Double = scale >= 120 ? 1 : scale >= 50 ? 2 : 5
+        return Canvas { ctx, _ in
+            var t = (lo / step).rounded(.down) * step
+            while t <= hi {
+                let x = CGFloat((t - lo) * scale)
                 ctx.fill(Path(CGRect(x: x, y: rulerHeight - 6, width: 1, height: 6)), with: .color(MG.tertiaryLabel))
-                ctx.draw(Text(String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)).font(.mg(size: 9)).foregroundStyle(MG.tertiaryLabel),
+                let label = t >= 3600 ? String(format: "%d:%02d:%02d", Int(t) / 3600, Int(t) / 60 % 60, Int(t) % 60)
+                    : String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
+                ctx.draw(Text(label).font(.mg(size: 9)).foregroundStyle(MG.tertiaryLabel),
                          at: CGPoint(x: x + 3, y: 6), anchor: .leading)
                 t += step
             }
         }
-        .frame(width: width, height: laneHeight + rulerHeight + 12)
+        .frame(width: max(1, CGFloat((hi - lo) * scale)), height: laneHeight + rulerHeight + 12)
     }
+}
+
+private struct TimelineOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// A sound on the timeline: a clip's own sound (H3), a line (with its speaker), a shot's effects or a scene's music.

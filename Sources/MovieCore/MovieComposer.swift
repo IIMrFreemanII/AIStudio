@@ -54,11 +54,21 @@ public enum MovieComposer {
 
     /// Each clip file's length, as the timeline needs them.
     public static func durations(of files: [String], in folder: URL) async -> [String: Double] {
-        var out: [String: Double] = [:]
-        for file in Set(files) {
-            if let d = await duration(of: folder.appendingPathComponent(file)) { out[file] = d }
+        // Loaded side by side, 8 at a time (a long film has hundreds of clips).
+        await withTaskGroup(of: (String, Double?).self) { group in
+            var out: [String: Double] = [:]
+            var pending = Array(Set(files))
+            func start() {
+                guard let file = pending.popLast() else { return }
+                group.addTask { (file, await duration(of: folder.appendingPathComponent(file))) }
+            }
+            for _ in 0..<8 { start() }
+            for await (file, d) in group {
+                if let d { out[file] = d }
+                start()
+            }
+            return out
         }
-        return out
     }
 
     /// A clip file's video length (the video track's, not counting any longer soundtrack).

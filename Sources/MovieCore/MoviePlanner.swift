@@ -32,7 +32,7 @@ public enum MoviePlanner {
     public static func scriptPrompt(for movie: MovieProject) -> (system: String, user: String) {
         let style = MovieStyle.named(movie.style)
         let shots = max(3, Int((Double(movie.targetSeconds) / 5).rounded()))
-        let scenes = max(1, min(12, Int((Double(shots) / 5).rounded())))
+        let scenes = max(1, min(40, Int((Double(shots) / 5).rounded())))
         let system = """
         You are a screenwriter for short AI-generated films. Every shot will be generated as a separate 3–7 second \
         video clip from a still image, so write a story told mostly through clear, filmable visuals: few locations, \
@@ -296,7 +296,45 @@ public enum MoviePlanner {
         movie.characters = draft.characters
         movie.scenes = draft.scenes
         movie.shots = []
+        groupSequences(&movie)
         movie.reopen(.shots)
+        movie.reopen(.cast)  // a new cast
+    }
+
+    /// About how long a sequence runs: a long film is made a few minutes at a time.
+    public static let sequenceSeconds = 150.0
+
+    /// Splits the scenes into sequences of about `sequenceSeconds` by their time budgets (one, "Whole film", for a
+    /// film that short), in order; per-sequence approvals of sequences that no longer exist are dropped.
+    public static func groupSequences(_ movie: inout MovieProject) {
+        let budgets = sceneSeconds(for: movie)
+        let total = movie.scenes.reduce(0) { $0 + (budgets[$1.id] ?? 0) }
+        let count = max(1, Int((total / sequenceSeconds).rounded()))
+        guard count > 1 else {
+            movie.sequences = [.wholeFilm]
+            for i in movie.scenes.indices { movie.scenes[i].sequence = MovieSequence.wholeFilm.id }
+            movie.sequenceApproved = movie.sequenceApproved.filter { $0.key == MovieSequence.wholeFilm.id }
+            return
+        }
+        let per = total / Double(count)
+        var sequences: [MovieSequence] = []
+        var run = 0.0
+        for i in movie.scenes.indices {
+            let n = sequences.count
+            if n == 0 || (run >= per * Double(n) && n < count) {
+                sequences.append(MovieSequence(id: "q\(n + 1)", title: movie.scenes[i].heading, act: 1))
+            }
+            movie.scenes[i].sequence = sequences[sequences.count - 1].id
+            run += budgets[movie.scenes[i].id] ?? 0
+        }
+        // Acts: the first quarter, the middle half, the last quarter.
+        for i in sequences.indices {
+            let f = Double(i) / Double(sequences.count)
+            sequences[i].act = f < 0.25 ? 1 : f < 0.75 ? 2 : 3
+        }
+        movie.sequences = sequences
+        let ids = Set(sequences.map(\.id))
+        movie.sequenceApproved = movie.sequenceApproved.filter { ids.contains($0.key) }
     }
 
     /// Replaces one scene's shots, keeping the scenes' order.
