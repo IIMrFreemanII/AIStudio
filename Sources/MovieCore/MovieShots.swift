@@ -273,6 +273,11 @@ public enum MovieShots {
 }
 
 extension Shot {
+    /// Whether the shot has a clip made by `engine`, so a switch of engine offers to make the missing ones.
+    public func hasClip(by engine: VideoEngine) -> Bool {
+        videos.contains { ($0.engine.flatMap(VideoEngine.init(rawValue:)) ?? .wan22) == engine }
+    }
+
     public var selectedVideoFile: String? {
         videos.first { $0.id == selectedVideo }?.file
     }

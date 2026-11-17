@@ -22,6 +22,7 @@ the containers (``HF_HUB_OFFLINE``) don't do.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -127,12 +128,24 @@ def gpu_name() -> str:
     return next((k for k in ("B200", "H200", "H100", "A100", "L40S") if k in name), name)
 
 
+RESIDENT_GIB = 80  # the most model weight kept on the GPU at once: one 61.7 GiB transformer or conditioner, plus the VAE
+
+
+def offload_margin(total_bytes: int) -> int:
+    """The components manager's reserve, in bytes: it moves a component onto the GPU only if this much stays free, else
+    offloads others first. With all but ``RESIDENT_GIB`` reserved, the 62 GiB conditioner leaves before the transformer
+    comes on, so denoising has the rest for activations (≈ 60 GiB on an H200, ≈ 98 on a B200). A 12 GB margin kept both
+    on an H200 and ran out of memory at step 5 of a 6 s clip."""
+    return max(12 * 2**30, int(total_bytes - RESIDENT_GIB * 2**30))
+
+
 class H3Worker:
     def __init__(self, workflow: str):
         self.workflow = workflow  # "t2va" (serves fl2va too) or "ref2va": which transformer partition it loads
         self.pipe = None
 
     def load(self, models_root: Path, status) -> None:
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read at the first CUDA allocation
         import torch
         from diffusers import ComponentsManager, ModularPipeline
         from diffusers.modular_pipelines.minimax_h3 import denoise
@@ -151,7 +164,7 @@ class H3Worker:
         with safe_open(str(lora), framework="pt") as f:
             metadata = f.metadata()
         self.pipe.load_lora_weights(prepare_lora(load_file(str(lora)), metadata), adapter_name="turbo")
-        manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin="12GB")
+        manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=offload_margin(torch.cuda.mem_get_info()[1]))
         self._denoise = denoise
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:

@@ -9,7 +9,11 @@ public struct GPUServerInfo: Codable, Sendable, Equatable {
         public var title: String
         public var kind: String
         public var gpu: String
+        /// USD per second: the GPU plus its container's memory and CPU.
         public var pricePerSecond: Double?
+        /// The dearest GPU Modal may give it when none of `gpu` is free, and its price (nil: no fallback).
+        public var fallbackGpu: String?
+        public var fallbackPricePerSecond: Double?
         public var installed: Bool
         public var inputs: [String]
         /// Inputs the task can use when connected (a voice to clone).

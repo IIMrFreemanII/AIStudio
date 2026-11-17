@@ -15,16 +15,19 @@ struct MovieClipsPage: View {
 
     var body: some View {
         let approved = doc.movie.approved.contains(.video)
-        let missing = doc.movie.shots.filter { $0.videos.isEmpty }.count
+        let engine = doc.movie.videoEngine
+        let missing = doc.movie.shots.filter { !$0.hasClip(by: engine) }.count
         let done = doc.movie.shots.count - missing
         MoviePage(title: "Shots",
-                  subtitle: "\(done) of \(doc.movie.shots.count) shots have a clip. Each is animated from its keyframe.") {
+                  subtitle: engine == .wan22
+                      ? "\(done) of \(doc.movie.shots.count) shots have a clip. Each is animated from its keyframe."
+                      : "\(done) of \(doc.movie.shots.count) shots have a MiniMax H3 clip, with its own sound.") {
             Button(missing > 0 ? (done == 0 ? "Make Clips…" : "Make Missing Clips…") : "Retake All…") {
                 model.requestClips(doc)
             }
             .buttonStyle(.mg(missing > 0 ? .prominent : .bordered))
             .disabled(doc.isBusy || doc.movie.shots.isEmpty)
-            .mgHelp(missing > 0 ? "One clip for each shot without one (you see the cost first)"
+            .mgHelp(missing > 0 ? "One clip for each shot without one from this engine (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-clips")
             MGPicker(selection: $doc.movie.videoEngine, options: VideoEngine.allCases.map { ($0, $0.title) },

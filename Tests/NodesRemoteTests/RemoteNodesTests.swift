@@ -13,17 +13,41 @@ import Testing
 /// dependencies in `AISTUDIO_GPU_PYTHON` (with xcodebuild: `TEST_RUNNER_AISTUDIO_GPU_PYTHON=…`); skipped otherwise.
 final class GPUServerFixture: @unchecked Sendable {
     static let python = ProcessInfo.processInfo.environment["AISTUDIO_GPU_PYTHON"]
-    static let shared: GPUServerFixture? = python.flatMap { try? GPUServerFixture(python: $0) }
+    /// A static is never deinitialized, so this fixture stops its servers itself: when the test process exits
+    /// (`atexit`), and through a watchdog when it dies some other way (a crash, a kill).
+    static let shared: GPUServerFixture? = python.flatMap { python in
+        guard let fixture = try? GPUServerFixture(python: python) else { return nil }
+        atexit { GPUServerFixture.shared?.stop() }
+        return fixture
+    }
 
-    let process = Process()
+    let process: Process
     /// A plain file server (Python's http.server) for link downloads: files written to `files` are served at
     /// `fileURL`.
-    let fileServer = Process()
+    let fileServer: Process
     let fileURL: URL
     var files: URL { folder.appendingPathComponent("served") }
     let baseURL: URL
     let token = String(repeating: "f", count: 48)
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("gpu-server-\(UUID().uuidString)")
+    private let stopped = NSLock()
+    private var isStopped = false
+
+    /// Runs `command` under a shell that ends it when this test process goes away (its parent pid stops answering)
+    /// or when the shell is terminated, so a server never outlives the tests.
+    static func guarded(_ command: [String]) -> Process {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", """
+            "$@" & child=$!
+            trap 'kill $child 2>/dev/null; wait $child 2>/dev/null; exit 0' TERM INT HUP
+            while kill -0 $PPID 2>/dev/null && kill -0 $child 2>/dev/null; do sleep 1; done
+            kill $child 2>/dev/null; wait $child 2>/dev/null
+            """, "sh"] + command
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        return p
+    }
 
     init(python: String) throws {
         let port = 18_900 + Int.random(in: 0..<900)
@@ -34,38 +58,42 @@ final class GPUServerFixture: @unchecked Sendable {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let tokenFile = folder.appendingPathComponent("token")
         try token.write(to: tokenFile, atomically: true, encoding: .utf8)
-        process.executableURL = URL(fileURLWithPath: python)
-        process.arguments = ["-m", "aistudio_gpu", "serve", "--port", String(port), "--data", folder.path + "/data",
-                             "--models", folder.path + "/models", "--token-file", tokenFile.path]
+        process = Self.guarded([python, "-m", "aistudio_gpu", "serve", "--port", String(port), "--data",
+                                folder.path + "/data", "--models", folder.path + "/models", "--token-file", tokenFile.path])
         process.currentDirectoryURL = serverDir
         var env = ProcessInfo.processInfo.environment
         env["AISTUDIO_FAKE_MODELS"] = "1"
         env["AISTUDIO_FETCH_HOSTS"] = "127.0.0.1"
         env["PYTHONPATH"] = serverDir.path
         process.environment = env
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle(forWritingAtPath: "/dev/null")
-        try process.run()
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("served"), withIntermediateDirectories: true)
-        fileServer.executableURL = URL(fileURLWithPath: python)
-        fileServer.arguments = ["-m", "http.server", String(port + 1000), "--bind", "127.0.0.1",
-                                "--directory", folder.appendingPathComponent("served").path]
-        fileServer.standardOutput = FileHandle.nullDevice
-        fileServer.standardError = FileHandle(forWritingAtPath: "/dev/null")
+        fileServer = Self.guarded([python, "-m", "http.server", String(port + 1000), "--bind", "127.0.0.1",
+                                   "--directory", folder.appendingPathComponent("served").path])
+        try process.run()
         try fileServer.run()
         for _ in 0..<150 {
             if let (_, r) = try? awaitSync({ try await URLSession.shared.data(from: self.baseURL.appendingPathComponent("v1/health")) }),
                (r as? HTTPURLResponse)?.statusCode == 200 { return }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        process.terminate()
+        stop()
         throw CocoaError(.featureUnsupported)
     }
 
-    deinit {
-        process.terminate()
-        fileServer.terminate()
+    /// Ends both servers (their watchdogs pass it on), waits for them, and removes the temporary folder. Once.
+    func stop() {
+        let first = stopped.withLock { () -> Bool in
+            defer { isStopped = true }
+            return !isStopped
+        }
+        guard first else { return }
+        let running = [process, fileServer].filter(\.isRunning)
+        running.forEach { $0.terminate() }  // both at once: each watchdog may take up to a second to notice
+        running.forEach { $0.waitUntilExit() }
+        try? FileManager.default.removeItem(at: folder)
     }
+
+    deinit { stop() }
 
     func install() {
         RemoteEndpoints.install([.init(id: "gpu", name: "Test GPU", baseURL: baseURL, token: token)])

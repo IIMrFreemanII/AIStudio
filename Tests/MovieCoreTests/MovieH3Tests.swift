@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import GraphRuntime
 @testable import MovieCore
 import Testing
@@ -28,6 +30,17 @@ private func h3Movie() -> MovieProject {
     m.aspect = .vertical
     #expect(m.videoSize == (768, 1344) && m.aspect.h3Aspect == "9:16")
     #expect(VideoEngine.minimaxH3.makesSound && !VideoEngine.wan22.makesSound)
+}
+
+@Test func clipsRecordTheirEngineSoASwitchOffersTheMissingOnes() throws {
+    var shot = Shot(scene: "s1")
+    #expect(!shot.hasClip(by: .wan22) && !shot.hasClip(by: .minimaxH3))
+    shot.videos = [Take(file: "shots/old.mp4")]  // before engines were recorded: Wan 2.2's
+    #expect(shot.hasClip(by: .wan22) && !shot.hasClip(by: .minimaxH3))
+    shot.videos.append(Take(file: "shots/h3.mp4", engine: VideoEngine.minimaxH3.rawValue))
+    #expect(shot.hasClip(by: .minimaxH3))
+    let back = try JSONDecoder().decode(Take.self, from: JSONEncoder().encode(shot.videos[1]))
+    #expect(back.engine == "minimax-h3")
 }
 
 @Test func h3EstimatesLineTimesAndMakesRoomForThem() {
@@ -67,9 +80,12 @@ private func h3Movie() -> MovieProject {
     #expect(MovieH3.usesReferences(talk, in: m))
     let refs = MovieH3.references(for: talk, in: m)
     #expect(refs.sheets == ["maya"] && refs.voices == ["maya"])
-    let r = MovieH3.referencePrompt(for: talk, in: m, sheets: refs.sheets, voices: refs.voices)
+    let views = [MovieH3.SubjectPicture(id: "maya", view: .face), .init(id: "maya", view: .body)]
+    let r = MovieH3.referencePrompt(for: talk, in: m, pictures: views, voices: refs.voices)
     for part in ["subject_definitions: <Picture 1> is the planned opening composition",
-                 "<Subject 1> is Maya, as shown in <Picture 2>",
+                 "<Subject 1> is Maya: their face and hair in <Picture 2>, and their whole figure and clothing in <Picture 3>.",
+                 "<Picture 3>: reference - Maya's clothing and build are kept, never shown as a picture of its own.",
+                 "in the setting of <Picture 1>, one continuous take.",
                  "<Audio 1> is the voice-timbre reference for <Subject 1> (S1).",
                  "summary: One wide shot in the setting of <Picture 1> in which Maya and Grandpa speak.",
                  "<Audio 1>: reference - Maya speaks in this voice timbre",
@@ -104,6 +120,42 @@ private func h3Movie() -> MovieProject {
     #expect(rg["voice1"]?.inputs["path"] == .value(.string("/m/audio/voice-maya.wav")))
     #expect(rg["picture3"] == nil && rg["video"]?.inputs["image3"] == nil && rg["video"]?.inputs["audio2"] == nil)
     #expect(MovieH3.work(shot, in: m) == MovieShots.work(width: 1344, height: 768, frames: 120))
+}
+
+@Test func h3CutsSheetsIntoViewsSoTheWholeSheetIsNeverAReference() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("h3-sheet-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir.appendingPathComponent("cast"), withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // A 300×100 "sheet": three views side by side (red, green, blue thirds).
+    let ctx = CGContext(data: nil, width: 300, height: 100, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    for (i, c) in [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)].enumerated() {
+        ctx.setFillColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        ctx.fill(CGRect(x: i * 100, y: 0, width: 100, height: 100))
+    }
+    try MovieComposer.writePNG(ctx.makeImage()!, to: dir.appendingPathComponent("cast/maya.png"))
+    let panels = MovieH3.sheetPanels(dir.appendingPathComponent("cast/maya.png"))
+    #expect(panels[.body]?.lastPathComponent == "maya-body.png" && panels[.face]?.lastPathComponent == "maya-face.png")
+    func pixel(_ url: URL) -> (Int, Int) {  // width, and which colour is strongest at its centre (0 r, 1 g, 2 b)
+        let img = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(url as CFURL, nil)!, 0, nil)!
+        let c = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        c.draw(img, in: CGRect(x: -img.width / 2, y: -img.height / 2, width: img.width, height: img.height))
+        let d = c.data!.assumingMemoryBound(to: UInt8.self)
+        return (img.width, [0, 1, 2].max { d[$0] < d[$1] }!)
+    }
+    #expect(pixel(panels[.body]!).1 == 0 && pixel(panels[.face]!).1 == 2 && pixel(panels[.face]!).0 < 100)
+
+    // One speaker: their face, then their whole figure; the prompt and the pictures agree.
+    let m = h3Movie()
+    let shot = Shot(scene: "a", duration: 4, dialogue: [spoken("Stay.")])
+    let subjects = MovieH3.subjectPictures(for: shot, in: m, folder: dir)
+    #expect(subjects.pictures == [.init(id: "maya", view: .face), .init(id: "maya", view: .body)])
+    let refs = MovieH3.referencesRender(shot, movie: m, folder: dir, keyframe: dir.appendingPathComponent("k.png"),
+                                        seed: 1, server: "g")
+    #expect(refs.values["picture2"] == .string(dir.appendingPathComponent("cast/maya-face.png").path))
+    #expect(refs.values["picture3"] == .string(dir.appendingPathComponent("cast/maya-body.png").path))
+    #expect(refs.unusedPictures == ["picture4", "voice2", "voice3"])
 }
 
 @Test func h3TimelinePlaysEachClipsOwnSoundForTheShotsLength() {

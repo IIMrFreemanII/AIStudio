@@ -77,7 +77,7 @@ struct NodeExtras: View {
                 if case .gpuOnline(let info)? = store.status[id], let taskID = RemoteNodes.taskID(forNodeType: node.type),
                    let task = info.task(taskID) {
                     Text(task.installed
-                         ? "\(task.gpu)" + (task.pricePerSecond.map { String(format: ", $%.2f per GPU-hour, billed per second", $0 * 3600) } ?? "")
+                         ? "\(task.gpu)" + (task.pricePerSecond.map { String(format: ", $%.2f an hour with its memory and CPU, billed per second", $0 * 3600) } ?? "")
                          : "\(task.title) isn't downloaded on this server yet: run its download step.")
                         .font(.mgSubheadline).foregroundStyle(task.installed ? MG.secondaryLabel : MG.warning)
                         .fixedSize(horizontal: false, vertical: true)

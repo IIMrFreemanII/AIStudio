@@ -426,9 +426,14 @@ the base model runs 49, about six times the GPU time.
 It runs on an H200 (`AISTUDIO_GPU_H3`): each of its two classes (`H3Video`, `H3References`) holds one 61.7 GB
 transformer with the shared 62 GB Qwen3-VL conditioner, about 140 GB in host RAM, and moves each onto the GPU as it
 runs. When no H200 is free it takes a B200 (`AISTUDIO_GPU_H3_FALLBACK`, comma-separated, empty for none): on
-2026-11-17 an H200 call waited 41 minutes in Modal's queue. The result's `extra.gpu` names the GPU it got, and the cost
-sheet still prices H3 at the H200 rate (a B200 costs about 38% more per second). On an H200, a 5 s 768p Turbo clip
-took 52 s to load, 71 s of setup and 8 steps of 7.6 s. Install it with the `minimax-h3` download (≈ 213 GB: the diffusers layout and both Turbo LoRAs, not the
+2026-11-17 an H200 call waited 41 minutes in Modal's queue. The result's `extra.gpu` names the GPU it got, and the job's
+cost is priced on it; `/v1/info` gives the task's `fallbackGpu` and `fallbackPricePerSecond`, and the movie studio's
+cost sheet says what the batch would cost on it. With its 160 GiB of memory and 8 cores, an H3 container costs about
+$6.20 an hour on an H200 and $7.91 on a B200. The worker keeps at most 80 GiB of weights on the GPU (the conditioner
+leaves before the transformer comes on), so even 15 s clips have room. On an H200, a 5 s 768p Turbo clip took 52 s
+to load, 71 s of setup and 8 steps of 7.6 s; a warm clip in the movie studio about 210 s. Talking shots send the
+speakers' face close-up and front full-body view, cut from their sheets, rather than the whole three-view sheet,
+which H3 sometimes copied into the clip. Install it with the `minimax-h3` download (≈ 213 GB: the diffusers layout and both Turbo LoRAs, not the
 original checkpoint's duplicate folders).
 
 **Licence.** The MiniMax H3 Community Licence excludes the US, the EU, the UK and South Korea unless you have
@@ -483,6 +488,10 @@ at the next step; the warm container stays for your next job until the idle wind
 
 You pay Modal's per-second price while a GPU container is up: start-up and model loading on a cold start, the job
 itself, then the idle window (default 2 min) in case another job follows. The node's estimate covers the first two.
+The price counts the GPU and the container's memory and CPU, which Modal bills for the larger of what it requests and
+what it uses: `tasks.CONTAINERS` holds each worker's request, which `modal_app.py` sizes its classes from, and
+`pricePerSecond` in `/v1/info` includes it. For the other workers that adds 3–11% to the GPU's price; for MiniMax H3
+(160 GiB, 8 cores) about 36%.
 
 - Wan with **fast** on (the default: Lightning LoRAs, 4 steps, no guidance) needs about a tenth of the GPU time of the
   full 40 steps; turn it off for the most detail.
