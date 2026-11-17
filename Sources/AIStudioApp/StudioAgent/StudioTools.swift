@@ -537,8 +537,9 @@ final class StudioSession {
         case "shots":
             return ("the shot list", .shots, "movie-write-shots", { app.requestShots(doc, scenes: scenes) }, { m().shots.count })
         case "cast", "sheets":
-            return ("character sheets", .cast, "movie-make-sheets", { app.requestSheets(doc, characters: chars) },
-                    { m().characters.reduce(0) { $0 + $1.sheets.count } })
+            return ("character sheets and plates of places", .cast, "movie-make-sheets",
+                    { app.requestSheets(doc, characters: chars) },
+                    { m().characters.reduce(0) { $0 + $1.sheets.count } + m().locations.reduce(0) { $0 + $1.plates.count } })
         case "keyframes":
             return ("keyframes", .keyframes, "movie-make-keyframes", { app.requestKeyframes(doc, shots: shots) },
                     { m().shots.reduce(0) { $0 + $1.keyframes.count } })

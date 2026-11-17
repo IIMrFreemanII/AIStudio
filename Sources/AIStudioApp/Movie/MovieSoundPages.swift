@@ -230,7 +230,7 @@ struct MovieSoundPage: View {
         let withFX = shots.filter { MovieSound.effectsPrompt($0) != nil }
         let fxMissing = withFX.filter { $0.sounds.isEmpty }.count
         let sceneIDs = Set(doc.scopeScenes.map(\.id))
-        let music = doc.movie.music.filter { sceneIDs.contains($0.id) }
+        let music = doc.movie.music.filter { sceneIDs.contains($0.scene) }
         let musicMissing = music.filter { $0.takes.isEmpty }.count
         let h3 = doc.movie.videoEngine.makesSound
         MoviePage(title: "Sound" + (doc.scopeTitle.map { " · " + $0 } ?? ""),
@@ -264,7 +264,7 @@ struct MovieSoundPage: View {
                 MixControls(doc: doc)
                 Text("MUSIC").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                 ForEach($doc.movie.music) { $cue in
-                    if sceneIDs.contains(cue.id) { MusicCueCard(doc: doc, cue: $cue) }
+                    if sceneIDs.contains(cue.scene) { MusicCueCard(doc: doc, cue: $cue) }
                 }
                 Text("EFFECTS").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
                     .padding(.top, 6)
@@ -320,11 +320,12 @@ private struct MusicCueCard: View {
     @Binding var cue: MusicCue
 
     var body: some View {
-        let heading = doc.movie.scenes.first { $0.id == cue.id }?.heading ?? cue.id
+        let scene = doc.movie.scenes.first { $0.id == cue.scene }?.heading ?? cue.scene
+        let heading = cue.part > 1 ? "\(scene) · part \(cue.part)" : scene
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(heading).font(.mgHeadline)
-                Text(MovieFormat.seconds(MovieSound.sceneSeconds(cue.id, in: doc.movie))).font(.mgFootnote)
+                Text(MovieFormat.seconds(MovieSound.cueSeconds(cue, in: doc.movie))).font(.mgFootnote)
                     .foregroundStyle(MG.secondaryLabel)
                 Spacer()
                 Button(cue.takes.isEmpty ? "Make Music…" : "Another Take…") {

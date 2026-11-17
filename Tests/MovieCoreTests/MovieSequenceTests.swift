@@ -201,7 +201,7 @@ private func film(sequences n: Int) -> MovieProject {
     }
     // Ducking: the music dips under every line it plays under.
     for (sound, points) in zip(t.sounds.filter { $0.kind == .music }, volumes).prefix(5) {
-        let inLine = t.subtitles.first { $0.start > sound.start + 1 && $0.end < sound.end - 2 }!
+        let inLine = t.subtitles.first { $0.start > sound.start + 2.5 && $0.end < sound.end - 2.5 }!
         let p = points.first { $0.time >= inLine.start && $0.time <= inLine.end }!
         #expect(abs(p.gain - sound.gain * t.duck) < 1e-6)
     }

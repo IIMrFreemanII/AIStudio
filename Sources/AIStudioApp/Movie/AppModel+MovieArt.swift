@@ -139,39 +139,84 @@ extension AppModel {
 
     // MARK: cast
 
-    /// Cast › Make Sheets: one take per character (`characters` nil: those without a sheet yet, else all of them).
-    func requestSheets(_ doc: MovieDocument, characters ids: [String]? = nil, takes: Int = 1) {
-        let missing = doc.movie.characters.filter { $0.sheets.isEmpty }.map(\.id)
-        let ids = ids ?? (missing.isEmpty ? doc.movie.characters.map(\.id) : missing)
-        guard !ids.isEmpty else { return }
-        let size = MovieArt.sheetSize
-        let jobs = ids.count * takes
-        gateImages(doc, title: jobs == 1 ? "Make a Reference Sheet" : "Make Reference Sheets",
-                   work: [ImageWork(label: jobs == 1 ? "1 reference sheet" : "\(jobs) reference sheets",
-                                    task: "qwen-image", jobs: jobs,
-                                    megapixels: Double(size.width * size.height) / 1e6)]) { [weak self] in
-            self?.makeSheets(doc, characters: ids, takes: takes)
+    /// What the Cast page makes: a character's reference sheet or a place's plate.
+    enum CastItem: Hashable {
+        case character(String)
+        case location(String)
+    }
+
+    /// Cast › Make Sheets: one take per character seen on screen and one plate per place (both nil: those without
+    /// one yet, else all of them; one given: only those).
+    func requestSheets(_ doc: MovieDocument, characters ids: [String]? = nil, locations places: [String]? = nil,
+                       takes: Int = 1) {
+        let seen = doc.movie.characters.filter { !$0.isNarrator }
+        var chars = ids ?? []
+        var locs = places ?? []
+        if ids == nil && places == nil {
+            let missingChars = seen.filter { $0.sheets.isEmpty }.map(\.id)
+            let missingPlates = doc.movie.locations.filter { $0.plates.isEmpty }.map(\.id)
+            if missingChars.isEmpty && missingPlates.isEmpty {
+                chars = seen.map(\.id)
+                locs = doc.movie.locations.map(\.id)
+            } else {
+                chars = missingChars
+                locs = missingPlates
+            }
+        }
+        let items = (chars.map(CastItem.character) + locs.map(CastItem.location)).flatMap { Array(repeating: $0, count: takes) }
+        guard !items.isEmpty else { return }
+        let size = MovieArt.sheetSize, plate = doc.movie.aspect.keyframeSize
+        let sheets = chars.count * takes, plates = locs.count * takes
+        gateImages(doc, title: plates == 0 ? (sheets == 1 ? "Make a Reference Sheet" : "Make Reference Sheets")
+                       : sheets == 0 ? (plates == 1 ? "Make a Place's Plate" : "Make Plates of the Places")
+                       : "Make Reference Sheets and Plates",
+                   work: [ImageWork(label: sheets == 1 ? "1 reference sheet" : "\(sheets) reference sheets",
+                                    task: "qwen-image", jobs: sheets,
+                                    megapixels: Double(size.width * size.height) / 1e6),
+                          ImageWork(label: plates == 1 ? "1 place's plate" : "\(plates) plates of places",
+                                    task: "qwen-image", jobs: plates,
+                                    megapixels: Double(plate.width * plate.height) / 1e6)],
+                   extraNotes: plates > 0 ? ["A plate is the place itself, empty: every keyframe there is made from it, "
+                                             + "so the place stays the same from shot to shot."] : []) { [weak self] in
+            self?.makeSheets(doc, items: items)
         }
     }
 
-    private func makeSheets(_ doc: MovieDocument, characters ids: [String], takes: Int) {
-        let items = ids.flatMap { id in Array(repeating: id, count: takes) }
-        runImageJob(doc, title: "Making reference sheets", count: items.count, task: { _ in "qwen-image" }) {
+    private func makeSheets(_ doc: MovieDocument, items: [CastItem]) {
+        runImageJob(doc, title: "Making the cast and places", count: items.count, task: { _ in "qwen-image" }) {
             [weak self] doc, i, server in
-            guard let self, let c = doc.movie.character(items[i]) else { return }
-            doc.job?.detail = "\(c.name) (\(i + 1) of \(items.count))"
+            guard let self else { return }
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let render = MovieArt.sheetRender(c, movie: doc.movie, seed: seed, server: server)
-            let template = self.movieTemplate(MovieArt.TemplateName.sheet, for: doc) {
-                MovieArt.textToImageTemplate(name: MovieArt.TemplateName.sheet)
+            switch items[i] {
+            case .character(let id):
+                guard let c = doc.movie.character(id) else { return }
+                doc.job?.detail = "\(c.name) (\(i + 1) of \(items.count))"
+                let render = MovieArt.sheetRender(c, movie: doc.movie, seed: seed, server: server)
+                let template = self.movieTemplate(MovieArt.TemplateName.sheet, for: doc) {
+                    MovieArt.textToImageTemplate(name: MovieArt.TemplateName.sheet)
+                }
+                let file = "cast/\(c.id)-\(UUID().uuidString.prefix(8).lowercased()).png"
+                let cost = try await self.renderStill(doc, template: template, render: render, to: file,
+                                                      title: "\(doc.movie.title): \(c.name)")
+                guard let j = doc.movie.characters.firstIndex(where: { $0.id == c.id }) else { return }
+                let take = Take(file: file, seed: seed, costUSD: cost)
+                doc.movie.characters[j].sheets.append(take)
+                if doc.movie.characters[j].selectedSheet == nil { doc.movie.characters[j].selectedSheet = take.id }
+            case .location(let id):
+                guard let l = doc.movie.locations.first(where: { $0.id == id }) else { return }
+                doc.job?.detail = "\(l.name) (\(i + 1) of \(items.count))"
+                let render = MovieArt.plateRender(l, movie: doc.movie, seed: seed, server: server)
+                let template = self.movieTemplate(MovieArt.TemplateName.plate, for: doc) {
+                    MovieArt.textToImageTemplate(name: MovieArt.TemplateName.plate)
+                }
+                let file = "places/\(l.id)-\(UUID().uuidString.prefix(8).lowercased()).png"
+                let cost = try await self.renderStill(doc, template: template, render: render, to: file,
+                                                      title: "\(doc.movie.title): \(l.name)")
+                guard let j = doc.movie.locations.firstIndex(where: { $0.id == l.id }) else { return }
+                let take = Take(file: file, seed: seed, costUSD: cost)
+                doc.movie.locations[j].plates.append(take)
+                if doc.movie.locations[j].selectedPlate == nil { doc.movie.locations[j].selectedPlate = take.id }
             }
-            let file = "cast/\(c.id)-\(UUID().uuidString.prefix(8).lowercased()).png"
-            let cost = try await self.renderStill(doc, template: template, render: render, to: file,
-                                                  title: "\(doc.movie.title): \(c.name)")
-            guard let j = doc.movie.characters.firstIndex(where: { $0.id == c.id }) else { return }
-            let take = Take(file: file, seed: seed, costUSD: cost)
-            doc.movie.characters[j].sheets.append(take)
-            if doc.movie.characters[j].selectedSheet == nil { doc.movie.characters[j].selectedSheet = take.id }
         }
     }
 
@@ -204,8 +249,9 @@ extension AppModel {
     /// Whether a shot's keyframe is an edit of pictures: it has characters, or continues the shot before in the
     /// same scene (whose keyframe it starts from).
     private func usesPictures(_ shot: Shot, in movie: MovieProject) -> Bool {
-        !shot.characters.compactMap(movie.character).isEmpty
+        !shot.characters.compactMap(movie.character).filter { !$0.isNarrator }.isEmpty
             || (shot.continuesPrevious && movie.shot(before: shot)?.scene == shot.scene)
+            || MovieArt.location(of: shot, in: movie)?.selectedPlateFile != nil
     }
 
     private func makeKeyframes(_ doc: MovieDocument, shots ids: [UUID]) {
@@ -383,6 +429,29 @@ extension AppModel {
               doc.movie.characters[j].selectedSheet != take else { return }
         doc.movie.characters[j].selectedSheet = take
         doc.movie.reopen(.cast)  // keyframes made from the old sheet no longer match
+        saveMovie(doc)
+    }
+
+    func selectPlate(_ doc: MovieDocument, location id: String, take: UUID) {
+        guard let j = doc.movie.locations.firstIndex(where: { $0.id == id }),
+              doc.movie.locations[j].selectedPlate != take else { return }
+        doc.movie.locations[j].selectedPlate = take
+        doc.movie.reopen(.cast)  // keyframes made from the old plate no longer match
+        saveMovie(doc)
+    }
+
+    /// Takes a plate take out of the movie and its file to the Trash.
+    func deletePlate(_ doc: MovieDocument, location id: String, take: UUID) {
+        guard let j = doc.movie.locations.firstIndex(where: { $0.id == id }),
+              let file = doc.movie.locations[j].plates.first(where: { $0.id == take })?.file else { return }
+        doc.movie.locations[j].plates.removeAll { $0.id == take }
+        if doc.movie.locations[j].selectedPlate == take {
+            doc.movie.locations[j].selectedPlate = doc.movie.locations[j].plates.last?.id
+            doc.movie.reopen(.cast)
+        }
+        let url = movieStore.url(doc.id, relative: file)
+        if Self.isAutomatedRun { try? FileManager.default.removeItem(at: url) }
+        else { try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }
         saveMovie(doc)
     }
 

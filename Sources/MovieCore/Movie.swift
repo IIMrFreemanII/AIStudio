@@ -392,13 +392,31 @@ public struct MovieLocation: Codable, Identifiable, Sendable, Equatable {
     /// A slug ("lighthouse").
     public var id: String
     public var name: String
-    /// What it looks like: architecture, light, colours, weather (the keyframes' and later its plate's prompt).
+    /// What it looks like: architecture, light, colours, weather (its plate's prompt, and every keyframe's there).
     public var look: String
+    /// Empty establishing pictures of it (a few takes, one chosen): every keyframe there is made from the chosen one.
+    public var plates: [Take]
+    public var selectedPlate: UUID?
 
-    public init(id: String, name: String, look: String = "") {
+    public init(id: String, name: String, look: String = "", plates: [Take] = [], selectedPlate: UUID? = nil) {
         self.id = id
         self.name = name
         self.look = look
+        self.plates = plates
+        self.selectedPlate = selectedPlate
+    }
+
+    public var selectedPlateFile: String? { plates.first { $0.id == selectedPlate }?.file }
+
+    private enum CodingKeys: String, CodingKey { case id, name, look, plates, selectedPlate }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        look = try c.decodeIfPresent(String.self, forKey: .look) ?? ""
+        plates = try c.decodeIfPresent([Take].self, forKey: .plates) ?? []
+        selectedPlate = try c.decodeIfPresent(UUID.self, forKey: .selectedPlate)
     }
 }
 
@@ -627,20 +645,44 @@ public struct Shot: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
-/// A scene's score: one piece of music under all of its shots.
+/// A piece of a scene's score: one piece of music under its shots (a long scene has several, one after another).
 public struct MusicCue: Codable, Identifiable, Sendable, Equatable {
-    /// The scene's id.
+    /// The scene's id for its first part ("s3"), then "s3.2", "s3.3"…
     public var id: String
-    /// The style of the music (ACE-Step tags: genre, instruments, mood), from the scene's mood and the movie's style.
+    /// The style of the music (ACE-Step tags: genre, instruments, mood), from the scene's mood, the film's theme and
+    /// its character's motif, and the movie's style.
     public var prompt: String
     public var takes: [Take]
     public var selected: UUID?
+    /// The scene it scores.
+    public var scene: String
+    /// Which part of the scene's score (1…).
+    public var part: Int
 
-    public init(id: String, prompt: String, takes: [Take] = [], selected: UUID? = nil) {
+    public init(id: String, prompt: String, takes: [Take] = [], selected: UUID? = nil, scene: String? = nil,
+                part: Int = 1) {
         self.id = id
         self.prompt = prompt
         self.takes = takes
         self.selected = selected
+        self.scene = scene ?? id
+        self.part = part
+    }
+
+    /// A scene's k-th cue's id.
+    public static func id(scene: String, part: Int) -> String { part <= 1 ? scene : "\(scene).\(part)" }
+
+    private enum CodingKeys: String, CodingKey { case id, prompt, takes, selected, scene, part }
+
+    /// Cues saved before long scenes had several are their scene's only one.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        prompt = try c.decode(String.self, forKey: .prompt)
+        takes = try c.decodeIfPresent([Take].self, forKey: .takes) ?? []
+        selected = try c.decodeIfPresent(UUID.self, forKey: .selected)
+        scene = try c.decodeIfPresent(String.self, forKey: .scene) ?? id
+        part = try c.decodeIfPresent(Int.self, forKey: .part) ?? 1
     }
 
     public var selectedTake: Take? { takes.first { $0.id == selected } }

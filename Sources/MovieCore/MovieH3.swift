@@ -184,7 +184,8 @@ public enum MovieH3 {
 
     /// A reference picture of a character: one view cut from their sheet, or the whole sheet when it couldn't be cut.
     public struct SubjectPicture: Equatable, Sendable {
-        public enum View: String, Sendable { case face, body }
+        /// `place`: the scene's place, empty (its plate); `id` is then the place's.
+        public enum View: String, Sendable { case face, body, place }
         public var id: String
         public var view: View?
         public init(id: String, view: View? = nil) { self.id = id; self.view = view }
@@ -197,8 +198,9 @@ public enum MovieH3 {
         let ids = speakers(shot)
         func name(_ id: String) -> String { movie.character(id)?.name ?? id }
         var subjects: [String] = []
-        for p in pictures where !subjects.contains(p.id) { subjects.append(p.id) }
+        for p in pictures where p.view != .place && !subjects.contains(p.id) { subjects.append(p.id) }
         func subject(_ id: String) -> String? { subjects.firstIndex(of: id).map { "<Subject \($0 + 1)>" } }
+        func place(_ id: String) -> String { movie.locations.first { $0.id == id }?.name ?? id }
         func sid(_ id: String) -> String { ids.firstIndex(of: id).map { " (S\($0 + 1))" } ?? "" }
         func label(_ i: Int) -> String { "<Picture \(i + 2)>" }
         var defs = ["<Picture 1> is the planned opening composition of the shot: its setting, framing and light."]
@@ -207,10 +209,13 @@ public enum MovieH3 {
                 switch p.view {
                 case .face: "their face and hair in \(label(i))"
                 case .body: "their whole figure and clothing in \(label(i))"
-                case nil: "their face, hair and clothing in \(label(i))"
+                case .place, nil: "their face, hair and clothing in \(label(i))"
                 }
             }
             defs.append("<Subject \(k + 1)> is \(name(id)): \(shown.joined(separator: ", and ")).")
+        }
+        for (i, p) in pictures.enumerated() where p.view == .place {
+            defs.append("\(label(i)) is the place, \(place(p.id)), empty: its architecture, materials and light.")
         }
         for (i, id) in voices.enumerated() {
             defs.append("<Audio \(i + 1)> is the voice-timbre reference for \(subject(id) ?? name(id))\(sid(id)).")
@@ -223,6 +228,7 @@ public enum MovieH3 {
             let kept = switch p.view {
             case .face: "\(name(p.id))'s face and hair are kept"
             case .body: "\(name(p.id))'s clothing and build are kept"
+            case .place: "the place's architecture and light are kept"
             case nil: "\(name(p.id))'s appearance and clothing are kept"
             }
             retention.append("\(label(i)): reference - \(kept), never shown as a picture of its own.")
@@ -288,7 +294,13 @@ public enum MovieH3 {
                 pictures.append(.init(id: id)); paths.append(sheet.path)
             }
         }
-        let n = min(pictures.count, maxPictures - 1)
+        var n = min(pictures.count, maxPictures - 1)
+        // Room left: the place's plate, so the place stays the one the other shots show.
+        if n < maxPictures - 1, let place = MovieArt.location(of: shot, in: movie), let file = place.selectedPlateFile {
+            pictures.insert(.init(id: place.id, view: .place), at: n)
+            paths.insert(folder.appendingPathComponent(file).path, at: n)
+            n += 1
+        }
         return (Array(pictures.prefix(n)), Array(paths.prefix(n)))
     }
 
