@@ -20,6 +20,8 @@ struct MovieVoicesPage: View {
         let noVoice = speaking.filter { $0.selectedVoiceSampleFile == nil }.count
         MoviePage(title: "Voices",
                   subtitle: lines == 0 ? "No one speaks in this film: nothing to voice."
+                      : doc.movie.videoEngine.makesSound
+                      ? "MiniMax H3 speaks the lines inside each clip, in the voice you choose for each character here."
                       : "\(lines - silent) of \(lines) lines are spoken. Each character's lines use the voice you choose for them.") {
             MGPicker(selection: $doc.movie.voiceEngine, options: VoiceEngine.allCases.map { ($0, $0.title) },
                      maxWidth: 220)
@@ -34,6 +36,7 @@ struct MovieVoicesPage: View {
                 .mgHelp(noVoice > 0 ? "A voice for each speaking character without one (you see the cost first)"
                         : "A new voice take for every speaking character")
                 .mgTestAnchor("movie-make-voices")
+            if !doc.movie.videoEngine.makesSound {
             Button(silent > 0 ? (silent == lines ? "Speak Lines…" : "Speak Missing Lines…") : "Retake Lines…") {
                 model.requestLines(doc)
             }
@@ -43,6 +46,7 @@ struct MovieVoicesPage: View {
                     : silent > 0 ? "Speaks each line without a take, in its character's voice (you see the cost first)"
                     : "A new take of every line")
             .mgTestAnchor("movie-speak-lines")
+            }
             Button("Edit Template") {
                 let engine = doc.movie.voiceEngine
                 model.editMovieTemplate(MovieVoices.TemplateName.sample(engine), for: doc) {
@@ -65,7 +69,8 @@ struct MovieVoicesPage: View {
             }
             .buttonStyle(.mg(.prominent))
             .disabled(approved || doc.isBusy)
-            .mgHelp(silent > 0 ? "\(silent) line\(silent == 1 ? "" : "s") without a take will be silent (and not lip-synced)"
+            .mgHelp(doc.movie.videoEngine.makesSound ? "Locks the voices in; the clips speak the lines next"
+                    : silent > 0 ? "\(silent) line\(silent == 1 ? "" : "s") without a take will be silent (and not lip-synced)"
                     : "Locks the lines in; talking shots are animated from them next")
             .mgTestAnchor("movie-approve-voices")
         } content: {
@@ -197,15 +202,20 @@ struct MovieSoundPage: View {
         let withFX = doc.movie.shots.filter { MovieSound.effectsPrompt($0) != nil }
         let fxMissing = withFX.filter { $0.sounds.isEmpty }.count
         let musicMissing = doc.movie.music.filter { $0.takes.isEmpty }.count
+        let h3 = doc.movie.videoEngine.makesSound
         MoviePage(title: "Sound",
-                  subtitle: "Effects for \(withFX.count - fxMissing) of \(withFX.count) shots, music for "
+                  subtitle: h3 ? "The clips carry their own effects (MiniMax H3); music for "
+                      + "\(doc.movie.music.count - musicMissing) of \(doc.movie.music.count) scenes, which is optional."
+                      : "Effects for \(withFX.count - fxMissing) of \(withFX.count) shots, music for "
                       + "\(doc.movie.music.count - musicMissing) of \(doc.movie.music.count) scenes. Both are optional.") {
+            if !h3 {
             Button(fxMissing > 0 ? "Make Effects…" : "Retake Effects…") { model.requestEffects(doc) }
                 .buttonStyle(.mg(fxMissing > 0 ? .prominent : .bordered))
                 .disabled(doc.isBusy || withFX.isEmpty)
                 .mgHelp(withFX.isEmpty ? "No shot has a sound prompt (add one below)"
                         : "Sound effects for each shot with a sound prompt and no take (you see the cost first)")
                 .mgTestAnchor("movie-make-effects")
+            }
             Button(musicMissing > 0 ? "Make Music…" : "Retake Music…") { model.requestMusic(doc) }
                 .buttonStyle(.mg(musicMissing > 0 ? .prominent : .bordered))
                 .disabled(doc.isBusy || doc.movie.music.isEmpty)

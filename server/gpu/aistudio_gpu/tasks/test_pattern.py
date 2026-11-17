@@ -79,6 +79,34 @@ def _dub(inputs: dict[str, Path], seconds: float, out_dir: Path) -> Output:
                                                     "audioSeconds": round(seconds, 2), "sourceFrames": len(source)})
 
 
+def _h3(task: TaskSpec, params: dict, inputs: dict[str, Path], out_dir: Path) -> Output:
+    """The fake MiniMax H3: the real worker's checks, frame count (24 fps, 17·n + 5) and canvas; the first frame the
+    start picture (or picture 1 of the references), the last the end picture; a 32 kHz stereo tone as its sound."""
+    from PIL import Image
+
+    from .minimax_h3 import FPS, SAMPLE_RATE, check, num_frames, target_size
+
+    check(task, params, inputs)
+    pictures = [k for k in ("image", "image1", "last_image") if k in inputs]
+    first = Image.open(inputs[pictures[0]]).convert("RGB") if pictures else None
+    h, w = target_size(params, first.size if first is not None else None)
+    n = num_frames(params["seconds"])
+    frames = np.empty((n, h, w, 3), dtype=np.uint8)  # uint8: a 15 s 768p clip in float would be gigabytes
+    for i in range(n):
+        frames[i] = (pattern(w, h, i / n, params["seed"]) * 255).astype(np.uint8)
+    for name, index in (("image", 0), ("image1", 0), ("last_image", -1)):
+        if name in inputs:
+            frames[index] = np.asarray(Image.open(inputs[name]).convert("RGB").resize((w, h)), dtype=np.uint8)
+    sound = out_dir / "sound.wav"
+    write_wav(tone(n / FPS, SAMPLE_RATE, 2, params["seed"]), SAMPLE_RATE, sound)
+    path = out_dir / "result.mp4"
+    write_mp4(frames, path, fps=FPS, audio=sound)
+    references = sum(1 for k in inputs if k.startswith(("image", "audio")) and k not in ("image", "last_image"))
+    return Output(path, "video", "video/mp4", extra={"frames": n, "width": w, "height": h, "seconds": n / FPS,
+                                                    "sampleRate": SAMPLE_RATE, "audioChannels": 2,
+                                                    "fast": params["fast"], "references": references})
+
+
 class FakeModelWorker:
     """Stands in for a GPU model (``AISTUDIO_FAKE_MODELS=1``): the task's own parameters, steps, previews and output
     kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image (and ends on ``last_image``),
@@ -120,6 +148,8 @@ class FakeModelWorker:
             rate, channels = {"music": (48000, 2), "sound": (44100, 2)}.get(task.family, (24000, 1))
             seconds = params.get("seconds") or min(10.0, max(1.0, len(params.get("text", "")) / 15))
             return _audio(seconds, rate, channels, params["seed"], inputs, out_dir)
+        if task.family in ("h3-video", "h3-references"):
+            return _h3(task, params, inputs, out_dir)
         if task.id == "infinitetalk":  # a dub: the uploaded clip's frames at 25 fps, as long as the speech
             return _dub(inputs, speech_seconds, out_dir)
         w, h = params.get("width", 832), params.get("height", 480)  # tasks without a size: Wan's

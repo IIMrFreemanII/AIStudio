@@ -50,9 +50,9 @@ extension SmokeTest {
         }
         /// Returns the most renders seen running at once (the job bar's lines).
         @discardableResult
-        func waitForJob(_ doc: MovieDocument) async -> Int {
+        func waitForJob(_ doc: MovieDocument, seconds: Int = 60) async -> Int {
             var most = 0
-            for _ in 0..<600 where doc.job != nil {
+            for _ in 0..<(seconds * 10) where doc.job != nil {
                 most = max(most, doc.job?.lines.count ?? 0)
                 try? await Task.sleep(for: .milliseconds(100))
             }
@@ -316,6 +316,54 @@ extension SmokeTest {
             check(learned.contains { $0.hasPrefix("\(engine.task)@") }, "\(engine.title) times were learned")
         }
         doc.movie.lipSyncEngine = .wanS2V
+
+        // MiniMax H3: every shot again, each clip with its own sound; the talking shots from references (the
+        // keyframe, Mara's sheet and her voice). The chosen takes stay; it goes back to Wan 2.2 afterwards.
+        doc.movie.videoEngine = .minimaxH3
+        let beforeH3 = doc.movie.shots.map(\.videos.count), chosen = doc.movie.shots.map(\.selectedVideo)
+        model.requestClips(doc, shots: doc.movie.shots.map(\.id))
+        await waitForGate(doc)
+        if let gate = doc.pendingGate {
+            let counts = gate.estimate.lines.map(\.count)
+            check(counts == [2, 2] && gate.estimate.lines.allSatisfy { $0.gpu == "H200" },
+                  "the H3 gate counts two clips and two talking clips on an H200: \(counts)")
+            check(gate.estimate.notes.contains { $0.contains("MiniMax H3") && $0.contains("US, EU, UK and Korea") },
+                  "it names H3 and its licence")
+            doc.pendingGate = nil
+            gate.run()
+            await waitForJob(doc, seconds: 600)  // the fake encodes four full-size 24 fps clips
+            check(doc.job == nil, "the H3 clips finished")
+            check(doc.error == nil, "H3 made the clips\(doc.error.map { ": \($0)" } ?? "")")
+            for (i, shot) in doc.movie.shots.enumerated() {
+                check(shot.videos.count == beforeH3[i] + 1 && shot.selectedVideo == chosen[i],
+                      "shot \(i + 1) has a new H3 take; the chosen one stays")
+                guard let file = shot.videos.last?.file else { continue }
+                let asset = AVURLAsset(url: folder.appendingPathComponent(file))
+                let seconds = await MovieComposer.duration(of: folder.appendingPathComponent(file)) ?? 0
+                let track = try? await asset.loadTracks(withMediaType: .video).first
+                let fps = try? await track?.load(.nominalFrameRate)
+                let size = try? await track?.load(.naturalSize)
+                let audio = try? await asset.loadTracks(withMediaType: .audio)
+                check(seconds >= max(5, shot.duration) - 0.05 && abs(Double(fps ?? 0) - 24) < 0.5
+                      && size == CGSize(width: 1344, height: 768) && audio?.isEmpty == false,
+                      "its take is 1344×768 at 24 fps, at least 5 s and as long as the shot, with sound: \(seconds) s")
+            }
+            // The edit with these takes: each clip's own sound, for its shot's length.
+            var h3 = doc.movie
+            for i in h3.shots.indices { h3.shots[i].selectedVideo = h3.shots[i].videos.last?.id }
+            let files = h3.shots.compactMap(\.selectedVideoFile)
+            let t = MovieTimeline(movie: h3, durations: await MovieComposer.durations(of: files, in: folder))
+            check(t.sounds.filter { $0.kind == .clip }.count == 4 && !t.sounds.contains { $0.kind == .dialogue }
+                  && zip(t.clips, h3.shots).allSatisfy { abs($0.duration - $1.duration) < 0.01 }
+                  && t.subtitles.count == 2,
+                  "its edit plays each clip's own sound for the shot's length, with the lines as subtitles")
+            let learned = GPUTimings.load(model.gpuTimingsURL).jobs.keys
+            check(learned.contains { $0.hasPrefix("h3-video@") } && learned.contains { $0.hasPrefix("h3-references@") },
+                  "H3 times were learned")
+        } else { check(false, "no cost gate for H3 clips: \(doc.error ?? "")") }
+        doc.movie.videoEngine = .wan22
+        // The Shots page's engine picker reopens the later stages when the engine changes: let it, then approve.
+        try? await Task.sleep(for: .milliseconds(300))
         doc.movie.approve(.video)
 
         doc.stage = .sound

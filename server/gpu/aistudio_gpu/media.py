@@ -99,6 +99,19 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     return data.astype(np.float32) / 32768.0, rate
 
 
+def resample(samples: np.ndarray, rate: int, target: int) -> np.ndarray:
+    """Band-limited resampling of float [channels, n] by FFT (zero-padding up, truncating down): enough for speech
+    references, with no scipy or torchaudio in the image."""
+    if rate == target:
+        return samples
+    n = samples.shape[-1]
+    m = max(1, int(round(n * target / rate)))
+    spec = np.fft.rfft(samples, axis=-1)
+    out = np.zeros(samples.shape[:-1] + (m // 2 + 1,), dtype=spec.dtype)
+    keep = min(out.shape[-1], spec.shape[-1])
+    out[..., :keep] = spec[..., :keep]
+    return (np.fft.irfft(out, n=m, axis=-1) * (m / n)).astype(np.float32)
+
 def tone(seconds: float, sample_rate: int, channels: int, seed: int) -> np.ndarray:
     """A gentle rising sweep (the test tasks' audio), [channels, n]."""
     n = max(1, int(round(seconds * sample_rate)))

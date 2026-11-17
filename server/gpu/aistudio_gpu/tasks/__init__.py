@@ -132,6 +132,7 @@ def _wan_params() -> dict[str, Param]:
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
+GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 62 GB conditioner take turns on it
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
@@ -150,6 +151,21 @@ SPEECH_VOICES = ("Ryan", "Aiden", "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric
 SPEECH_LANGUAGES = ("Auto", "English", "Chinese", "Japanese", "Korean", "German", "French", "Russian", "Portuguese",
                     "Spanish", "Italian")
 SEED = Param("int", 0, min=0, max=2**32 - 1)
+
+
+def _h3_params() -> dict[str, Param]:
+    return {
+        # A structured prompt reads best (see MiniMax's prompting guide): the shot, then its dialogue as
+        # <d>[English] …</d>, the soundscape and any music. With references, name them <Picture n> / <Audio n>.
+        "prompt": Param("string", ""),
+        "seed": SEED,
+        "seconds": Param("float", 5.0, min=5.0, max=15.0),  # snapped to the VAE's 17·n + 5 frames at 24 fps
+        "size": Param("string", "768p", choices=("768p", "544p")),  # 544p: about 2.3× faster per step
+        "aspect": Param("string", "auto", choices=("auto", "16:9", "9:16", "1:1")),  # auto: the first picture's
+        # LightX2V's Turbo LoRA, 8 model evaluations; off: the base model at 49 (≈ 6× the GPU time).
+        "fast": Param("bool", True),
+        "steps": Param("int", 0, min=0, max=100),  # model evaluations; 0 = 8 fast, 49 full
+    }
 
 TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     TaskSpec("wan22-t2v", "Wan 2.2 Text to Video", "video", "wan22-t2v", GPU_WAN, _wan_params(),
@@ -292,6 +308,13 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "reference_text": Param("string", ""),  # what the reference clip says (better clones; optional)
         "seed": SEED,
     }, optional_inputs=("reference",), models=("qwen3-tts",)),
+    # MiniMax H3 (Community Licence: not for the US, EU, UK or Korea without MiniMax's licence; above $20M revenue
+    # MiniMax's written permission; products made with it show "MiniMax H3"): video with its own sound, 24 fps.
+    TaskSpec("h3-video", "MiniMax H3 video with sound (licence: not US/EU/UK/Korea)", "video", "h3-video", GPU_H3,
+             _h3_params(), optional_inputs=("image", "last_image"), models=("minimax-h3",)),
+    TaskSpec("h3-references", "MiniMax H3 from references, with sound (licence: not US/EU/UK/Korea)", "video",
+             "h3-references", GPU_H3, _h3_params(), inputs=("image1",),
+             optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3"), models=("minimax-h3",)),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
         "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]
@@ -407,6 +430,12 @@ def make_worker(family: str) -> Worker:
     if family == "breeze":
         from .breeze import BreezeWorker
         return BreezeWorker()
+    if family == "h3-video":
+        from .minimax_h3 import H3Worker
+        return H3Worker("t2va")
+    if family == "h3-references":
+        from .minimax_h3 import H3Worker
+        return H3Worker("ref2va")
     raise KeyError(family)
 
 

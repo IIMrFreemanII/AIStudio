@@ -14,6 +14,7 @@ measured times and the cost. For checking a deployment and measuring cold and wa
     python server/gpu/modal_check.py ace-step-xl --prompt "indie pop, female vocals" --set lyrics=@lyrics.txt
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --set voice=designed --set description="…"
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --input reference=voice.wav
+    python server/gpu/modal_check.py h3-video --input image=start.png --prompt "…" [--set seconds=5 --set fast=false]
     python server/gpu/modal_check.py breeze-tts --set text="(sigh) Hello." --set instruction="a calm older man"
 
 ``--prompt`` fills the task's text (prompt, tags or text); ``--set name=value`` any other parameter (``@file`` reads
@@ -42,7 +43,7 @@ CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", 
            "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL",
            "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech",
-           "breeze-tts": "Breeze"}
+           "breeze-tts": "Breeze", "h3-video": "H3Video", "h3-references": "H3References"}
 
 
 def main() -> int:
@@ -148,15 +149,17 @@ def main() -> int:
     if "error" in result:
         say(f"FAILED: {result['error']}")
         return 1
+    a.out.mkdir(parents=True, exist_ok=True)
     out = a.out / f"{a.task}-{job[:8]}{result['suffix']}"
     out.write_bytes(result["data"])
-    price = GPU_PRICES.get(spec.gpu, 0)
+    used = (result.get("extra") or {}).get("gpu") or spec.gpu  # a fallback GPU when the first was busy
+    price = GPU_PRICES.get(used, GPU_PRICES.get(spec.gpu, 0))
     gpu, load = result["gpuSeconds"], result["loadSeconds"]
     say(f"saved {out} ({len(result['data']) / 1e6:.1f} MB), {previews} previews, {result.get('extra')}")
     print(f"\n  total wall time      {total:7.1f} s   (first worker event after {first_event or 0:.1f} s)")
     print(f"  job on the GPU       {gpu:7.1f} s")
     print(f"  model loading        {load:7.1f} s   ({'cold container' if load else 'warm container'})")
-    print(f"  GPU                  {spec.gpu}, ${price * 3600:.2f}/h")
+    print(f"  GPU                  {used}, ${price * 3600:.2f}/h")
     print(f"  cost (load + job)    ${(gpu + load) * price:.4f}   (+ the idle window until scale-down)")
     print(f"  cost incl. start-up  ${(first_event or 0) * price + gpu * price:.4f}   (wall time to first event × price)")
     return 0

@@ -525,3 +525,108 @@ def test_breeze_download_skips_the_readme_assets():
     assert spec["revision"] == "3e28c5151381a722f1d8661b4118c298caa77aa4" and "assets/*" not in spec["allow"]
     assert "audio_tokenizer/*" in spec["allow"] and GROUPS["breeze-tts"] == ["breeze-tts"]
     assert "breeze-tts" not in GROUPS["audio"]
+
+
+def test_resample_keeps_a_tone_and_its_length():
+    import numpy as np
+    from aistudio_gpu.media import resample
+    t = np.arange(24000) / 24000
+    x = np.stack([np.sin(2 * np.pi * 440 * t), 0.5 * np.sin(2 * np.pi * 440 * t)]).astype(np.float32)
+    y = resample(x, 24000, 32000)
+    assert y.shape == (2, 32000) and y.dtype == np.float32
+    u = np.arange(32000) / 32000
+    assert np.abs(y[0, 100:-100] - np.sin(2 * np.pi * 440 * u[100:-100])).max() < 1e-3
+    assert abs(np.abs(y[1]).max() - 0.5) < 1e-2
+    assert resample(x, 24000, 24000) is x
+    assert resample(x, 48000, 16000).shape == (2, 8000)
+
+
+def test_h3_snaps_frames_sizes_the_canvas_and_folds_lora_alphas():
+    import numpy as np
+    import pytest
+
+    from aistudio_gpu.tasks import TASKS
+    from aistudio_gpu.tasks.minimax_h3 import canvas, num_frames, prepare_lora, target_size
+
+    # 24 fps, 17·n + 5 frames, within 5–15 s.
+    assert [num_frames(s) for s in (5, 5.2, 10, 15)] == [124, 141, 243, 345]
+    assert all(n % 17 == 5 and 5 <= n / 24 <= 15 for n in (num_frames(s / 4) for s in range(20, 61)))
+    # The checkpoint's canvases; 544p is the faster draft size.
+    assert canvas(16, 9) == (768, 1344) and canvas(9, 16) == (1344, 768) and canvas(1, 1) == (768, 768)
+    assert canvas(16, 9, 544) == (544, 960)
+    spec = TASKS["h3-video"]
+    assert target_size(spec.normalize({"prompt": "x"}), (1344, 768)) == (768, 1344)  # auto: the picture's
+    assert target_size(spec.normalize({"prompt": "x"}), None) == (768, 1344)  # auto, no picture: 16:9
+    assert target_size(spec.normalize({"prompt": "x", "aspect": "9:16", "size": "544p"}), None) == (960, 544)
+    with pytest.raises(ValueError, match="1:4 to 4:1"):
+        canvas(5, 1)
+
+    # LightX2V's FL2VA file: peft names, a per-layer alpha (and a metadata one, which loses); rank 4 here.
+    a, b = np.ones((4, 8), np.float32), np.ones((8, 4), np.float32)
+    sd = {"blocks.0.to_q.lora_A.default.weight": a, "blocks.0.to_q.lora_B.default.weight": b,
+          "blocks.0.to_q.alpha": np.float32(8.0),
+          "norm_out.linear.lora_A.default.weight": a, "norm_out.linear.lora_B.default.weight": b}
+    out = prepare_lora(sd, {"alpha": "2"})
+    assert set(out) == {"transformer.blocks.0.to_q.lora_A.weight", "transformer.blocks.0.to_q.lora_B.weight",
+                        "transformer.norm_out.linear.lora_A.weight", "transformer.norm_out.linear.lora_B.weight"}
+    assert out["transformer.blocks.0.to_q.lora_B.weight"].max() == 2.0  # its own alpha 8 / rank 4
+    assert out["transformer.norm_out.linear.lora_B.weight"].max() == 0.5  # the metadata's 2 / rank 4
+    assert out["transformer.blocks.0.to_q.lora_A.weight"].max() == 1.0  # A untouched
+    # The Ref2VA file: metadata alpha only; without any alpha, scale 1.
+    assert prepare_lora({"x.lora_A.weight": a, "x.lora_B.weight": b}, {"alpha": "8"})["transformer.x.lora_B.weight"].max() == 2.0
+    assert prepare_lora({"x.lora_A.weight": a, "x.lora_B.weight": b}, None)["transformer.x.lora_B.weight"].max() == 1.0
+
+
+def test_fake_h3_makes_24fps_video_with_stereo_sound_on_its_canvas(tmp_path, monkeypatch):
+    import imageio_ffmpeg
+    import numpy as np
+    import pytest
+    from PIL import Image
+
+    from aistudio_gpu.media import write_wav
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    info = {t: TASKS[t] for t in ("h3-video", "h3-references")}
+    assert info["h3-video"].gpu == "H200" and info["h3-video"].optional_inputs == ("image", "last_image")
+    assert info["h3-references"].inputs == ("image1",) and "audio3" in info["h3-references"].optional_inputs
+    assert "US/EU/UK/Korea" in info["h3-video"].title
+
+    start = tmp_path / "start.png"
+    Image.new("RGB", (1344, 768), (0, 0, 255)).save(start)
+    spec = info["h3-video"]
+    out_dir = tmp_path / "v"
+    out_dir.mkdir()
+    out = make_worker(spec.family).run(spec, spec.normalize({"prompt": "a lighthouse", "seconds": 5, "size": "544p"}),
+                                       {"image": start}, _QuietSink(), out_dir)
+    assert out.extra["frames"] == 124 and (out.extra["width"], out.extra["height"]) == (960, 544)
+    reader = imageio_ffmpeg.read_frames(str(out.path))
+    meta = reader.__next__()
+    assert meta["fps"] == 24 and tuple(meta["size"]) == (960, 544)
+    first = np.frombuffer(next(reader), np.uint8).reshape(544, 960, 3)
+    assert first[..., 2].mean() > 200 and first[..., 0].mean() < 60  # it starts on the start picture
+    import subprocess
+    probe = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(out.path)], capture_output=True, text=True)
+    assert "32000 Hz, stereo" in probe.stderr
+
+    # References: picture 1 is required; an audio reference has to be 2–15 s.
+    spec = info["h3-references"]
+    voice = tmp_path / "voice.wav"
+    write_wav(np.zeros((1, 16000), np.float32), 16000, voice)  # 1 s
+    with pytest.raises(ValueError, match="2–15 s"):
+        make_worker(spec.family).run(spec, spec.normalize({"prompt": "she speaks"}),
+                                     {"image1": start, "audio1": voice}, _QuietSink(), tmp_path)
+    with pytest.raises(ValueError, match="prompt"):
+        make_worker(spec.family).run(spec, spec.normalize({"prompt": " "}), {"image1": start}, _QuietSink(), tmp_path)
+
+
+def test_h3_download_takes_the_diffusers_layout_and_both_turbo_loras():
+    from aistudio_gpu.download import GROUPS, MODELS
+
+    (repo, revision, into, allow), (lora_repo, _, lora_into, files) = MODELS["minimax-h3"]["parts"]
+    assert revision == "0919fb684102ef115126612f3fbb84d1027e7317" and into == "."
+    assert "transformer/*" in allow and "transformer_ref/*" in allow and "modular_model_index.json" in allow
+    assert not any(p.startswith(("FL2VA", "Ref2VA")) for p in allow)
+    assert lora_into == "turbo" and set(files) == {"fl2v.safetensors", "ref2v.safetensors"}
+    assert "8step_v1.2_768p" in files["fl2v.safetensors"] and "ref2v_turbo_8step_v1.1_768p" in files["ref2v.safetensors"]
+    assert GROUPS["minimax-h3"] == ["minimax-h3"]

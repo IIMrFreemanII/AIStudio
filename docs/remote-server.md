@@ -410,6 +410,38 @@ H100 (`AISTUDIO_GPU_AVATAR`):
 - Both log each step's time (`longcat-avatar step 3/8: … s`) and return `setupSeconds` and `stepSeconds` in the
   result's `extra`.
 
+### MiniMax H3: video with its own sound
+
+| Node | Task | What it makes |
+|---|---|---|
+| MiniMax H3 Video with Sound | `h3-video` | A clip from the prompt alone, or from a first and/or last frame |
+| MiniMax H3 from References | `h3-references` | A clip from up to four pictures and three voice or music clips (2–15 s each), which the prompt names as `<Picture 1>` and `<Audio 1>`; a character can speak in a reference's voice |
+
+H3 makes 5–15 s at 24 fps, a 768-pixel short edge (`size` 544p is about 2.3× faster per step) and 32 kHz stereo:
+dialogue, effects and ambience from the same model. Write the prompt in MiniMax's structure
+(`integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`), with each line as
+`<d>[English] the line</d>`; the presets show one. `fast` (the default) uses LightX2V's Turbo LoRA at 8 steps; off,
+the base model runs 49, about six times the GPU time.
+
+It runs on an H200 (`AISTUDIO_GPU_H3`): each of its two classes (`H3Video`, `H3References`) holds one 61.7 GB
+transformer with the shared 62 GB Qwen3-VL conditioner, about 140 GB in host RAM, and moves each onto the GPU as it
+runs. When no H200 is free it takes a B200 (`AISTUDIO_GPU_H3_FALLBACK`, comma-separated, empty for none): on
+2026-11-17 an H200 call waited 41 minutes in Modal's queue. The result's `extra.gpu` names the GPU it got, and the cost
+sheet still prices H3 at the H200 rate (a B200 costs about 38% more per second). On an H200, a 5 s 768p Turbo clip
+took 52 s to load, 71 s of setup and 8 steps of 7.6 s. Install it with the `minimax-h3` download (≈ 213 GB: the diffusers layout and both Turbo LoRAs, not the
+original checkpoint's duplicate folders).
+
+**Licence.** The MiniMax H3 Community Licence excludes the US, the EU, the UK and South Korea unless you have
+MiniMax's own licence (apply at platform.minimax.io/h3-license). Above $20M in annual revenue you need MiniMax's
+written permission, and products made with it must show "MiniMax H3".
+
+In Movie Studio, the Shots page's engine menu switches a movie to H3. Each clip then carries its own sound:
+- talking shots are made from references: the keyframe, the speakers' character sheets and their voice samples, so
+  each character speaks in their own voice;
+- the other shots start from their keyframe, or from the clip before's last frame;
+- the Voices stage makes only the voices, and the Sound stage only the music;
+- the edit plays each clip's own sound for its shot's length, with the lines as subtitles.
+
 ### Music, sound and speech
 
 | Node | Model | Licence | What it makes |

@@ -54,11 +54,12 @@ public struct MovieTimeline: Sendable, Equatable {
 
     // MARK: audio
 
-    public enum SoundKind: String, Sendable, CaseIterable { case dialogue, effects, music }
+    /// `clip`: a clip's own sound (MiniMax H3 makes each shot's lines, effects and ambience with its picture).
+    public enum SoundKind: String, Sendable, CaseIterable { case clip, dialogue, effects, music }
 
-    /// A piece of sound on the timeline: a line, a shot's effects, or a scene's score.
+    /// A piece of sound on the timeline: a clip's own sound, a line, a shot's effects, or a scene's score.
     public struct Sound: Sendable, Equatable, Identifiable {
-        /// "line-<line uuid>", "fx-<shot uuid>", "music-<scene id>".
+        /// "clip-<shot uuid>", "line-<line uuid>", "fx-<shot uuid>", "music-<scene id>".
         public var id: String
         public var kind: SoundKind
         /// Relative to the movie's folder.
@@ -100,11 +101,12 @@ public struct MovieTimeline: Sendable, Equatable {
     public static let duckRamp = 0.25
 
     /// The sound's gain over time as piecewise-linear points (absolute timeline times): its gain × its fades, and for
-    /// music × the dip under dialogue (lines closer than half a second count as one).
+    /// music × the dip while someone speaks (the subtitles: each voiced line, or each line an H3 clip speaks; lines
+    /// closer than half a second count as one).
     public func volume(for sound: Sound) -> [VolumePoint] {
         var spans: [(Double, Double)] = []
         if sound.kind == .music {
-            for d in sounds.filter({ $0.kind == .dialogue }).sorted(by: { $0.start < $1.start }) {
+            for d in subtitles.sorted(by: { $0.start < $1.start }) {
                 if let last = spans.last, d.start - last.1 < 0.5 {
                     spans[spans.count - 1].1 = max(last.1, d.end)
                 } else {
@@ -152,7 +154,9 @@ public struct MovieTimeline: Sendable, Equatable {
             let source = durations[take.file] ?? shot.duration
             let trimStart = max(0, min(shot.trimStart, source - Self.minimumClip))
             let trimEnd = max(0, min(shot.trimEnd, source - trimStart - Self.minimumClip))
-            let length = max(Self.minimumClip, source - trimStart - trimEnd)
+            var length = max(Self.minimumClip, source - trimStart - trimEnd)
+            // An H3 clip is at least 5 s: it plays for the shot's planned length.
+            if movie.videoEngine.makesSound { length = max(Self.minimumClip, min(length, shot.duration)) }
             var clip = Clip(shot: shot.id, file: take.file, poster: take.poster, sourceDuration: source, start: t,
                             trimStart: trimStart, duration: length, fadeIn: 0, fadeOut: 0, transition: shot.transition,
                             track: clips.count % 2)
@@ -190,6 +194,22 @@ public struct MovieTimeline: Sendable, Equatable {
         var subs: [Subtitle] = []
         for c in clips {
             guard let shot = movie.shots.first(where: { $0.id == c.shot }) else { continue }
+            if movie.videoEngine.makesSound {
+                // The clip's own sound (its lines, effects and ambience), and its lines' estimated times as subtitles.
+                let n = (movie.shots.firstIndex { $0.id == shot.id } ?? 0) + 1
+                out.append(Sound(id: "clip-\(shot.id.uuidString)", kind: .clip, file: c.file, label: "Shot \(n)",
+                                 start: c.start, offset: c.trimStart, duration: c.duration, gain: movie.mix.dialogue,
+                                 fadeIn: max(c.fadeIn, 0.02), fadeOut: max(c.fadeOut, 0.05), track: 0))
+                for p in MovieH3.lineTimes(shot) {
+                    guard let line = shot.dialogue.first(where: { $0.id == p.line }) else { continue }
+                    let t0 = c.start - c.trimStart + p.start
+                    let lo = max(t0, c.start), hi = min(t0 + p.seconds, c.end)
+                    guard hi - lo >= 0.05 else { continue }
+                    subs.append(Subtitle(start: lo, end: hi, speaker: movie.character(line.character)?.name ?? line.character,
+                                         text: line.text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                }
+                continue
+            }
             for p in MovieVoices.layout(shot) {
                 guard let line = shot.dialogue.first(where: { $0.id == p.line }),
                       let take = line.takes.first(where: { $0.id == line.selectedTake }) else { continue }
@@ -238,8 +258,8 @@ public struct MovieTimeline: Sendable, Equatable {
                 }
             }
         }
-        sounds = out
         subtitles = subs.sorted { $0.start < $1.start }
+        sounds = out
     }
 
     /// A stretch of the timeline where the same clips show and every opacity changes linearly: what one video

@@ -21,6 +21,10 @@ extension AppModel {
             doc.error = "Choose a keyframe for shot \(lacking.map(String.init).joined(separator: ", ")) first (Keyframes)."
             return
         }
+        if doc.movie.videoEngine == .minimaxH3 {
+            requestH3Clips(doc, shots: shots)
+            return
+        }
         let size = doc.movie.aspect.videoSize
         let engine = doc.movie.lipSyncEngine
         let talking = shots.filter { MovieShots.usesLipSync($0, in: doc.movie) }
@@ -76,6 +80,46 @@ extension AppModel {
         }
     }
 
+    /// Make Clips with MiniMax H3: talking shots from references (keyframe, the speakers' sheets and voices), the
+    /// rest from their start picture; each clip with its own sound.
+    private func requestH3Clips(_ doc: MovieDocument, shots asked: [Shot]) {
+        // Room for the lines first (H3 speaks them inside the clip), so the sheet prices the real lengths.
+        let unfit = MovieH3.fitDurations(&doc.movie).compactMap { id in doc.movie.shots.first { $0.id == id } }
+            .compactMap { number(of: $0, in: doc.movie) }
+        let shots = asked.compactMap { s in doc.movie.shots.first { $0.id == s.id } }
+        let talking = shots.filter { MovieH3.usesReferences($0, in: doc.movie) }
+        let plain = shots.filter { !MovieH3.usesReferences($0, in: doc.movie) }
+        let size = doc.movie.videoSize
+        func avg(_ w: [Double]) -> Double { w.isEmpty ? 0 : w.reduce(0, +) / Double(w.count) }
+        var notes = ["Clips are \(size.width)×\(size.height) at 24 fps with their own sound (lines, effects, "
+                     + "ambience), by MiniMax H3's fast 8-step mode; each is at least 5 s, and the edit plays the "
+                     + "shot's length.",
+                     "MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence; products "
+                     + "made with it must show \"MiniMax H3\"."]
+        if !talking.isEmpty {
+            notes.append("Talking shots are made from their keyframe, the speakers' character sheets and their voices "
+                         + "(Voices), so each character speaks in their own voice.")
+        }
+        let voiceless = shots.filter { !MovieH3.speakers($0).isEmpty && !MovieH3.usesReferences($0, in: doc.movie) }.count
+        if voiceless > 0 {
+            notes.append("\(voiceless == 1 ? "1 shot's speakers have" : "\(voiceless) shots' speakers have") no voice yet: "
+                         + "H3 makes one up from the voice description.")
+        }
+        if !unfit.isEmpty {
+            notes.append("The lines of shot \(unfit.map(String.init).joined(separator: ", ")) are longer than a clip can "
+                         + "be (15 s): shorten them, or split the shot.")
+        }
+        gateImages(doc, title: shots.count == 1 ? "Make a Clip" : "Make Clips", work: [
+            ImageWork(label: plain.count == 1 ? "1 clip" : "\(plain.count) clips", task: "h3-video", jobs: plain.count,
+                      megapixels: avg(plain.map { MovieH3.work($0, in: doc.movie) })),
+            ImageWork(label: talking.count == 1 ? "1 talking clip" : "\(talking.count) talking clips",
+                      task: "h3-references", jobs: talking.count,
+                      megapixels: avg(talking.map { MovieH3.work($0, in: doc.movie) })),
+        ], extraNotes: notes) { [weak self] in
+            self?.makeClips(doc, shots: shots.map(\.id))
+        }
+    }
+
     private func number(of shot: Shot, in movie: MovieProject) -> Int? {
         movie.shots.firstIndex { $0.id == shot.id }.map { $0 + 1 }
     }
@@ -83,9 +127,11 @@ extension AppModel {
     private func makeClips(_ doc: MovieDocument, shots ids: [UUID]) {
         // A continuing shot starts from the clip before's last frame, so it waits for that clip; the rest run at once.
         let engine = doc.movie.lipSyncEngine
-        let tasks = ids.map { id in
-            doc.movie.shots.first { $0.id == id }.map { MovieShots.usesLipSync($0, in: doc.movie) } == true
-                ? engine.task : "wan22-i2v"
+        let h3 = doc.movie.videoEngine == .minimaxH3
+        let tasks = ids.map { id -> String in
+            guard let shot = doc.movie.shots.first(where: { $0.id == id }) else { return "wan22-i2v" }
+            if h3 { return MovieH3.usesReferences(shot, in: doc.movie) ? "h3-references" : "h3-video" }
+            return MovieShots.usesLipSync(shot, in: doc.movie) ? engine.task : "wan22-i2v"
         }
         runImageJob(doc, title: "Making clips", count: ids.count, chains: MovieShots.chains(ids, in: doc.movie),
                     task: { tasks[$0] }) { [weak self] doc, i, server in
@@ -106,10 +152,18 @@ extension AppModel {
                 }
             }
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let lipSync = MovieShots.usesLipSync(shot, in: doc.movie)
+            let lipSync = !h3 && MovieShots.usesLipSync(shot, in: doc.movie)
             let render: MovieArt.Render
             let template: MovieTemplate
-            if lipSync {
+            if h3, tasks[i] == "h3-references", let key = shot.selectedKeyframeFile {
+                template = self.movieTemplate(MovieH3.TemplateName.references, for: doc) { MovieH3.referencesTemplate() }
+                render = MovieH3.referencesRender(shot, movie: doc.movie, folder: folder,
+                                                  keyframe: folder.appendingPathComponent(key), seed: seed, server: server)
+            } else if h3 {
+                template = self.movieTemplate(MovieH3.TemplateName.video, for: doc) { MovieH3.videoTemplate() }
+                render = MovieH3.videoRender(shot, movie: doc.movie, folder: folder, startImage: start, ends: ends,
+                                             seed: seed, server: server)
+            } else if lipSync {
                 // The shot's lines as one recording as long as the shot: what the lips follow.
                 let voice = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot))
                 try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration, to: voice)
@@ -154,8 +208,8 @@ extension AppModel {
                 try? MovieComposer.writePNG(still, to: folder.appendingPathComponent(poster))
             }
             let size = doc.movie.aspect.videoSize
-            let clipWork = MovieShots.work(width: size.width, height: size.height,
-                                           frames: MovieShots.frames(for: shot.duration))
+            let clipWork = h3 ? MovieH3.work(shot, in: doc.movie)
+                : MovieShots.work(width: size.width, height: size.height, frames: MovieShots.frames(for: shot.duration))
             let talkWork = MovieShots.talkingWork(width: size.width, height: size.height, seconds: shot.duration)
             // A dub graph runs the ordinary clip and the lip-sync: each job learns its own task's timing.
             var cost: Double?
@@ -202,7 +256,7 @@ extension AppModel {
         do {
             let timeline = await movieTimeline(doc)
             let composition = try await MovieComposer.build(timeline, folder: movieStore.folder(doc.id),
-                                                            size: doc.movie.aspect.videoSize)
+                                                            size: doc.movie.videoSize)
             try await MovieComposer.export(composition, to: url, codec: codec,
                                            burnSubtitles: doc.movie.mix.burnSubtitles) { p in
                 Task { @MainActor in doc.job?.progress = p }
