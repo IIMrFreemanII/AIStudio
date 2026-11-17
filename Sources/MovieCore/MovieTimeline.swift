@@ -195,12 +195,14 @@ public struct MovieTimeline: Sendable, Equatable {
         for c in clips {
             guard let shot = movie.shots.first(where: { $0.id == c.shot }) else { continue }
             if movie.videoEngine.makesSound {
-                // The clip's own sound (its lines, effects and ambience), and its lines' estimated times as subtitles.
+                // The clip's own sound (its lines, effects and ambience), and its lines as subtitles where the clip
+                // speaks them (estimated when its voice hasn't been looked for).
                 let n = (movie.shots.firstIndex { $0.id == shot.id } ?? 0) + 1
                 out.append(Sound(id: "clip-\(shot.id.uuidString)", kind: .clip, file: c.file, label: "Shot \(n)",
                                  start: c.start, offset: c.trimStart, duration: c.duration, gain: movie.mix.dialogue,
                                  fadeIn: max(c.fadeIn, 0.02), fadeOut: max(c.fadeOut, 0.05), track: 0))
-                for p in MovieH3.lineTimes(shot) {
+                let heard = shot.selectedVideoTake?.voice.map { MovieH3.heardTimes(shot, voice: $0) }
+                for p in heard ?? MovieH3.lineTimes(shot) {
                     guard let line = shot.dialogue.first(where: { $0.id == p.line }) else { continue }
                     let t0 = c.start - c.trimStart + p.start
                     let lo = max(t0, c.start), hi = min(t0 + p.seconds, c.end)

@@ -117,6 +117,9 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
     /// The video engine that made a clip (`VideoEngine` raw value); nil for clips made before engines were recorded,
     /// which are Wan 2.2's.
     public var engine: String?
+    /// Where someone speaks in a clip with its own sound (MiniMax H3), found when it was made (`MovieSpeech`); nil
+    /// when not looked for yet, empty when no voice was found.
+    public var voice: [VoiceSpan]?
 
     public init(id: UUID = UUID(), file: String, poster: String? = nil, seed: Int? = nil, costUSD: Double? = nil,
                 date: Date = Date(), seconds: Double? = nil, gainDB: Double? = nil, engine: String? = nil) {
