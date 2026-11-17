@@ -58,6 +58,36 @@ MODELS: dict[str, dict] = {
         "wav2vec2-large-xlsr-53-english/config.json", "wav2vec2-large-xlsr-53-english/preprocessor_config.json",
         "wav2vec2-large-xlsr-53-english/special_tokens_map.json", "wav2vec2-large-xlsr-53-english/vocab.json",
         "wav2vec2-large-xlsr-53-english/alphabet.json", "wav2vec2-large-xlsr-53-english/model.safetensors"]},
+    # LongCat-Video-Avatar 1.6 (MIT): its bf16 avatar DiT, the two distillation LoRAs, the scheduler and
+    # Whisper-large-v3 (safetensors only; not the int8 DiT, the vocal separator or Whisper's flax/pt copies), plus
+    # LongCat-Video's UMT5 text encoder, tokenizer and VAE (not its own 54 GB DiT). ≈ 63.6 GB, summed from the repos'
+    # file listings at these revisions, 2026-11-17.
+    "longcat-avatar": {"repo": "meituan-longcat/LongCat-Video-Avatar-1.6", "parts": [
+        ("meituan-longcat/LongCat-Video-Avatar-1.6", "acfc628244201fc53fb6fe8a8903c5bac9bdf68f", "avatar", [
+            "config.json", "model_index.json", "scheduler/*", "base_model/*", "loraA/*", "loraB/*",
+            "whisper-large-v3/model.safetensors", "whisper-large-v3/config.json",
+            "whisper-large-v3/generation_config.json", "whisper-large-v3/preprocessor_config.json",
+            "whisper-large-v3/tokenizer.json", "whisper-large-v3/tokenizer_config.json", "whisper-large-v3/vocab.json",
+            "whisper-large-v3/merges.txt", "whisper-large-v3/added_tokens.json", "whisper-large-v3/normalizer.json",
+            "whisper-large-v3/special_tokens_map.json"]),
+        ("meituan-longcat/LongCat-Video", "03b55529b1d1d4045f5fbe14d65c8c6e8116b278", "base", [
+            "text_encoder/*", "tokenizer/*", "vae/*"]),
+    ]},
+    # InfiniteTalk (Apache 2.0) on Wan 2.1 I2V 14B 480p (its official layout: the fp32 transformer, which the repo
+    # casts to bf16 as it loads, the UMT5 and CLIP encoders, the VAE and tokenizers), InfiniteTalk's single-speaker
+    # weights (not its 143 GB of quantised copies), the Chinese wav2vec2 base (its safetensors file is on PR 1) and
+    # Kijai's lightx2v 4-step LoRA. ≈ 94 GB, summed from the listings, 2026-11-17.
+    "infinitetalk": {"repo": "MeiGen-AI/InfiniteTalk", "parts": [
+        ("Wan-AI/Wan2.1-I2V-14B-480P", "6b73f84e66371cdfe870c72acd6826e1d61cf279", "wan21-i2v", [
+            "config.json", "diffusion_pytorch_model-*.safetensors", "diffusion_pytorch_model.safetensors.index.json",
+            "models_t5_umt5-xxl-enc-bf16.pth", "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+            "Wan2.1_VAE.pth", "google/umt5-xxl/*", "xlm-roberta-large/*"]),
+        ("MeiGen-AI/InfiniteTalk", "d59847ebdacf19245bfca3fb23311c0cada8378a", "infinitetalk", ["single/*"]),
+        ("TencentGameMate/chinese-wav2vec2-base", "5f7a6cfdfc5440ec78748f79a9dd66f077c2b463", "wav2vec2", [
+            "config.json", "preprocessor_config.json", "model.safetensors"]),
+        ("Kijai/WanVideo_comfy", "8260d429d19fd7a72304cad059160b95d843913f", "lightx2v", {
+            "lightx2v.safetensors": "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank32.safetensors"}),
+    ]},
     # Gated: needs a Hugging Face token whose account accepted the licence on the model page.
     "flux1-dev": {"repo": "black-forest-labs/FLUX.1-dev", "revision": "3de623fc3c33e44ffbe2bad470d0f45bccf2eb21",
                   "gated": True, "allow": [
@@ -115,7 +145,9 @@ MODELS: dict[str, dict] = {
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
 }
 # What a task name expands to.
-GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"], "flux": ["flux1-dev"],
+GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"],
+          "longcat-avatar": ["longcat-avatar"], "infinitetalk": ["infinitetalk"],
+          "lipsync": ["wan22-s2v", "longcat-avatar", "infinitetalk"], "flux": ["flux1-dev"],
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
@@ -155,9 +187,13 @@ def download(names: list[str], root: Path, token: str | None = None, on_done=Non
         if "files" in spec:
             _files(spec, dest, token)
         elif "parts" in spec:
-            for repo, revision, into in spec["parts"]:
+            for repo, revision, into, *rest in spec["parts"]:
                 print(f"  {repo} → {name}/{into}", flush=True)
-                _snapshot(repo, dest / into, token, revision=revision, ignore=[".gitattributes"])
+                pick = rest[0] if rest else None  # an allow list, or {target: source} single files
+                if isinstance(pick, dict):
+                    _files({"repo": repo, "revision": revision, "files": pick}, dest / into, token)
+                else:
+                    _snapshot(repo, dest / into, token, revision=revision, allow=pick, ignore=[".gitattributes"])
         elif spec.get("sa3"):
             _convert_sa3(spec, dest, token)
         elif "bf16" in spec:

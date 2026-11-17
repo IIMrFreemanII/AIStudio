@@ -30,9 +30,19 @@ struct MovieClipsPage: View {
             Toggle("Lip-sync", isOn: $doc.movie.lipSync)
                 .toggleStyle(.switch).controlSize(.small)
                 .disabled(doc.isBusy)
-                .mgHelp("Talking shots with spoken lines are animated from their voices by Wan 2.2 S2V, lips in sync "
-                        + "(slower and dearer); off: like every other shot")
+                .mgHelp("Talking shots with spoken lines are animated from their voices, lips in sync (slower and "
+                        + "dearer); off: like every other shot")
                 .mgTestAnchor("movie-lip-sync")
+            if doc.movie.lipSync {
+                MGPicker(selection: $doc.movie.lipSyncEngine,
+                         options: LipSyncEngine.allCases.map { ($0, $0.title) }, maxWidth: 160)
+                    .disabled(doc.isBusy)
+                    .mgHelp("Wan 2.2 S2V: from the keyframe, 40 steps. LongCat Avatar: from the keyframe, 8 steps, "
+                            + "one or two speakers. InfiniteTalk: makes the shot's ordinary clip, then re-syncs the "
+                            + "speaker to the lines (talking shots up to 7.5 s)")
+                    .mgTestAnchor("movie-lip-sync-engine")
+                    .onChange(of: doc.movie.lipSyncEngine) { model.fitShotsToLines(doc) }
+            }
             Button("Edit Template") {
                 model.editMovieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
             }
@@ -40,7 +50,10 @@ struct MovieClipsPage: View {
             .mgHelp("Opens the graph clips are made with as a workflow; this movie uses your edited copy")
             .mgContextMenu {
                 MGMenuItem.button("Edit Talking-Shot Template") {
-                    model.editMovieTemplate(MovieShots.TemplateName.talking, for: doc) { MovieShots.talkingTemplate() }
+                    let engine = doc.movie.lipSyncEngine
+                    model.editMovieTemplate(MovieShots.TemplateName.talking(engine), for: doc) {
+                        MovieShots.talkingTemplate(for: engine)
+                    }
                 }
             }
             Button(approved ? "Approved" : "Approve Shots") {

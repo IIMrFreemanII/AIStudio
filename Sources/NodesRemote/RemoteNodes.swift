@@ -12,7 +12,7 @@ import NodesStandard
 public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
-        RemoteFluxNode.self, RemoteQwenImageNode.self,
+        RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self,
     ]
@@ -29,7 +29,8 @@ public enum RemoteNodes {
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
     public static let taskIDs: [String: String] = [
         "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v",
-        "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteFlux": "flux1-dev",
+        "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
+        "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
     ]
@@ -102,8 +103,9 @@ public enum RemoteNodeError: Error, CustomStringConvertible {
 
 /// Runs one job and returns the downloaded result file.
 func runRemoteJob(task: String, params: [String: Any], images: [String: MLXArray] = [:],
-                  audios: [String: AudioClip] = [:], files: [String: URL] = [:], links: [String: LoRARemote] = [:],
-                  inputs nodeInputs: NodeInputs, context: ExecutionContext) async throws -> (URL, OutputDescriptor.Kind) {
+                  audios: [String: AudioClip] = [:], videos: [String: VideoClip] = [:], files: [String: URL] = [:],
+                  links: [String: LoRARemote] = [:], inputs nodeInputs: NodeInputs,
+                  context: ExecutionContext) async throws -> (URL, OutputDescriptor.Kind) {
     let serverID = try nodeInputs.string("server")
     guard let endpoint = RemoteEndpoints.resolve(serverID) else { throw RemoteNodeError.noServer(serverID) }
     let client: GPUJobClient = try await context.resources.get(
@@ -113,20 +115,31 @@ func runRemoteJob(task: String, params: [String: Any], images: [String: MLXArray
 
     // The pictures are encoded here (MLX); everything after is network, so other graphs can use the Mac meanwhile.
     let pngs = try images.mapValues(pngData)
+    // Clips go up as MP4: the file they were read from when unchanged (a cloud clip), else encoded here.
+    var clips: [String: URL] = [:]
+    for (name, clip) in videos {
+        if let source = clip.sourceURL {
+            clips[name] = source
+        } else {
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("upload-\(UUID().uuidString).mp4")
+            try await MediaIO.writeVideo(clip, to: url, quality: 0.9)
+            clips[name] = url
+        }
+    }
     return try await RemoteWait.outside {
-        try await submitRemoteJob(task: task, params: params, pngs: pngs, audios: audios, files: files, links: links,
-                                  client: client, endpoint: endpoint, context: context)
+        try await submitRemoteJob(task: task, params: params, pngs: pngs, audios: audios, clips: clips, files: files,
+                                  links: links, client: client, endpoint: endpoint, context: context)
     }
 }
 
 /// `runRemoteJob` past encoding: uploads, runs the job, downloads its result.
 private func submitRemoteJob(task: String, params: [String: Any], pngs: [String: Data], audios: [String: AudioClip],
-                             files: [String: URL], links: [String: LoRARemote], client: GPUJobClient,
+                             clips: [String: URL], files: [String: URL], links: [String: LoRARemote], client: GPUJobClient,
                              endpoint: RemoteEndpoints.Endpoint, context: ExecutionContext)
     async throws -> (URL, OutputDescriptor.Kind)
 {
     var uploaded: [String: String] = [:]
-    if !pngs.isEmpty || !audios.isEmpty || !files.isEmpty {
+    if !pngs.isEmpty || !audios.isEmpty || !clips.isEmpty || !files.isEmpty {
         context.status("Uploading")
         for (name, png) in pngs {
             uploaded[name] = try await client.upload(png, ext: "png", progress: uploadReporter("image", context))
@@ -134,6 +147,9 @@ private func submitRemoteJob(task: String, params: [String: Any], pngs: [String:
         for (name, clip) in audios {
             uploaded[name] = try await client.upload(MediaIO.wavData(clip), ext: "wav",
                                                      progress: uploadReporter("audio", context))
+        }
+        for (name, url) in clips.sorted(by: { $0.key < $1.key }) {
+            uploaded[name] = try await client.uploadFile(url, ext: "mp4", progress: uploadReporter("video", context))
         }
         for (name, url) in files.sorted(by: { $0.key < $1.key }) {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
@@ -489,6 +505,82 @@ public struct RemoteWanSpeechToVideoNode: NodeImplementation {
         let audios = ["audio": MediaOps.channels(speech, 1)]
         let (url, _) = try await runRemoteJob(task: "wan22-s2v", params: params, images: images, audios: audios,
                                               inputs: inputs, context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// LongCat-Video-Avatar 1.6 (MIT): a talking clip from a picture and speech, like Wan S2V but distilled to 8 steps,
+/// so about a minute of H100 time per clip. A second voice (`audio 2`) makes a two-person scene: `audio` is the
+/// left-hand person, `audio 2` the right-hand one, on one timeline (silence in one is the other's turn). Use clean
+/// speech: the model hears everything in the recording. The clip is as long as the speech, at 25 fps, with it in.
+public struct RemoteLongCatAvatarNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteLongCatAvatar", displayName: "LongCat Avatar Talking Video (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("image", .image),
+            InputSpec("audio", .audio),
+            InputSpec("audio2", .audio, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            // The size follows the picture's shape (832×480 for a wide one at 480p).
+            InputSpec("resolution", .string, default: .string("480p"), widget: .choice(["480p", "720p"])),
+            // 0 = automatic (8).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 50, step: 1), zeroLabel: "auto"),
+        ],
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"),
+            "resolution": try inputs.string("resolution"), "steps": try inputs.int("steps"),
+        ]
+        let speech: AudioClip = try inputs.object("audio")
+        var audios = ["audio": MediaOps.channels(speech, 1)]
+        if let second = inputs.optionalObject("audio2", as: AudioClip.self) {
+            audios["audio2"] = MediaOps.channels(second, 1)
+        }
+        let (url, _) = try await runRemoteJob(task: "longcat-avatar", params: params,
+                                              images: ["image": try inputs.object("image")], audios: audios,
+                                              inputs: inputs, context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// InfiniteTalk (Apache 2.0): dubs a clip, re-syncing the speaker's lips, head and body to new speech while keeping
+/// the clip's camera move and look. 4 steps (lightx2v LoRA), about a minute of H100 time for a short clip. The
+/// result is as long as the speech (past the clip's end its last frame holds), at 25 fps, with the speech in.
+public struct RemoteInfiniteTalkNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteInfiniteTalk", displayName: "InfiniteTalk Lip-Sync (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("video", .video),
+            InputSpec("audio", .audio),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("resolution", .string, default: .string("480p"), widget: .choice(["480p", "720p"])),
+            // 0 = automatic (4).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 40, step: 1), zeroLabel: "auto"),
+            // 0 = automatic (2); higher follows the speech more tightly.
+            InputSpec("audio_guidance", .float, default: .double(0),
+                      widget: .number(min: 0, max: 10, step: 0.5), zeroLabel: "auto"),
+        ],
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"),
+            "resolution": try inputs.string("resolution"), "steps": try inputs.int("steps"),
+            "audio_guidance": try inputs.float("audio_guidance"),
+        ]
+        let speech: AudioClip = try inputs.object("audio")
+        let (url, _) = try await runRemoteJob(task: "infinitetalk", params: params,
+                                              audios: ["audio": MediaOps.channels(speech, 1)],
+                                              videos: ["video": try inputs.object("video")], inputs: inputs,
+                                              context: context)
         return ["video": .object(try await loadVideo(url))]
     }
 }

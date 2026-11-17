@@ -95,6 +95,17 @@ struct NodeExtras: View {
                      + "guidance, which runs each step twice.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
+            if node.type == "RemoteLongCatAvatar" {
+                Text("A talking clip from a picture and speech, 8 steps. Connect audio 2 for a second speaker: audio "
+                     + "is the left-hand person, audio 2 the right-hand one, on one timeline (pad each with silence "
+                     + "where the other speaks). Use clean speech, with no music under it.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
+            if node.type == "RemoteInfiniteTalk" {
+                Text("Dubs a clip: the speaker's lips, head and body follow the new speech, and the camera move stays. "
+                     + "The result is as long as the speech; past the clip's end its last frame holds.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
             if node.type == "RemoteTextToSpeech" {
                 Text("Connect a reference clip to clone its voice (a few seconds; its transcript helps). Otherwise it "
                      + "speaks with the chosen voice, or with \"designed\", a new voice made from the description. "

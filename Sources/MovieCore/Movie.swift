@@ -112,6 +112,35 @@ public struct Take: Codable, Identifiable, Sendable, Equatable {
     }
 }
 
+/// The cloud model that animates a talking shot from its lines.
+public enum LipSyncEngine: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Wan 2.2 S2V: from the keyframe, 40 steps (several minutes of GPU time a clip).
+    case wanS2V = "wan-s2v"
+    /// LongCat-Video-Avatar 1.6: from the keyframe, distilled to 8 steps; one or two speakers.
+    case longcat
+    /// InfiniteTalk: makes the shot's ordinary Wan clip, then re-syncs the speaker to the lines (keeps its motion).
+    case infiniteTalk = "infinitetalk"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .wanS2V: "Wan 2.2 S2V"
+        case .longcat: "LongCat Avatar"
+        case .infiniteTalk: "InfiniteTalk"
+        }
+    }
+
+    /// The server task that does the lip-sync.
+    public var task: String {
+        switch self {
+        case .wanS2V: "wan22-s2v"
+        case .longcat: "longcat-avatar"
+        case .infiniteTalk: "infinitetalk"
+        }
+    }
+}
+
 public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
     /// A character's id.
@@ -396,14 +425,17 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     /// The scenes' music.
     public var music: [MusicCue]
     public var mix: MovieMix
-    /// Talking shots are animated by Wan 2.2 S2V from their lines' audio (lips in sync); off: like any other shot.
+    /// Talking shots are animated from their lines' audio (lips in sync, by `lipSyncEngine`); off: like any other shot.
     public var lipSync: Bool
+    /// The model that makes lip-synced talking shots.
+    public var lipSyncEngine: LipSyncEngine
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
                 llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
                 shots: [Shot] = [], approved: Set<MovieStage> = [], costSpent: Double = 0, created: Date = Date(),
-                modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true) {
+                modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true,
+                lipSyncEngine: LipSyncEngine = .wanS2V) {
         self.id = id
         self.title = title
         self.idea = idea
@@ -422,11 +454,12 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.music = music
         self.mix = mix
         self.lipSync = lipSync
+        self.lipSyncEngine = lipSyncEngine
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, approved,
-             costSpent, created, modified, music, mix, lipSync
+             costSpent, created, modified, music, mix, lipSync, lipSyncEngine
     }
 
     /// Movies saved before the sound stages have no music, mix or lip-sync setting.
@@ -451,6 +484,8 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         music = try c.decodeIfPresent([MusicCue].self, forKey: .music) ?? []
         mix = try c.decodeIfPresent(MovieMix.self, forKey: .mix) ?? MovieMix()
         lipSync = try c.decodeIfPresent(Bool.self, forKey: .lipSync) ?? true
+        // Movies from before the choice used Wan S2V; an engine this version doesn't know falls back to it.
+        lipSyncEngine = (try? c.decodeIfPresent(LipSyncEngine.self, forKey: .lipSyncEngine)) ?? .wanS2V
     }
 
     public var runtime: Double { shots.reduce(0) { $0 + $1.duration } }

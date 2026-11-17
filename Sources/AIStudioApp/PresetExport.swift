@@ -302,6 +302,42 @@ enum PresetExport {
                             "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
                      ])
                  }),
+            Spec(id: "cloud-longcat-avatar", name: "Talking Clip, Fast · Cloud GPU", category: .video, models: [],
+                 modelName: "LongCat-Video-Avatar 1.6 on a GPU server",
+                 summary: "A picture speaks, in 8 steps: a lip-synced clip from a still and clean speech, on an NVIDIA GPU. Connect a second voice to audio 2 for a two-person scene (left and right). About a minute of GPU time per clip.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     Graph(nodes: [
+                        GraphNode(id: "first_frame", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 60)),
+                        GraphNode(id: "speech", type: "LoadAudio", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 260)),
+                        GraphNode(id: "cloud", type: "RemoteLongCatAvatar", inputs: [
+                            "image": .link(node: "first_frame", output: "image"),
+                            "audio": .link(node: "speech", output: "audio"),
+                            "prompt": .value(.string("A person talking to the camera, natural expressions")),
+                        ], position: GraphPoint(x: 340, y: 60)),
+                        GraphNode(id: "show", type: "PreviewVideo", inputs: [
+                            "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
+                     ])
+                 }),
+            Spec(id: "cloud-infinitetalk", name: "Lip-Sync a Clip · Cloud GPU", category: .video, models: [],
+                 modelName: "InfiniteTalk on a GPU server",
+                 summary: "Dub a clip: the speaker's lips, head and body follow new speech while the camera move stays, on an NVIDIA GPU. The result is as long as the speech. About a minute of GPU time for a short clip.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     Graph(nodes: [
+                        GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 60)),
+                        GraphNode(id: "speech", type: "LoadAudio", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 260)),
+                        GraphNode(id: "cloud", type: "RemoteInfiniteTalk", inputs: [
+                            "video": .link(node: "clip", output: "video"),
+                            "audio": .link(node: "speech", output: "audio"),
+                            "prompt": .value(.string("A person talking, natural expressions")),
+                        ], position: GraphPoint(x: 340, y: 60)),
+                        GraphNode(id: "show", type: "PreviewVideo", inputs: [
+                            "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
+                     ])
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

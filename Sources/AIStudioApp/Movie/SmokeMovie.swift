@@ -242,6 +242,48 @@ extension SmokeTest {
         let learned = GPUTimings.load(model.gpuTimingsURL).jobs.keys
         check(learned.contains { $0.hasPrefix("wan22-i2v@") } && learned.contains { $0.hasPrefix("wan22-s2v@") },
               "clip times were learned")
+        // The other lip-sync models, on the talking shots only: a new take each, at their 25 fps, with the voice in.
+        let talkingIDs = doc.movie.shots.filter { MovieShots.usesLipSync($0, in: doc.movie) }.map(\.id)
+        for engine in [LipSyncEngine.longcat, .infiniteTalk] {
+            doc.movie.lipSyncEngine = engine
+            let before = doc.movie.shots.map(\.videos.count)
+            model.requestClips(doc, shots: talkingIDs)
+            await waitForGate(doc)
+            guard let gate = doc.pendingGate else { say("FAIL no cost gate for \(engine.title): \(doc.error ?? "")"); return false }
+            let counts = gate.estimate.lines.map(\.count)
+            // InfiniteTalk dubs each shot's ordinary clip, so those are counted too.
+            check(engine == .infiniteTalk ? counts == [2, 2] : counts.last == 2,
+                  "the \(engine.title) gate counts the talking shots: \(counts)")
+            check(gate.estimate.notes.contains { $0.contains(engine.title) }, "it names \(engine.title)")
+            if engine == .infiniteTalk {
+                // The fake voices' 9.3 s shots are past a clip's 7.5 s: the sheet says the last frame holds.
+                check(gate.estimate.notes.contains { $0.contains("7.5 s") }, "it says the long shots hold their last frame")
+            }
+            doc.pendingGate = nil
+            gate.run()
+            await waitForJob(doc)
+            // Switching to InfiniteTalk (the Shots page's picker) re-fits the shots and warns that these lines are
+            // longer than its talking shots can be; any other error is a failure.
+            if engine == .infiniteTalk, doc.error?.contains("longer than the shot can be") == true { doc.error = nil }
+            check(doc.error == nil, "\(engine.title) made the talking clips\(doc.error.map { ": \($0)" } ?? "")")
+            for id in talkingIDs {
+                guard let i = doc.movie.shots.firstIndex(where: { $0.id == id }) else { continue }
+                let shot = doc.movie.shots[i]
+                check(shot.videos.count == before[i] + 1, "shot \(i + 1) has a new \(engine.title) take")
+                guard let file = shot.videos.last?.file else { continue }
+                let url = folder.appendingPathComponent(file)
+                let seconds = await MovieComposer.duration(of: url) ?? 0
+                let tracks = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video)
+                let fps = try? await tracks?.first?.load(.nominalFrameRate)
+                check(abs(seconds - shot.duration) < 0.08 && abs(Double(fps ?? 0) - 25) < 0.5,
+                      "its take is as long as the shot at 25 fps: \(seconds) s, \(fps ?? 0) fps")
+                let audio = try? await AVURLAsset(url: url).loadTracks(withMediaType: .audio)
+                check(audio?.isEmpty == false, "it carries the voice")
+            }
+            let learned = GPUTimings.load(model.gpuTimingsURL).jobs.keys
+            check(learned.contains { $0.hasPrefix("\(engine.task)@") }, "\(engine.title) times were learned")
+        }
+        doc.movie.lipSyncEngine = .wanS2V
         doc.movie.approve(.video)
 
         doc.stage = .sound

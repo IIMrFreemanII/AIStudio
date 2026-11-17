@@ -53,7 +53,7 @@ private func tempFolder() throws -> URL {
     m.music = [MusicCue(id: "s1", prompt: "p")]
     m.lipSync = false
     var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as! [String: Any]
-    for k in ["music", "mix", "lipSync"] { json[k] = nil }
+    for k in ["music", "mix", "lipSync", "lipSyncEngine"] { json[k] = nil }
     var chars = json["characters"] as! [[String: Any]]
     for i in chars.indices { chars[i]["voiceSamples"] = nil; chars[i]["selectedVoiceSample"] = nil }
     json["characters"] = chars
@@ -72,6 +72,18 @@ private func tempFolder() throws -> URL {
     let back = try JSONDecoder().decode(MovieProject.self, from: JSONSerialization.data(withJSONObject: json))
     #expect(back.shots[0].dialogue[0].takes.isEmpty && back.characters[0].voiceSamples.isEmpty)
     #expect(back.shots[0].sounds.isEmpty && back.music.isEmpty && back.mix == MovieMix() && back.lipSync)
+    #expect(back.lipSyncEngine == .wanS2V)  // what movies from before the choice used
+}
+
+@Test func lipSyncEngineRoundTripsAndAnUnknownOneFallsBack() throws {
+    var m = MovieProject()
+    m.lipSyncEngine = .longcat
+    #expect(try JSONDecoder().decode(MovieProject.self, from: JSONEncoder().encode(m)).lipSyncEngine == .longcat)
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as! [String: Any]
+    json["lipSyncEngine"] = "some-future-model"
+    let back = try JSONDecoder().decode(MovieProject.self, from: JSONSerialization.data(withJSONObject: json))
+    #expect(back.lipSyncEngine == .wanS2V)
+    #expect(LipSyncEngine.allCases.map(\.task) == ["wan22-s2v", "longcat-avatar", "infinitetalk"])
 }
 
 // MARK: layout
@@ -287,6 +299,68 @@ private func soundMovie() -> MovieProject {
     #expect(throws: MovieAudioError.self) {
         try MovieVoices.voiceTrack(Shot(scene: "s"), folder: folder, duration: 3, to: out)
     }
+}
+
+@Test func eachSpeakerGetsATrackOnTheShotsTimeline() throws {
+    let folder = try tempFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    try writeWAV(folder.appendingPathComponent("audio/a.wav"), seconds: 1, amplitude: 0.5, rate: 16_000)
+    try writeWAV(folder.appendingPathComponent("audio/b.wav"), seconds: 1, amplitude: 0.5, rate: 16_000)
+    let shot = Shot(scene: "s", dialogue: [line("hi", 1, character: "bo", file: "audio/a.wav"),
+                                           line("hello", 1, character: "ann", file: "audio/b.wav"),
+                                           line("bye", 0.5, character: "bo", file: "audio/a.wav")], talking: true)
+    #expect(MovieVoices.speakers(shot) == ["bo", "ann"])  // in the order they first speak
+    let out = folder.appendingPathComponent("audio/ann.wav")
+    try MovieVoices.voiceTrack(shot, folder: folder, duration: 4, speaker: "ann", to: out)
+    let file = try AVAudioFile(forReading: out)
+    let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 64_000)!
+    try file.read(into: buf)
+    let d = buf.floatChannelData![0]
+    func rms(_ a: Int, _ b: Int) -> Double { sqrt((a..<b).reduce(0.0) { $0 + Double(d[$1] * d[$1]) } / Double(b - a)) }
+    #expect(file.length == 64_000)
+    #expect(rms(5_000, 20_000) < 0.001)  // bo's first line (0.3…1.3 s) is not on Ann's track
+    #expect(rms(26_000, 40_000) > 0.3)   // Ann's line, at its layout time (1.55…2.55 s)
+    #expect(rms(46_000, 64_000) < 0.001)  // bo's last line, from 2.8 s
+    #expect(MovieShots.voiceTrackFile(for: shot, speaker: 1).hasSuffix("-voice-2.wav"))
+}
+
+@Test func infiniteTalkCapsTalkingShotsAtAClipsLength() {
+    let shot = Shot(scene: "s", duration: 3, dialogue: [line("long", 10)], talking: true)
+    #expect(MovieVoices.maxDuration(shot, lipSync: true) == MovieVoices.maxTalking)
+    #expect(MovieVoices.maxDuration(shot, lipSync: true, engine: .longcat) == MovieVoices.maxTalking)
+    #expect(MovieVoices.maxDuration(shot, lipSync: true, engine: .infiniteTalk) == Shot.durationRange.upperBound)
+    var m = MovieProject(shots: [shot], lipSyncEngine: .infiniteTalk)
+    #expect(MovieVoices.fitDurations(&m) == [shot.id])  // 10.7 s of lines don't fit in 7.5
+    #expect(m.shots[0].duration == Shot.durationRange.upperBound)
+}
+
+@Test func lipSyncTemplatesBindForEachEngine() throws {
+    let movie = MovieProject(scenes: [MovieScene(id: "s", heading: "INT. ROOM")])
+    let shot = Shot(scene: "s", duration: 4, talking: true)
+    let folder = URL(fileURLWithPath: "/m")
+    let start = URL(fileURLWithPath: "/m/k.png"), a = URL(fileURLWithPath: "/m/a.wav"), b = URL(fileURLWithPath: "/m/b.wav")
+
+    // LongCat with one voice: the second Load Audio goes; with two, both feed the node.
+    let one = MovieShots.longCatRender(shot, movie: movie, startImage: start, voices: [a], seed: 7, server: "gpu")
+    let g1 = try MovieShots.longCatTemplate().bind(one.values, remove: one.unusedPictures)
+    #expect(g1["voice2"] == nil && g1["video"]?.inputs["audio2"] == nil)
+    #expect(g1["video"]?.inputs["server"] == .value(.string("gpu")))
+    let two = MovieShots.longCatRender(shot, movie: movie, startImage: start, voices: [a, b], seed: 7, server: "gpu")
+    let g2 = try MovieShots.longCatTemplate().bind(two.values, remove: two.unusedPictures)
+    #expect(g2["voice2"]?.inputs["path"] == .value(.string("/m/b.wav")))
+    #expect(g2["video"]?.inputs["audio2"] == .link(node: "voice2", output: "audio"))
+
+    // InfiniteTalk: the ordinary clip into the dub, both on the server, no end picture for a shot without one.
+    let ends = MovieShots.Ends(start: .keyframe("k.png"), end: nil)
+    let dub = MovieShots.dubRender(shot, movie: movie, folder: folder, startImage: start, ends: ends, voice: a,
+                                   seed: 9, server: "gpu")
+    let g3 = try MovieShots.dubTemplate().bind(dub.values, remove: dub.unusedPictures)
+    #expect(g3["end"] == nil && g3["video"]?.type == "RemoteWanImageToVideo")
+    #expect(g3["talk"]?.inputs["video"] == .link(node: "video", output: "video"))
+    #expect(g3["talk"]?.inputs["server"] == .value(.string("gpu")) && g3["video"]?.inputs["server"] == .value(.string("gpu")))
+    #expect(g3["out"]?.inputs["video"] == .link(node: "talk", output: "video"))
+    #expect(MovieShots.TemplateName.talking(.infiniteTalk) == "shot-infinitetalk")
+    #expect(MovieShots.talkingTemplate(for: .longcat).graph["video"]?.type == "RemoteLongCatAvatar")
 }
 
 // MARK: composer

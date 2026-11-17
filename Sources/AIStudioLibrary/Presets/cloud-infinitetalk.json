@@ -1,0 +1,73 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "clip",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "LoadVideo"
+      },
+      {
+        "id" : "speech",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 260
+        },
+        "type" : "LoadAudio"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "audio" : {
+            "node" : "speech",
+            "output" : "audio"
+          },
+          "prompt" : "A person talking, natural expressions",
+          "video" : {
+            "node" : "clip",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteInfiniteTalk"
+      },
+      {
+        "id" : "show",
+        "inputs" : {
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "PreviewVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-infinitetalk",
+  "modelName" : "InfiniteTalk on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Lip-Sync a Clip · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 290,
+  "summary" : "Dub a clip: the speaker's lips, head and body follow new speech while the camera move stays, on an NVIDIA GPU. The result is as long as the speech. About a minute of GPU time for a short clip.",
+  "symbol" : "cloud"
+}

@@ -22,8 +22,10 @@ extension AppModel {
             return
         }
         let size = doc.movie.aspect.videoSize
+        let engine = doc.movie.lipSyncEngine
         let talking = shots.filter { MovieShots.usesLipSync($0, in: doc.movie) }
-        let plain = shots.filter { !MovieShots.usesLipSync($0, in: doc.movie) }
+        // InfiniteTalk dubs each talking shot's ordinary clip, so those are made too.
+        let plain = shots.filter { !MovieShots.usesLipSync($0, in: doc.movie) || engine == .infiniteTalk }
         let work = plain.map { MovieShots.work(width: size.width, height: size.height,
                                                frames: MovieShots.frames(for: $0.duration)) }
         let talkWork = talking.map { MovieShots.talkingWork(width: size.width, height: size.height, seconds: $0.duration) }
@@ -35,8 +37,26 @@ extension AppModel {
                 + "starts from that clip's last frame and ends on its own keyframe.")
         }
         if !talking.isEmpty {
-            notes.append("Talking shots are animated from their lines by Wan 2.2 S2V (lips in sync, 40 steps): several "
-                + "minutes of GPU time each. Turn lip-sync off on this page to animate them like the others.")
+            let how: String = switch engine {
+            case .wanS2V:
+                "Talking shots are animated from their lines by Wan 2.2 S2V (lips in sync, 40 steps): several minutes "
+                    + "of GPU time each."
+            case .longcat:
+                "Talking shots are animated from their lines by LongCat Avatar (lips in sync, 8 steps). With two "
+                    + "speakers, the first to speak is taken to be on the left."
+            case .infiniteTalk:
+                "Talking shots are made like the others, then InfiniteTalk re-syncs the speaker to their lines (lips, "
+                    + "head and body; the camera move stays)."
+            }
+            notes.append(how + " Turn lip-sync off on this page to animate them like the others.")
+        }
+        if engine == .infiniteTalk {
+            let long = talking.filter { $0.duration > Shot.durationRange.upperBound + 1e-9 }
+                .compactMap { number(of: $0, in: doc.movie) }
+            if !long.isEmpty {
+                notes.append("Shot \(long.map(String.init).joined(separator: ", ")) is longer than a clip can be "
+                    + "(7.5 s): past the clip's end its last frame holds while the lines finish.")
+            }
         }
         let unvoiced = shots.filter { $0.talking && !MovieShots.usesLipSync($0, in: doc.movie) }.count
         if unvoiced > 0, doc.movie.lipSync {
@@ -47,8 +67,10 @@ extension AppModel {
         gateImages(doc, title: shots.count == 1 ? "Make a Clip" : "Make Clips", work: [
             ImageWork(label: plain.count == 1 ? "1 clip" : "\(plain.count) clips", task: "wan22-i2v", jobs: plain.count,
                       megapixels: avg(work)),
-            ImageWork(label: talking.count == 1 ? "1 talking clip" : "\(talking.count) talking clips", task: "wan22-s2v",
-                      jobs: talking.count, megapixels: avg(talkWork)),
+            ImageWork(label: engine == .infiniteTalk
+                        ? (talking.count == 1 ? "1 lip-sync" : "\(talking.count) lip-syncs")
+                        : (talking.count == 1 ? "1 talking clip" : "\(talking.count) talking clips"),
+                      task: engine.task, jobs: talking.count, megapixels: avg(talkWork)),
         ], extraNotes: notes) { [weak self] in
             self?.makeClips(doc, shots: shots.map(\.id))
         }
@@ -60,8 +82,10 @@ extension AppModel {
 
     private func makeClips(_ doc: MovieDocument, shots ids: [UUID]) {
         // A continuing shot starts from the clip before's last frame, so it waits for that clip; the rest run at once.
+        let engine = doc.movie.lipSyncEngine
         let tasks = ids.map { id in
-            doc.movie.shots.first { $0.id == id }.map { MovieShots.usesLipSync($0, in: doc.movie) } == true ? "wan22-s2v" : "wan22-i2v"
+            doc.movie.shots.first { $0.id == id }.map { MovieShots.usesLipSync($0, in: doc.movie) } == true
+                ? engine.task : "wan22-i2v"
         }
         runImageJob(doc, title: "Making clips", count: ids.count, chains: MovieShots.chains(ids, in: doc.movie),
                     task: { tasks[$0] }) { [weak self] doc, i, server in
@@ -89,9 +113,30 @@ extension AppModel {
                 // The shot's lines as one recording as long as the shot: what the lips follow.
                 let voice = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot))
                 try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration, to: voice)
-                render = MovieShots.talkingRender(shot, movie: doc.movie, startImage: start, voice: voice, seed: seed,
-                                                  server: server)
-                template = self.movieTemplate(MovieShots.TemplateName.talking, for: doc) { MovieShots.talkingTemplate() }
+                let name = MovieShots.TemplateName.talking(engine)
+                template = self.movieTemplate(name, for: doc) { MovieShots.talkingTemplate(for: engine) }
+                switch engine {
+                case .wanS2V:
+                    render = MovieShots.talkingRender(shot, movie: doc.movie, startImage: start, voice: voice,
+                                                      seed: seed, server: server)
+                case .longcat:
+                    // Two speakers: one track each (the first to speak on the left), on the shot's timeline.
+                    let speakers = MovieVoices.speakers(shot)
+                    var voices = [voice]
+                    if speakers.count >= 2 {
+                        voices = try speakers.prefix(2).enumerated().map { k, character in
+                            let url = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot, speaker: k))
+                            try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration,
+                                                       speaker: character, to: url)
+                            return url
+                        }
+                    }
+                    render = MovieShots.longCatRender(shot, movie: doc.movie, startImage: start, voices: voices,
+                                                      seed: seed, server: server)
+                case .infiniteTalk:
+                    render = MovieShots.dubRender(shot, movie: doc.movie, folder: folder, startImage: start,
+                                                  ends: ends, voice: voice, seed: seed, server: server)
+                }
             } else {
                 render = MovieShots.render(shot, movie: doc.movie, folder: folder, startImage: start, ends: ends,
                                            seed: seed, server: server)
@@ -109,9 +154,15 @@ extension AppModel {
                 try? MovieComposer.writePNG(still, to: folder.appendingPathComponent(poster))
             }
             let size = doc.movie.aspect.videoSize
-            let cost = self.recordJobs(jobs, doc: doc, work: lipSync
-                ? MovieShots.talkingWork(width: size.width, height: size.height, seconds: shot.duration)
-                : MovieShots.work(width: size.width, height: size.height, frames: MovieShots.frames(for: shot.duration)))
+            let clipWork = MovieShots.work(width: size.width, height: size.height,
+                                           frames: MovieShots.frames(for: shot.duration))
+            let talkWork = MovieShots.talkingWork(width: size.width, height: size.height, seconds: shot.duration)
+            // A dub graph runs the ordinary clip and the lip-sync: each job learns its own task's timing.
+            var cost: Double?
+            for job in jobs {
+                let c = self.recordJobs([job], doc: doc, work: lipSync && job.task != "wan22-i2v" ? talkWork : clipWork)
+                if let c { cost = (cost ?? 0) + c }
+            }
             guard let j = doc.movie.shots.firstIndex(where: { $0.id == shot.id }) else { return }
             let take = Take(file: file, poster: poster, seed: seed, costUSD: cost)
             doc.movie.shots[j].videos.append(take)

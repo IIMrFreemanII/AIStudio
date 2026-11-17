@@ -135,6 +135,8 @@ GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
+# The lip-sync models (LongCat-Video-Avatar's 15.8B DiT, InfiniteTalk on Wan 2.1's 14B), bf16 on an 80 GB card.
+GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 
 # ACE-Step's planner and DiT: keys as "C major" … "B minor", time signatures as beats per bar, ISO 639-1 languages
 # (the same lists as the app's local Text to Music node; "auto" lets the planner choose).
@@ -168,6 +170,28 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         # Longer audio is refused, so a job's cost stays bounded (≈ 80 frames, 5 s, per pass of the model).
         "max_seconds": Param("float", 15.0, min=1.0, max=30.0),
     }, inputs=("image", "audio"), models=("wan22-s2v",)),
+    # LongCat-Video-Avatar 1.6 (MIT): a picture and speech make a lip-synced clip, like S2V; audio2 is a second
+    # speaker (the picture's right-hand person), time-aligned with the first. Distilled: 8 steps, no guidance.
+    TaskSpec("longcat-avatar", "LongCat Avatar talking video", "video", "longcat-avatar", GPU_AVATAR, {
+        "prompt": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "resolution": Param("string", "480p", choices=("480p", "720p")),  # the size follows the picture's shape
+        "steps": Param("int", 0, min=0, max=50),  # 0 = the distilled 8
+        # The first mix_steps steps blend the DMD LoRA (mix_alpha) with OPSD; the rest are OPSD (the model's advice).
+        "mix_steps": Param("int", 4, min=0, max=8),
+        "mix_alpha": Param("float", 1.0, min=0.0, max=1.0),
+        "max_seconds": Param("float", 15.0, min=1.0, max=30.0),
+    }, inputs=("image", "audio"), optional_inputs=("audio2",), models=("longcat-avatar",)),
+    # InfiniteTalk (Apache 2.0, on Wan 2.1 I2V 14B): re-syncs a clip's lips, head and body to new speech (dubbing),
+    # keeping its camera move. 4 steps with the lightx2v LoRA; the clip is as long as the audio (≤ the video).
+    TaskSpec("infinitetalk", "InfiniteTalk lip-sync (dub a clip)", "video", "infinitetalk", GPU_AVATAR, {
+        "prompt": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "resolution": Param("string", "480p", choices=("480p", "720p")),
+        "steps": Param("int", 0, min=0, max=40),  # 0 = 4 (the LoRA's)
+        "audio_guidance": Param("float", 0.0, min=0.0, max=10.0),  # 0 = 2 (with the LoRA; raise for tighter lips)
+        "max_seconds": Param("float", 15.0, min=1.0, max=30.0),
+    }, inputs=("video", "audio"), models=("infinitetalk",)),
     TaskSpec("flux1-dev", "FLUX.1 dev", "image", "flux1-dev", GPU_FLUX, {
         "prompt": Param("string", ""),
         "seed": Param("int", 0, min=0, max=2**32 - 1),
@@ -340,6 +364,12 @@ def make_worker(family: str) -> Worker:
     if family == "wan22-s2v":
         from .wan_s2v import WanS2VWorker
         return WanS2VWorker()
+    if family == "longcat-avatar":
+        from .longcat_avatar import LongCatAvatarWorker
+        return LongCatAvatarWorker()
+    if family == "infinitetalk":
+        from .infinitetalk import InfiniteTalkWorker
+        return InfiniteTalkWorker()
     if family == "flux1-dev":
         from .flux import FluxWorker
         return FluxWorker()

@@ -55,6 +55,11 @@ def test_auth_and_info(client):
     assert tasks["qwen-image-edit"]["optionalInputs"][:2] == ["image2", "image3"]
     assert tasks["wan22-s2v"]["inputs"] == ["image", "audio"] and tasks["wan22-s2v"]["gpu"] == "H100"
     assert tasks["wan22-s2v"]["params"]["max_seconds"]["default"] == 15.0
+    assert tasks["longcat-avatar"]["inputs"] == ["image", "audio"] and tasks["longcat-avatar"]["gpu"] == "H100"
+    assert tasks["longcat-avatar"]["optionalInputs"] == ["audio2"]
+    assert tasks["longcat-avatar"]["params"]["resolution"]["choices"] == ["480p", "720p"]
+    assert tasks["infinitetalk"]["inputs"] == ["video", "audio"] and tasks["infinitetalk"]["gpu"] == "H100"
+    assert not tasks["longcat-avatar"]["installed"] and not tasks["infinitetalk"]["installed"]
 
 
 def test_video_job_streams_status_progress_previews_and_result(client):
@@ -344,6 +349,87 @@ def test_fake_models_speech_to_video_follows_the_audio(tmp_path, monkeypatch):
 def test_fake_models_speech_to_video_refuses_audio_past_max_seconds(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match=r"the audio is 2\.5 s; at most 2 s per clip"):
         _s2v_run(tmp_path, monkeypatch, 2.5, max_seconds=2.0)
+
+
+class _QuietSink:
+    def status(self, t): pass
+    def progress(self, s, t): pass
+    def preview(self, *a): pass
+    def check(self): pass
+
+
+def _frames(path):
+    import imageio_ffmpeg
+    import numpy as np
+
+    reader = imageio_ffmpeg.read_frames(str(path))
+    meta = next(reader)
+    w, h = meta["size"]
+    return meta, [np.frombuffer(f, np.uint8).reshape(h, w, 3) for f in reader]
+
+
+def test_fake_models_longcat_avatar_follows_the_longer_speaker_at_25_fps(tmp_path, monkeypatch):
+    """Two speakers: the clip is as long as the longer voice, at LongCat's 25 fps, starting on the picture."""
+    from PIL import Image
+
+    from aistudio_gpu.media import tone, write_wav
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    spec = TASKS["longcat-avatar"]
+    pic, a, b = tmp_path / "two.png", tmp_path / "a.wav", tmp_path / "b.wav"
+    Image.new("RGB", (64, 64), (0, 0, 255)).save(pic)
+    write_wav(tone(0.8, 16000, 1, 1), 16000, a)
+    write_wav(tone(1.2, 16000, 1, 2), 16000, b)
+    out = make_worker(spec.family).run(spec, spec.normalize({}), {"image": pic, "audio": a, "audio2": b},
+                                       _QuietSink(), tmp_path)
+    meta, frames = _frames(out.path)
+    assert len(frames) == 30 and meta["fps"] == 25  # ceil(1.2 * 25)
+    assert frames[0][10, 10, 2] > 200 and frames[0][10, 10, 0] < 60  # the blue picture
+    assert out.extra["speakers"] == 2 and out.extra["audioSeconds"] == 1.2
+
+
+def test_fake_models_infinitetalk_dubs_the_clip_at_25_fps_for_the_speech(tmp_path, monkeypatch):
+    """A dub: the uploaded 16 fps clip re-timed to 25 fps, as long as the speech (its last frame held), the speech
+    muxed in; speech past max_seconds is refused."""
+    import imageio_ffmpeg
+    import numpy as np
+
+    from aistudio_gpu.media import tone, write_mp4, write_wav
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    spec = TASKS["infinitetalk"]
+    clip, wav = tmp_path / "take.mp4", tmp_path / "line.wav"
+    take = np.zeros((16, 48, 64, 3), np.float32)  # 1 s at 16 fps: red, then green from frame 8
+    take[:8, :, :, 0] = 1.0
+    take[8:, :, :, 1] = 1.0
+    write_mp4(take, clip, fps=16)
+    write_wav(tone(1.6, 16000, 1, 4), 16000, wav)
+    out = make_worker(spec.family).run(spec, spec.normalize({}), {"video": clip, "audio": wav}, _QuietSink(),
+                                       tmp_path)
+    meta, frames = _frames(out.path)
+    assert len(frames) == 40 and meta["fps"] == 25 and meta["size"] == (64, 48)  # ceil(1.6 * 25)
+    assert frames[0][20, 20, 0] > 200 and frames[-1][20, 20, 1] > 200  # starts red, holds the green last frame
+    info = subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-i", str(out.path)], capture_output=True, text=True)
+    assert "Audio:" in info.stderr
+    with pytest.raises(ValueError, match=r"the audio is 1\.6 s; at most 1 s per clip"):
+        make_worker(spec.family).run(spec, spec.normalize({"max_seconds": 1.0}), {"video": clip, "audio": wav},
+                                     _QuietSink(), tmp_path)
+
+
+def test_lip_sync_downloads_pick_their_files():
+    """Each part of the lip-sync models has an allow list or named files (no 54 GB DiT or quantised copies)."""
+    from aistudio_gpu.download import MODELS, expand
+
+    assert expand(["lipsync"]) == ["wan22-s2v", "longcat-avatar", "infinitetalk"]
+    for name in ("longcat-avatar", "infinitetalk"):
+        for repo, revision, into, pick in MODELS[name]["parts"]:
+            assert len(revision) == 40 and pick
+    base = dict((p[2], p[3]) for p in MODELS["longcat-avatar"]["parts"])["base"]
+    assert "dit/*" not in base and "text_encoder/*" in base
+    it = dict((p[2], p[3]) for p in MODELS["infinitetalk"]["parts"])
+    assert it["infinitetalk"] == ["single/*"] and "lightx2v.safetensors" in it["lightx2v"]
 
 
 def test_file_store_prunes_the_least_recently_used_past_its_cap(tmp_path):

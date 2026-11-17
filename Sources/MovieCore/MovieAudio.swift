@@ -29,7 +29,8 @@ public enum MovieVoices {
     public static let gap = 0.25
     public static let tail = 0.4
 
-    /// The longest a lip-synced shot may be (S2V); other shots are capped by `Shot.durationRange`.
+    /// The longest a lip-synced shot may be (S2V, LongCat); other shots are capped by `Shot.durationRange`, and so are
+    /// InfiniteTalk's, since it dubs the shot's ordinary clip (at most 121 frames).
     public static let maxTalking = 12.0
 
     /// Text to Speech (voice design, no reference) into a Preview Audio.
@@ -91,6 +92,15 @@ public enum MovieVoices {
         public var seconds: Double
     }
 
+    /// The characters who speak voiced lines in the shot, in the order they first speak.
+    public static func speakers(_ shot: Shot) -> [String] {
+        var out: [String] = []
+        for p in layout(shot) {
+            if let c = shot.dialogue.first(where: { $0.id == p.line })?.character, !out.contains(c) { out.append(c) }
+        }
+        return out
+    }
+
     /// The shot's voiced lines in order: the first after `leadIn`, each next after the one before and a `gap`. Lines
     /// without a chosen take of known length are left out.
     public static func layout(_ shot: Shot) -> [Placed] {
@@ -110,8 +120,8 @@ public enum MovieVoices {
         layout(shot).last.map { $0.start + $0.seconds + tail }
     }
 
-    public static func maxDuration(_ shot: Shot, lipSync: Bool) -> Double {
-        lipSync && shot.talking ? maxTalking : Shot.durationRange.upperBound
+    public static func maxDuration(_ shot: Shot, lipSync: Bool, engine: LipSyncEngine = .wanS2V) -> Double {
+        lipSync && shot.talking && engine != .infiniteTalk ? maxTalking : Shot.durationRange.upperBound
     }
 
     /// Stretches shots that are too short for their lines (rounded up to 0.1 s, never shortened, never past the
@@ -123,7 +133,7 @@ public enum MovieVoices {
         for i in movie.shots.indices {
             let shot = movie.shots[i]
             guard let needed = neededDuration(shot) else { continue }
-            let cap = maxDuration(shot, lipSync: lipSync)
+            let cap = maxDuration(shot, lipSync: lipSync, engine: movie.lipSyncEngine)
             if needed > cap + 1e-9 { unfit.append(shot.id) }
             if needed > shot.duration {
                 movie.shots[i].duration = max(shot.duration, (min(needed, cap) * 10 - 1e-9).rounded(.up) / 10)
@@ -141,9 +151,13 @@ public enum MovieVoices {
     public static let trackRate = 16_000.0
 
     /// Writes the shot's lines as one mono 16-bit 16 kHz WAV, `duration` seconds long: quiet except the lines at their
-    /// layout times (each scaled by its take's `gainDB`, summed, clipped); a line past `duration` is cut.
-    public static func voiceTrack(_ shot: Shot, folder: URL, duration: Double, to url: URL) throws {
-        let placed = layout(shot)
+    /// layout times (each scaled by its take's `gainDB`, summed, clipped); a line past `duration` is cut. With
+    /// `speaker` (a character's id), only that character's lines: one track per voice, still on the shot's timeline.
+    public static func voiceTrack(_ shot: Shot, folder: URL, duration: Double, speaker: String? = nil,
+                                  to url: URL) throws {
+        let placed = layout(shot).filter { p in
+            speaker == nil || shot.dialogue.first { $0.id == p.line }?.character == speaker
+        }
         guard !placed.isEmpty else { throw MovieAudioError.noLines }
         let total = max(1, Int((duration * trackRate).rounded()))
         var mix = [Float](repeating: 0, count: total)

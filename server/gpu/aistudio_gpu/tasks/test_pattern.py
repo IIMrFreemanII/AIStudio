@@ -55,6 +55,30 @@ class TestPatternWorker:
         return Output(path, "image", "image/png")
 
 
+# The talking tasks: their clip is as long as the speech, at the model's frame rate.
+TALKING_FPS = {"wan22-s2v": 16, "longcat-avatar": 25, "infinitetalk": 25}
+
+
+def _dub(inputs: dict[str, Path], seconds: float, out_dir: Path) -> Output:
+    """The fake InfiniteTalk: the uploaded clip re-timed to 25 fps (its last frame held past its end), as long as the
+    speech, with the speech muxed in."""
+    import imageio_ffmpeg
+
+    reader = imageio_ffmpeg.read_frames(str(inputs["video"]))
+    meta = reader.__next__()
+    w, h = meta["size"]
+    source = [np.frombuffer(f, dtype=np.uint8).reshape(h, w, 3) for f in reader]
+    if not source:
+        raise ValueError("the clip has no frames")
+    rate = float(meta.get("fps") or 16)
+    n = max(1, math.ceil(seconds * 25))
+    frames = np.stack([source[min(len(source) - 1, int(i / 25 * rate))] for i in range(n)])
+    path = out_dir / "result.mp4"
+    write_mp4(frames, path, fps=25, audio=inputs["audio"])
+    return Output(path, "video", "video/mp4", extra={"frames": n, "width": w, "height": h,
+                                                    "audioSeconds": round(seconds, 2), "sourceFrames": len(source)})
+
+
 class FakeModelWorker:
     """Stands in for a GPU model (``AISTUDIO_FAKE_MODELS=1``): the task's own parameters, steps, previews and output
     kind, from a test pattern on the CPU. Image-to-video starts from the uploaded image (and ends on ``last_image``),
@@ -69,9 +93,14 @@ class FakeModelWorker:
         from PIL import Image
 
         speech_seconds = None
-        if task.id == "wan22-s2v":  # as the real worker: the clip is as long as the audio, within its limit
-            samples, rate = read_wav(inputs["audio"])
-            speech_seconds = samples.shape[1] / rate
+        fps = TALKING_FPS.get(task.id, 16)
+        if task.id in TALKING_FPS:  # as the real workers: the clip is as long as the audio, within its limit
+            seconds = []
+            for name in ("audio", "audio2"):
+                if name in inputs:
+                    samples, rate = read_wav(inputs[name])
+                    seconds.append(samples.shape[1] / rate)
+            speech_seconds = max(seconds)
             if speech_seconds > params["max_seconds"]:
                 raise ValueError(f"the audio is {speech_seconds:.1f} s; at most {params['max_seconds']:g} s per clip")
         steps = params.get("steps") or 4
@@ -81,14 +110,16 @@ class FakeModelWorker:
             time.sleep(0.02)
             sink.progress(step, steps)
             if task.kind != "audio":
-                sink.preview(pattern(params["width"] or 64, params["height"] or 64, step / steps, params["seed"]),
+                sink.preview(pattern(params.get("width") or 64, params.get("height") or 64, step / steps, params["seed"]),
                              step, steps)
         if task.kind == "audio":
             # Each audio model's own rate and channels; length from its seconds (speech: from the text).
             rate, channels = {"music": (48000, 2), "sound": (44100, 2)}.get(task.family, (24000, 1))
             seconds = params.get("seconds") or min(10.0, max(1.0, len(params.get("text", "")) / 15))
             return _audio(seconds, rate, channels, params["seed"], inputs, out_dir)
-        w, h = params["width"], params["height"]
+        if task.id == "infinitetalk":  # a dub: the uploaded clip's frames at 25 fps, as long as the speech
+            return _dub(inputs, speech_seconds, out_dir)
+        w, h = params.get("width", 832), params.get("height", 480)  # tasks without a size: Wan's
         # LoRAs with a strength: the top row's brightness is their count / 4 (Wan pairs' low-noise files: the second
         # row's); a fine-tune (`model` other than base): the right-hand column turns white. So a client can check they
         # arrived. In video, 8-pixel bands.
@@ -123,7 +154,7 @@ class FakeModelWorker:
             path = out_dir / "result.png"
             write_png(image, path)
             return Output(path, "image", "image/png", extra={"loras": loras})
-        n = params.get("length", 9) if speech_seconds is None else max(1, math.ceil(speech_seconds * 16))
+        n = params.get("length", 9) if speech_seconds is None else max(1, math.ceil(speech_seconds * fps))
         frames = np.stack([pattern(w, h, i / max(n, 1), params["seed"]) for i in range(n)])
         if "image" in inputs:
             start = Image.open(inputs["image"]).convert("RGB").resize((w, h))
@@ -134,9 +165,10 @@ class FakeModelWorker:
         frames = np.stack([mark(f) for f in frames])
         path = out_dir / "result.mp4"
         if speech_seconds is not None:
-            write_mp4(frames, path, fps=16, audio=inputs["audio"])
+            write_mp4(frames, path, fps=fps, audio=inputs["audio"])
             return Output(path, "video", "video/mp4", extra={"frames": n, "width": w, "height": h,
-                                                            "audioSeconds": round(speech_seconds, 2)})
+                                                            "audioSeconds": round(speech_seconds, 2),
+                                                            "speakers": 2 if "audio2" in inputs else 1})
         write_mp4(frames, path, fps=16)
         return Output(path, "video", "video/mp4")
 
