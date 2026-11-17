@@ -219,7 +219,8 @@ extension AppModel {
                 if let c { cost = (cost ?? 0) + c }
             }
             guard let j = doc.movie.shots.firstIndex(where: { $0.id == shot.id }) else { return }
-            let take = Take(file: file, poster: poster, seed: seed, costUSD: cost, engine: doc.movie.videoEngine.rawValue)
+            var take = Take(file: file, poster: poster, seed: seed, costUSD: cost, engine: doc.movie.videoEngine.rawValue)
+            if h3 && !shot.dialogue.isEmpty { take.voice = try? await MovieSpeech.spans(in: url) }
             doc.movie.shots[j].videos.append(take)
             if doc.movie.shots[j].selectedVideo == nil { doc.movie.shots[j].selectedVideo = take.id }
         }
@@ -239,9 +240,26 @@ extension AppModel {
 
     /// The edit's timeline, with each chosen clip's real length.
     func movieTimeline(_ doc: MovieDocument) async -> MovieTimeline {
+        let folder = movieStore.folder(doc.id)
+        await findClipVoices(doc, in: folder)
         let files = doc.movie.shots.compactMap(\.selectedVideoFile)
-        let durations = await MovieComposer.durations(of: files, in: movieStore.folder(doc.id))
+        let durations = await MovieComposer.durations(of: files, in: folder)
         return MovieTimeline(movie: doc.movie, durations: durations)
+    }
+
+    /// Finds where the chosen H3 clips of talking shots speak, for takes made before that was recorded, and saves.
+    private func findClipVoices(_ doc: MovieDocument, in folder: URL) async {
+        var found = false
+        for shot in doc.movie.shots where !shot.dialogue.isEmpty {
+            guard let take = shot.selectedVideoTake, take.voice == nil,
+                  take.engine == VideoEngine.minimaxH3.rawValue,
+                  let spans = try? await MovieSpeech.spans(in: folder.appendingPathComponent(take.file)),
+                  let j = doc.movie.shots.firstIndex(where: { $0.id == shot.id }),
+                  let k = doc.movie.shots[j].videos.firstIndex(where: { $0.id == take.id }) else { continue }
+            doc.movie.shots[j].videos[k].voice = spans
+            found = true
+        }
+        if found { saveMovie(doc) }
     }
 
     /// Edit › Export: the film as an MP4 at `url` (nil: `renders/<title>.mp4` in the movie's folder). Runs as the

@@ -185,3 +185,64 @@ private func h3Movie() -> MovieProject {
     let w = MovieTimeline(movie: m, durations: ["shots/a.mp4": 5.04, "shots/b.mp4": 6.04])
     #expect(w.clips[0].duration == 5.04 && !w.sounds.contains { $0.kind == .clip })
 }
+
+/// 16 kHz test sound: hiss throughout, a smooth rumble, a whistle above the speaking range, and a 210 Hz voice
+/// (with harmonics) at `voices` (seconds).
+private func testSound(seconds: Double, voices: [(Double, Double)]) -> [Float] {
+    let rate = MovieSpeech.rate
+    var rng = SystemRandomNumberGenerator()
+    var low: Float = 0
+    return (0..<Int(seconds * rate)).map { i in
+        let t = Double(i) / rate
+        var x = Float.random(in: -0.03...0.03, using: &rng)
+        low = 0.995 * low + Float.random(in: -0.02...0.02, using: &rng)  // rumble
+        if t >= 0.2 && t < 1.2 { x += low * 4 }
+        if t >= 1.4 && t < 1.9 { x += 0.2 * Float(sin(2 * .pi * 420 * t)) }  // whistle
+        if voices.contains(where: { t >= $0.0 && t < $0.1 }) {
+            x += Float(0.25 * sin(2 * .pi * 210 * t) + 0.12 * sin(2 * .pi * 420 * t) + 0.06 * sin(2 * .pi * 630 * t))
+        }
+        return x
+    }
+}
+
+@Test func speechIsFoundWhereTheVoiceIsNotInHissRumbleOrWhistles() {
+    let spans = MovieSpeech.spans(samples: testSound(seconds: 5, voices: [(3.0, 3.6)]))
+    #expect(spans.count == 1)
+    if let s = spans.first { #expect(abs(s.start - 3.0) < 0.12 && abs(s.end - 3.6) < 0.12) }
+    #expect(MovieSpeech.spans(samples: testSound(seconds: 5, voices: [])).isEmpty)
+}
+
+@Test func h3SubtitlesGoWhereTheClipSpeaks() throws {
+    var m = h3Movie()
+    let clip = Take(file: "shots/a.mp4")
+    var a = Shot(scene: "s1", duration: 5, dialogue: [spoken("Stay.")], talking: true)
+    a.videos = [clip]; a.selectedVideo = clip.id
+    m.shots = [a]
+    // Not looked for yet: the estimate.
+    #expect(MovieTimeline(movie: m, durations: ["shots/a.mp4": 5.04]).subtitles.first?.start == MovieH3.leadIn)
+    // Heard late in the clip: the subtitle (at least 0.8 s long) and the music's dip go there.
+    m.shots[0].videos[0].voice = [VoiceSpan(start: 4.4, end: 4.7)]
+    let t = MovieTimeline(movie: m, durations: ["shots/a.mp4": 5.04])
+    let sub = try #require(t.subtitles.first)
+    #expect(abs(sub.start - 4.4) < 1e-9 && abs(sub.end - 5.0) < 1e-9)  // 4.4 + 0.8, cut at the clip's end
+    // A blip after the line doesn't stretch it; a long second stretch does (one line said in two parts).
+    let one = m.shots[0]
+    #expect(MovieH3.heardTimes(one, voice: [VoiceSpan(start: 0.95, end: 2.9), VoiceSpan(start: 4.6, end: 4.75)])
+        .map { [$0.start, ($0.seconds * 100).rounded() / 100] } == [[0.95, 1.95]])
+    #expect(MovieH3.heardTimes(one, voice: [VoiceSpan(start: 1, end: 2), VoiceSpan(start: 3, end: 3.5)])
+        .map { [$0.start, ($0.seconds * 100).rounded() / 100] } == [[1, 2.5]])
+    // Nothing heard: the estimate.
+    m.shots[0].videos[0].voice = []
+    #expect(MovieTimeline(movie: m, durations: ["shots/a.mp4": 5.04]).subtitles.first?.start == MovieH3.leadIn)
+    // Two lines: the voice split at its widest pause; the first ends before the second starts.
+    let two = Shot(scene: "s1", duration: 6, dialogue: [spoken("Stay here."), spoken("I will.", "grandpa")])
+    let placed = MovieH3.heardTimes(two, voice: [VoiceSpan(start: 1.0, end: 1.3), VoiceSpan(start: 1.5, end: 1.9),
+                                                 VoiceSpan(start: 3.2, end: 3.5)])
+    #expect(placed.map(\.line) == two.dialogue.map(\.id))
+    #expect(placed.map(\.start) == [1.0, 3.2] && abs(placed[0].seconds - 0.9) < 1e-9 && abs(placed[1].seconds - 0.8) < 1e-9)
+    // Fewer stretches than lines: the estimate.
+    #expect(MovieH3.heardTimes(two, voice: [VoiceSpan(start: 1, end: 2)]) == MovieH3.lineTimes(two))
+    // The take keeps what was found; old takes decode without it.
+    let back = try JSONDecoder().decode(Take.self, from: JSONEncoder().encode(m.shots[0].videos[0]))
+    #expect(back.voice == [] && Take(file: "x").voice == nil)
+}

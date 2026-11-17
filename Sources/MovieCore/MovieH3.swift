@@ -14,8 +14,8 @@ import ImageIO
 ///   sometimes copied into the clip), and their voice samples as `<Audio n>`, the voice each speaks in.
 ///
 /// H3 makes 5–15 s; a shorter shot plays the start of its clip (the edit trims it to the shot). Line times are
-/// estimated from the words (there are no line takes to measure), for the prompt's order, the subtitles and to make
-/// room for the lines.
+/// estimated from the words (there are no line takes to measure), for the prompt's order and to make room for the
+/// lines. H3 picks its own times, so the subtitles go where the clip's voice is (`MovieSpeech`, `heardTimes`).
 public enum MovieH3 {
     public static let fps = 24.0
     public static let minSeconds = 5.0
@@ -58,6 +58,41 @@ public enum MovieH3 {
             t += s + gap
         }
         return out
+    }
+
+    /// The shot's lines where its clip speaks them (`voice`, from `MovieSpeech`), in order: with one line, from the
+    /// first voice to the last; with several, the voice split at its widest pauses, one stretch per line. Short
+    /// blips beyond one per line are left out first. A line
+    /// shows for at least 0.8 s (but not past the next). The estimate when nothing is heard, or fewer stretches than
+    /// lines.
+    public static func heardTimes(_ shot: Shot, voice: [VoiceSpan]) -> [Placed] {
+        let estimate = lineTimes(shot)
+        var spans = voice.sorted { $0.start < $1.start }
+        // Blips (under 0.2 s) beyond one per line go first: a creak or a breath shouldn't stretch a line.
+        while spans.count > estimate.count, let i = spans.indices.min(by: { spans[$0].length < spans[$1].length }),
+              spans[i].length < 0.2 {
+            spans.remove(at: i)
+        }
+        guard !estimate.isEmpty, spans.count >= estimate.count else { return estimate }
+        // The n − 1 widest pauses end the groups.
+        let cuts = Set(spans.indices.dropLast()
+            .sorted { spans[$0 + 1].start - spans[$0].end > spans[$1 + 1].start - spans[$1].end }
+            .prefix(estimate.count - 1))
+        var groups: [VoiceSpan] = []
+        var open: VoiceSpan?
+        for (i, s) in spans.enumerated() {
+            open = open.map { VoiceSpan(start: $0.start, end: max($0.end, s.end)) } ?? s
+            if cuts.contains(i) || i == spans.count - 1, let g = open {
+                groups.append(g)
+                open = nil
+            }
+        }
+        return estimate.indices.map { i in
+            let g = groups[i]
+            var seconds = max(0.8, g.end - g.start)
+            if i + 1 < groups.count { seconds = min(seconds, max(g.end - g.start, groups[i + 1].start - g.start)) }
+            return Placed(line: estimate[i].line, start: g.start, seconds: seconds)
+        }
     }
 
     /// How long the shot must be for its lines (nil: none).
