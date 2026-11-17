@@ -21,6 +21,13 @@ struct MovieVoicesPage: View {
         MoviePage(title: "Voices",
                   subtitle: lines == 0 ? "No one speaks in this film: nothing to voice."
                       : "\(lines - silent) of \(lines) lines are spoken. Each character's lines use the voice you choose for them.") {
+            MGPicker(selection: $doc.movie.voiceEngine, options: VoiceEngine.allCases.map { ($0, $0.title) },
+                     maxWidth: 220)
+                .disabled(doc.isBusy)
+                .mgHelp("Qwen3-TTS: 10 languages; a line keeps its character's voice but not its delivery. Breeze TTS "
+                        + "2: English and Chinese, says each line as its delivery directs; for research and "
+                        + "non-commercial use only. Either can speak in a voice the other made.")
+                .mgTestAnchor("movie-voice-engine")
             Button(noVoice > 0 ? "Make Voices…" : "Retake Voices…") { model.requestVoiceSamples(doc) }
                 .buttonStyle(.mg(noVoice > 0 ? .prominent : .bordered))
                 .disabled(doc.isBusy || speaking.isEmpty)
@@ -36,6 +43,22 @@ struct MovieVoicesPage: View {
                     : silent > 0 ? "Speaks each line without a take, in its character's voice (you see the cost first)"
                     : "A new take of every line")
             .mgTestAnchor("movie-speak-lines")
+            Button("Edit Template") {
+                let engine = doc.movie.voiceEngine
+                model.editMovieTemplate(MovieVoices.TemplateName.sample(engine), for: doc) {
+                    MovieVoices.sampleTemplate(engine: engine)
+                }
+            }
+            .buttonStyle(.mg(.borderless))
+            .mgHelp("Opens the graph voices are designed with as a workflow; this movie uses your edited copy")
+            .mgContextMenu {
+                MGMenuItem.button("Edit Line Template") {
+                    let engine = doc.movie.voiceEngine
+                    model.editMovieTemplate(MovieVoices.TemplateName.line(engine), for: doc) {
+                        MovieVoices.lineTemplate(engine: engine)
+                    }
+                }
+            }
             Button(approved ? "Approved" : "Approve Voices") {
                 doc.movie.approve(.voices)
                 doc.stage = .video

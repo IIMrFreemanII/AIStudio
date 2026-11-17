@@ -24,24 +24,30 @@ extension AppModel {
         let ids = ids ?? (missing.isEmpty ? speaking.map(\.id) : missing)
         guard !ids.isEmpty else { return }
         let seconds = Double(MovieVoices.sampleText.count) / 15
+        let engine = doc.movie.voiceEngine
         gateImages(doc, title: ids.count == 1 ? "Make a Voice" : "Make Voices", work: [
-            ImageWork(label: ids.count == 1 ? "1 voice sample" : "\(ids.count) voice samples", task: "qwen3-tts",
+            ImageWork(label: ids.count == 1 ? "1 voice sample" : "\(ids.count) voice samples", task: engine.task,
                       jobs: ids.count, megapixels: MovieVoices.work(seconds: seconds)),
-        ], extraNotes: ["Each voice is designed from the character's voice description, saying one sample sentence. "
-                            + "Their lines are then spoken in that voice."]) { [weak self] in
+        ], extraNotes: ["Each voice is designed by \(engine.title) from the character's voice description, saying one "
+                            + "sample sentence. Their lines are then spoken in that voice."]
+                       + Self.voiceEngineNotes(engine)) { [weak self] in
             self?.makeVoiceSamples(doc, characters: ids)
         }
     }
 
     private func makeVoiceSamples(_ doc: MovieDocument, characters ids: [String]) {
-        runImageJob(doc, title: "Making voices", count: ids.count, task: { _ in "qwen3-tts" }) {
+        let engine = doc.movie.voiceEngine
+        runImageJob(doc, title: "Making voices", count: ids.count, task: { _ in engine.task }) {
             [weak self] doc, i, server in
             guard let self, let c = doc.movie.character(ids[i]) else { return }
             doc.job?.detail = "\(c.name) (\(i + 1) of \(ids.count))"
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let template = self.movieTemplate(MovieVoices.TemplateName.sample, for: doc) { MovieVoices.sampleTemplate() }
+            let template = self.movieTemplate(MovieVoices.TemplateName.sample(engine), for: doc) {
+                MovieVoices.sampleTemplate(engine: engine)
+            }
             let take = try await self.renderSound(doc, template: template,
-                                                  render: MovieVoices.sampleRender(c, seed: seed, server: server),
+                                                  render: MovieVoices.sampleRender(c, engine: engine, seed: seed,
+                                                                                   server: server),
                                                   to: "audio/voice-\(c.id)", seed: seed,
                                                   title: "\(doc.movie.title): \(c.name)'s voice")
             guard let j = doc.movie.characters.firstIndex(where: { $0.id == c.id }) else { return }
@@ -74,17 +80,21 @@ extension AppModel {
             return
         }
         let seconds = items.map { Double($0.line.text.count) / 15 }.reduce(0, +) / Double(items.count)
+        let engine = doc.movie.voiceEngine
+        let delivery = engine == .breeze ? " \(engine.title) says each line as its delivery directs." : ""
         gateImages(doc, title: items.count == 1 ? "Speak a Line" : "Speak Lines", work: [
-            ImageWork(label: items.count == 1 ? "1 line" : "\(items.count) lines", task: "qwen3-tts", jobs: items.count,
+            ImageWork(label: items.count == 1 ? "1 line" : "\(items.count) lines", task: engine.task, jobs: items.count,
                       megapixels: MovieVoices.work(seconds: max(1, seconds))),
-        ], extraNotes: ["Lines are spoken in each character's chosen voice. Shots too short for their lines get longer "
-                            + "(up to \(Int(MovieVoices.maxTalking)) s for a lip-synced shot, 7.5 s otherwise)."]) { [weak self] in
+        ], extraNotes: ["Lines are spoken in each character's chosen voice.\(delivery) Shots too short for their lines "
+                            + "get longer (up to \(Int(MovieVoices.maxTalking)) s for a lip-synced shot, 7.5 s "
+                            + "otherwise)."] + Self.voiceEngineNotes(engine)) { [weak self] in
             self?.makeLines(doc, items.map(\.ref))
         }
     }
 
     private func makeLines(_ doc: MovieDocument, _ refs: [LineRef]) {
-        runImageJob(doc, title: "Speaking lines", count: refs.count, task: { _ in "qwen3-tts" }) {
+        let engine = doc.movie.voiceEngine
+        runImageJob(doc, title: "Speaking lines", count: refs.count, task: { _ in engine.task }) {
             [weak self] doc, i, server in
             guard let self, let j = doc.movie.shots.firstIndex(where: { $0.id == refs[i].shot }),
                   let k = doc.movie.shots[j].dialogue.firstIndex(where: { $0.id == refs[i].line }) else { return }
@@ -92,9 +102,11 @@ extension AppModel {
             guard let c = doc.movie.character(line.character), let sample = c.selectedVoiceSampleFile else { return }
             doc.job?.detail = "Shot \(j + 1), \(c.name) (\(i + 1) of \(refs.count))"
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let template = self.movieTemplate(MovieVoices.TemplateName.line, for: doc) { MovieVoices.lineTemplate() }
-            let render = MovieVoices.lineRender(line, sample: self.movieStore.url(doc.id, relative: sample), seed: seed,
-                                                server: server)
+            let template = self.movieTemplate(MovieVoices.TemplateName.line(engine), for: doc) {
+                MovieVoices.lineTemplate(engine: engine)
+            }
+            let render = MovieVoices.lineRender(line, engine: engine, sample: self.movieStore.url(doc.id, relative: sample),
+                                                seed: seed, server: server)
             let take = try await self.renderSound(doc, template: template, render: render,
                                                   to: "audio/line-\(line.id.uuidString.prefix(8).lowercased())",
                                                   seed: seed, title: "\(doc.movie.title): shot \(j + 1) line")
@@ -104,6 +116,12 @@ extension AppModel {
             if doc.movie.shots[j].dialogue[k].selectedTake == nil { doc.movie.shots[j].dialogue[k].selectedTake = take.id }
             self.fitShotsToLines(doc)
         }
+    }
+
+    /// What the cost sheet says about the voice model's terms.
+    static func voiceEngineNotes(_ engine: VoiceEngine) -> [String] {
+        engine == .breeze ? ["Breeze TTS 2 speaks English and Chinese, and is for research and non-commercial use "
+                             + "only: so are the voices and lines it makes."] : []
     }
 
     /// Makes shots long enough for their chosen lines; says which still don't fit.

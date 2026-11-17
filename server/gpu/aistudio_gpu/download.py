@@ -120,6 +120,9 @@ MODELS: dict[str, dict] = {
         ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "0c0e3051f131929182e2c023b9537f8b1c68adfe", "custom"),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "5ecdb67327fd37bb2e042aab12ff7391903235d3", "design"),
     ]},
+    # Research and non-commercial licence; the audio tokenizer (Qwen3-TTS's) ships inside the repo.
+    "breeze-tts": {"repo": "BreezeBlue/Breeze-TTS-2", "revision": "3e28c5151381a722f1d8661b4118c298caa77aa4",
+                   "allow": ["*.json", "*.safetensors", "audio_tokenizer/*", "LICENSE"]},
     # Gated (Stability AI Community licence); its T5Gemma text encoder ships inside the repo.
     "stable-audio-3": {"repo": "stabilityai/stable-audio-3-medium", "revision": "d4d3579395a8ac0df4ab13b5b1d7138ce7290f81",
                        "gated": True, "sa3": True},
@@ -151,6 +154,7 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
+          "breeze-tts": ["breeze-tts"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl"],
           "sd": ["sd35-large", "sd35-large-turbo", "sdxl"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"

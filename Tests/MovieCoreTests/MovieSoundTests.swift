@@ -86,6 +86,47 @@ private func tempFolder() throws -> URL {
     #expect(LipSyncEngine.allCases.map(\.task) == ["wan22-s2v", "longcat-avatar", "infinitetalk"])
 }
 
+@Test func voiceEngineRoundTripsAndAnUnknownOneFallsBack() throws {
+    #expect(MovieProject().voiceEngine == .qwen3)
+    var m = MovieProject()
+    m.voiceEngine = .breeze
+    #expect(try JSONDecoder().decode(MovieProject.self, from: JSONEncoder().encode(m)).voiceEngine == .breeze)
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(m)) as! [String: Any]
+    json["voiceEngine"] = "some-future-model"
+    #expect(try JSONDecoder().decode(MovieProject.self, from: JSONSerialization.data(withJSONObject: json)).voiceEngine == .qwen3)
+    json.removeValue(forKey: "voiceEngine")  // movies from before the choice
+    #expect(try JSONDecoder().decode(MovieProject.self, from: JSONSerialization.data(withJSONObject: json)).voiceEngine == .qwen3)
+    #expect(VoiceEngine.allCases.map(\.task) == ["qwen3-tts", "breeze-tts"])
+    #expect(VoiceEngine.breeze.title.contains("non-commercial"))
+}
+
+@Test func breezeDesignsFromTheDescriptionAndDirectsLinesByTheirDelivery() throws {
+    let c = MovieCharacter(id: "x", name: "X", look: "", voice: "a gruff old sailor")
+    #expect(MovieVoices.TemplateName.sample(.breeze) != MovieVoices.TemplateName.sample(.qwen3))
+    #expect(MovieVoices.TemplateName.line(.breeze) != MovieVoices.TemplateName.line(.qwen3))
+
+    let sr = MovieVoices.sampleRender(c, engine: .breeze, seed: 1, server: "s")
+    let sg = try MovieVoices.sampleTemplate(engine: .breeze).bind(sr.values)
+    #expect(sg["voice"]?.type == "RemoteBreezeSpeech")
+    #expect(sg["voice"]?.inputs["instruction"] == .value(.string("a gruff old sailor")))
+    #expect(sg["voice"]?.inputs["text"] == .value(.string(MovieVoices.sampleText)))
+
+    var l = DialogueLine(character: "x", text: " Stay. ", delivery: " soft, firm ")
+    let lr = MovieVoices.lineRender(l, engine: .breeze, sample: URL(fileURLWithPath: "/m/s.wav"), seed: 2, server: "s")
+    let lg = try MovieVoices.lineTemplate(engine: .breeze).bind(lr.values)
+    #expect(lg["voice"]?.type == "RemoteBreezeSpeech" && lg["reference"]?.inputs["path"] == .value(.string("/m/s.wav")))
+    #expect(lg["voice"]?.inputs["instruction"] == .value(.string("soft, firm")))
+    #expect(lg["voice"]?.inputs["text"] == .value(.string("Stay.")))
+    // Cloning needs the sample's exact words, which every sample says.
+    #expect(lg["voice"]?.inputs["reference_text"] == .value(.string(MovieVoices.sampleText)))
+
+    // Qwen3-TTS is not given the delivery (it can't use it while cloning).
+    l.delivery = "shouting"
+    let qr = MovieVoices.lineRender(l, sample: URL(fileURLWithPath: "/m/s.wav"), seed: 2, server: "s")
+    #expect(qr.values["instruction"] == nil && qr.values["language"] == .string("Auto"))
+    #expect(try MovieVoices.lineTemplate().bind(qr.values)["voice"]?.type == "RemoteTextToSpeech")
+}
+
 // MARK: layout
 
 @Test func linesAreLaidOutAndShotsStretchToFit() {

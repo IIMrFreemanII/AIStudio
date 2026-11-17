@@ -417,6 +417,7 @@ H100 (`AISTUDIO_GPU_AVATAR`):
 | ACE-Step 1.5 XL Music | ACE-Step 1.5 XL turbo DiT (4B) with its 4B planner | MIT | Songs with vocals from style tags and lyrics, or instrumentals; 48 kHz stereo, 10 s – 10 min. Same inputs as the local Text to Music node; `planner` off skips the language model. |
 | Stable Audio 3 Sound | Stable Audio 3 medium (2B, distilled, 8 steps) | Stability AI Community: free for personal use and for organisations under $1M a year | Sound effects, ambience and instrumental beds; 44.1 kHz stereo, up to about six minutes. |
 | Qwen3-TTS Speech | Qwen3-TTS 12Hz 1.7B Base, CustomVoice and VoiceDesign | Apache-2.0 | Speech in 10 languages, 24 kHz mono. |
+| Breeze TTS 2 Speech | Breeze TTS 2 (BreezeBlue) | **Research and non-commercial only**, for the weights and for what it makes | Expressive English and Chinese speech, 24 kHz mono: clone, direct or design a voice; vocal events such as `(laugh)` or `(sigh)` in the text. |
 
 The speech node picks its model from what you give it:
 
@@ -426,6 +427,18 @@ The speech node picks its model from what you give it:
 2. Otherwise, `voice` **designed**: a new voice made from the `description` ("a calm older man with a British
    accent").
 3. Otherwise, one of nine **built-in voices**; the `description`, if any, sets the delivery ("excited, whispering").
+
+Breeze TTS 2 picks its mode the same way, with one `instruction` field instead of the voice menu:
+
+1. A clip on `reference` plus its **exact** transcript in `reference_text` (required: Breeze refuses a clip without
+   one): **clones** the voice. The app sends the whole clip as mono, since the transcript must match all of it.
+2. The same plus an `instruction` ("speak slowly, restrained"): **directs** that voice.
+3. No clip: the `instruction` **designs** a new voice ("a warm young woman, calm and reflective").
+
+`cfg_scale` 0 means auto: 4 with an instruction (the model card's advice), 1 without. It runs on the L40S like
+Qwen3-TTS, in its own container (`Breeze` in Modal). Install it with the `breeze-tts` download (7.7 GB); it isn't in
+the `audio` group, so it comes only on request. In Movie Studio, the Voices page's engine menu switches a movie to
+Breeze: each line still clones its character's voice sample (from either engine) and is said as its delivery directs.
 
 Only clone voices you have the right to use.
 

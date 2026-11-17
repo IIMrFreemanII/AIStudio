@@ -1,0 +1,48 @@
+{
+  "category" : "speech",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "instruction" : "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery.",
+          "seed" : 1,
+          "text" : "(sigh) Welcome aboard. This voice was designed from a description, on a cloud GPU."
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteBreezeSpeech"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "audio" : {
+            "node" : "cloud",
+            "output" : "audio"
+          },
+          "directory" : "{output}",
+          "filename_prefix" : "speech",
+          "format" : "wav"
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveAudio"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-breeze-tts",
+  "modelName" : "Breeze TTS 2 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Breeze TTS 2 · Cloud GPU (non-commercial)",
+  "needsServer" : "gpu",
+  "order" : 300,
+  "summary" : "Expressive English and Chinese speech: design a voice from a description, or connect Load Audio to reference (with its exact transcript) to clone and direct a voice. Research and non-commercial use only.",
+  "symbol" : "cloud"
+}

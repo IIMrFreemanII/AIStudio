@@ -172,8 +172,11 @@ def _wav_info(data: bytes):
 
 def test_audio_tasks_are_listed_with_choices_and_optional_inputs(client):
     tasks = {t["id"]: t for t in client.get("/v1/info", headers=AUTH).json()["tasks"]}
-    for task in ("ace-step-xl", "stable-audio-3", "qwen3-tts"):
+    for task in ("ace-step-xl", "stable-audio-3", "qwen3-tts", "breeze-tts"):
         assert tasks[task]["kind"] == "audio" and tasks[task]["gpu"] == "L40S" and not tasks[task]["installed"]
+    breeze = tasks["breeze-tts"]
+    assert "non-commercial" in breeze["title"] and breeze["optionalInputs"] == ["reference"]
+    assert set(breeze["params"]) == {"text", "instruction", "reference_text", "cfg_scale", "seed"}
     speech = tasks["qwen3-tts"]
     assert speech["inputs"] == [] and speech["optionalInputs"] == ["reference"]
     assert "Ryan" in speech["params"]["voice"]["choices"] and "designed" in speech["params"]["voice"]["choices"]
@@ -230,7 +233,7 @@ def test_fake_models_give_each_audio_model_its_format(tmp_path, monkeypatch):
         def check(self): pass
 
     expected = {"ace-step-xl": (48000, 2, 10 * 48000), "stable-audio-3": (44100, 2, 3 * 44100),
-                "qwen3-tts": (24000, 1, None)}
+                "qwen3-tts": (24000, 1, None), "breeze-tts": (24000, 1, None)}
     for task, (rate, channels, frames) in expected.items():
         spec = TASKS[task]
         params = spec.normalize({"seconds": 10} if task == "ace-step-xl" else
@@ -483,3 +486,42 @@ def test_two_uploads_of_the_same_bytes_at_once_both_succeed(tmp_path):
 
     assert asyncio.run(both()) == [True, True]
     assert store.path(name).read_bytes() == data and not store._receiving
+
+
+def test_breeze_picks_its_mode_and_needs_a_transcript_to_clone(tmp_path, monkeypatch):
+    """Breeze's mode comes from what it's given; guidance 4 with an instruction (unless set); a reference without its
+    transcript is refused, by the fake worker too."""
+    import pytest
+
+    from aistudio_gpu.tasks import TASKS, make_worker
+    from aistudio_gpu.tasks.breeze import request
+
+    spec = TASKS["breeze-tts"]
+    ref = {"reference": tmp_path / "voice.wav"}
+    cases = [({"text": "Hi."}, {}, "plain", 1.0),
+             ({"text": "Hi.", "instruction": "a calm older man"}, {}, "design", 4.0),
+             ({"text": "Hi.", "reference_text": "I remember."}, ref, "clone", 1.0),
+             ({"text": "Hi.", "reference_text": "I remember.", "instruction": "quietly"}, ref, "direction", 4.0),
+             ({"text": "Hi.", "instruction": "quietly", "cfg_scale": 2.5}, {}, "design", 2.5)]
+    for params, inputs, mode, cfg in cases:
+        req, got_mode, got_cfg = request(spec.normalize(params), inputs)
+        assert (got_mode, got_cfg) == (mode, cfg), params
+        assert ("ref_audio_path" in req) == bool(inputs) and ("instruction" in req) == ("instruction" in params)
+    with pytest.raises(ValueError, match="exact transcript"):
+        request(spec.normalize({"text": "Hi."}), ref)
+    with pytest.raises(ValueError, match="no text"):
+        request(spec.normalize({"text": "  "}), {})
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    (tmp_path / "voice.wav").write_bytes(b"")
+    with pytest.raises(ValueError, match="exact transcript"):
+        make_worker(spec.family).run(spec, spec.normalize({"text": "Hi."}), ref, _QuietSink(), tmp_path)
+
+
+def test_breeze_download_skips_the_readme_assets():
+    from aistudio_gpu.download import GROUPS, MODELS
+
+    spec = MODELS["breeze-tts"]
+    assert spec["revision"] == "3e28c5151381a722f1d8661b4118c298caa77aa4" and "assets/*" not in spec["allow"]
+    assert "audio_tokenizer/*" in spec["allow"] and GROUPS["breeze-tts"] == ["breeze-tts"]
+    assert "breeze-tts" not in GROUPS["audio"]

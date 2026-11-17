@@ -190,6 +190,7 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         "longcat-avatar": (90, 32.3, 120),
         "infinitetalk": (60, 32.3, 150),
         "qwen3-tts": (6, 4, 60),
+        "breeze-tts": (6, 4, 60),
         "stable-audio-3": (4, 5, 40),
         "ace-step-xl": (25, 30, 90),
     ]

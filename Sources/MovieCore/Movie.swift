@@ -141,6 +141,27 @@ public enum LipSyncEngine: String, Codable, Sendable, CaseIterable, Identifiable
     }
 }
 
+/// The model that speaks the characters' voice samples and lines.
+public enum VoiceEngine: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Qwen3-TTS: 10 languages; a line clones the sample's voice but can't take its delivery.
+    case qwen3 = "qwen3-tts"
+    /// Breeze TTS 2: English and Chinese, research and non-commercial use only; a line clones the sample's voice and
+    /// is said as its delivery directs ("quietly, scared").
+    case breeze = "breeze-tts"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .qwen3: "Qwen3-TTS"
+        case .breeze: "Breeze TTS 2 (non-commercial)"
+        }
+    }
+
+    /// The server task that speaks.
+    public var task: String { rawValue }
+}
+
 public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
     /// A character's id.
@@ -429,13 +450,15 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var lipSync: Bool
     /// The model that makes lip-synced talking shots.
     public var lipSyncEngine: LipSyncEngine
+    /// The model that speaks the voice samples and lines.
+    public var voiceEngine: VoiceEngine
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
                 llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
                 shots: [Shot] = [], approved: Set<MovieStage> = [], costSpent: Double = 0, created: Date = Date(),
                 modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true,
-                lipSyncEngine: LipSyncEngine = .wanS2V) {
+                lipSyncEngine: LipSyncEngine = .wanS2V, voiceEngine: VoiceEngine = .qwen3) {
         self.id = id
         self.title = title
         self.idea = idea
@@ -455,11 +478,12 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.mix = mix
         self.lipSync = lipSync
         self.lipSyncEngine = lipSyncEngine
+        self.voiceEngine = voiceEngine
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, approved,
-             costSpent, created, modified, music, mix, lipSync, lipSyncEngine
+             costSpent, created, modified, music, mix, lipSync, lipSyncEngine, voiceEngine
     }
 
     /// Movies saved before the sound stages have no music, mix or lip-sync setting.
@@ -486,6 +510,7 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         lipSync = try c.decodeIfPresent(Bool.self, forKey: .lipSync) ?? true
         // Movies from before the choice used Wan S2V; an engine this version doesn't know falls back to it.
         lipSyncEngine = (try? c.decodeIfPresent(LipSyncEngine.self, forKey: .lipSyncEngine)) ?? .wanS2V
+        voiceEngine = (try? c.decodeIfPresent(VoiceEngine.self, forKey: .voiceEngine)) ?? .qwen3
     }
 
     public var runtime: Double { shots.reduce(0) { $0 + $1.duration } }

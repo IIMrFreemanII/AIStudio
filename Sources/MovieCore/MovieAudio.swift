@@ -22,6 +22,11 @@ public enum MovieVoices {
     public enum TemplateName {
         public static let sample = "voice-sample"
         public static let line = "voice-line"
+        public static let sampleBreeze = "voice-sample-breeze"
+        public static let lineBreeze = "voice-line-breeze"
+
+        public static func sample(_ engine: VoiceEngine) -> String { engine == .breeze ? sampleBreeze : sample }
+        public static func line(_ engine: VoiceEngine) -> String { engine == .breeze ? lineBreeze : line }
     }
 
     /// Seconds of quiet before the first line, between lines, and after the last.
@@ -33,54 +38,83 @@ public enum MovieVoices {
     /// InfiniteTalk's, since it dubs the shot's ordinary clip (at most 121 frames).
     public static let maxTalking = 12.0
 
+    /// The speech node's type and its inputs besides the reference, per engine.
+    private static func speechNode(_ engine: VoiceEngine) -> (type: String, sample: [String], line: [String]) {
+        switch engine {
+        case .qwen3: ("RemoteTextToSpeech", ["text", "description", "voice", "language", "seed", "server"],
+                      ["text", "reference_text", "language", "seed", "server"])
+        case .breeze: ("RemoteBreezeSpeech", ["text", "instruction", "seed", "server"],
+                       ["text", "reference_text", "instruction", "seed", "server"])
+        }
+    }
+
     /// Text to Speech (voice design, no reference) into a Preview Audio.
-    public static func sampleTemplate(name: String = TemplateName.sample) -> MovieTemplate {
-        let voice = GraphNode(id: "voice", type: "RemoteTextToSpeech", inputs: [
-            "text": .value(.string(sampleText)), "language": .value(.string("Auto")), "voice": .value(.string("designed")),
-            "description": .value(.string("")), "seed": .value(.int(0)), "server": .value(.string("")),
-        ], position: GraphPoint(x: 40, y: 60))
+    public static func sampleTemplate(name: String? = nil, engine: VoiceEngine = .qwen3) -> MovieTemplate {
+        let node = speechNode(engine)
+        let inputs: [String: NodeInput] = switch engine {
+        case .qwen3: ["text": .value(.string(sampleText)), "language": .value(.string("Auto")),
+                      "voice": .value(.string("designed")), "description": .value(.string("")),
+                      "seed": .value(.int(0)), "server": .value(.string(""))]
+        case .breeze: ["text": .value(.string(sampleText)), "instruction": .value(.string("")),
+                       "cfg_scale": .value(.double(0)), "seed": .value(.int(0)), "server": .value(.string(""))]
+        }
+        let voice = GraphNode(id: "voice", type: node.type, inputs: inputs, position: GraphPoint(x: 40, y: 60))
         let out = GraphNode(id: "out", type: "PreviewAudio", inputs: ["audio": .link(node: "voice", output: "audio")],
                             position: GraphPoint(x: 400, y: 80))
-        let slots = Dictionary(uniqueKeysWithValues: ["text", "description", "voice", "language", "seed", "server"]
-            .map { ($0, MovieTemplate.Slot(node: "voice", input: $0)) })
-        return MovieTemplate(name: name, graph: Graph(nodes: [voice, out]), slots: slots)
+        let slots = Dictionary(uniqueKeysWithValues: node.sample.map { ($0, MovieTemplate.Slot(node: "voice", input: $0)) })
+        return MovieTemplate(name: name ?? TemplateName.sample(engine), graph: Graph(nodes: [voice, out]), slots: slots)
     }
 
     /// Load Audio (the character's sample) into Text to Speech as its reference (voice cloning) into a Preview Audio.
-    public static func lineTemplate(name: String = TemplateName.line) -> MovieTemplate {
+    public static func lineTemplate(name: String? = nil, engine: VoiceEngine = .qwen3) -> MovieTemplate {
+        let node = speechNode(engine)
         let reference = GraphNode(id: "reference", type: "LoadAudio", inputs: ["path": .value(.string(""))],
                                   position: GraphPoint(x: 40, y: 60))
-        let voice = GraphNode(id: "voice", type: "RemoteTextToSpeech", inputs: [
-            "reference": .link(node: "reference", output: "audio"),
-            "text": .value(.string("")), "reference_text": .value(.string(sampleText)),
-            "language": .value(.string("Auto")), "seed": .value(.int(0)), "server": .value(.string("")),
-        ], position: GraphPoint(x: 340, y: 60))
+        var inputs: [String: NodeInput] = switch engine {
+        case .qwen3: ["text": .value(.string("")), "reference_text": .value(.string(sampleText)),
+                      "language": .value(.string("Auto")), "seed": .value(.int(0)), "server": .value(.string(""))]
+        case .breeze: ["text": .value(.string("")), "reference_text": .value(.string(sampleText)),
+                       "instruction": .value(.string("")), "cfg_scale": .value(.double(0)), "seed": .value(.int(0)),
+                       "server": .value(.string(""))]
+        }
+        inputs["reference"] = .link(node: "reference", output: "audio")
+        let voice = GraphNode(id: "voice", type: node.type, inputs: inputs, position: GraphPoint(x: 340, y: 60))
         let out = GraphNode(id: "out", type: "PreviewAudio", inputs: ["audio": .link(node: "voice", output: "audio")],
                             position: GraphPoint(x: 700, y: 80))
-        var slots = Dictionary(uniqueKeysWithValues: ["text", "reference_text", "language", "seed", "server"]
-            .map { ($0, MovieTemplate.Slot(node: "voice", input: $0)) })
+        var slots = Dictionary(uniqueKeysWithValues: node.line.map { ($0, MovieTemplate.Slot(node: "voice", input: $0)) })
         slots["reference"] = .init(node: "reference", input: "path")
-        return MovieTemplate(name: name, graph: Graph(nodes: [reference, voice, out]), slots: slots)
+        return MovieTemplate(name: name ?? TemplateName.line(engine), graph: Graph(nodes: [reference, voice, out]),
+                             slots: slots)
     }
 
     /// A character's voice sample: the sample sentence, spoken in a voice designed from their description.
-    public static func sampleRender(_ c: MovieCharacter, seed: Int, server: String) -> MovieArt.Render {
+    public static func sampleRender(_ c: MovieCharacter, engine: VoiceEngine = .qwen3, seed: Int,
+                                    server: String) -> MovieArt.Render {
         var description = c.voice.trimmingCharacters(in: .whitespacesAndNewlines)
         if description.isEmpty { description = "a clear, natural speaking voice" }
-        return MovieArt.Render(values: [
-            "text": .string(sampleText), "description": .string(description), "voice": .string("designed"),
-            "language": .string("Auto"), "seed": .int(seed), "server": .string(server),
-        ], unusedPictures: [])
+        let values: [String: JSONValue] = switch engine {
+        case .qwen3: ["text": .string(sampleText), "description": .string(description), "voice": .string("designed"),
+                      "language": .string("Auto"), "seed": .int(seed), "server": .string(server)]
+        case .breeze: ["text": .string(sampleText), "instruction": .string(description), "seed": .int(seed),
+                       "server": .string(server)]
+        }
+        return MovieArt.Render(values: values, unusedPictures: [])
     }
 
     /// A line spoken by cloning the character's voice sample (`sample`, absolute), so the voice is the same from line
-    /// to line. Cloning can't apply the line's `delivery` ("quietly, scared"); it isn't used here.
-    public static func lineRender(_ line: DialogueLine, sample: URL, seed: Int, server: String) -> MovieArt.Render {
-        MovieArt.Render(values: [
+    /// to line. Qwen3-TTS can't apply the line's `delivery` ("quietly, scared") while cloning; Breeze is directed by it.
+    public static func lineRender(_ line: DialogueLine, engine: VoiceEngine = .qwen3, sample: URL, seed: Int,
+                                  server: String) -> MovieArt.Render {
+        var values: [String: JSONValue] = [
             "text": .string(line.text.trimmingCharacters(in: .whitespacesAndNewlines)),
             "reference": .string(sample.path), "reference_text": .string(sampleText),
-            "language": .string("Auto"), "seed": .int(seed), "server": .string(server),
-        ], unusedPictures: [])
+            "seed": .int(seed), "server": .string(server),
+        ]
+        switch engine {
+        case .qwen3: values["language"] = .string("Auto")
+        case .breeze: values["instruction"] = .string(line.delivery.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return MovieArt.Render(values: values, unusedPictures: [])
     }
 
     // MARK: layout
