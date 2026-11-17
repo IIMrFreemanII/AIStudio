@@ -29,7 +29,8 @@ Layout:
   up to ``AISTUDIO_UPLOADS_GB`` (default 50; least recently used go first). Workers copy inputs straight from it.
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
-``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
+default H200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default B200; empty for none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
 L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
@@ -52,6 +53,10 @@ GPU_CONTAINERS = int(os.environ.get("AISTUDIO_GPU_CONTAINERS", "4"))
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
+GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")
+# Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
+GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
+H3_GPUS = [GPU_H3] + [g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
@@ -117,7 +122,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_AVATAR": GPU_AVATAR,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -521,6 +526,50 @@ class QwenImageEdit:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("qwen-image-edit", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# MiniMax H3: one class per transformer partition, so each container holds one 61.7 GB transformer with the shared
+# 62 GB conditioner and the VAEs (≈ 140 GB in host RAM; the components manager moves each onto the GPU as it runs). On
+# the edit image for torchvision, which transformers' Qwen-VL processors need. ``H3_GPUS`` falls back to a B200 when no
+# H200 is free.
+@_gpu_class(image=edit_image, gpu=H3_GPUS, memory=(163840, 262144), cpu=8)
+class H3Video:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("h3-video", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(image=edit_image, gpu=H3_GPUS, memory=(163840, 262144), cpu=8)
+class H3References:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("h3-references", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1429,7 +1478,8 @@ def api():
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "music": Music,
-                          "sound": Sound, "speech": Speech, "breeze": Breeze}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "sound": Sound, "speech": Speech, "breeze": Breeze,
+                          "h3-video": H3Video, "h3-references": H3References}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

@@ -112,6 +112,17 @@ struct NodeExtras: View {
                      + "With a built-in voice, the description sets the delivery (\"excited, whispering\").")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
+            if node.type == "RemoteH3Video" || node.type == "RemoteH3References" {
+                Text((node.type == "RemoteH3Video"
+                      ? "A clip with its own sound (dialogue, effects, ambience), 5–15 s at 24 fps: from the prompt "
+                        + "alone, or from a first and/or last frame. "
+                      : "A clip from reference pictures and voice or music clips (2–15 s each); name them in the "
+                        + "prompt as <Picture 1>, <Audio 1>. ")
+                     + "Write dialogue as <d>[English] the line</d>. Fast: the Turbo LoRA, 8 steps; off: about six "
+                     + "times the GPU time. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's "
+                     + "own licence, and products made with it must show \"MiniMax H3\".")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
             if node.type == "RemoteBreezeSpeech" {
                 Text("English and Chinese. Connect a reference clip and type its exact transcript to clone its voice; "
                      + "add an instruction to direct it (\"slowly, restrained\"). Without a clip, the instruction "

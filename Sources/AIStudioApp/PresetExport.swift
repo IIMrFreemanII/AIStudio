@@ -17,6 +17,9 @@ enum PresetExport {
 
     /// A Cloud GPU node (optionally fed by Load Image) into a local Save node for its output (`video`, `image` or
     /// `audio`); `literals` are the node's preset values.
+    /// The H3 presets' prompt, in the structure MiniMax's prompting guide describes.
+    static let h3Prompt = "integrated_multimodal_description: [Shot 1] A wide shot of a lighthouse on a rocky headland at dusk; waves break against the rocks below as the camera slowly pushes in, and the lamp turns on, sweeping its beam across the water.\noverall_soundscape: Crashing surf, wind, gulls far off, a low mechanical hum as the lamp starts.\nnon_diegetic_music: none"
+
     static func cloudGraph(node type: String, literals: [String: JSONValue], startImage: Bool = false,
                            imageInput: String = "image", output: String, prefix: String? = nil,
                            outputDirectory out: String) -> Graph {
@@ -347,6 +350,41 @@ enum PresetExport {
                         "instruction": .string("A warm, thoughtful young woman with a clear voice and a calm, reflective delivery."),
                         "seed": .int(1),
                      ], output: "audio", prefix: "speech", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-h3-t2v", name: "MiniMax H3 Video with Sound · Cloud GPU", category: .video, models: [],
+                 modelName: "MiniMax H3 on a GPU server",
+                 summary: "A 5–15 s clip with its own dialogue, effects and ambience from one prompt, on an H200. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteH3Video", literals: [
+                        "prompt": .string(Self.h3Prompt), "seed": .int(1),
+                     ], output: "video", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-h3-i2v", name: "MiniMax H3 Image to Video with Sound · Cloud GPU", category: .video, models: [],
+                 modelName: "MiniMax H3 on a GPU server",
+                 summary: "Animate a picture into a clip with its own sound: the picture is the first frame (connect a last frame too, if you like). MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteH3Video", literals: [
+                        "prompt": .string(Self.h3Prompt), "seed": .int(1),
+                     ], startImage: true, output: "video", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-h3-references", name: "MiniMax H3 from References · Cloud GPU", category: .video, models: [],
+                 modelName: "MiniMax H3 on a GPU server",
+                 summary: "A clip from a reference picture and a voice clip: name them <Picture 1> and <Audio 1> in the prompt, and the character speaks in that voice. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     Graph(nodes: [
+                        GraphNode(id: "picture", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 60)),
+                        GraphNode(id: "voice", type: "LoadAudio", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 300)),
+                        GraphNode(id: "cloud", type: "RemoteH3References", inputs: [
+                            "image1": .link(node: "picture", output: "image"),
+                            "audio1": .link(node: "voice", output: "audio"),
+                            "prompt": .value(.string("integrated_multimodal_description: [Shot 1] Medium close-up of <Picture 1> in soft window light; they look into the camera and speak warmly. <Picture 1> says: <d>[English] Hello! This clip was made from one picture and one voice.</d> (voice: <Audio 1>)\noverall_soundscape: A quiet room, faint birdsong outside.\nnon_diegetic_music: none")),
+                            "seed": .value(.int(1)),
+                        ], position: GraphPoint(x: 340, y: 60)),
+                        GraphNode(id: "show", type: "PreviewVideo", inputs: [
+                            "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
+                     ])
                  }),
         ]
 

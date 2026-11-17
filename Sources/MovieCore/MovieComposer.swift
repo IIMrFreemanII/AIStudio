@@ -129,6 +129,7 @@ public enum MovieComposer {
         for sound in timeline.sounds.sorted(by: { $0.start < $1.start }) {
             let asset = AVURLAsset(url: folder.appendingPathComponent(sound.file))
             guard let source = try await asset.loadTracks(withMediaType: .audio).first else {
+                if sound.kind == .clip { continue }  // a silent clip (made before the movie switched to H3)
                 throw ComposerError.noAudio(sound.file)
             }
             let range = try await source.load(.timeRange)

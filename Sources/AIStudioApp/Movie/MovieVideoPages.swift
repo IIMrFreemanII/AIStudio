@@ -27,6 +27,15 @@ struct MovieClipsPage: View {
             .mgHelp(missing > 0 ? "One clip for each shot without one (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-clips")
+            MGPicker(selection: $doc.movie.videoEngine, options: VideoEngine.allCases.map { ($0, $0.title) },
+                     maxWidth: 200)
+                .disabled(doc.isBusy)
+                .mgHelp("Wan 2.2: silent clips; the lines, effects and lip-sync come from the other stages. MiniMax "
+                        + "H3: each clip with its own sound (its lines in the characters' voices, effects, ambience), "
+                        + "on an H200; its licence excludes the US, EU, UK and Korea without MiniMax's own licence.")
+                .mgTestAnchor("movie-video-engine")
+                .onChange(of: doc.movie.videoEngine) { doc.movie.reopen(.video) }
+            if doc.movie.videoEngine == .wan22 {
             Toggle("Lip-sync", isOn: $doc.movie.lipSync)
                 .toggleStyle(.switch).controlSize(.small)
                 .disabled(doc.isBusy)
@@ -43,13 +52,22 @@ struct MovieClipsPage: View {
                     .mgTestAnchor("movie-lip-sync-engine")
                     .onChange(of: doc.movie.lipSyncEngine) { model.fitShotsToLines(doc) }
             }
+            }
             Button("Edit Template") {
-                model.editMovieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
+                if doc.movie.videoEngine == .minimaxH3 {
+                    model.editMovieTemplate(MovieH3.TemplateName.video, for: doc) { MovieH3.videoTemplate() }
+                } else {
+                    model.editMovieTemplate(MovieShots.TemplateName.shot, for: doc) { MovieShots.template() }
+                }
             }
             .buttonStyle(.mg(.borderless))
             .mgHelp("Opens the graph clips are made with as a workflow; this movie uses your edited copy")
             .mgContextMenu {
                 MGMenuItem.button("Edit Talking-Shot Template") {
+                    if doc.movie.videoEngine == .minimaxH3 {
+                        model.editMovieTemplate(MovieH3.TemplateName.references, for: doc) { MovieH3.referencesTemplate() }
+                        return
+                    }
                     let engine = doc.movie.lipSyncEngine
                     model.editMovieTemplate(MovieShots.TemplateName.talking(engine), for: doc) {
                         MovieShots.talkingTemplate(for: engine)
@@ -336,7 +354,7 @@ struct MovieEditPage: View {
             return
         }
         do {
-            let c = try await MovieComposer.build(t, folder: model.movieStore.folder(doc.id), size: doc.movie.aspect.videoSize)
+            let c = try await MovieComposer.build(t, folder: model.movieStore.folder(doc.id), size: doc.movie.videoSize)
             let item = AVPlayerItem(asset: c.asset)
             item.videoComposition = c.video
             item.audioMix = c.audioMix
@@ -452,7 +470,7 @@ private struct MovieTimelineView: View {
     }
 }
 
-/// A sound on the timeline: a line (with its speaker), a shot's effects or a scene's music.
+/// A sound on the timeline: a clip's own sound (H3), a line (with its speaker), a shot's effects or a scene's music.
 private struct TimelineSoundView: View {
     let sound: MovieTimeline.Sound
     let scale: Double
@@ -462,11 +480,13 @@ private struct TimelineSoundView: View {
 
     var body: some View {
         let tint: Color = switch sound.kind {
+        case .clip: MG.success
         case .dialogue: MG.accent
         case .effects: MG.warning
         case .music: .purple
         }
         let symbol = switch sound.kind {
+        case .clip: "film"
         case .dialogue: "person.wave.2"
         case .effects: "speaker.wave.2"
         case .music: "music.note"
@@ -484,7 +504,7 @@ private struct TimelineSoundView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: open)
         .mgContextMenu { MGMenuItem.button("Open in Viewer", action: open) }
-        .mgHelp("\(sound.kind == .dialogue ? "Line" : sound.kind == .effects ? "Sound effects" : "Music"): \(sound.label) · "
+        .mgHelp("\(sound.kind == .clip ? "The clip's own sound" : sound.kind == .dialogue ? "Line" : sound.kind == .effects ? "Sound effects" : "Music"): \(sound.label) · "
                 + String(format: "%.1f s", sound.duration) + " · double-click to open it")
     }
 }

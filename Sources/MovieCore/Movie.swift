@@ -62,6 +62,22 @@ public enum MovieAspect: String, Codable, CaseIterable, Sendable, Identifiable {
         case .square: (640, 640)
         }
     }
+    /// MiniMax H3's own canvas for the shape (its 768-pixel short edge, multiples of 32).
+    public var h3Size: (width: Int, height: Int) {
+        switch self {
+        case .wide: (1344, 768)
+        case .vertical: (768, 1344)
+        case .square: (768, 768)
+        }
+    }
+    /// The shape as H3's `aspect` parameter.
+    public var h3Aspect: String {
+        switch self {
+        case .wide: "16:9"
+        case .vertical: "9:16"
+        case .square: "1:1"
+        }
+    }
     /// Keyframe stills: about a megapixel at the same shape (SDXL / Qwen sizes, multiples of 64).
     public var keyframeSize: (width: Int, height: Int) {
         switch self {
@@ -139,6 +155,27 @@ public enum LipSyncEngine: String, Codable, Sendable, CaseIterable, Identifiable
         case .infiniteTalk: "infinitetalk"
         }
     }
+}
+
+/// The model that makes the shots' clips.
+public enum VideoEngine: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Wan 2.2: silent clips from the keyframes (lines, effects and lip-sync are added by the later stages).
+    case wan22 = "wan-2.2"
+    /// MiniMax H3: each clip with its own sound (its lines in the characters' voices, effects, ambience), so the
+    /// Lines and Effects steps are skipped. Its licence excludes the US, EU, UK and Korea without MiniMax's own.
+    case minimaxH3 = "minimax-h3"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .wan22: "Wan 2.2"
+        case .minimaxH3: "MiniMax H3 (with sound)"
+        }
+    }
+
+    /// Whether its clips carry the shot's own sound.
+    public var makesSound: Bool { self == .minimaxH3 }
 }
 
 /// The model that speaks the characters' voice samples and lines.
@@ -452,13 +489,16 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var lipSyncEngine: LipSyncEngine
     /// The model that speaks the voice samples and lines.
     public var voiceEngine: VoiceEngine
+    /// The model that makes the clips.
+    public var videoEngine: VideoEngine
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
                 llm: MovieLLM? = nil, logline: String = "", characters: [MovieCharacter] = [], scenes: [MovieScene] = [],
                 shots: [Shot] = [], approved: Set<MovieStage> = [], costSpent: Double = 0, created: Date = Date(),
                 modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true,
-                lipSyncEngine: LipSyncEngine = .wanS2V, voiceEngine: VoiceEngine = .qwen3) {
+                lipSyncEngine: LipSyncEngine = .wanS2V, voiceEngine: VoiceEngine = .qwen3,
+                videoEngine: VideoEngine = .wan22) {
         self.id = id
         self.title = title
         self.idea = idea
@@ -479,11 +519,12 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.lipSync = lipSync
         self.lipSyncEngine = lipSyncEngine
         self.voiceEngine = voiceEngine
+        self.videoEngine = videoEngine
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, id, title, idea, style, aspect, targetSeconds, llm, logline, characters, scenes, shots, approved,
-             costSpent, created, modified, music, mix, lipSync, lipSyncEngine, voiceEngine
+             costSpent, created, modified, music, mix, lipSync, lipSyncEngine, voiceEngine, videoEngine
     }
 
     /// Movies saved before the sound stages have no music, mix or lip-sync setting.
@@ -511,9 +552,15 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         // Movies from before the choice used Wan S2V; an engine this version doesn't know falls back to it.
         lipSyncEngine = (try? c.decodeIfPresent(LipSyncEngine.self, forKey: .lipSyncEngine)) ?? .wanS2V
         voiceEngine = (try? c.decodeIfPresent(VoiceEngine.self, forKey: .voiceEngine)) ?? .qwen3
+        videoEngine = (try? c.decodeIfPresent(VideoEngine.self, forKey: .videoEngine)) ?? .wan22
     }
 
     public var runtime: Double { shots.reduce(0) { $0 + $1.duration } }
+
+    /// The clips' size: the video engine's canvas for the movie's shape (also the export's).
+    public var videoSize: (width: Int, height: Int) {
+        videoEngine == .minimaxH3 ? aspect.h3Size : aspect.videoSize
+    }
 
     public func character(_ id: String) -> MovieCharacter? { characters.first { $0.id == id } }
 

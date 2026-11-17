@@ -14,7 +14,7 @@ public enum RemoteNodes {
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
-        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self,
+        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self,
     ]
 
     /// Nodes that only prepare inputs for the job nodes above (no server, no job of their own).
@@ -32,7 +32,7 @@ public enum RemoteNodes {
         "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
         "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
-        "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts",
+        "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
     ]
 
     public static func taskID(forNodeType type: String) -> String? { taskIDs[type] }
@@ -1021,5 +1021,71 @@ public struct RemoteBreezeSpeechNode: NodeImplementation {
         let (url, _) = try await runRemoteJob(task: "breeze-tts", params: params, audios: audios, inputs: inputs,
                                               context: context)
         return ["audio": .object(try await loadAudio(url))]
+    }
+}
+
+/// The inputs both MiniMax H3 nodes share.
+private func h3Inputs() -> [InputSpec] {
+    [
+        RemoteNodes.serverInput,
+        InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+        InputSpec("seed", .int, default: .int(0), widget: .seed),
+        InputSpec("seconds", .float, default: .double(5), widget: .number(min: 5, max: 15, step: 0.5)),
+        InputSpec("size", .string, default: .string("768p"), widget: .choice(["768p", "544p"])),
+        InputSpec("aspect", .string, default: .string("auto"), widget: .choice(["auto", "16:9", "9:16", "1:1"])),
+        InputSpec("fast", .bool, default: .bool(true)),
+        // Model evaluations; 0 = automatic (8 fast, 49 full).
+        InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
+    ]
+}
+
+private func h3Params(_ inputs: NodeInputs) throws -> [String: Any] {
+    ["prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"), "seconds": try inputs.float("seconds"),
+     "size": try inputs.string("size"), "aspect": try inputs.string("aspect"), "fast": try inputs.bool("fast"),
+     "steps": try inputs.int("steps")]
+}
+
+/// MiniMax H3: a 5–15 s clip with its own sound (dialogue, effects, ambience) from one model, 24 fps at a 768 short
+/// edge, from text alone or from a first and/or last frame. An H200 by default. Its community licence excludes the
+/// US, EU, UK and Korea without MiniMax's own licence.
+public struct RemoteH3VideoNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteH3Video", displayName: "MiniMax H3 Video with Sound (Cloud GPU)", category: "remote",
+        inputs: [InputSpec("image", .image, optional: true), InputSpec("last_image", .image, optional: true)] + h3Inputs(),
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var images: [String: MLXArray] = [:]
+        images["image"] = inputs.optionalObject("image", as: MLXArray.self)
+        images["last_image"] = inputs.optionalObject("last_image", as: MLXArray.self)
+        let (url, _) = try await runRemoteJob(task: "h3-video", params: try h3Params(inputs), images: images,
+                                              inputs: inputs, context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// MiniMax H3 from references: up to four pictures (characters, places, objects) and three voice or music clips
+/// (2–15 s each), which the prompt names as <Picture 1>… and <Audio 1>…; a character can speak in a reference's
+/// voice. The clip comes back with its sound.
+public struct RemoteH3ReferencesNode: NodeImplementation {
+    public static let pictures = ["image1", "image2", "image3", "image4"]
+    public static let voices = ["audio1", "audio2", "audio3"]
+
+    public static let schema = NodeSchema(
+        type: "RemoteH3References", displayName: "MiniMax H3 from References (Cloud GPU)", category: "remote",
+        inputs: [InputSpec("image1", .image)] + pictures.dropFirst().map { InputSpec($0, .image, optional: true) }
+            + voices.map { InputSpec($0, .audio, optional: true) } + h3Inputs(),
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var images: [String: MLXArray] = ["image1": try inputs.object("image1")]
+        for name in Self.pictures.dropFirst() { images[name] = inputs.optionalObject(name, as: MLXArray.self) }
+        var audios: [String: AudioClip] = [:]
+        for name in Self.voices { audios[name] = inputs.optionalObject(name, as: AudioClip.self) }
+        let (url, _) = try await runRemoteJob(task: "h3-references", params: try h3Params(inputs), images: images,
+                                              audios: audios, inputs: inputs, context: context)
+        return ["video": .object(try await loadVideo(url))]
     }
 }

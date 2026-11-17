@@ -309,6 +309,56 @@ struct RemoteNodesTests {
         #expect(dubbed.audio != nil)
     }
 
+    @Test(.enabled(if: hasServer)) func h3MakesA24FPSClipWithStereoSoundFromItsStartPicture() async throws {
+        // A blue 16:9 picture at 544p: 960×544, 5 s at 24 fps snapped to 124 frames, starting blue, with stereo sound.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let png = out.appendingPathComponent("h3-start.png")
+        try ImageArray.savePNG(MLXArray.ones([54, 96, 4]) * MLXArray([0.1, 0.1, 0.9, 1] as [Float]), to: png)
+        let (result, log) = try await run([
+            GraphNode(id: "pic", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "h3", type: "RemoteH3Video", inputs: [
+                "image": .link(node: "pic", output: "image"), "prompt": .value(.string("a lighthouse at dusk")),
+                "size": .value(.string("544p"))]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "h3", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        #expect(log.statuses.contains("Uploading"))
+        let clip = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(clip.frameCount == 124 && clip.fps == 24 && clip.width == 960 && clip.height == 544)
+        #expect(clip.frames[0].mean(axes: [0, 1])[2].item(Float.self) > 0.7)
+        #expect(clip.audio?.channels == 2 && abs((clip.audio?.duration ?? 0) - clip.duration) < 0.1)
+    }
+
+    @Test(.enabled(if: hasServer)) func h3ReferencesTakeAPictureAndAVoiceAndRefuseAShortVoice() async throws {
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let png = out.appendingPathComponent("h3-ref.png")
+        try ImageArray.savePNG(MLXArray.ones([40, 40, 4]) * MLXArray([0.9, 0.1, 0.1, 1] as [Float]), to: png)
+        func graph(voiceSeconds: Double) async throws -> [GraphNode] {
+            let wav = out.appendingPathComponent("h3-voice-\(voiceSeconds).wav")
+            let n = Int(voiceSeconds * 24000)
+            let tone = MLX.sin(MLXArray(0..<n).asType(.float32) * 0.05) * 0.5
+            try await MediaIO.writeAudio(AudioClip(samples: MLX.stacked([tone]), sampleRate: 24000), to: wav)
+            return [GraphNode(id: "pic", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+                    GraphNode(id: "voice", type: "LoadAudio", inputs: ["path": .value(.string(wav.path))]),
+                    GraphNode(id: "h3", type: "RemoteH3References", inputs: [
+                        "image1": .link(node: "pic", output: "image"), "audio1": .link(node: "voice", output: "audio"),
+                        "prompt": .value(.string("<Picture 1> says hello in the voice of <Audio 1>")),
+                        "size": .value(.string("544p")), "aspect": .value(.string("16:9"))]),
+                    GraphNode(id: "save", type: "SaveVideo", inputs: [
+                        "video": .link(node: "h3", output: "video"), "directory": .value(.string(out.path))])]
+        }
+        let (result, _) = try await run(try await graph(voiceSeconds: 3))
+        let clip = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(clip.frameCount == 124 && clip.width == 960 && clip.audio != nil)
+        #expect(clip.frames[0].mean(axes: [0, 1])[0].item(Float.self) > 0.7)  // picture 1 arrived
+        let short = try await graph(voiceSeconds: 1)
+        await #expect(throws: (any Error).self) { _ = try await run(short) }
+    }
+
     @Test(.enabled(if: hasServer)) func fluxReturnsAnImage() async throws {
         let (result, _) = try await run([
             GraphNode(id: "flux", type: "RemoteFlux", inputs: [

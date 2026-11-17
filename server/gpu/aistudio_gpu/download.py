@@ -120,6 +120,18 @@ MODELS: dict[str, dict] = {
         ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "0c0e3051f131929182e2c023b9537f8b1c68adfe", "custom"),
         ("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", "5ecdb67327fd37bb2e042aab12ff7391903235d3", "design"),
     ]},
+    # MiniMax H3 Community Licence (not for the US, EU, UK or Korea without MiniMax's licence). Only the root diffusers
+    # layout (≈ 210 GB: both transformer partitions and the shared parts), not the original checkpoint's FL2VA/ and
+    # Ref2VA/ copies (288 GB); plus LightX2V's Turbo LoRA for each partition.
+    "minimax-h3": {"repo": "MiniMaxAI/MiniMax-H3", "parts": [
+        ("MiniMaxAI/MiniMax-H3", "0919fb684102ef115126612f3fbb84d1027e7317", ".", [
+            "model_index.json", "modular_model_index.json", "LICENSE", "transformer/*", "transformer_ref/*",
+            "text_encoder/*", "tokenizer/*", "processor/*", "vae/*", "audio_vae/*", "scheduler/*",
+            "audio_scheduler/*"]),
+        ("lightx2v/Minimax-h3-Turbo", "c2bf13b837e33bd851b370285fc7db99482d2ab2", "turbo", {
+            "fl2v.safetensors": "minimax_h3_fl2v_turbo_8step_v1.2_768p_bf16.safetensors",
+            "ref2v.safetensors": "minimax_h3_ref2v_turbo_8step_v1.1_768p_bf16.safetensors"}),
+    ]},
     # Research and non-commercial licence; the audio tokenizer (Qwen3-TTS's) ships inside the repo.
     "breeze-tts": {"repo": "BreezeBlue/Breeze-TTS-2", "revision": "3e28c5151381a722f1d8661b4118c298caa77aa4",
                    "allow": ["*.json", "*.safetensors", "audio_tokenizer/*", "LICENSE"]},
@@ -154,7 +166,7 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
-          "breeze-tts": ["breeze-tts"],  # not in "audio": it is non-commercial, so only on request
+          "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl"],
           "sd": ["sd35-large", "sd35-large-turbo", "sdxl"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"

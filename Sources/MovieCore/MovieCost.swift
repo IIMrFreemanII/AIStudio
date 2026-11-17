@@ -191,6 +191,10 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         "infinitetalk": (60, 32.3, 150),
         "qwen3-tts": (6, 4, 60),
         "breeze-tts": (6, 4, 60),
+        // MiniMax H3, fast (8 steps) on an H200: a 5 s 1344×768 clip is 124 frames ≈ 128; loading ≈ 140 GB. Guesses
+        // until the first runs are learned.
+        "h3-video": (120, 128, 420),
+        "h3-references": (150, 128, 420),
         "stable-audio-3": (4, 5, 40),
         "ace-step-xl": (25, 30, 90),
     ]
