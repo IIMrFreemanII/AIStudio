@@ -248,7 +248,22 @@ public enum MovieShots {
 
     /// Whether the shot is animated from its voice: lip sync is on, it's a talking shot, and has voiced lines.
     public static func usesLipSync(_ shot: Shot, in movie: MovieProject) -> Bool {
-        movie.lipSync && shot.talking && !MovieVoices.layout(shot).isEmpty
+        movie.lipSync && shot.talking && !MovieVoices.layout(shot, only: { $0.mode == .onScreen }).isEmpty
+    }
+
+    /// Two speakers' order for LongCat (its first voice is the person on the left): by the sides the shot list gave
+    /// them in the scene, else as they first speak.
+    public static func leftToRight(_ speakers: [String], scene: MovieScene?) -> [String] {
+        guard let b = scene?.blocking, speakers.count >= 2 else { return speakers }
+        func rank(_ id: String) -> Int {
+            switch b[id] {
+            case .left?: 0
+            case .center?: 1
+            case .right?: 2
+            case nil: 1
+            }
+        }
+        return speakers.enumerated().sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }.map(\.element)
     }
 
     /// Where a shot's voice track is written (relative to the movie's folder); `speaker` k: the k-th speaker's own.

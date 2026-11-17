@@ -16,6 +16,20 @@ public enum MovieAudioError: Error, CustomStringConvertible {
 
 /// Voices: a character's designed voice sample, each line cloned from it, and the shot's lines laid out in time.
 public enum MovieVoices {
+    /// Whether a script is in a language Breeze speaks (English or Chinese): a Chinese script by its characters, an
+    /// English one by its common words.
+    public static func suitsBreeze(_ text: String) -> Bool {
+        let letters = text.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        guard !letters.isEmpty else { return false }
+        let cjk = letters.filter { (0x4E00...0x9FFF).contains($0.value) }.count
+        if Double(cjk) / Double(letters.count) > 0.3 { return true }
+        let words = text.lowercased().split { !$0.isLetter && $0 != "'" }
+        guard words.count >= 8 else { return false }
+        let common: Set<Substring> = ["the", "a", "an", "and", "of", "to", "in", "is", "it", "you", "i", "her", "his",
+                                      "she", "he", "that", "with", "on", "for", "at", "we", "they", "my", "your", "not"]
+        return Double(words.filter { common.contains($0) }.count) / Double(words.count) > 0.12
+    }
+
     /// The sentence every character's voice is designed saying.
     public static let sampleText = "I remember the way the light fell across the water that morning, quiet and gold, before anyone else was awake."
 
@@ -126,32 +140,65 @@ public enum MovieVoices {
         public var seconds: Double
     }
 
-    /// The characters who speak voiced lines in the shot, in the order they first speak.
+    /// The characters who speak voiced lines on screen in the shot, in the order they first speak (who the lips
+    /// follow).
     public static func speakers(_ shot: Shot) -> [String] {
         var out: [String] = []
         for p in layout(shot) {
-            if let c = shot.dialogue.first(where: { $0.id == p.line })?.character, !out.contains(c) { out.append(c) }
+            guard let l = shot.dialogue.first(where: { $0.id == p.line }), l.mode == .onScreen else { continue }
+            if !out.contains(l.character) { out.append(l.character) }
         }
         return out
     }
 
-    /// The shot's voiced lines in order: the first after `leadIn`, each next after the one before and a `gap`. Lines
-    /// without a chosen take of known length are left out.
-    public static func layout(_ shot: Shot) -> [Placed] {
+    /// The shot's voiced lines in order: the first after `leadIn` (after `incoming` seconds of the shot before's
+    /// carried line and a `gap`, or `lead` seconds before the shot starts for a J cut), each next after the one
+    /// before and a `gap`. Lines without a chosen take of known length, or not passing `only`, are left out.
+    public static func layout(_ shot: Shot, incoming: Double = 0,
+                              only: (DialogueLine) -> Bool = { _ in true }) -> [Placed] {
         var out: [Placed] = []
-        var t = leadIn
-        for line in shot.dialogue {
+        var t = incoming > 0 ? incoming + gap : leadIn
+        for line in shot.dialogue where only(line) {
             guard let take = line.takes.first(where: { $0.id == line.selectedTake }), let s = take.seconds, s > 0
             else { continue }
+            if out.isEmpty, incoming <= 0, line.lead > 0 { t = -min(line.lead, DialogueLine.maxLead) }
             out.append(Placed(line: line.id, start: t, seconds: s))
             t += s + gap
         }
         return out
     }
 
-    /// How long the shot must be to say its lines; nil when none is voiced.
-    public static func neededDuration(_ shot: Shot) -> Double? {
-        layout(shot).last.map { $0.start + $0.seconds + tail }
+    /// How much of a carried line still has to play once its shot has cut: about a second, so the cut lands
+    /// inside the line.
+    public static let carryInShot = 1.0
+
+    /// How long the shot must be to say its lines; nil when none is voiced. A last line that carries over the cut
+    /// (`canCarry`: a next shot in the scene) only needs to start in it.
+    public static func neededDuration(_ shot: Shot, incoming: Double = 0, canCarry: Bool = false) -> Double? {
+        let placed = layout(shot, incoming: incoming)
+        guard let last = placed.last else { return nil }
+        let carries = canCarry && shot.dialogue.first { $0.id == last.line }?.carry == true
+        guard carries else { return last.start + last.seconds + tail }
+        let before = placed.dropLast().last.map { $0.start + $0.seconds + tail } ?? 0
+        return max(before, last.start + min(last.seconds, carryInShot), Shot.durationRange.lowerBound)
+    }
+
+    /// Whether a shot's last line can carry into the next shot: there is one, in the same scene.
+    public static func canCarry(_ i: Int, in movie: MovieProject) -> Bool {
+        i + 1 < movie.shots.count && movie.shots[i + 1].scene == movie.shots[i].scene
+    }
+
+    /// How far into each shot the shot before's carried line still plays (shot id → seconds; only those it reaches).
+    public static func incoming(_ movie: MovieProject) -> [UUID: Double] {
+        var out: [UUID: Double] = [:]
+        for i in movie.shots.indices where canCarry(i, in: movie) {
+            let shot = movie.shots[i]
+            guard let last = layout(shot, incoming: out[shot.id] ?? 0).last,
+                  shot.dialogue.first(where: { $0.id == last.line })?.carry == true else { continue }
+            let over = last.start + last.seconds - shot.duration
+            if over > 0.05 { out[movie.shots[i + 1].id] = min(over, movie.shots[i + 1].duration) }
+        }
+        return out
     }
 
     public static func maxDuration(_ shot: Shot, lipSync: Bool, engine: LipSyncEngine = .wanS2V) -> Double {
@@ -159,18 +206,29 @@ public enum MovieVoices {
     }
 
     /// Stretches shots that are too short for their lines (rounded up to 0.1 s, never shortened, never past the
-    /// longest the shot can be). Returns the shots whose lines still don't fit.
+    /// longest the shot can be), in film order, since a carried line moves the next shot's lines. Returns the shots
+    /// whose lines still don't fit.
     @discardableResult
     public static func fitDurations(_ movie: inout MovieProject) -> [UUID] {
         var unfit: [UUID] = []
         let lipSync = movie.lipSync
+        var carried: [UUID: Double] = [:]
         for i in movie.shots.indices {
             let shot = movie.shots[i]
-            guard let needed = neededDuration(shot) else { continue }
-            let cap = maxDuration(shot, lipSync: lipSync, engine: movie.lipSyncEngine)
-            if needed > cap + 1e-9 { unfit.append(shot.id) }
-            if needed > shot.duration {
-                movie.shots[i].duration = max(shot.duration, (min(needed, cap) * 10 - 1e-9).rounded(.up) / 10)
+            let incoming = carried[shot.id] ?? 0
+            let carry = canCarry(i, in: movie)
+            if let needed = neededDuration(shot, incoming: incoming, canCarry: carry) {
+                let cap = maxDuration(shot, lipSync: lipSync, engine: movie.lipSyncEngine)
+                if needed > cap + 1e-9 { unfit.append(shot.id) }
+                if needed > shot.duration {
+                    movie.shots[i].duration = max(shot.duration, (min(needed, cap) * 10 - 1e-9).rounded(.up) / 10)
+                }
+            }
+            // What this shot's carried line leaves for the next.
+            if carry, let last = layout(movie.shots[i], incoming: incoming).last,
+               shot.dialogue.first(where: { $0.id == last.line })?.carry == true {
+                let over = last.start + last.seconds - movie.shots[i].duration
+                if over > 0.05 { carried[movie.shots[i + 1].id] = over }
             }
         }
         return unfit
@@ -184,13 +242,17 @@ public enum MovieVoices {
     /// The sample rate Wan's audio encoder reads.
     public static let trackRate = 16_000.0
 
-    /// Writes the shot's lines as one mono 16-bit 16 kHz WAV, `duration` seconds long: quiet except the lines at their
-    /// layout times (each scaled by its take's `gainDB`, summed, clipped); a line past `duration` is cut. With
-    /// `speaker` (a character's id), only that character's lines: one track per voice, still on the shot's timeline.
-    public static func voiceTrack(_ shot: Shot, folder: URL, duration: Double, speaker: String? = nil,
-                                  to url: URL) throws {
-        let placed = layout(shot).filter { p in
-            speaker == nil || shot.dialogue.first { $0.id == p.line }?.character == speaker
+    /// Writes the shot's on-screen lines as one mono 16-bit 16 kHz WAV, `duration` seconds long: quiet except the
+    /// lines at their layout times (each scaled by its take's `gainDB`, summed, clipped); a line's part before the
+    /// shot (a J cut) or past `duration` (an L cut) is cut. Off-screen lines and narration aren't in it: no lips
+    /// follow them. With `speaker` (a character's id), only that character's lines: one track per voice, still on
+    /// the shot's timeline.
+    public static func voiceTrack(_ shot: Shot, folder: URL, duration: Double, incoming: Double = 0,
+                                  speaker: String? = nil, to url: URL) throws {
+        // Every voiced line keeps its place (as the edit plays them); only the on-screen ones go on the track.
+        let placed = layout(shot, incoming: incoming).filter { p in
+            guard let l = shot.dialogue.first(where: { $0.id == p.line }) else { return false }
+            return l.mode == .onScreen && (speaker == nil || l.character == speaker)
         }
         guard !placed.isEmpty else { throw MovieAudioError.noLines }
         let total = max(1, Int((duration * trackRate).rounded()))
@@ -202,7 +264,7 @@ public enum MovieVoices {
             let gain = Float(pow(10, (take.gainDB ?? 0) / 20))
             let at = Int((p.start * trackRate).rounded())
             guard at < total else { continue }
-            for (k, v) in samples.enumerated() where at + k < total { mix[at + k] += v * gain }
+            for (k, v) in samples.enumerated() where at + k >= 0 && at + k < total { mix[at + k] += v * gain }
         }
         for i in mix.indices { mix[i] = max(-1, min(1, mix[i])) }
 

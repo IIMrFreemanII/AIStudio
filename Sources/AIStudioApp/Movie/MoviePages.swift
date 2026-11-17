@@ -344,6 +344,8 @@ struct MovieShotsPage: View {
         // The plan, not its takes: a keyframe made later isn't a shot list edit.
         .onChange(of: shots.map(\.planPart)) { _, _ in
             if doc.isApproved(.shots), !doc.isBusy { doc.reopen(.shots) }
+            // A J or L cut moves lines between shots: the voiced ones may need longer shots.
+            MovieVoices.fitDurations(&doc.movie)
         }
     }
 
@@ -419,11 +421,9 @@ private struct ShotCard: View {
                 TextField("What moves", text: $shot.motionPrompt, axis: .vertical).lineLimit(1...4).font(.mgCallout)
             }
             if !shot.dialogue.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(shot.dialogue) { line in
-                        (Text((cast.first { $0.id == line.character }?.name ?? line.character).uppercased() + "  ")
-                            .font(.mg(size: 10.5, weight: .semibold)).foregroundColor(MG.secondaryLabel)
-                         + Text(line.text).font(.mgCallout))
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(shot.dialogue.indices), id: \.self) { k in
+                        ShotLineRow(line: $shot.dialogue[k], cast: cast, first: k == 0, last: k == shot.dialogue.count - 1)
                     }
                 }
             }
@@ -456,6 +456,40 @@ private struct ShotCard: View {
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-shot-card")
         .mgScrollTarget("movie-shot:\(shot.id.uuidString)")
+    }
+}
+
+/// A line on a shot card: who says it and the words, how it's heard, and (first line) a J cut or (last line) an
+/// L cut.
+private struct ShotLineRow: View {
+    @Binding var line: DialogueLine
+    let cast: [MovieCharacter]
+    let first: Bool
+    let last: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            (Text((cast.first { $0.id == line.character }?.name ?? line.character).uppercased() + "  ")
+                .font(.mg(size: 10.5, weight: .semibold)).foregroundColor(MG.secondaryLabel)
+             + Text(line.text).font(.mgCallout))
+            HStack(spacing: 10) {
+                MGPicker(selection: $line.mode, options: LineMode.allCases.map { ($0, $0.title) }, maxWidth: 110)
+                    .frame(width: 110)
+                    .mgHelp("On screen: the speaker's lips follow it. Off screen or voice-over: heard over the picture")
+                    .mgTestAnchor("movie-line-mode")
+                if first {
+                    Stepper(value: $line.lead, in: 0...DialogueLine.maxLead, step: 0.5) {
+                        Text(line.lead > 0 ? "J −\(MovieFormat.seconds(line.lead))" : "No J cut").font(.mgFootnote)
+                    }
+                    .mgHelp("A J cut: the line starts this long before the shot, over the end of the one before")
+                }
+                if last {
+                    Toggle("L cut", isOn: $line.carry)
+                        .toggleStyle(MGCheckboxStyle()).font(.mgFootnote)
+                        .mgHelp("An L cut: the line runs on over the next shot in the scene (its listener's reaction)")
+                }
+            }
+        }
     }
 }
 

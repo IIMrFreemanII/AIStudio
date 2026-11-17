@@ -101,6 +101,8 @@ extension SmokeTest {
         check(MoviePlanner.sceneSeconds(for: doc.movie) == ["s1": 15, "s2": 15], "the scenes' seconds add up to the length")
         check(doc.movie.approved == [.idea] && doc.stage == .story, "the idea is approved and the story is shown")
         check(doc.sequence == "q1", "a film in sequences opens its per-sequence pages on the first")
+        check(doc.movie.voiceEngine == .breeze, "an English script gets Breeze, which follows each line's delivery")
+        doc.movie.voiceEngine = .qwen3  // this pass starts with Qwen3-TTS; Breeze gets its own below
         await snapshots("story")
         doc.show(sequence: nil)  // this pass makes the whole film at once; the sequences get their own pass below
 
@@ -141,6 +143,8 @@ extension SmokeTest {
               "the talking shot has Mara's line")
         check(doc.movie.shots[1].continuesPrevious && !doc.movie.shots[2].continuesPrevious,
               "continues within a scene, never across into the next one")
+        doc.stage = .shots
+        await snapshots("shotlist")
         doc.movie.approve(.shots)
 
         // Cast: one reference sheet per character (Qwen-Image), behind its gate.
@@ -549,6 +553,41 @@ extension SmokeTest {
                 check(false, "no cost gate for the retakes: \(doc.error ?? "")")
             }
         }
+        // Dialogue across cuts, on a copy: a line carried over the cut (L), one started early (J), one off screen.
+        do {
+            var m = doc.movie
+            let take = m.shots[1].dialogue[0]
+            var carried = DialogueLine(character: take.character, text: "Hold on.", takes: take.takes,
+                                       selectedTake: take.selectedTake, carry: true)
+            carried.id = UUID()
+            m.shots[0].dialogue = [carried]
+            let seconds = take.takes.first { $0.id == take.selectedTake }?.seconds ?? 0
+            m.shots[0].duration = 2  // shorter than the line: it runs on over shot 2
+            let t = MovieTimeline(movie: m, durations: [:])
+            let c0 = t.clips[0], c1 = t.clips[1]
+            let l0 = t.sounds.first { $0.id == "line-\(carried.id.uuidString)" }
+            let l1 = t.sounds.first { $0.id == "line-\(take.id.uuidString)" }
+            check(seconds > 2.5 && (l0?.end ?? 0) > c0.end + 0.3 && abs((l0?.duration ?? 0) - seconds) < 0.05,
+                  "an L cut's line runs on over the next shot: \(l0.map { "\($0.start)–\($0.end)" } ?? "none") vs cut at \(c0.end)")
+            check((l1?.start ?? 0) >= (l0?.end ?? 99) + MovieVoices.gap - 0.01 && (l1?.start ?? 0) > c1.start,
+                  "the next shot's own line waits for it")
+            var j = doc.movie
+            j.shots[1].dialogue[0].lead = 1
+            let tj = MovieTimeline(movie: j, durations: [:])
+            let lj = tj.sounds.first { $0.id == "line-\(take.id.uuidString)" }
+            check(abs((lj?.start ?? 0) - (tj.clips[1].start - 1)) < 0.05, "a J cut's line starts a second before its shot")
+            let track = store.folder(doc.id).appendingPathComponent("audio/smoke-j.wav")
+            try? MovieVoices.voiceTrack(j.shots[1], folder: store.folder(doc.id), duration: j.shots[1].duration, to: track)
+            let trackSeconds = (try? AVAudioFile(forReading: track)).map { Double($0.length) / $0.fileFormat.sampleRate } ?? 0
+            check(abs(trackSeconds - j.shots[1].duration) < 0.05, "its lip-sync track stays the shot's length")
+            var o = doc.movie
+            for k in o.shots[3].dialogue.indices { o.shots[3].dialogue[k].mode = .offScreen }
+            check(!MovieShots.usesLipSync(o.shots[3], in: o) && MovieShots.usesLipSync(doc.movie.shots[3], in: doc.movie),
+                  "an off-screen line isn't lip-synced")
+            let to = MovieTimeline(movie: o, durations: [:])
+            check(to.subtitles.contains { $0.shown.hasPrefix("(O.S.) ") }, "and its subtitle says it's off screen")
+        }
+
         // A long film is made a sequence at a time: split this one in two, and each goes on by itself.
         if doc.movie.scenes.count >= 2 {
             let last = doc.movie.scenes[doc.movie.scenes.count - 1].id

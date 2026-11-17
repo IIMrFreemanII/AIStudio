@@ -4,7 +4,7 @@ import Foundation
 public enum MovieSubtitles {
     public static func srt(_ subtitles: [MovieTimeline.Subtitle]) -> String {
         subtitles.sorted { $0.start < $1.start }.enumerated().map { i, s in
-            "\(i + 1)\n\(stamp(s.start)) --> \(stamp(s.end))\n\(s.text)\n\n"
+            "\(i + 1)\n\(stamp(s.start)) --> \(stamp(s.end))\n\(s.shown)\n\n"
         }.joined()
     }
 

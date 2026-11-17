@@ -232,6 +232,28 @@ public enum VoiceEngine: String, Codable, Sendable, CaseIterable, Identifiable {
     public var task: String { rawValue }
 }
 
+/// How a line is heard: from someone on screen (lip-synced), from someone off screen, or as narration.
+public enum LineMode: String, Codable, Sendable, CaseIterable {
+    case onScreen = "on", offScreen = "off", voiceOver = "vo"
+
+    public var title: String {
+        switch self {
+        case .onScreen: "On screen"
+        case .offScreen: "Off screen"
+        case .voiceOver: "Voice-over"
+        }
+    }
+
+    /// "O.S.", "V.O." (screenplay marks); empty on screen.
+    public var mark: String {
+        switch self {
+        case .onScreen: ""
+        case .offScreen: "O.S."
+        case .voiceOver: "V.O."
+        }
+    }
+}
+
 public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
     public var id: UUID
     /// A character's id.
@@ -242,18 +264,32 @@ public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
     /// The line spoken in the character's voice (a shot's lines; a scene's are only the script).
     public var takes: [Take]
     public var selectedTake: UUID?
+    /// How it's heard: only on-screen lines are lip-synced (and spoken inside an H3 clip).
+    public var mode: LineMode
+    /// A J cut: the line starts this many seconds before its shot, over the end of the one before (the shot's first
+    /// line only; at most `maxLead`).
+    public var lead: Double
+    /// An L cut: the line may run on past its shot's end, over the start of the next shot in the scene (the shot's
+    /// last line only), so the next shot can be the listener's reaction.
+    public var carry: Bool
+
+    /// The longest J lead.
+    public static let maxLead = 3.0
 
     public init(id: UUID = UUID(), character: String, text: String, delivery: String = "", takes: [Take] = [],
-                selectedTake: UUID? = nil) {
+                selectedTake: UUID? = nil, mode: LineMode = .onScreen, lead: Double = 0, carry: Bool = false) {
         self.id = id
         self.character = character
         self.text = text
         self.delivery = delivery
         self.takes = takes
         self.selectedTake = selectedTake
+        self.mode = mode
+        self.lead = lead
+        self.carry = carry
     }
 
-    private enum CodingKeys: String, CodingKey { case id, character, text, delivery, takes, selectedTake }
+    private enum CodingKeys: String, CodingKey { case id, character, text, delivery, takes, selectedTake, mode, lead, carry }
 
     /// Lines saved before the Voices stage have no takes.
     public init(from decoder: Decoder) throws {
@@ -264,6 +300,9 @@ public struct DialogueLine: Codable, Identifiable, Sendable, Equatable {
         delivery = try c.decodeIfPresent(String.self, forKey: .delivery) ?? ""
         takes = try c.decodeIfPresent([Take].self, forKey: .takes) ?? []
         selectedTake = try c.decodeIfPresent(UUID.self, forKey: .selectedTake)
+        mode = (try? c.decodeIfPresent(LineMode.self, forKey: .mode)) ?? .onScreen
+        lead = try c.decodeIfPresent(Double.self, forKey: .lead) ?? 0
+        carry = try c.decodeIfPresent(Bool.self, forKey: .carry) ?? false
     }
 }
 

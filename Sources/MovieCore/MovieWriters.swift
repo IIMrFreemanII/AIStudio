@@ -111,8 +111,10 @@ public enum MovieWriters {
 
         Reply with only JSON:
         {"action": "screenplay action lines: what we see and hear, in order", \
-        "dialogue": [{"character": "<character id>", "text": "...", "delivery": "how it's said"}], \
-        "mood": "for the music: genre, tempo, instruments"}
+        "dialogue": [{"character": "<character id>", "text": "...", "delivery": "how it's said", \
+        "mode": "on | off | vo"}], "mood": "for the music: genre, tempo, instruments"}
+        A line's mode: "on" when its speaker is in the scene and seen, "off" when heard from off screen (another \
+        room, a phone, behind the camera), "vo" for narration or a character's inner voice.
         """
         let index = movie.scenes.firstIndex { $0.id == scene.id } ?? 0
         let before = movie.scenes[..<index].suffix(2).filter(\.isWritten)
@@ -215,7 +217,8 @@ public enum MovieWriters {
         if !scene.action.isEmpty { out.append(scene.action) }
         for l in scene.dialogue {
             let name = (movie.character(l.character)?.name ?? l.character).uppercased()
-            out.append("\(name)\(l.delivery.isEmpty ? "" : " (\(l.delivery))"): \(l.text)")
+            let mark = l.mode == .onScreen ? "" : " (\(l.mode.mark))"
+            out.append("\(name)\(mark)\(l.delivery.isEmpty ? "" : " (\(l.delivery))"): \(l.text)")
         }
         return out.joined(separator: "\n")
     }
