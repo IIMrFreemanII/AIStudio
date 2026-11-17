@@ -127,6 +127,8 @@ struct RemoteNodesTests {
         #expect(info.api == 1 && info.runner == "local")
         #expect(info.task("wan22-t2v")?.gpu == "H100" && info.task("wan22-t2v")?.installed == true)
         #expect(info.task("wan22-i2v")?.inputs == ["image"])
+        #expect(info.task("infinitetalk")?.inputs == ["video", "audio"])
+        #expect(info.task("longcat-avatar")?.optionalInputs == ["audio2"])
         #expect(info.task("qwen-image-edit")?.inputs == ["image1"] && info.task("qwen-image-edit")?.installed == true)
         // A wrong token is refused.
         await #expect(throws: RemoteClient.ClientError.self) {
@@ -248,6 +250,63 @@ struct RemoteNodesTests {
         #expect(abs(audio.duration - 1.5) < 0.1)
         let first = clip.frames[0].mean(axes: [0, 1])
         #expect(first[0].item(Float.self) > 0.7 && first[1].item(Float.self) < 0.3)
+    }
+
+    @Test(.enabled(if: hasServer)) func longCatAvatarTakesTwoVoicesAndFollowsTheLonger() async throws {
+        // A red still with a 1 s and a 1.4 s voice: 25 fps, as long as the longer voice, starting from the picture.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let png = out.appendingPathComponent("pair.png")
+        try ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.9, 0.1, 0.1, 1.0] as [Float]), to: png)
+        var voices: [URL] = []
+        for (k, n) in [24000, 33600].enumerated() {
+            let wav = out.appendingPathComponent("voice\(k).wav")
+            let tone = MLX.sin(MLXArray(0..<n).asType(.float32) * 0.05) * 0.5
+            try await MediaIO.writeAudio(AudioClip(samples: MLX.stacked([tone]), sampleRate: 24000), to: wav)
+            voices.append(wav)
+        }
+        let (result, _) = try await run([
+            GraphNode(id: "img", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "a", type: "LoadAudio", inputs: ["path": .value(.string(voices[0].path))]),
+            GraphNode(id: "b", type: "LoadAudio", inputs: ["path": .value(.string(voices[1].path))]),
+            GraphNode(id: "talk", type: "RemoteLongCatAvatar", inputs: [
+                "image": .link(node: "img", output: "image"), "audio": .link(node: "a", output: "audio"),
+                "audio2": .link(node: "b", output: "audio")]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "talk", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        let clip = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(clip.frameCount == 35 && clip.fps == 25)  // ceil(1.4 * 25)
+        #expect(clip.audio != nil)
+        let first = clip.frames[0].mean(axes: [0, 1])
+        #expect(first[0].item(Float.self) > 0.7 && first[1].item(Float.self) < 0.3)
+    }
+
+    @Test(.enabled(if: hasServer)) func infiniteTalkUploadsTheClipAndDubsItForTheSpeech() async throws {
+        // A 1 s green clip at 16 fps (Load Video's frames: encoded again for the upload) and 1.2 s of speech: back
+        // at 25 fps, as long as the speech (its last frame held), still green, with the speech in it.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let mp4 = out.appendingPathComponent("take.mp4"), wav = out.appendingPathComponent("line.wav")
+        let frames = MLXArray.ones([16, 48, 64, 3]) * MLXArray([0.1, 0.9, 0.1] as [Float])
+        try await MediaIO.writeVideo(VideoClip(frames: frames, fps: 16), to: mp4)
+        let tone = MLX.sin(MLXArray(0..<28800).asType(.float32) * 0.05) * 0.5
+        try await MediaIO.writeAudio(AudioClip(samples: MLX.stacked([tone]), sampleRate: 24000), to: wav)
+        let (result, log) = try await run([
+            GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(mp4.path))]),
+            GraphNode(id: "voice", type: "LoadAudio", inputs: ["path": .value(.string(wav.path))]),
+            GraphNode(id: "dub", type: "RemoteInfiniteTalk", inputs: [
+                "video": .link(node: "clip", output: "video"), "audio": .link(node: "voice", output: "audio")]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "dub", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        #expect(log.statuses.contains("Uploading"))
+        let dubbed = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(dubbed.frameCount == 30 && dubbed.fps == 25 && dubbed.width == 64)
+        #expect(dubbed.frames[29].mean(axes: [0, 1])[1].item(Float.self) > 0.7)
+        #expect(dubbed.audio != nil)
     }
 
     @Test(.enabled(if: hasServer)) func fluxReturnsAnImage() async throws {

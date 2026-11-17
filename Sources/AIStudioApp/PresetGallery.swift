@@ -178,7 +178,8 @@ struct SavePresetSheet: View {
     static func category(of g: Graph) -> Preset.Category {
         let types = Set(g.nodes.map(\.type))
         func has(_ t: String...) -> Bool { !types.isDisjoint(with: t) }
-        if has("VideoSampler", "RemoteWanTextToVideo", "RemoteWanImageToVideo", "RemoteWanSpeechToVideo") { return .video }
+        if has("VideoSampler", "RemoteWanTextToVideo", "RemoteWanImageToVideo", "RemoteWanSpeechToVideo",
+               "RemoteLongCatAvatar", "RemoteInfiniteTalk") { return .video }
         if has("TextToAudio", "RemoteTextToSound") { return .sound }
         if has("TextToMusic", "RemoteTextToMusic") { return .music }
         if has("TextToSpeech", "RemoteTextToSpeech") { return .speech }

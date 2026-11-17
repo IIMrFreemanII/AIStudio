@@ -11,7 +11,9 @@
 Layout:
 - ``api``: the front desk (FastAPI on 1 CPU core, proxy-auth protected; it relays LLM streams too). Checking it, uploading, and the CPU test
   tasks never start a GPU. It scales to zero 5 min after the last request.
-- ``WanT2V`` / ``WanI2V`` / ``WanS2V`` (speech to video; Wan's own code in its own image), ``QwenImage`` and ``QwenImageEdit`` (H100), ``Flux`` (L40S): GPU workers, one per model
+- ``WanT2V`` / ``WanI2V`` / ``WanS2V`` (speech to video; Wan's own code in its own image), ``LongCatAvatar`` and
+  ``InfiniteTalk`` (lip-sync: a talking clip from a picture, or a clip re-synced to new speech; each repo's own code
+  in its own image, H100), ``QwenImage`` and ``QwenImageEdit`` (H100), ``Flux`` (L40S): GPU workers, one per model
   family, each with the models loaded once per container. They scale to zero ``AISTUDIO_IDLE`` seconds (default 120) after their last job.
 - ``SD35`` (Stable Diffusion 3.5 Large, with its Turbo mode) and ``SDXL`` (L40S): the same, for the Stable Diffusion
   family. SD 3.5 is gated: accept the licences of both repos (``stable-diffusion-3.5-large`` and ``…-large-turbo``)
@@ -26,7 +28,7 @@ Layout:
   up to ``AISTUDIO_UPLOADS_GB`` (default 50; least recently used go first). Workers copy inputs straight from it.
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
-``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
 L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
@@ -51,6 +53,7 @@ GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
+GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
 UPLOADS_GB = float(os.environ.get("AISTUDIO_UPLOADS_GB", "50"))
@@ -113,7 +116,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_AVATAR": GPU_AVATAR,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -242,6 +245,61 @@ s2v_image = (
     .env({**env, "PYTHONPATH": "/opt/wan22"})
     .add_local_python_source("aistudio_gpu"))
 
+# LongCat-Video-Avatar 1.6: the official repo at a pinned commit with its requirements.txt pins (torch 2.6 + CUDA
+# 12.4, transformers 4.41, diffusers 0.35.1) and the parts of requirements_avatar.txt the avatar pipeline imports
+# (librosa, pyloudnorm, scipy; not its vocal separator, Triton client or OpenAI SDK). flash-attn is the official
+# prebuilt wheel for that torch (the repo's config turns FlashAttention-2 on). Python 3.11, not the repo's 3.10:
+# Modal's image builder no longer has 3.10 (InfiniteTalk's image too).
+LONGCAT_COMMIT = "58eb336edc5c8c63389838727e40b8c18434e54e"
+FLASH_ATTN_TORCH26 = ("https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/"
+                      "flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl")
+avatar_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "ffmpeg", "libsndfile1")
+    .run_commands("git init -q /opt/longcat && cd /opt/longcat && git remote add origin "
+                  f"https://github.com/meituan-longcat/LongCat-Video && git fetch -q --depth 1 origin {LONGCAT_COMMIT} "
+                  "&& git checkout -q FETCH_HEAD")
+    .uv_pip_install("torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0",
+                    index_url="https://download.pytorch.org/whl/cu124")
+    .uv_pip_install("numpy==1.26.4", "transformers==4.41.0", "loguru==0.7.2", "diffusers==0.35.1", "einops==0.8.0",
+                    "ftfy==6.2.0", "psutil==6.0.0", "av==12.0.0", "opencv-python-headless==4.9.0.80",
+                    "imageio==2.37.0", "imageio-ffmpeg==0.6.0", "scipy==1.15.3", "soundfile==0.13.1",
+                    "soxr==0.5.0.post1", "librosa==0.11.0", "pyloudnorm==0.1.1", "accelerate==1.1.1",
+                    "safetensors==0.4.5", "sentencepiece==0.2.0", "protobuf<5", "huggingface_hub<1.0",
+                    "fastapi==0.162.2", "pillow", "httpx==0.28.1", FLASH_ATTN_TORCH26)
+    .env({**env, "PYTHONPATH": "/opt/longcat"})
+    .add_local_python_source("aistudio_gpu"))
+
+# InfiniteTalk: the official repo at a pinned commit with its README's torch 2.4.1 + CUDA 12.1, xformers 0.0.28 and
+# flash-attn 2.7.4.post1 (the official wheel), and its requirements.txt at their lowest supported versions; not
+# gradio, dashscope or the Kokoro TTS demo (misaki), which its pipeline never imports.
+INFINITETALK_COMMIT = "50aa0a94184315407a991ae804d9b58d6d311ba8"
+FLASH_ATTN_TORCH24 = ("https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/"
+                      "flash_attn-2.7.4.post1+cu12torch2.4cxx11abiFALSE-cp311-cp311-linux_x86_64.whl")
+infinitetalk_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "ffmpeg", "libsndfile1")
+    .run_commands("git init -q /opt/infinitetalk && cd /opt/infinitetalk && git remote add origin "
+                  f"https://github.com/MeiGen-AI/InfiniteTalk && git fetch -q --depth 1 origin {INFINITETALK_COMMIT} "
+                  "&& git checkout -q FETCH_HEAD "
+                  # An unused import of inspect.ArgSpec, which Python 3.11 removed (the repo targets 3.10).
+                  "&& sed -i '/^from inspect import ArgSpec$/d' wan/multitalk.py "
+                  "&& ! grep -n ArgSpec wan/multitalk.py")
+    .uv_pip_install("torch==2.4.1", "torchvision==0.19.1", "torchaudio==2.4.1", "xformers==0.0.28",
+                    index_url="https://download.pytorch.org/whl/cu121")
+    .uv_pip_install("numpy==1.26.4", "opencv-python-headless==4.9.0.80", "diffusers==0.33.1", "transformers==4.49.0",
+                    "tokenizers==0.21.0", "accelerate==1.1.1", "tqdm", "imageio", "imageio-ffmpeg", "easydict",
+                    "ftfy", "scikit-image", "loguru", "xfuser==0.4.1", "pyloudnorm", "optimum-quanto==0.2.6",
+                    "scenedetect", "moviepy==1.0.3", "decord==0.6.0", "librosa==0.10.2.post1", "soundfile", "einops",
+                    "safetensors", "sentencepiece", "huggingface_hub<1.0", "fastapi==0.162.2", "pillow",
+                    "httpx==0.28.1", FLASH_ATTN_TORCH24)  # diffusers 0.33+: wan/multitalk.py needs no_init_weights
+    .env({**env, "PYTHONPATH": "/opt/infinitetalk"})
+    # Import everything the worker does, so a missing name fails the build rather than a GPU container. The repo (and
+    # xfuser) touch CUDA on import, so this one cached step runs on a small GPU.
+    .run_commands("cd /opt/infinitetalk && python -c 'import wan, wan.configs, src.audio_analysis.wav2vec2'",
+                  gpu="T4")
+    .add_local_python_source("aistudio_gpu"))
+
 
 def _imports():
     # Captured in the memory snapshot, so a cold container skips importing torch and diffusers.
@@ -261,6 +319,14 @@ def _music_imports():
 def _s2v_imports():
     # Not `wan` itself: importing it touches CUDA (a default argument calls torch.cuda.current_device()), and the
     # snapshot is taken without a GPU. The worker imports it when it loads.
+    import torch  # noqa: F401
+
+    import aistudio_gpu.modal_runner  # noqa: F401
+
+
+def _repo_imports():
+    # LongCat and InfiniteTalk: torch only; their repos set up CUDA state as they load, which the GPU-less
+    # snapshot can't hold. The workers import them in `load`.
     import torch  # noqa: F401
 
     import aistudio_gpu.modal_runner  # noqa: F401
@@ -331,6 +397,49 @@ class WanS2V:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-s2v", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# The lip-sync models: one 14–16B DiT in bf16 on an 80 GB card. Four CPUs for their host-side audio work (Whisper /
+# wav2vec2 features, loudness) and the clip's re-timing.
+@_gpu_class(image=avatar_image, gpu=GPU_AVATAR, memory=(16384, 131072), cpu=4)
+class LongCatAvatar:
+    @modal.enter(snap=True)
+    def imports(self):
+        _repo_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("longcat-avatar", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# Wan 2.1's fp32 checkpoint (66 GB) is read into host memory and cast to bf16 as it loads: room for that.
+@_gpu_class(image=infinitetalk_image, gpu=GPU_AVATAR, memory=(32768, 196608), cpu=4)
+class InfiniteTalk:
+    @modal.enter(snap=True)
+    def imports(self):
+        _repo_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("infinitetalk", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1277,7 +1386,7 @@ def api():
 
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
-                          "flux1-dev": Flux, "qwen-image": QwenImage,
+                          "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "music": Music,
                           "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)

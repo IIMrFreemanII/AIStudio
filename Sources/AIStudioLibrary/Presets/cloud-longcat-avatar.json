@@ -1,0 +1,73 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "first_frame",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "speech",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 260
+        },
+        "type" : "LoadAudio"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "audio" : {
+            "node" : "speech",
+            "output" : "audio"
+          },
+          "image" : {
+            "node" : "first_frame",
+            "output" : "image"
+          },
+          "prompt" : "A person talking to the camera, natural expressions"
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteLongCatAvatar"
+      },
+      {
+        "id" : "show",
+        "inputs" : {
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "PreviewVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-longcat-avatar",
+  "modelName" : "LongCat-Video-Avatar 1.6 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Talking Clip, Fast · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 280,
+  "summary" : "A picture speaks, in 8 steps: a lip-synced clip from a still and clean speech, on an NVIDIA GPU. Connect a second voice to audio 2 for a two-person scene (left and right). About a minute of GPU time per clip.",
+  "symbol" : "cloud"
+}

@@ -384,6 +384,32 @@ torch 2.8 (without it the worker falls back to PyTorch's SDPA, which ignores the
   steps. The first run used PyTorch's SDPA instead, with Modal's default CPU share, and went at about 3 minutes a
   step, roughly 18× slower.
 
+### Faster lip-sync: LongCat Avatar and InfiniteTalk
+
+Two more talking-shot models, each running its official repo's code in its own image at a pinned commit, on an
+H100 (`AISTUDIO_GPU_AVATAR`):
+
+- **`longcat-avatar`**: LongCat-Video-Avatar 1.6 (MIT).
+  - A picture (`image`) and speech (`audio`) make a lip-synced clip at 25 fps, like S2V, but distilled to 8 steps.
+  - An optional `audio2` is a second speaker: `audio` is the left-hand person, `audio2` the right-hand one, both
+    on one timeline.
+  - Parameters: `prompt`, `seed`, `resolution` (`480p`/`720p`; the size follows the picture's shape), `steps`
+    (0 = 8), `mix_steps`/`mix_alpha` (the DMD/OPSD LoRA mix), `max_seconds`.
+  - Download it with `--models longcat-avatar` (≈ 64 GB, from two repos, without LongCat-Video's own 54 GB DiT).
+  - The demo's vocal separator is skipped: send clean speech.
+- **`infinitetalk`**: InfiniteTalk (Apache 2.0) on Wan 2.1 I2V 14B, with the lightx2v 4-step LoRA.
+  - Dubs a clip (`video`) to new speech (`audio`): lips, head and body follow it, and the camera move stays.
+  - The clip is re-timed to 25 fps first. The result is as long as the speech, and past the clip's end its last
+    frame holds.
+  - Parameters: `prompt`, `seed`, `resolution`, `steps` (0 = 4), `audio_guidance` (0 = 2), `max_seconds`.
+  - Download it with `--models infinitetalk` (≈ 94 GB: Wan 2.1's transformer is fp32, cast to bf16 as it loads).
+- `--models lipsync` downloads all three lip-sync models.
+- Check them with:
+  - `python server/gpu/modal_check.py longcat-avatar --image face.png --input audio=speech.wav`;
+  - `python server/gpu/modal_check.py infinitetalk --input video=take.mp4 --input audio=speech.wav`.
+- Both log each step's time (`longcat-avatar step 3/8: … s`) and return `setupSeconds` and `stepSeconds` in the
+  result's `extra`.
+
 ### Music, sound and speech
 
 | Node | Model | Licence | What it makes |

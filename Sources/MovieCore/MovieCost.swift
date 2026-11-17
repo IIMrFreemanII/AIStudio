@@ -186,6 +186,9 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         // cold load. The rest are guesses until measured; the audio models' work is seconds of audio
         // (`MovieVoices.work`).
         "wan22-s2v": (450, 32.3, 90),
+        // The distilled lip-sync models: guesses (8 and 4 steps of a 14–16B DiT) until measured.
+        "longcat-avatar": (90, 32.3, 120),
+        "infinitetalk": (60, 32.3, 150),
         "qwen3-tts": (6, 4, 60),
         "stable-audio-3": (4, 5, 40),
         "ace-step-xl": (25, 30, 90),

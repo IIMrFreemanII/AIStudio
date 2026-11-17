@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import io
 import queue
+import signal
 import sys
 import time
 import uuid
@@ -35,7 +36,8 @@ import modal  # noqa: E402
 
 from aistudio_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
 
-CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", "flux1-dev": "Flux", "qwen-image": "QwenImage",
+CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", "longcat-avatar": "LongCatAvatar",
+           "infinitetalk": "InfiniteTalk", "flux1-dev": "Flux", "qwen-image": "QwenImage",
            "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL",
            "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech"}
@@ -101,28 +103,44 @@ def main() -> int:
 
     say(f"{a.task} {params}")
     call = worker.run.spawn(job, a.task, params, inputs)
+    say(f"call {call.object_id}")
+    # A spawned call outlives this script: if it stops early (Ctrl-C, kill, an error), cancel the call, or Modal runs it
+    # later with nobody to collect the result.
+    def on_term(*_):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, on_term)
     first_event = None
     previews = 0
-    while True:
-        try:
-            items = events.get_many(64, partition=job, timeout=1.0)
-        except queue.Empty:  # Modal raises on a timeout
-            items = []
-        for kind, step, total, payload in items:
-            first_event = first_event or time.monotonic() - start
-            if kind == "status":
-                say(f"status: {payload}")
-            elif kind == "progress":
-                say(f"step {step}/{total}")
-            elif kind == "preview":  # a JPEG, saved next to the result
-                previews += 1
-                a.out.mkdir(parents=True, exist_ok=True)
-                (a.out / f"{a.task}-{job[:8]}-preview-{step}.jpg").write_bytes(payload)
-        try:
-            result = call.get(timeout=0)
-            break
-        except TimeoutError:
-            continue
+    try:
+        while True:
+            try:
+                try:
+                    items = events.get_many(64, partition=job, timeout=1.0)
+                except queue.Empty:  # Modal raises on a timeout
+                    items = []
+                for kind, step, total, payload in items:
+                    first_event = first_event or time.monotonic() - start
+                    if kind == "status":
+                        say(f"status: {payload}")
+                    elif kind == "progress":
+                        say(f"step {step}/{total}")
+                    elif kind == "preview":  # a JPEG, saved next to the result
+                        previews += 1
+                        a.out.mkdir(parents=True, exist_ok=True)
+                        (a.out / f"{a.task}-{job[:8]}-preview-{step}.jpg").write_bytes(payload)
+                try:
+                    result = call.get(timeout=0)
+                    break
+                except TimeoutError:  # still running
+                    continue
+            except modal.exception.ConnectionError as e:  # a network blip: try again
+                say(f"connection lost ({e}); retrying")
+                time.sleep(5)
+    except BaseException:
+        say(f"stopping: cancelling call {call.object_id}")
+        call.cancel(terminate_containers=True)
+        raise
     total = time.monotonic() - start
     events.clear(partition=job)
     if "error" in result:
