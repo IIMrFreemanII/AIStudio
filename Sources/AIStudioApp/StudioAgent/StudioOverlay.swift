@@ -62,6 +62,7 @@ struct StudioOverlayView: View {
                             .opacity(c.ringShown ? 1 : 0)
                     }
                 }
+                StudioEchoesView(groups: echoGroups(at: now))
                 ForEach(controller.cursors) { c in
                     let motions = controller.motions(c)
                     if let p = c.displayed(at: now, drift: motions.contains(.drift)) {
@@ -74,8 +75,7 @@ struct StudioOverlayView: View {
                     }
                 }
                 if let h = controller.handoff, now.timeIntervalSince(h.at) < 0.5 {
-                    let f = StudioFlight(from: h.from, to: h.to, bend: 0.25, duration: 0.5)
-                    let p = f.point(at: now.timeIntervalSince(h.at))
+                    let p = Self.handoffFlight(h).point(at: now.timeIntervalSince(h.at))
                     SparkleShape().fill(MG.accent)
                         .frame(width: 12, height: 12)
                         .shadow(color: MG.accent.opacity(0.8), radius: 4)
@@ -88,12 +88,33 @@ struct StudioOverlayView: View {
         .accessibilityHidden(true)
     }
 
-    /// Anything flying, drifting or handing off: the timeline runs; otherwise it rests.
+    /// The handoff sparkle's flight (the overlay draws it for half a second).
+    static func handoffFlight(_ h: (from: CGPoint, to: CGPoint, at: Date)) -> StudioFlight {
+        StudioFlight(from: h.from, to: h.to, bend: 0.25, duration: 0.5)
+    }
+
+    /// Every actor's ghost echoes at `now`, and the handoff sparkle's.
+    private func echoGroups(at now: Date) -> [StudioEchoGroup] {
+        var groups = controller.cursors.compactMap { c -> StudioEchoGroup? in
+            let e = c.echoes(at: now, drift: controller.motions(c).contains(.drift))
+            return e.isEmpty ? nil : StudioEchoGroup(actor: c.actor, echoes: e)
+        }
+        if let h = controller.handoff, now.timeIntervalSince(h.at) < 0.5 {
+            // The sparkle vanishes as it lands (the worker pops in), so its echoes stop with it.
+            let leg = StudioTrailLeg(flight: Self.handoffFlight(h), start: h.at.timeIntervalSinceReferenceDate)
+            groups.append(StudioEchoGroup(actor: .architect, echoes: StudioTrail.echoes([leg], now: now.timeIntervalSinceReferenceDate),
+                                          sparkle: true))
+        }
+        return groups
+    }
+
+    /// Anything flying, trailing, drifting or handing off: the timeline runs; otherwise it rests.
     private var moving: Bool {
         let now = Date()
         if let h = controller.handoff, now.timeIntervalSince(h.at) < 0.6 { return true }
         return controller.cursors.contains { c in
-            c.position != nil && (c.isFlying(at: now) || (controller.motions(c).contains(.drift) && !c.ringShown))
+            c.isTrailing(at: now)
+                || (c.position != nil && (c.isFlying(at: now) || (controller.motions(c).contains(.drift) && !c.ringShown)))
         }
     }
 }

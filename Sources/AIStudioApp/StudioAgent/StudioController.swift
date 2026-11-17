@@ -38,6 +38,8 @@ final class StudioCursor: Identifiable {
     var position: CGPoint?
     var flight: StudioFlight?
     var flightStart = Date.distantPast
+    /// Its last flights (at most two), which its ghost echoes follow.
+    var trail: [StudioTrailLeg] = []
     var ring: CGRect?
     var ringShown = false
     var caption: String?
@@ -67,6 +69,9 @@ final class StudioCursor: Identifiable {
         guard let flight else { return false }
         return now.timeIntervalSince(flightStart) < flight.duration
     }
+
+    /// Its echoes are still showing (flying, or pulling in after landing).
+    func isTrailing(at now: Date) -> Bool { StudioTrail.isActive(trail, now: now.timeIntervalSinceReferenceDate) }
 
     /// Where the icon is drawn at `now`: along its flight, else its resting spot (drifting when `drift`).
     func displayed(at now: Date, drift: Bool) -> CGPoint? {
@@ -475,12 +480,14 @@ final class StudioController {
         guard motions.contains(.glide) else {
             withAnimation(.easeInOut(duration: 0.2)) { c.position = to }
             c.flight = nil
+            c.trail = []
             return
         }
         let f = StudioFlight(from: from, to: to, pace: motions.contains(.curve) ? (pace == .fast ? .watchable : pace) : .fast)
         c.gaze = StudioFace.gaze(from: from, to: to)
         c.flight = f
         c.flightStart = now
+        c.trail = Array((c.trail + [StudioTrailLeg(flight: f, start: now.timeIntervalSinceReferenceDate)]).suffix(2))
         if c.position == nil { c.popIn += 1 }
         c.position = to
         if f.duration > 0 { try? await Task.sleep(for: .seconds(f.duration)) }
@@ -532,6 +539,7 @@ final class StudioController {
         showOverlay(main)
         let start = homeSpot(c) ?? edgeSpot(for: c)
         c.flight = nil
+        c.trail = []
         if motions(c).contains(.handoff), let from = cursor(.architect).displayed(at: Date(), drift: false) ?? homeSpot(cursor(.architect)) {
             handoff = (from: from, to: start, at: Date())
             try? await Task.sleep(for: .seconds(0.5))

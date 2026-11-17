@@ -288,6 +288,90 @@ public struct StudioFlight: Equatable, Sendable {
     }
 }
 
+// MARK: trail
+
+/// One ghost echo behind a flying orb: where it is, how big and how visible (both fractions of the orb), and how far
+/// back it sits (0 at the front echo, 1 at the back: picks the architect's colour).
+public struct StudioEcho: Equatable, Sendable {
+    public var point: CGPoint
+    public var scale: Double
+    public var opacity: Double
+    public var band: Double
+
+    public init(point: CGPoint, scale: Double, opacity: Double, band: Double) {
+        self.point = point
+        self.scale = scale
+        self.opacity = opacity
+        self.band = band
+    }
+}
+
+/// A flight and when it began (seconds, any one clock): the path an orb's echoes follow.
+public struct StudioTrailLeg: Equatable, Sendable {
+    public var flight: StudioFlight
+    public var start: Double
+
+    public init(flight: StudioFlight, start: Double) {
+        self.flight = flight
+        self.start = start
+    }
+
+    public var end: Double { start + flight.duration }
+}
+
+/// The ghost echoes a flying orb leaves: five glass silhouettes along the last 0.3 s of its path (0.12 s in Fast; at
+/// most 150 points), each smaller and fainter. After landing they slide into the orb over 0.35 s and are gone.
+public enum StudioTrail {
+    public static let count = 5
+    /// Seconds the echoes take to pull into the orb after it lands.
+    public static let pull = 0.35
+
+    /// The most path (points) the echoes cover: at full speed they overlap into one trail instead of scattering.
+    public static let longest = 150.0
+
+    /// How far back along the path (seconds) the last echo sits: shorter for Fast pace's quick flights.
+    public static func span(duration: Double) -> Double { duration <= 0.2 ? 0.12 : 0.3 }
+
+    /// The span at `t` seconds into `flight`: `span(duration:)`, shortened while it flies fast so the trail is at most
+    /// `longest` points long.
+    public static func span(_ flight: StudioFlight, at t: Double) -> Double {
+        let base = span(duration: flight.duration)
+        let dt = 1.0 / 120
+        let tt = min(max(t, dt), flight.duration)
+        let speed = StudioFlight.distance(flight.point(at: tt - dt), flight.point(at: tt)) / dt
+        return speed > 0 ? min(base, longest / speed) : base
+    }
+
+    /// Whether `legs` still show echoes at `now`.
+    public static func isActive(_ legs: [StudioTrailLeg], now: Double) -> Bool {
+        guard let last = legs.last, last.flight.duration > 0 else { return false }
+        return now >= last.start && now < last.end + pull
+    }
+
+    /// The echoes at `now`, back to front. Each follows the leg that was flying at its own moment, so a flight replaced
+    /// mid-air keeps its old path behind; moments before the first leg have no echo. `offset` is the orb's drift
+    /// after landing, which the echoes take on as they pull in.
+    public static func echoes(_ legs: [StudioTrailLeg], now: Double, offset: CGVector = .zero) -> [StudioEcho] {
+        guard let last = legs.last, last.flight.duration > 0, now >= last.start else { return [] }
+        let k = now < last.end ? 1 : max(0, 1 - (now - last.end) / pull)
+        guard k > 0 else { return [] }
+        let span = span(last.flight, at: now - last.start)
+        let drift = 1 - k
+        var out: [StudioEcho] = []
+        for i in stride(from: count, through: 1, by: -1) {
+            let u = Double(i) / Double(count)
+            let t = now - span * u * k
+            // An older leg counts only while it was still flying (a resting orb leaves no echoes behind its next start).
+            guard let leg = legs.last(where: { $0.start <= t && ($0 == last || t <= $0.end) }) else { continue }
+            let p = leg.flight.point(at: t - leg.start)
+            out.append(StudioEcho(point: CGPoint(x: p.x + offset.dx * drift, y: p.y + offset.dy * drift),
+                                  scale: 1 - 0.35 * u, opacity: 0.55 * (1 - 0.85 * u) * k,
+                                  band: Double(i - 1) / Double(count - 1)))
+        }
+        return out
+    }
+}
+
 /// A repeatable random source (SplitMix64), so wandering can be tested.
 public struct StudioRandom: RandomNumberGenerator, Sendable {
     private var state: UInt64
