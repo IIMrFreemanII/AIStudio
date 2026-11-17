@@ -342,6 +342,40 @@ extension SmokeTest {
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("orbs-\(name).png"))
                 }
+                // The ghost echoes: the architect and Mint mid-flight, Plum just landed (pulling in), the handoff
+                // sparkle on its way; the orbs drawn where they are.
+                let flights: [(StudioActor, StudioFlight, Double)] = [
+                    (.architect, StudioFlight(from: CGPoint(x: 60, y: 60), to: CGPoint(x: 620, y: 180), pace: .watchable), 0.6),
+                    (StudioActor(1), StudioFlight(from: CGPoint(x: 60, y: 300), to: CGPoint(x: 620, y: 240), pace: .watchable), 0.75),
+                    (StudioActor(3), StudioFlight(from: CGPoint(x: 80, y: 420), to: CGPoint(x: 520, y: 400), pace: .watchable), 1.0),
+                ]
+                let groups = flights.map { a, f, at in
+                    StudioEchoGroup(actor: a, echoes: StudioTrail.echoes([StudioTrailLeg(flight: f, start: 0)], now: f.duration * at + (at >= 1 ? 0.08 : 0)))
+                }
+                let spark = StudioFlight(from: CGPoint(x: 420, y: 60), to: CGPoint(x: 680, y: 360), bend: 0.25, duration: 0.5)
+                let sparkEchoes = StudioEchoGroup(actor: .architect, echoes: StudioTrail.echoes([StudioTrailLeg(flight: spark, start: 0)], now: 0.32),
+                                                  sparkle: true)
+                let frame = ZStack(alignment: .topLeading) {
+                    StudioEchoesView(groups: groups + [sparkEchoes])
+                    ForEach(Array(flights.enumerated()), id: \.offset) { _, item in
+                        let (a, f, at) = item
+                        let p = f.point(at: f.duration * at)
+                        let size: CGFloat = a.isArchitect ? 36 : 32
+                        StudioOrb(actor: a, state: .working, size: size, pace: .watchable, still: true)
+                            .offset(x: p.x - size / 2, y: p.y - size / 2)
+                    }
+                    let sp = spark.point(at: 0.32)
+                    SparkleShape().fill(MG.accent).frame(width: 12, height: 12).offset(x: sp.x - 6, y: sp.y - 6)
+                }
+                .frame(width: 740, height: 480, alignment: .topLeading)
+                .background(bg)
+                .environment(\.colorScheme, scheme)
+                let tr = ImageRenderer(content: frame)
+                tr.scale = 2
+                if let img = tr.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("trail-\(name).png"))
+                }
             }
         }
         var snapped = false

@@ -180,6 +180,58 @@ struct StudioFlightTests {
             #expect(d >= 10 && d <= 25 && d == StudioFlight.wanderDelay(using: &b))
         }
     }
+
+    @Test func ghostEchoesFollowTheFlightAndPullIn() {
+        let f = StudioFlight(from: .zero, to: CGPoint(x: 1000, y: 0), pace: .watchable)
+        let leg = StudioTrailLeg(flight: f, start: 100)
+        // Mid-flight: five echoes, back to front, on the path 0.3 s back at most, smaller and fainter towards the back.
+        let mid = 100 + f.duration * 0.7
+        let e = StudioTrail.echoes([leg], now: mid)
+        #expect(e.count == 5)
+        #expect(e.first?.band == 1 && e.last?.band == 0)
+        let span = StudioTrail.span(f, at: mid - 100)
+        #expect(span > 0.05 && span < 0.3, "fast here: the trail is shortened")
+        for (i, echo) in e.enumerated() {
+            let lag = span * Double(5 - i) / 5
+            let on = f.point(at: mid - 100 - lag)
+            #expect(abs(echo.point.x - on.x) < 0.001 && abs(echo.point.y - on.y) < 0.001)
+            if i > 0 { #expect(echo.scale > e[i - 1].scale && echo.opacity > e[i - 1].opacity) }
+        }
+        // At most 150 points of path at full speed (a little more along the curve than straight).
+        let mid2 = 100 + f.duration / 2
+        let fastest = StudioTrail.echoes([leg], now: mid2)
+        #expect(StudioFlight.distance(fastest[0].point, f.point(at: f.duration / 2)) < 155)
+        // Slow, near the end: the whole 0.3 s.
+        #expect(StudioTrail.span(f, at: f.duration) == 0.3)
+        #expect(abs(e[4].scale - 0.93) < 0.001 && abs(e[0].scale - 0.65) < 0.001)
+        // Just after take-off: echoes from before the flight aren't there.
+        #expect((1..<5).contains(StudioTrail.echoes([leg], now: 100.07).count))
+        #expect(StudioTrail.echoes([leg], now: 99).isEmpty)
+        // After landing they slide into the landing spot and fade, then are gone.
+        let landed = StudioTrail.echoes([leg], now: leg.end + 0.3)
+        #expect(landed.count == 5 && landed.allSatisfy { $0.point.x > 980 && $0.opacity < 0.1 })
+        #expect(StudioTrail.echoes([leg], now: leg.end + 0.36).isEmpty)
+        #expect(StudioTrail.isActive([leg], now: leg.end + 0.34) && !StudioTrail.isActive([leg], now: leg.end + 0.36))
+        // The drift after landing pulls them along.
+        let drifted = StudioTrail.echoes([leg], now: leg.end + 0.3, offset: CGVector(dx: 0, dy: 8))
+        #expect(drifted.allSatisfy { $0.point.y > 6 })
+    }
+
+    @Test func fastFlightsLeaveAShortStreakAndReplacedFlightsKeepTheirPath() {
+        #expect(StudioTrail.span(duration: 0.15) == 0.12 && StudioTrail.span(duration: 0.5) == 0.3)
+        let fast = StudioFlight(from: .zero, to: CGPoint(x: 300, y: 0), pace: .fast)
+        let streak = StudioTrail.echoes([StudioTrailLeg(flight: fast, start: 0)], now: 0.14)
+        #expect(streak.count == 5 && streak[0].point.x > 0)
+        // A flight replaced mid-air: the back echoes are still on the old path (y = 0), the front ones on the new one.
+        let old = StudioTrailLeg(flight: StudioFlight(from: .zero, to: CGPoint(x: 1000, y: 0), bend: 0, duration: 0.8), start: 0)
+        let new = StudioTrailLeg(flight: StudioFlight(from: CGPoint(x: 500, y: 0), to: CGPoint(x: 500, y: 800), bend: 0, duration: 0.8),
+                                 start: 0.4)
+        let e = StudioTrail.echoes([old, new], now: 0.47)
+        #expect(e.count == 5 && e[0].point.y == 0 && e[4].point.y > 0)
+        // An older leg that had landed long before leaves nothing behind the next start.
+        let rested = StudioTrailLeg(flight: new.flight, start: 5)
+        #expect(StudioTrail.echoes([old, rested], now: 5.13).count == 2)
+    }
 }
 
 /// Two `delegate` calls in one message run at the same time, like `task`.
