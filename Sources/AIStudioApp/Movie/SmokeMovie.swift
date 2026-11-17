@@ -83,18 +83,43 @@ extension SmokeTest {
         doc.movie.llm = MovieLLM(serverID: conn.id, modelID: mid)
         doc.movie.idea = "A girl keeps a lighthouse lit through a storm."
         doc.movie.targetSeconds = 30
-        model.requestScript(doc)
+        model.requestStory(doc)
         await waitForGate(doc)
-        guard let gate = doc.pendingGate else { say("FAIL no cost gate for the script: \(doc.error ?? "")"); return false }
-        check(gate.estimate.lines.count == 1 && gate.estimate.lines[0].count == 1, "the gate lists one request")
+        guard let gate = doc.pendingGate else { say("FAIL no cost gate for the story: \(doc.error ?? "")"); return false }
+        check(gate.estimate.lines.count == 1 && gate.estimate.lines[0].count == 2, "the gate lists two requests (bible, outline)")
         check(doc.job == nil && doc.movie.scenes.isEmpty, "nothing runs before Run")
         doc.pendingGate = nil
         gate.run()
         await waitForJob(doc)
+        check(doc.error == nil, "the story was written\(doc.error.map { ": \($0)" } ?? "")")
+        check(doc.movie.title == "The Last Lantern" && doc.movie.characters.count == 2 && doc.movie.locations.count == 2
+              && doc.movie.characters[0].goal == "keep the light burning" && !doc.movie.premise.isEmpty,
+              "the bible came in: title, premise, 2 characters with goals, 2 places")
+        check(doc.movie.sequences.map(\.title) == ["The Lamp Dies", "The Run"] && doc.movie.scenes.map(\.id) == ["s1", "s2"]
+              && doc.movie.scenes.map(\.location) == ["lighthouse", "cliff"] && !doc.movie.scenes.contains(where: \.isWritten),
+              "the outline: 2 sequences of one scene each, at their places, not written yet")
+        check(MoviePlanner.sceneSeconds(for: doc.movie) == ["s1": 15, "s2": 15], "the scenes' seconds add up to the length")
+        check(doc.movie.approved == [.idea] && doc.stage == .story, "the idea is approved and the story is shown")
+        check(doc.sequence == "q1", "a film in sequences opens its per-sequence pages on the first")
+        await snapshots("story")
+        doc.show(sequence: nil)  // this pass makes the whole film at once; the sequences get their own pass below
+
+        // Story approved → the script, a scene at a time, then the critique of each sequence.
+        doc.movie.approve(.story)
+        model.requestScript(doc)
+        await waitForGate(doc)
+        guard let scriptGate = doc.pendingGate else { say("FAIL no cost gate for the script: \(doc.error ?? "")"); return false }
+        check(scriptGate.estimate.lines.first?.count == 4, "2 scenes + 2 critiques: \(scriptGate.estimate.lines.map(\.count))")
+        doc.pendingGate = nil
+        scriptGate.run()
+        await waitForJob(doc)
         check(doc.error == nil, "the script was written\(doc.error.map { ": \($0)" } ?? "")")
-        check(doc.movie.title == "The Last Lantern" && doc.movie.scenes.count == 2 && doc.movie.characters.count == 2,
-              "title, 2 scenes and 2 characters came in")
-        check(doc.movie.approved == [.idea] && doc.stage == .script, "the idea is approved and the script is shown")
+        check(doc.movie.scenes.allSatisfy(\.isWritten) && doc.movie.scenes[1].dialogue.first?.text == "Grandpa, the light!",
+              "every scene is written")
+        check(doc.movie.scenes[0].action.contains("gutters") && doc.movie.critiqueNotes["q1"]?.contains("slower") == true,
+              "the critique revised scene 1 and left its notes: \(doc.movie.critiqueNotes)")
+        check(doc.stage == .script && !doc.movie.isApproved(.script), "the script waits for approval")
+        await snapshots("script")
 
         // Script approved → the shot list, one request per scene.
         doc.movie.approve(.script)
@@ -106,6 +131,9 @@ extension SmokeTest {
         shotGate.run()
         await waitForJob(doc)
         check(doc.error == nil, "the shot list was written\(doc.error.map { ": \($0)" } ?? "")")
+        // The fake's shots run 7 s against the scenes' 15: asked again, then noted on the page.
+        check(doc.shotNotes.count == 2 && doc.shotNotes["s1"]?.contains("run 7 s") == true,
+              "a shot list far off the scene's length is noted: \(doc.shotNotes)")
         check(doc.movie.shots.count == 4 && doc.movie.shots.map(\.scene) == ["s1", "s1", "s2", "s2"],
               "two shots per scene, in scene order")
         guard doc.movie.shots.count == 4 else { say("FAILED"); return false }
@@ -295,6 +323,10 @@ extension SmokeTest {
         let talkingIDs = doc.movie.shots.filter { MovieShots.usesLipSync($0, in: doc.movie) }.map(\.id)
         for engine in [LipSyncEngine.longcat, .infiniteTalk] {
             doc.movie.lipSyncEngine = engine
+            // The Shots page's picker re-fits the shots on a change: with InfiniteTalk the fake voices' lines are too
+            // long for its talking shots, which it says (expected; a race with the sheet otherwise).
+            try? await Task.sleep(for: .milliseconds(300))
+            if engine == .infiniteTalk, doc.error?.contains("longer than the shot can be") == true { doc.error = nil }
             let before = doc.movie.shots.map(\.videos.count)
             model.requestClips(doc, shots: talkingIDs)
             await waitForGate(doc)

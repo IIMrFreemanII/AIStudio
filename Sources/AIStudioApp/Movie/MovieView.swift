@@ -20,6 +20,7 @@ struct MovieView: View {
                 Group {
                     switch doc.stage {
                     case .idea: MovieIdeaPage(doc: doc)
+                    case .story: MovieStoryPage(doc: doc)
                     case .script: MovieScriptPage(doc: doc)
                     case .shots: MovieShotsPage(doc: doc)
                     case .cast: MovieCastPage(doc: doc)

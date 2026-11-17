@@ -16,6 +16,10 @@ from aistudio_gpu.jobs import JobManager
 from aistudio_gpu.llm import proxy, sizing
 from aistudio_gpu.llm.engine import (
     FAKE_COMMIT,
+    FAKE_MOVIE_BIBLE,
+    FAKE_MOVIE_CRITIQUE,
+    FAKE_MOVIE_OUTLINE,
+    FAKE_MOVIE_SCENE,
     FAKE_PR,
     FakeEngine,
     phase_of,
@@ -564,6 +568,16 @@ def test_fake_commit_and_pr_drafts(client):
         chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
         text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"])
         assert text == reply
+
+
+def test_fake_writers_room_replies(client):
+    mid = install(client)
+    for task, reply in [("bible", FAKE_MOVIE_BIBLE), ("outline", FAKE_MOVIE_OUTLINE), ("scene", FAKE_MOVIE_SCENE),
+                        ("critique", FAKE_MOVIE_CRITIQUE)]:
+        events = chat(client, mid, "", messages=[{"role": "user", "content": f"Task: {task}\nIdea: a lighthouse"}])
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        text = "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"])
+        assert text == reply and json.loads(text)
 
 
 def test_fake_graph_helper_script(client):

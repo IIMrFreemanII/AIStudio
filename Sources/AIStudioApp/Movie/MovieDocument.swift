@@ -29,6 +29,9 @@ final class MovieDocument: Identifiable {
     /// Where the film was last exported (this session).
     var lastExport: URL?
 
+    /// What the shot list's checks still found after asking again, by scene id (lines in no shot, a runtime far off).
+    var shotNotes: [String: String] = [:]
+
     init(movie: MovieProject, saved: MovieProject? = nil) {
         id = movie.id
         self.movie = movie

@@ -28,7 +28,7 @@ private func film(sequences n: Int) -> MovieProject {
     d.dateDecodingStrategy = .iso8601
     let m = try d.decode(MovieProject.self, from: Data(old.utf8))
     #expect(m.sequences == [.wholeFilm] && m.scenes[0].sequence == "q1")
-    #expect(m.approved == [.idea, .script, .cast])
+    #expect(m.approved == [.idea, .story, .script, .cast], "a movie with a script gets its story approved")
     #expect(m.sequenceApproved == ["q1": [.shots, .keyframes]])
     #expect(m.isApproved(.keyframes) && m.isApproved(.keyframes, in: "q1"))
     #expect(m.currentStage == .voices && m.isUnlocked(.voices) && !m.isUnlocked(.video))
@@ -42,6 +42,7 @@ private func film(sequences n: Int) -> MovieProject {
 @Test func perSequenceStagesGateEachSequenceOnItsOwn() {
     var m = film(sequences: 3)
     m.approve(.idea)
+    m.approve(.story)
     m.approve(.script)
     #expect(m.isUnlocked(.shots, in: "q2") && m.isUnlocked(.cast) && !m.isUnlocked(.keyframes, in: "q1"))
 
@@ -67,6 +68,7 @@ private func film(sequences n: Int) -> MovieProject {
 @Test func reopeningASequenceLeavesTheOthersAndTheFilmsStages() {
     var m = film(sequences: 2)
     m.approve(.idea)
+    m.approve(.story)
     m.approve(.script)
     m.approve(.cast)
     for q in ["q1", "q2"] {
@@ -76,18 +78,18 @@ private func film(sequences n: Int) -> MovieProject {
 
     // A keyframe changed in sequence 2: its keyframes and later stages, and the film's edit.
     m.reopen(.keyframes, in: "q2")
-    #expect(m.approved == [.idea, .script, .cast])
+    #expect(m.approved == [.idea, .story, .script, .cast], "a movie with a script gets its story approved")
     #expect(m.sequenceApproved["q1"] == [.shots, .keyframes, .voices, .video, .sound])
     #expect(m.sequenceApproved["q2"] == [.shots])
 
     // A new sheet (the film's cast): every sequence's keyframes and on.
     m.reopen(.cast)
-    #expect(m.approved == [.idea, .script])
+    #expect(m.approved == [.idea, .story, .script])
     #expect(m.sequenceApproved == ["q1": [.shots], "q2": [.shots]])
 
     // Nil: every sequence.
     m.reopen(.shots)
-    #expect(m.sequenceApproved.isEmpty && m.approved == [.idea, .script])
+    #expect(m.sequenceApproved.isEmpty && m.approved == [.idea, .story, .script])
 
     m.approve(.voices, in: "q1")
     m.unapprove(.voices, in: "q1")
@@ -121,11 +123,6 @@ private func film(sequences n: Int) -> MovieProject {
     short.scenes = (1...3).map { MovieScene(id: "s\($0)", heading: "S\($0)") }
     MoviePlanner.groupSequences(&short)
     #expect(short.sequences == [.wholeFilm] && short.scenes.allSatisfy { $0.sequence == "q1" })
-}
-
-@Test func theScriptPromptNoLongerStopsAtTwelveScenes() {
-    let m = MovieProject(idea: "x", targetSeconds: 1200)
-    #expect(MoviePlanner.scriptPrompt(for: m).user.contains("in 40 scenes"))
 }
 
 // MARK: budget

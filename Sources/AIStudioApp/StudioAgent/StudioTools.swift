@@ -100,7 +100,10 @@ final class StudioSession {
     func shot(_ doc: MovieDocument, _ n: Int?) throws -> (Shot, Int) {
         guard let n else { throw ToolError("shot (its number, from 1) is missing") }
         guard n >= 1, n <= doc.movie.shots.count else { throw ToolError("there is no shot \(n): the movie has \(doc.movie.shots.count)") }
-        return (doc.movie.shots[n - 1], n)
+        let s = doc.movie.shots[n - 1]
+        // Its card is on its sequence's pages: show that one when another is shown.
+        if let q = doc.sequence, doc.movie.sequence(of: s) != q { doc.show(sequence: doc.movie.sequence(of: s)) }
+        return (s, n)
     }
 
     func character(_ doc: MovieDocument, _ id: String?) throws -> MovieCharacter {
@@ -347,11 +350,32 @@ final class StudioSession {
         switch (a.string("part") ?? "overview").lowercased() {
         case "overview":
             return movieOverview(doc) + "\nIdea: \(m.idea)\nStyle: \(m.style)"
+        case "story", "outline", "bible":
+            var out = ["Title: \(m.title)", "Logline: \(m.logline)", "Premise: \(m.premise)", "Tone: \(m.tone)",
+                       "Main theme: \(m.theme)", "Characters:"]
+            out += m.characters.map {
+                "- \($0.id): \($0.name)\($0.isNarrator ? " (narrator)" : "") — role \($0.role); wants: \($0.goal); flaw: \($0.flaw); "
+                    + "arc: \($0.arc); relationships: \($0.relationships); look: \($0.look); voice: \($0.voice)"
+            }
+            out.append("Places:")
+            out += m.locations.map { "- \($0.id): \($0.name) — \($0.look)" }
+            let secs = MoviePlanner.sceneSeconds(for: m)
+            for (i, q) in m.sequences.enumerated() {
+                out.append("Sequence \(i + 1) (act \(q.act)): \(q.title) — \(q.summary)")
+                out += m.scenes(inSequence: q.id).map {
+                    "  scene \($0.id): \($0.heading) at \($0.location), \(Int(secs[$0.id] ?? 0)) s, with \($0.characters.joined(separator: ", ")) — beat: \($0.beat)"
+                }
+            }
+            return out.joined(separator: "\n")
         case "script":
             var out = ["Title: \(m.title)", "Logline: \(m.logline)", "Characters:"]
             out += m.characters.map { "- \($0.id): \($0.name) — \($0.look)" }
             for s in m.scenes {
-                out.append("Scene \(s.id): \(s.heading) — \(s.summary) (mood: \(s.mood))")
+                if let q = m.sequences.first(where: { $0.id == s.sequence }), m.scenes.first(where: { $0.sequence == q.id })?.id == s.id,
+                   let notes = m.critiqueNotes[q.id], !notes.isEmpty {
+                    out.append("Editor's notes on \(q.title): \(notes)")
+                }
+                out.append("Scene \(s.id): \(s.heading) — \(s.summary) (mood: \(s.mood))\(s.isWritten ? "" : " — not written yet")")
                 if !s.action.isEmpty { out.append("  Action: \(s.action)") }
                 out += s.dialogue.map { "  \($0.character): “\($0.text)” \($0.delivery.isEmpty ? "" : "(\($0.delivery))")" }
             }
@@ -375,7 +399,7 @@ final class StudioSession {
         case "music":
             return m.music.map { "- scene \($0.id): \($0.prompt) — \(takes($0.takes, $0.selected))" }.joined(separator: "\n")
         default:
-            throw ToolError("part: overview, script, shots, cast or music")
+            throw ToolError("part: overview, story, script, shots, cast or music")
         }
     }
 
@@ -413,9 +437,34 @@ final class StudioSession {
         }
         switch name {
         case "title": return movieField(\.title, page: .idea, target: "movie-idea", reopens: nil, what: "title")
-        case "idea": return movieField(\.idea, page: .idea, target: "movie-idea", reopens: .script, what: "idea")
-        case "style": return movieField(\.style, page: .idea, target: "movie-idea", reopens: .script, what: "style")
+        case "idea": return movieField(\.idea, page: .idea, target: "movie-idea", reopens: .story, what: "idea")
+        case "style": return movieField(\.style, page: .idea, target: "movie-idea", reopens: .story, what: "style")
         case "logline": return movieField(\.logline, page: .script, target: "movie-view", reopens: .script, what: "logline")
+        case "premise": return movieField(\.premise, page: .story, target: "movie-premise", reopens: .story, what: "premise")
+        case "tone": return movieField(\.tone, page: .story, target: "movie-view", reopens: .story, what: "tone")
+        case "theme": return movieField(\.theme, page: .story, target: "movie-view", reopens: .story, what: "main theme")
+        case "goal": return try characterField(\.goal, page: .story, target: "movie-character-bible", reopens: .story, what: "goal")
+        case "flaw": return try characterField(\.flaw, page: .story, target: "movie-character-bible", reopens: .story, what: "flaw")
+        case "arc": return try characterField(\.arc, page: .story, target: "movie-character-bible", reopens: .story, what: "arc")
+        case "beat":
+            guard let sid = a.string("scene"), let scene = doc.movie.scenes.first(where: { $0.id == sid }) else {
+                throw ToolError("scene (its id, as movie_get story lists them) is missing or unknown")
+            }
+            let id = scene.id
+            func index() -> Int? { doc.movie.scenes.firstIndex { $0.id == id } }
+            return Field(page: .story, target: "movie-outline", reopens: .story, label: "scene \(id)'s beat",
+                         get: { index().map { doc.movie.scenes[$0].beat } ?? "" },
+                         set: { v in if let i = index() { doc.movie.scenes[i].beat = v } })
+        case "location_look", "place_look":
+            let ref = (a.string("location") ?? "").lowercased()
+            guard let l = doc.movie.locations.first(where: { $0.id == ref || $0.name.lowercased() == ref }) else {
+                throw ToolError("location (a place's id or name) is missing or unknown")
+            }
+            let id = l.id
+            func index() -> Int? { doc.movie.locations.firstIndex { $0.id == id } }
+            return Field(page: .story, target: "movie-view", reopens: .story, label: "\(l.name)'s look",
+                         get: { index().map { doc.movie.locations[$0].look } ?? "" },
+                         set: { v in if let i = index() { doc.movie.locations[i].look = v } })
         case "keyframe_prompt": return try shotField(\.keyframePrompt, page: .keyframes, target: "movie-keyframe", reopens: .keyframes, what: "keyframe prompt")
         case "motion_prompt": return try shotField(\.motionPrompt, page: .video, target: "movie-clip", reopens: .video, what: "motion prompt")
         case "sfx", "effects": return try shotField(\.sfx, page: .sound, target: "movie-effects", reopens: .sound, what: "sound effects")
@@ -438,7 +487,7 @@ final class StudioSession {
                          get: { index().flatMap { i in doc.movie.shots[i].dialogue[safe: k]?.text } ?? "" },
                          set: { v in if let i = index(), k < doc.movie.shots[i].dialogue.count { doc.movie.shots[i].dialogue[k].text = v } })
         default:
-            throw ToolError("field: title, idea, style, logline, keyframe_prompt, motion_prompt, sfx, look, voice, music_prompt or line")
+            throw ToolError("field: title, idea, style, logline, premise, tone, theme, goal, flaw, arc, beat, location_look, keyframe_prompt, motion_prompt, sfx, look, voice, music_prompt or line")
         }
     }
 
@@ -480,8 +529,11 @@ final class StudioSession {
         let scenes = (a.raw["scenes"] as? [Any])?.map { "\($0)" }
         let m = { doc.movie }
         switch what {
-        case "script":
-            return ("the script", .idea, "movie-write-script", { app.requestScript(doc) }, { m().scenes.count })
+        case "story", "outline":
+            return ("the story", .idea, "movie-write-story", { app.requestStory(doc) }, { m().scenes.count })
+        case "script", "scenes":
+            return ("the script", .script, "movie-write-script", { app.requestScript(doc, scenes: scenes) },
+                    { m().scenes.filter(\.isWritten).count })
         case "shots":
             return ("the shot list", .shots, "movie-write-shots", { app.requestShots(doc, scenes: scenes) }, { m().shots.count })
         case "cast", "sheets":
@@ -506,7 +558,7 @@ final class StudioSession {
             return ("music", .sound, "movie-make-music", { app.requestMusic(doc, scenes: scenes) },
                     { m().music.reduce(0) { $0 + $1.takes.count } })
         default:
-            throw ToolError("work: script, shots, cast, keyframes, voices, lines, clips, effects or music")
+            throw ToolError("work: story, script, shots, cast, keyframes, voices, lines, clips, effects or music")
         }
     }
 
@@ -664,7 +716,7 @@ final class StudioSession {
     }
 
     static let approveTargets: [MovieStage: String] = [
-        .script: "movie-approve-script", .shots: "movie-approve-shots", .cast: "movie-approve-cast",
+        .story: "movie-approve-story", .script: "movie-approve-script", .shots: "movie-approve-shots", .cast: "movie-approve-cast",
         .keyframes: "movie-approve-keyframes", .voices: "movie-approve-voices", .video: "movie-approve-clips",
         .sound: "movie-approve-sound", .edit: "movie-export",
     ]

@@ -9,18 +9,18 @@ struct MovieIdeaPage: View {
     @Bindable var doc: MovieDocument
 
     var body: some View {
-        let hasScript = !doc.movie.scenes.isEmpty
-        MoviePage(title: "Idea", subtitle: "What the film is about, how it looks and how long it runs. The model writes a script from it.") {
-            if hasScript {
-                Button("Go to Script") { doc.stage = .script }.buttonStyle(.mg(.bordered))
+        let hasStory = !doc.movie.scenes.isEmpty
+        MoviePage(title: "Idea", subtitle: "What the film is about, how it looks and how long it runs. The model develops the story from it.") {
+            if hasStory {
+                Button("Go to Story") { doc.stage = .story }.buttonStyle(.mg(.bordered))
             }
-            Button(hasScript ? "Rewrite Script…" : "Write Script…") { model.requestScript(doc) }
+            Button(hasStory ? "Rewrite Story…" : "Write Story…") { model.requestStory(doc) }
                 .buttonStyle(.mg(.prominent))
                 .disabled(doc.isBusy || doc.movie.idea.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                           || doc.movie.llm == nil)
-                .mgHelp(hasScript ? "Writes a new script: replaces the cast, the scenes and the shot list"
-                                  : "Shows the cost first; nothing runs until you confirm")
-                .mgTestAnchor("movie-write-script")
+                .mgHelp(hasStory ? "Writes a new story bible and outline: replaces the cast, the places, the scenes and the shot list"
+                                 : "The characters, places and an outline of every scene (two requests; you see the cost first)")
+                .mgTestAnchor("movie-write-story")
         } content: {
             VStack(alignment: .leading, spacing: 18) {
                 MovieField(label: "Title") {
@@ -122,31 +122,45 @@ struct MovieScriptPage: View {
 
     var body: some View {
         let approved = doc.isApproved(.script)
-        MoviePage(title: "Script", subtitle: doc.movie.logline.isEmpty ? "Edit anything; the shot list is written from what's here." : doc.movie.logline) {
-            Button("Rewrite…") { model.requestScript(doc) }.buttonStyle(.mg(.bordered)).disabled(doc.isBusy)
-                .mgHelp("Writes a new script from the idea: replaces the cast, the scenes and the shot list")
+        let written = doc.movie.scenes.filter(\.isWritten).count
+        let total = doc.movie.scenes.count
+        MoviePage(title: "Script",
+                  subtitle: written < total ? "\(written) of \(total) scenes written. Each is written from the outline, with the scenes before it."
+                      : "\(total) scenes · \(doc.movie.scenes.reduce(0) { $0 + $1.dialogue.count }) lines. Edit anything; the shot lists are written from what's here.") {
+            Toggle("Critique pass", isOn: $doc.movie.critique)
+                .toggleStyle(MGCheckboxStyle()).font(.mgFootnote)
+                .mgHelp("After the scenes, an editor reads each sequence and revises its dialogue, pacing and continuity (one more request per sequence)")
+            Button(written == 0 ? "Write Script…" : "Rewrite All…") { model.requestScript(doc) }
+                .buttonStyle(.mg(written == 0 ? .prominent : .bordered)).disabled(doc.isBusy || total == 0)
+                .mgHelp("Writes every scene in order, one request each (you see the cost first)")
+                .mgTestAnchor("movie-write-script")
             Button(approved ? "Approved" : "Approve Script") {
                 doc.approve(.script)
                 doc.stage = .shots
-                if doc.scopeShots.isEmpty { model.requestShots(doc) }
+                if doc.scopeShots.isEmpty {
+                    // A long film's shot lists come a sequence at a time: the one shown (or the first).
+                    let q = doc.sequence ?? (doc.movie.sequences.count > 1 ? doc.movie.sequences.first?.id : nil)
+                    model.requestShots(doc, scenes: q.map { doc.movie.scenes(inSequence: $0).map(\.id) })
+                }
             }
             .buttonStyle(.mg(.prominent))
-            .disabled(approved || doc.isBusy || doc.movie.scenes.isEmpty)
-            .mgHelp("Locks this version in and writes the shot list from it (you see the cost first)")
+            .disabled(approved || doc.isBusy || written < total || total == 0)
+            .mgHelp(written < total ? "Every scene needs writing first"
+                    : "Locks this version in and writes the shot list from it (you see the cost first)")
             .mgTestAnchor("movie-approve-script")
         } content: {
-            VStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 22) {
                 MovieField(label: "Logline") {
                     TextField("One sentence", text: $doc.movie.logline, axis: .vertical).lineLimit(1...3)
                 }
-                castSection
                 ForEach($doc.movie.scenes) { $scene in
                     if doc.movie.sequences.count > 1, doc.movie.sequences.first(where: { $0.id == scene.sequence }).map({ q in
                         doc.movie.scenes.first { $0.sequence == q.id }?.id == scene.id
                     }) == true, let i = doc.movie.sequences.firstIndex(where: { $0.id == scene.sequence }) {
                         sequenceHeader(i)
                     }
-                    SceneEditor(scene: $scene, cast: doc.movie.characters, sequences: doc.movie.sequences) {
+                    SceneEditor(scene: $scene, cast: doc.movie.characters, sequences: doc.movie.sequences,
+                                busy: doc.isBusy, rewrite: { model.requestScript(doc, scenes: [scene.id]) }) {
                         doc.movie.scenes.removeAll { $0.id == scene.id }
                     }
                 }
@@ -161,49 +175,32 @@ struct MovieScriptPage: View {
             }
         }
         .onChange(of: doc.movie.scenes) { _, _ in if doc.isApproved(.script) { doc.reopen(.script) } }
-        // Names, looks and voices: a new sheet take (Cast) isn't a script edit.
-        .onChange(of: doc.movie.characters.map(\.scriptPart)) { _, _ in
-            if doc.isApproved(.script), !doc.isBusy { doc.reopen(.script) }
-        }
     }
 
-    /// A sequence's title over its first scene (editable).
+    /// A sequence's title over its first scene (editable), Rewrite Sequence, and the editor's notes on it.
     private func sequenceHeader(_ i: Int) -> some View {
-        HStack(spacing: 10) {
-            Text("SEQUENCE \(i + 1) · ACT \(doc.movie.sequences[i].act)")
-                .font(.mg(size: 10.5, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
-            TextField("Sequence title", text: $doc.movie.sequences[i].title).font(.mgHeadline)
-        }
-        .padding(.top, 6)
-    }
-
-    private var castSection: some View {
-        MovieField(label: "Cast", hint: "look and voice are what keep them the same in every shot") {
-            VStack(spacing: 8) {
-                ForEach($doc.movie.characters) { $c in
-                    HStack(alignment: .top, spacing: 10) {
-                        TextField("Name", text: $c.name).frame(width: 140)
-                        VStack(alignment: .leading, spacing: 6) {
-                            TextField("Look: age, face, hair, build, clothes", text: $c.look, axis: .vertical).lineLimit(1...4)
-                            TextField("Voice: gender, age, pitch, texture, accent", text: $c.voice, axis: .vertical).lineLimit(1...3)
-                        }
-                        Button { doc.movie.characters.removeAll { $0.id == c.id } } label: { Image(systemName: "trash") }
-                            .buttonStyle(.mg(.icon)).mgHelp("Remove \(c.name)")
-                    }
-                    .padding(10)
-                    .background(RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous).fill(MG.fill))
+        let q = doc.movie.sequences[i]
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text("SEQUENCE \(i + 1) · ACT \(q.act)")
+                    .font(.mg(size: 10.5, weight: .semibold)).foregroundStyle(MG.tertiaryLabel)
+                TextField("Sequence title", text: $doc.movie.sequences[i].title).font(.mgHeadline)
+                Button("Rewrite Sequence…") {
+                    model.requestScript(doc, scenes: doc.movie.scenes(inSequence: q.id).map(\.id))
                 }
-                HStack {
-                    Button {
-                        var id = "character-\(doc.movie.characters.count + 1)"
-                        while doc.movie.characters.contains(where: { $0.id == id }) { id += "b" }
-                        doc.movie.characters.append(MovieCharacter(id: id, name: "New Character", look: "", voice: ""))
-                    } label: { Label("Add Character", systemImage: "plus") }
-                        .buttonStyle(.mg(.borderless))
-                    Spacer()
+                .buttonStyle(.mg(.borderless)).controlSize(.small).disabled(doc.isBusy)
+                .mgHelp("Writes this sequence's scenes again, then its critique (you see the cost first)")
+            }
+            if let notes = doc.movie.critiqueNotes[q.id], !notes.isEmpty {
+                DisclosureGroup("Editor's notes") {
+                    Text(notes).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .font(.mgFootnote)
+                .mgTestAnchor("movie-critique-notes")
             }
         }
+        .padding(.top, 6)
     }
 }
 
@@ -211,6 +208,8 @@ private struct SceneEditor: View {
     @Binding var scene: MovieScene
     let cast: [MovieCharacter]
     var sequences: [MovieSequence] = []
+    var busy = false
+    var rewrite: () -> Void = {}
     let remove: () -> Void
 
     var body: some View {
@@ -224,7 +223,15 @@ private struct SceneEditor: View {
                         .frame(width: 130)
                         .mgHelp("The sequence this scene is made in")
                 }
+                Button(action: rewrite) { Image(systemName: "arrow.clockwise") }.buttonStyle(.mg(.icon)).disabled(busy)
+                    .mgHelp(scene.isWritten ? "Write this scene again (you see the cost first)" : "Write this scene (you see the cost first)")
                 Button(action: remove) { Image(systemName: "trash") }.buttonStyle(.mg(.icon)).mgHelp("Remove this scene")
+            }
+            if !scene.beat.isEmpty {
+                Text(scene.beat).font(.mgFootnote).foregroundStyle(MG.tertiaryLabel).mgHelp("The scene's beat, from the outline (Story)")
+            }
+            if !scene.isWritten {
+                Text("Not written yet").font(.mgFootnote).foregroundStyle(MG.warning)
             }
             TextField("Summary", text: $scene.summary).foregroundStyle(MG.secondaryLabel)
             TextField("Action", text: $scene.action, axis: .vertical).lineLimit(2...10)
@@ -309,11 +316,19 @@ struct MovieShotsPage: View {
                                     .buttonStyle(.mg(.borderless)).controlSize(.small).disabled(doc.isBusy)
                                     .mgHelp("Breaks this scene down again (one request)")
                             }
+                            if let note = doc.shotNotes[scene.id] {
+                                Label(note.prefix(1).uppercased() + note.dropFirst(), systemImage: "exclamationmark.triangle")
+                                    .font(.mgFootnote).foregroundStyle(MG.warning)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .mgHelp("Still so after asking the model again: fix it here, or rewrite the scene")
+                                    .mgTestAnchor("movie-shot-note")
+                            }
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: 12, alignment: .top)],
                                       alignment: .leading, spacing: 12) {
                                 ForEach(ids, id: \.self) { id in
                                     if let binding = shotBinding(id, index: index) {
                                         ShotCard(shot: binding, number: (index[id] ?? 0) + 1, cast: doc.movie.characters,
+                                                 talkingCap: MoviePlanner.talkingCap(for: doc.movie),
                                                  keyframe: binding.wrappedValue.selectedKeyframeFile.map {
                                                      model.movieStore.url(doc.id, relative: $0)
                                                  },
@@ -358,6 +373,8 @@ private struct ShotCard: View {
     @Binding var shot: Shot
     let number: Int
     let cast: [MovieCharacter]
+    /// How long a lip-synced talking shot can be with the movie's engines.
+    var talkingCap: Double = Shot.durationRange.upperBound
     /// The chosen keyframe's file, when there is one.
     var keyframe: URL? = nil
     let move: (Int) -> Void
@@ -371,6 +388,10 @@ private struct ShotCard: View {
                     .background(Circle().fill(MG.accent.opacity(0.15)))
                     .foregroundStyle(MG.accent)
                 TextField("framing", text: $shot.framing).frame(width: 96).font(.mgFootnote)
+                if let c = shot.coverage {
+                    Text(c.title).font(.mg(size: 9.5, weight: .medium)).foregroundStyle(MG.tertiaryLabel)
+                        .mgHelp("Its part in the scene's coverage")
+                }
                 TextField("camera", text: $shot.camera).font(.mgFootnote)
                 Spacer(minLength: 2)
                 Button { move(-1) } label: { Image(systemName: "chevron.left") }.buttonStyle(.mg(.icon)).mgHelp("Earlier")
@@ -410,7 +431,10 @@ private struct ShotCard: View {
             HStack(spacing: 12) {
                 HStack(spacing: 4) {
                     Text("Length").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
-                    MGSlider(value: $shot.duration, in: Shot.durationRange, step: 0.5).frame(width: 90)
+                    MGSlider(value: $shot.duration,
+                             in: Shot.durationRange.lowerBound...(shot.talking ? max(talkingCap, Shot.durationRange.upperBound)
+                                                                  : Shot.durationRange.upperBound),
+                             step: 0.5).frame(width: 90)
                     Text(MovieFormat.seconds(shot.duration)).font(.mgFootnote).monospacedDigit().frame(width: 38, alignment: .leading)
                 }
                 Spacer(minLength: 0)

@@ -9,7 +9,7 @@ import Testing
 
 @Test func everyStageIsAvailableAndUnlocksInOrder() {
     var m = MovieProject()
-    for s in [MovieStage.idea, .script, .shots, .cast, .keyframes] { m.approve(s) }
+    for s in [MovieStage.idea, .story, .script, .shots, .cast, .keyframes] { m.approve(s) }
     #expect(m.currentStage == .voices && m.isUnlocked(.voices) && !m.isUnlocked(.video))
     for s in [MovieStage.voices, .video, .sound] { m.approve(s) }
     #expect(m.currentStage == .edit && m.isUnlocked(.edit))

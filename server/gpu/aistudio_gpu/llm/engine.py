@@ -430,18 +430,37 @@ FAKE_WIDGET = """<label>Strength <input id="s" type="range" min="0" max="1" step
 # The fake engine's canned drafts for the "draft a commit message" and "draft a pull request" buttons.
 FAKE_COMMIT = "Add hello.txt\n\nCreates hello.txt with a greeting from the agent."
 FAKE_PR = "Add hello.txt\n\n## Summary\n- Adds hello.txt with a greeting\n\n## Test plan\n- cat hello.txt"
-# The app's Movie Studio prompts (MoviePlanner): a two-scene script, and two shots for whichever scene is asked about.
-FAKE_MOVIE_SCRIPT = json.dumps({
+# The app's Movie Studio prompts: the writers' room (MovieWriters) and two shots for whichever scene is asked about.
+# The bible, an outline of two one-scene sequences, every scene, and a critique.
+FAKE_MOVIE_BIBLE = json.dumps({
     "title": "The Last Lantern", "logline": "A girl keeps a lighthouse lit through a storm.",
-    "characters": [{"id": "mara", "name": "Mara", "look": "girl of 12, freckles, red raincoat",
-                    "voice": "young girl, bright, brave"},
-                   {"id": "tomas", "name": "Tomas", "look": "man of 70, grey beard, wool sweater",
-                    "voice": "deep, gravelly, slow"}],
-    "scenes": [{"id": "s1", "heading": "INT. LIGHTHOUSE – NIGHT", "summary": "The lamp goes dark.", "mood": "tense strings",
-                "action": "Wind howls. The lamp flickers out.",
-                "dialogue": [{"character": "mara", "text": "Grandpa, the light!", "delivery": "scared"}]},
-               {"id": "s2", "heading": "EXT. CLIFF – NIGHT", "summary": "Mara runs for oil.", "mood": "driving drums",
-                "action": "Mara runs through the rain with a can of oil.", "dialogue": []}]})
+    "premise": "The lamp dies in the storm of the century. Mara, twelve, must carry oil up the cliff while her "
+               "grandfather Tomas lies hurt; she relights it as a ship rounds the rocks.",
+    "tone": "tense, tender, then fierce", "theme": "a music-box melody that grows into full strings",
+    "characters": [{"id": "mara", "name": "Mara", "role": "protagonist", "goal": "keep the light burning",
+                    "flaw": "afraid of the dark stairs", "arc": "from scared to steady",
+                    "relationships": "Tomas's granddaughter", "look": "girl of 12, freckles, red raincoat",
+                    "voice": "young girl, bright, brave", "motif": "a music box"},
+                   {"id": "tomas", "name": "Tomas", "role": "mentor", "goal": "protect Mara",
+                    "flaw": "too proud to ask for help", "arc": "learns to trust her", "relationships": "her grandfather",
+                    "look": "man of 70, grey beard, wool sweater", "voice": "deep, gravelly, slow", "motif": "low cello"}],
+    "locations": [{"id": "lighthouse", "name": "Lighthouse lamp room", "look": "brass lamp, salt-stained glass, night"},
+                  {"id": "cliff", "name": "Cliff path", "look": "wet black rock, rain, a steep path"}]})
+FAKE_MOVIE_OUTLINE = json.dumps({"sequences": [
+    {"title": "The Lamp Dies", "act": 1, "summary": "The light goes out.", "scenes": [
+        {"id": "s1", "heading": "INT. LIGHTHOUSE – NIGHT", "location": "lighthouse", "characters": ["mara", "tomas"],
+         "summary": "The lamp goes dark.", "beat": "Mara wants the light on / the lamp dies / she must go alone",
+         "mood": "tense strings", "seconds": 15}]},
+    {"title": "The Run", "act": 3, "summary": "Mara brings the oil.", "scenes": [
+        {"id": "s2", "heading": "EXT. CLIFF – NIGHT", "location": "cliff", "characters": ["mara"],
+         "summary": "Mara runs for oil.", "beat": "she wants to reach the top / the wind / she makes it",
+         "mood": "driving drums", "seconds": 15}]}]})
+FAKE_MOVIE_SCENE = json.dumps({"action": "Wind howls. The lamp flickers out.",
+                               "dialogue": [{"character": "mara", "text": "Grandpa, the light!", "delivery": "scared"}],
+                               "mood": "tense strings"})
+FAKE_MOVIE_CRITIQUE = json.dumps({"notes": "- Let the lamp die slower before Mara speaks.", "scenes": [
+    {"id": "s1", "action": "Wind howls. The lamp flickers, gutters, and dies.",
+     "dialogue": [{"character": "mara", "text": "Grandpa, the light!", "delivery": "scared"}]}]})
 FAKE_MOVIE_SHOTS = json.dumps({"shots": [
     {"duration": 4, "framing": "wide", "camera": "slow push in", "keyframe": "a lighthouse lamp room at night",
      "motion": "the lamp flickers out", "characters": ["mara"], "dialogue": [], "talking": False, "continues": False,
@@ -517,8 +536,8 @@ class FakeEngine:
     in the message, it calls start_session (title "Hello file", brief "create hello.txt and show it", worktree on), then
     "Done: " and the result. "create hello.txt with a todo list" calls todo_write (two steps, the first in progress)
     before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
-    FAKE_PR; the Movie Studio's script and shot prompts with FAKE_MOVIE_SCRIPT / FAKE_MOVIE_SHOTS. With the ui tools
-    offered, "test the ui" calls ui_apps, then "Done: " and the result."""
+    FAKE_PR; the Movie Studio writers' room with FAKE_MOVIE_BIBLE/OUTLINE/SCENE/CRITIQUE and its shot prompts with
+    FAKE_MOVIE_SHOTS. With the ui tools offered, "test the ui" calls ui_apps, then "Done: " and the result."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -668,8 +687,14 @@ class FakeEngine:
             words = FAKE_COMMIT.split(" ")
         elif "write the pull request now." in last.lower():
             words = FAKE_PR.split(" ")
-        elif last.startswith("Idea:") and "Length: about" in last:
-            words = FAKE_MOVIE_SCRIPT.split(" ")
+        elif last.startswith("Task: bible"):
+            words = FAKE_MOVIE_BIBLE.split(" ")
+        elif last.startswith("Task: outline"):
+            words = FAKE_MOVIE_OUTLINE.split(" ")
+        elif last.startswith("Task: scene"):
+            words = FAKE_MOVIE_SCENE.split(" ")
+        elif last.startswith("Task: critique"):
+            words = FAKE_MOVIE_CRITIQUE.split(" ")
         elif "Break down this scene" in last:
             words = FAKE_MOVIE_SHOTS.split(" ")
         else:
