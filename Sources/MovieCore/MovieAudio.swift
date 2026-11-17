@@ -361,9 +361,61 @@ public enum MovieSound {
         ], unusedPictures: [])
     }
 
-    public static func musicPrompt(for scene: MovieScene, style: MovieStyle) -> String {
+    /// A scene's music: its mood, the film's main theme, the motif of the character it's about (the first with one
+    /// among its people, else whoever speaks most), the style's tags.
+    public static func musicPrompt(for scene: MovieScene, style: MovieStyle, movie: MovieProject? = nil) -> String {
         let mood = scene.mood.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ((mood.isEmpty ? [] : [mood]) + [style.musicTags, "instrumental"]).joined(separator: ", ")
+        var tags = mood.isEmpty ? [] : [mood]
+        if let movie {
+            let theme = movie.theme.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !theme.isEmpty { tags.append("main theme: \(theme)") }
+            if let c = focalCharacter(of: scene, in: movie) { tags.append("\(c.name)'s motif: \(c.motif)") }
+        }
+        return (tags + [style.musicTags, "instrumental"]).joined(separator: ", ")
+    }
+
+    /// Whose motif a scene's music carries: the first of its people with one, else the one with most lines.
+    static func focalCharacter(of scene: MovieScene, in movie: MovieProject) -> MovieCharacter? {
+        let withMotif = { (id: String) in movie.character(id).flatMap { $0.motif.isEmpty ? nil : $0 } }
+        if let c = scene.characters.lazy.compactMap(withMotif).first { return c }
+        var count: [String: Int] = [:]
+        for l in scene.dialogue { count[l.character, default: 0] += 1 }
+        return count.sorted { ($0.value, $1.key) > ($1.value, $0.key) }.lazy.compactMap { withMotif($0.key) }.first
+    }
+
+    /// The longest a cue runs: a longer scene's score is in parts, one after another, crossfaded.
+    public static let maxCue = 150.0
+
+    /// A scene's shots split into the parts of its score: one part up to `maxCue`, else as many as it takes, cut at
+    /// shot boundaries into about even lengths.
+    public static func parts(_ shots: [Shot]) -> [[Shot]] {
+        let total = shots.reduce(0) { $0 + $1.duration }
+        guard total > maxCue, shots.count > 1 else { return shots.isEmpty ? [] : [shots] }
+        let n = Int((total / maxCue).rounded(.up))
+        let target = total / Double(n)
+        var out: [[Shot]] = [[]]
+        var run = 0.0
+        for (i, shot) in shots.enumerated() {
+            let left = shots.count - i
+            if !out[out.count - 1].isEmpty, out.count < n, run + shot.duration / 2 > target * Double(out.count),
+               left >= n - out.count {
+                out.append([])
+            }
+            out[out.count - 1].append(shot)
+            run += shot.duration
+        }
+        return out
+    }
+
+    /// The shots a cue plays under.
+    public static func shots(of cue: MusicCue, in movie: MovieProject) -> [Shot] {
+        let p = parts(movie.shots(in: cue.scene))
+        return p.indices.contains(cue.part - 1) ? p[cue.part - 1] : []
+    }
+
+    /// How long a cue's shots run together.
+    public static func cueSeconds(_ cue: MusicCue, in movie: MovieProject) -> Double {
+        shots(of: cue, in: movie).reduce(0) { $0 + $1.duration }
     }
 
     /// How long a scene's shots run together.
@@ -371,12 +423,17 @@ public enum MovieSound {
         movie.shots.filter { $0.scene == scene }.reduce(0) { $0 + $1.duration }
     }
 
-    /// One cue per scene that has shots; cues already in the movie are kept as they are.
+    /// The cues the shots need: one per part of each scene's score; cues already in the movie are kept as they are.
     public static func cues(for movie: MovieProject) -> [MusicCue] {
         let style = MovieStyle.named(movie.style)
-        return movie.scenes.compactMap { scene in
-            guard movie.shots.contains(where: { $0.scene == scene.id }) else { return nil }
-            return movie.music.first { $0.id == scene.id } ?? MusicCue(id: scene.id, prompt: musicPrompt(for: scene, style: style))
+        return movie.scenes.flatMap { scene -> [MusicCue] in
+            let n = parts(movie.shots(in: scene.id)).count
+            return (0..<n).map { k in
+                let id = MusicCue.id(scene: scene.id, part: k + 1)
+                return movie.music.first { $0.id == id }
+                    ?? MusicCue(id: id, prompt: musicPrompt(for: scene, style: style, movie: movie), scene: scene.id,
+                                part: k + 1)
+            }
         }
     }
 

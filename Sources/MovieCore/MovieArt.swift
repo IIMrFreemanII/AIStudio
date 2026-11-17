@@ -22,24 +22,37 @@ public enum MovieArt {
         style.negative + ", text, labels, extra people, different outfits, cropped"
     }
 
-    /// A picture a keyframe is made from: a character's chosen sheet, or the shot before's keyframe.
+    /// A picture a keyframe is made from: a character's chosen sheet, the place's plate, or the shot before's
+    /// keyframe.
     public struct Reference: Equatable, Sendable {
-        /// "Mara", or "the previous shot".
+        /// "Mara", "Lamp room", or "the previous shot".
         public var label: String
         /// Relative to the movie's folder.
         public var file: String
         public var character: String?
+        /// The place's plate (a `MovieLocation` id).
+        public var location: String? = nil
+    }
+
+    /// The place a shot is in, when its scene names one.
+    public static func location(of shot: Shot, in movie: MovieProject) -> MovieLocation? {
+        guard let id = movie.scenes.first(where: { $0.id == shot.scene })?.location, !id.isEmpty else { return nil }
+        return movie.locations.first { $0.id == id }
     }
 
     /// The pictures a shot's keyframe is made from, at most three: the sheets of its characters (in the order the
-    /// shot lists them), then, for a shot that continues the one before, that shot's keyframe (same place and light).
-    /// Characters without a chosen sheet are left out (`missingSheets` names them).
+    /// shot lists them), then its place's plate, then, for a shot that continues the one before, that shot's keyframe
+    /// (same place and light). With three characters there's no room for the plate. Characters without a chosen
+    /// sheet are left out (`missingSheets` names them).
     public static func references(for shot: Shot, in movie: MovieProject) -> [Reference] {
         var refs: [Reference] = []
         for id in shot.characters {
-            guard refs.count < maxReferences, let c = movie.character(id), let file = c.selectedSheetFile,
+            guard refs.count < maxReferences, let c = movie.character(id), !c.isNarrator, let file = c.selectedSheetFile,
                   !refs.contains(where: { $0.character == id }) else { continue }
             refs.append(Reference(label: c.name, file: file, character: id))
+        }
+        if refs.count < maxReferences, let place = location(of: shot, in: movie), let file = place.selectedPlateFile {
+            refs.append(Reference(label: place.name, file: file, character: nil, location: place.id))
         }
         if shot.continuesPrevious, refs.count < maxReferences, let prev = movie.shot(before: shot),
            prev.scene == shot.scene, let file = prev.selectedKeyframeFile {
@@ -51,7 +64,7 @@ public enum MovieArt {
     /// The names of the shot's characters that have no chosen reference sheet yet.
     public static func missingSheets(for shot: Shot, in movie: MovieProject) -> [String] {
         shot.characters.compactMap { id in
-            guard let c = movie.character(id) else { return nil }
+            guard let c = movie.character(id), !c.isNarrator else { return nil }
             return c.selectedSheetFile == nil ? c.name : nil
         }
     }
@@ -65,7 +78,8 @@ public enum MovieArt {
         var parts: [String] = []
         if !references.isEmpty {
             let who = references.enumerated().map { i, r in
-                r.character == nil ? "Picture \(i + 1) is \(r.label): keep its place, light and colours"
+                r.location != nil ? "Picture \(i + 1) is the place, \(r.label): keep its architecture, materials, light and colours"
+                    : r.character == nil ? "Picture \(i + 1) is \(r.label): keep its place, light and colours"
                     : "Picture \(i + 1) is \(r.label)"
             }
             parts.append(who.joined(separator: ". ") + ".")
@@ -89,6 +103,25 @@ public enum MovieArt {
         public static let sheet = "character-sheet"
         public static let keyframe = "keyframe"
         public static let keyframeEdit = "keyframe-edit"
+        public static let plate = "location-plate"
+    }
+
+    /// A place's plate: the place itself, empty, as a wide film frame.
+    public static func platePrompt(_ l: MovieLocation, style: MovieStyle) -> String {
+        let look = l.look.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "An empty establishing shot of \(l.name)\(look.isEmpty ? "" : ": \(look)"). No people, no figures, "
+            + "nobody in the frame. A wide film frame that shows the whole place, its light and atmosphere. "
+            + style.keyframeSuffix
+    }
+
+    public static func plateRender(_ l: MovieLocation, movie: MovieProject, seed: Int, server: String) -> Render {
+        let style = MovieStyle.named(movie.style)
+        let size = movie.aspect.keyframeSize
+        return Render(values: [
+            "prompt": .string(platePrompt(l, style: style)),
+            "negative": .string(style.negative + ", people, person, figure, crowd, text"),
+            "seed": .int(seed), "width": .int(size.width), "height": .int(size.height), "server": .string(server),
+        ], unusedPictures: [])
     }
 
     /// The slots every image template has. Edit templates have `image1`…`image3` too (a Load Image's path each).
@@ -206,8 +239,12 @@ extension MovieProject {
         return shots[i - 1]
     }
 
-    /// Every character has a chosen reference sheet.
-    public var castIsReady: Bool { !characters.isEmpty && characters.allSatisfy { $0.selectedSheetFile != nil } }
+    /// Every character seen on screen has a chosen reference sheet (a narrator has none). Places' plates are
+    /// optional.
+    public var castIsReady: Bool {
+        let seen = characters.filter { !$0.isNarrator }
+        return !seen.isEmpty && seen.allSatisfy { $0.selectedSheetFile != nil }
+    }
 
     /// Every shot has a chosen keyframe.
     public var keyframesAreReady: Bool { keyframesAreReady(in: nil) }

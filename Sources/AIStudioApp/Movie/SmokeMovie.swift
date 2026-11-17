@@ -152,8 +152,9 @@ extension SmokeTest {
         model.requestSheets(doc)
         await waitForGate(doc)
         guard let sheetGate = doc.pendingGate else { say("FAIL no cost gate for the sheets: \(doc.error ?? "")"); return false }
-        check(sheetGate.estimate.lines.map(\.count) == [2] && sheetGate.estimate.usd > 0,
-              "the sheet gate counts one job per character, with a price")
+        check(sheetGate.estimate.lines.map(\.count) == [2, 2] && sheetGate.estimate.usd > 0
+              && sheetGate.estimate.lines.last?.label == "2 plates of places",
+              "the cast gate counts a sheet per character and a plate per place, with a price: \(sheetGate.estimate.lines.map(\.label))")
         check(doc.job == nil && doc.movie.characters.allSatisfy { $0.sheets.isEmpty }, "no sheet before Run")
         doc.pendingGate = nil
         sheetGate.run()
@@ -165,6 +166,11 @@ extension SmokeTest {
               "each character has a chosen 1664×928 sheet on disk")
         check(doc.movie.costSpent > spentOnWriting && doc.movie.characters.allSatisfy { ($0.sheets.first?.costUSD ?? 0) > 0 },
               "the sheets' cost is on the takes and the movie")
+        let plateFiles = doc.movie.locations.compactMap(\.selectedPlateFile).map { store.url(doc.id, relative: $0) }
+        check(plateFiles.count == 2 && plateFiles.allSatisfy { pixelSize($0) == "1344x768" },
+              "each place has a chosen 1344×768 plate on disk")
+        doc.stage = .cast
+        await snapshots("places")
         doc.movie.approve(.cast)
 
         // Keyframes: edits of the sheets (and of the shot before, for a continuing shot), in film order.
@@ -180,10 +186,11 @@ extension SmokeTest {
         let keys = doc.movie.shots.map { $0.selectedKeyframeFile.map { store.url(doc.id, relative: $0) } }
         check(doc.movie.keyframesAreReady && keys.allSatisfy { $0.flatMap(pixelSize) == "1344x768" },
               "every shot has a chosen 1344×768 keyframe")
-        // The fake edit's bottom row: the number of pictures / 4 (Mara's sheet; plus the shot before for shot 2).
+        // The fake edit's bottom row: the number of pictures / 4 (Mara's sheet and the place's plate; plus the shot
+        // before for shot 2).
         let rows = keys.map { $0.flatMap { bottomRow($0) } ?? -1 }
-        check(abs(rows[0] - 0.25) < 0.02 && abs(rows[1] - 0.5) < 0.02 && abs(rows[2] - 0.25) < 0.02,
-              "shot 1 from one picture, shot 2 from two (the sheet and shot 1); a new scene starts afresh: \(rows)")
+        check(abs(rows[0] - 0.5) < 0.02 && abs(rows[1] - 0.75) < 0.02 && abs(rows[2] - 0.5) < 0.02,
+              "shot 1 from the sheet and the plate, shot 2 from those and shot 1; a new scene starts afresh: \(rows)")
         let timings = GPUTimings.load(model.gpuTimingsURL)
         check(timings.jobs.keys.contains { $0.hasPrefix("qwen-image-edit@") } && timings.lastJob["qwen-image"] != nil,
               "the jobs' times were learned")
@@ -423,6 +430,8 @@ extension SmokeTest {
         // Sound: effects per shot (Stable Audio 3), music per scene (ACE-Step), both behind their gates.
         check(doc.movie.currentStage == .sound, "Sound comes next: \(doc.movie.currentStage)")
         doc.movie.music = MovieSound.cues(for: doc.movie)
+        check(doc.movie.music.allSatisfy { $0.prompt.contains("main theme: a music-box melody") && $0.prompt.contains("Mara's motif") },
+              "each cue carries the film's theme and Mara's motif: \(doc.movie.music.first?.prompt ?? "")")
         model.requestEffects(doc)
         await waitForGate(doc)
         guard let fxGate = doc.pendingGate else { say("FAIL no cost gate for the effects: \(doc.error ?? "")"); return false }

@@ -11,16 +11,18 @@ struct MovieCastPage: View {
 
     var body: some View {
         let approved = doc.isApproved(.cast)
-        let missing = doc.movie.characters.filter { $0.sheets.isEmpty }.count
-        MoviePage(title: "Cast",
-                  subtitle: "One reference sheet per character, made from their look. Keyframes copy faces and clothes from the sheet you choose.") {
-            Button(missing > 0 ? (missing == doc.movie.characters.count ? "Make Sheets…" : "Make Missing Sheets…") : "Retake All…") {
+        let seen = doc.movie.characters.filter { !$0.isNarrator }
+        let missing = seen.filter { $0.sheets.isEmpty }.count + doc.movie.locations.filter { $0.plates.isEmpty }.count
+        let total = seen.count + doc.movie.locations.count
+        MoviePage(title: doc.movie.locations.isEmpty ? "Cast" : "Cast & Places",
+                  subtitle: "One reference sheet per character, made from their look, and an empty plate of each place. Keyframes copy faces, clothes and places from the pictures you choose.") {
+            Button(missing > 0 ? (missing == total ? "Make Sheets…" : "Make Missing…") : "Retake All…") {
                 model.requestSheets(doc)
             }
             .buttonStyle(.mg(missing > 0 ? .prominent : .bordered))
-            .disabled(doc.isBusy || doc.movie.characters.isEmpty)
-            .mgHelp(missing > 0 ? "One sheet for each character without one (you see the cost first)"
-                    : "A new take for every character; the chosen ones stay until you pick another")
+            .disabled(doc.isBusy || total == 0)
+            .mgHelp(missing > 0 ? "A sheet for each character and a plate for each place without one (you see the cost first)"
+                    : "A new take of every sheet and plate; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-sheets")
             Button("Edit Template") {
                 model.editMovieTemplate(MovieArt.TemplateName.sheet, for: doc) {
@@ -46,7 +48,13 @@ struct MovieCastPage: View {
                         .frame(maxWidth: .infinity, minHeight: 240)
                 }
                 ForEach($doc.movie.characters) { $c in
-                    CastCard(doc: doc, character: $c)
+                    if !c.isNarrator { CastCard(doc: doc, character: $c) }
+                }
+                if !doc.movie.locations.isEmpty {
+                    Text("PLACES").font(.mg(size: 10, weight: .semibold)).foregroundStyle(MG.tertiaryLabel).padding(.top, 6)
+                    ForEach($doc.movie.locations) { $l in
+                        PlaceCard(doc: doc, location: $l)
+                    }
                 }
             }
         }
@@ -101,6 +109,59 @@ private struct CastCard: View {
     private var shotCount: String {
         let n = doc.movie.shots.filter { $0.characters.contains(character.id) }.count
         return n == 1 ? "in 1 shot" : "in \(n) shots"
+    }
+}
+
+/// A place on the Cast page: its look and its plates (the place itself, empty), one chosen.
+private struct PlaceCard: View {
+    @Environment(AppModel.self) private var model
+    let doc: MovieDocument
+    @Binding var location: MovieLocation
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text(location.name).font(.mgHeadline)
+                Text(sceneCount).font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                Spacer()
+                Button(location.plates.isEmpty ? "Make Plate…" : "Another Take…") {
+                    model.requestSheets(doc, locations: [location.id])
+                }
+                .buttonStyle(.mg(.bordered)).controlSize(.small).disabled(doc.isBusy)
+                .mgHelp("An empty picture of \(location.name) every keyframe there is made from (you see the cost first)")
+            }
+            MovieField(label: "Look", hint: "edit, then make another take") {
+                TextField("Architecture, materials, light, colours, weather", text: $location.look, axis: .vertical)
+                    .lineLimit(1...4).font(.mgCallout)
+            }
+            if location.plates.isEmpty {
+                RoundedRectangle(cornerRadius: MGRadius.sm, style: .continuous).fill(MG.fill)
+                    .frame(height: 120)
+                    .overlay {
+                        Label("No plate yet", systemImage: "photo").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
+                    }
+            } else {
+                TakeStrip(doc: doc, takes: location.plates, selected: location.selectedPlate, height: 120,
+                          select: { model.selectPlate(doc, location: location.id, take: $0) },
+                          delete: { model.deletePlate(doc, location: location.id, take: $0) },
+                          open: { id in
+                              model.openMovieViewer(doc, takes: location.plates, name: location.name, take: id)
+                          })
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).fill(MG.card))
+        .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
+        .onChange(of: location.look) { _, _ in
+            if doc.isApproved(.cast), !doc.isBusy { doc.reopen(.cast) }
+        }
+        .mgTestAnchor("movie-place-card")
+        .mgScrollTarget("movie-place:\(location.id)")
+    }
+
+    private var sceneCount: String {
+        let n = doc.movie.scenes.filter { $0.location == location.id }.count
+        return n == 1 ? "in 1 scene" : "in \(n) scenes"
     }
 }
 

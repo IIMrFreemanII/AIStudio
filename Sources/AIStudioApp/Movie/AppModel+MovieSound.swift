@@ -194,16 +194,18 @@ extension AppModel {
     func requestMusic(_ doc: MovieDocument, scenes ids: [String]? = nil) {
         doc.movie.music = MovieSound.cues(for: doc.movie)
         let scenes = Set(doc.scopeScenes.map(\.id))
-        let scoped = doc.movie.music.filter { scenes.contains($0.id) }
+        let scoped = doc.movie.music.filter { scenes.contains($0.scene) }
         let missing = scoped.filter { $0.takes.isEmpty }.map(\.id)
         let ids = ids ?? (missing.isEmpty ? scoped.map(\.id) : missing)
         let cues = doc.movie.music.filter { ids.contains($0.id) }
         guard !cues.isEmpty else { return }
-        let seconds = cues.map { MovieSound.sceneSeconds($0.id, in: doc.movie) }.reduce(0, +) / Double(cues.count)
+        let seconds = cues.map { MovieSound.cueSeconds($0, in: doc.movie) }.reduce(0, +) / Double(cues.count)
         gateImages(doc, title: cues.count == 1 ? "Make Music" : "Make Music for \(cues.count) Scenes", work: [
             ImageWork(label: cues.count == 1 ? "1 piece of music" : "\(cues.count) pieces of music", task: "ace-step-xl",
                       jobs: cues.count, megapixels: MovieVoices.work(seconds: max(10, seconds + 2))),
-        ], extraNotes: ["One instrumental piece per scene, a little longer than the scene; it dips under the dialogue."]) { [weak self] in
+        ], extraNotes: ["One instrumental piece per scene (a long scene's in parts of up to \(Int(MovieSound.maxCue)) s that "
+                            + "crossfade), a little longer than its shots; it dips under the dialogue. Each carries the "
+                            + "film's main theme and its character's motif."]) { [weak self] in
             self?.makeMusic(doc, scenes: cues.map(\.id))
         }
     }
@@ -212,10 +214,11 @@ extension AppModel {
         runImageJob(doc, title: "Making music", count: ids.count, task: { _ in "ace-step-xl" }) {
             [weak self] doc, i, server in
             guard let self, let cue = doc.movie.music.first(where: { $0.id == ids[i] }) else { return }
-            let heading = doc.movie.scenes.first { $0.id == cue.id }?.heading ?? cue.id
+            let scene = doc.movie.scenes.first { $0.id == cue.scene }?.heading ?? cue.scene
+            let heading = cue.part > 1 ? "\(scene) (part \(cue.part))" : scene
             doc.job?.detail = "\(heading) (\(i + 1) of \(ids.count))"
             let seed = Int.random(in: 0..<Int(UInt32.max))
-            let render = MovieSound.musicRender(cue, seconds: MovieSound.sceneSeconds(cue.id, in: doc.movie), seed: seed,
+            let render = MovieSound.musicRender(cue, seconds: MovieSound.cueSeconds(cue, in: doc.movie), seed: seed,
                                                 server: server)
             let template = self.movieTemplate(MovieSound.TemplateName.music, for: doc) { MovieSound.musicTemplate() }
             let take = try await self.renderSound(doc, template: template, render: render, to: "audio/music-\(cue.id)",

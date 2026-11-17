@@ -43,6 +43,8 @@ public struct MovieTimeline: Sendable, Equatable {
 
     /// The length of a crossfade or a fade.
     public static let fade = 0.5
+    /// How long two pieces of music that meet overlap.
+    public static let crossfade = 2.0
     /// The shortest a clip can be trimmed to.
     public static let minimumClip = 0.5
 
@@ -269,23 +271,36 @@ public struct MovieTimeline: Sendable, Equatable {
                 }
             }
         }
-        var sceneSpan: [String: (Double, Double)] = [:]
-        for c in clips {
-            guard let i = index[c.shot] else { continue }
-            let scene = movie.shots[i].scene
-            let span = sceneSpan[scene]
-            sceneSpan[scene] = (min(span?.0 ?? c.start, c.start), max(span?.1 ?? c.end, c.end))
-        }
+        // Music: each cue under its own shots (a long scene's parts one after another); cues that meet crossfade.
+        var shotSpan: [UUID: (Double, Double)] = [:]
+        for c in clips { shotSpan[c.shot] = (c.start, c.end) }
+        var music: [(sound: Sound, length: Double)] = []
         for cue in movie.music {
             guard let take = cue.selectedTake, let len = length(take) else { continue }
-            guard let (first, last) = sceneSpan[cue.id] else { continue }
+            let spans = MovieSound.shots(of: cue, in: movie).compactMap { shotSpan[$0.id] }
+            guard let first = spans.map(\.0).min(), let last = spans.map(\.1).max() else { continue }
             let d = min(last - first, len)
             guard d > 0 else { continue }
-            let heading = movie.scenes.first { $0.id == cue.id }?.heading ?? cue.id
-            out.append(Sound(id: "music-\(cue.id)", kind: .music, file: take.file, label: heading, start: first, offset: 0,
-                             duration: d, gain: movie.mix.music * Self.linear(take.gainDB),
-                             fadeIn: min(first < 0.01 ? 0.5 : 1.0, d / 3), fadeOut: min(1.5, d / 3), track: 0))
+            let heading = movie.scenes.first { $0.id == cue.scene }?.heading ?? cue.scene
+            music.append((Sound(id: "music-\(cue.id)", kind: .music, file: take.file,
+                                label: cue.part > 1 ? "\(heading) (\(cue.part))" : heading, start: first, offset: 0,
+                                duration: d, gain: movie.mix.music * Self.linear(take.gainDB),
+                                fadeIn: min(first < 0.01 ? 0.5 : 1.0, d / 3), fadeOut: min(1.5, d / 3), track: 0), len))
         }
+        music.sort { $0.sound.start < $1.sound.start }
+        for k in music.indices.dropFirst() {
+            let a = music[k - 1].sound, b = music[k].sound
+            guard b.start - a.end < 0.5, b.start - a.end > -0.5 else { continue }
+            // The next cue comes in a second early and the one before plays on a second (as far as its file goes).
+            let early = min(Self.crossfade / 2, b.start)
+            music[k].sound.start -= early
+            music[k].sound.duration += early
+            music[k].sound.fadeIn = min(Self.crossfade, music[k].sound.duration / 2)
+            let later = max(0, min(Self.crossfade / 2, music[k - 1].length - a.offset - a.duration))
+            music[k - 1].sound.duration += later
+            music[k - 1].sound.fadeOut = min(early + later, music[k - 1].sound.duration / 2)
+        }
+        out += music.map(\.sound)
         // Lanes, per kind: the lowest one free at the sound's start.
         for kind in SoundKind.allCases {
             var ends: [Double] = []

@@ -173,7 +173,7 @@ enum StudioTools {
                 ToolOutput(try await s.movieEdit(a, id))
             },
             StudioTool("movie_run",
-                       "Starts a stage's work (a long film's per-sequence stages for one sequence at a time): story (bible and outline), script (each scene, then the critique; scenes: [ids] for only those), shots, cast (character sheets), keyframes, voices (voice samples), lines (spoken dialogue), clips, effects or music. Pass shots / characters / scenes to make (or retake) only those. Paid work opens the app's cost sheet and waits: only the user can press Run there. Then it waits for the work to finish and says what was made.",
+                       "Starts a stage's work (a long film's per-sequence stages for one sequence at a time): story (bible and outline), script (each scene, then the critique; scenes: [ids] for only those), shots, cast (character sheets and the places' plates), keyframes, voices (voice samples), lines (spoken dialogue), clips, effects or music. Pass shots / characters / scenes to make (or retake) only those. Paid work opens the app's cost sheet and waits: only the user can press Run there. Then it waits for the work to finish and says what was made.",
                        .object([
                            "type": .string("object"),
                            "properties": .object([
