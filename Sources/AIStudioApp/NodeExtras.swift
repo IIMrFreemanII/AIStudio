@@ -112,6 +112,13 @@ struct NodeExtras: View {
                      + "With a built-in voice, the description sets the delivery (\"excited, whispering\").")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
+            if node.type == "RemoteBreezeSpeech" {
+                Text("English and Chinese. Connect a reference clip and type its exact transcript to clone its voice; "
+                     + "add an instruction to direct it (\"slowly, restrained\"). Without a clip, the instruction "
+                     + "describes a new voice. Vocal events go in the text: (laugh), (sigh), (clears throat). "
+                     + "Breeze TTS 2 is for research and non-commercial use only, and so is what it makes.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task { for c in servers where store.status[c.id] == nil || store.status[c.id] == .unknown { await store.test(c.id) } }
     }

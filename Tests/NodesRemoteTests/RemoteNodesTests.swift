@@ -490,6 +490,31 @@ struct RemoteNodesTests {
         #expect(abs(head - tone).max().item(Float.self) < 0.001)
     }
 
+    @Test(.enabled(if: hasServer)) func breezeClonesWithATranscriptAndRefusesWithout() async throws {
+        let info = try await GPUJobClient(baseURL: server.baseURL, token: server.token).info()
+        let task = try #require(info.task("breeze-tts"))
+        #expect(task.kind == "audio" && task.optionalInputs == ["reference"] && task.title.contains("non-commercial"))
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let ref = out.appendingPathComponent("breeze-ref.wav")
+        let tone = MLX.sin(MLXArray(0..<12000).asType(.float32) * 0.05) * 0.5
+        try await MediaIO.writeAudio(AudioClip(samples: MLX.stacked([tone, tone]), sampleRate: 24000), to: ref)
+        func graph(transcript: String) -> [GraphNode] {
+            [GraphNode(id: "ref", type: "LoadAudio", inputs: ["path": .value(.string(ref.path))]),
+             GraphNode(id: "tts", type: "RemoteBreezeSpeech", inputs: [
+                "reference": .link(node: "ref", output: "audio"), "text": .value(.string("(sigh) Hello there.")),
+                "reference_text": .value(.string(transcript)), "instruction": .value(.string("quietly"))]),
+             GraphNode(id: "save", type: "SaveAudio", inputs: [
+                "audio": .link(node: "tts", output: "audio"), "directory": .value(.string(out.path))])]
+        }
+        let (result, log) = try await run(graph(transcript: "A tone."))
+        #expect(log.statuses.contains("Uploading"))
+        let clip = try await savedAudio(result)
+        #expect(clip.sampleRate == 24000 && clip.channels == 1)
+        let head = clip.samples[0, ..<12000]  // the fake plays the (mono) reference back first
+        #expect(abs(head - tone).max().item(Float.self) < 0.001)
+        await #expect(throws: (any Error).self) { _ = try await run(graph(transcript: "")) }
+    }
+
     @Test func referenceClipsAreMonoAndCapped() {
         let long = AudioClip(samples: MLXArray.zeros([2, 48000 * 40]), sampleRate: 48000)
         let ref = RemoteTextToSpeechNode.referenceClip(long)

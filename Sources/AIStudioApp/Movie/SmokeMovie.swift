@@ -181,6 +181,38 @@ extension SmokeTest {
         check(doc.movie.silentLines == 0 && doc.movie.shots.flatMap(\.dialogue).allSatisfy {
             ($0.takes.first?.seconds ?? 0) > 0.5 && $0.takes.first?.gainDB != nil }, "every line has a measured take")
         check(MovieVoices.layout(doc.movie.shots[1]).first?.start == MovieVoices.leadIn, "the line starts after a lead-in")
+
+        // Breeze TTS 2: another voice take for Mara, then a new take of each line, cloned from her chosen (Qwen3-TTS)
+        // voice and directed by its delivery. The chosen takes stay; it goes back to Qwen3-TTS afterwards.
+        doc.movie.voiceEngine = .breeze
+        let qwenLineTakes = doc.movie.shots.flatMap(\.dialogue).map(\.selectedTake)
+        model.requestVoiceSamples(doc)
+        await waitForGate(doc)
+        if let gate = doc.pendingGate {
+            check(gate.estimate.lines.map(\.count) == [1] && gate.estimate.notes.contains { $0.contains("Breeze TTS 2") }
+                  && gate.estimate.notes.contains { $0.contains("non-commercial") },
+                  "the Breeze voice gate names it and its non-commercial licence")
+            doc.pendingGate = nil
+            gate.run()
+            await waitForJob(doc)
+            check(doc.error == nil && doc.movie.character("mara")?.voiceSamples.count == 2
+                  && doc.movie.character("mara")?.selectedVoiceSample == mara?.selectedVoiceSample,
+                  "Breeze made a second voice take; the chosen one stays\(doc.error.map { ": \($0)" } ?? "")")
+        } else { check(false, "no cost gate for a Breeze voice: \(doc.error ?? "")") }
+        model.requestLines(doc)
+        await waitForGate(doc)
+        if let gate = doc.pendingGate {
+            check(gate.estimate.lines.map(\.count) == [2] && gate.estimate.notes.contains { $0.contains("delivery") },
+                  "the Breeze line gate counts both lines and says it follows their delivery")
+            doc.pendingGate = nil
+            gate.run()
+            await waitForJob(doc)
+            let dialogue = doc.movie.shots.flatMap(\.dialogue)
+            check(doc.error == nil && dialogue.allSatisfy { $0.takes.count == 2 && ($0.takes.last?.seconds ?? 0) > 0.5 }
+                  && dialogue.map(\.selectedTake) == qwenLineTakes,
+                  "Breeze spoke a measured new take of each line; the chosen ones stay\(doc.error.map { ": \($0)" } ?? "")")
+        } else { check(false, "no cost gate for Breeze lines: \(doc.error ?? "")") }
+        doc.movie.voiceEngine = .qwen3
         doc.movie.approve(.voices)
         check(doc.movie.currentStage == .video && doc.movie.isUnlocked(.video),
               "then the shots: \(doc.movie.currentStage) \(doc.movie.approved.map(\.rawValue).sorted())")

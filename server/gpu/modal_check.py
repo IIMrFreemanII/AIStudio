@@ -14,6 +14,7 @@ measured times and the cost. For checking a deployment and measuring cold and wa
     python server/gpu/modal_check.py ace-step-xl --prompt "indie pop, female vocals" --set lyrics=@lyrics.txt
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --set voice=designed --set description="…"
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --input reference=voice.wav
+    python server/gpu/modal_check.py breeze-tts --set text="(sigh) Hello." --set instruction="a calm older man"
 
 ``--prompt`` fills the task's text (prompt, tags or text); ``--set name=value`` any other parameter (``@file`` reads
 the value from a file); ``--input name=path`` uploads a file input.
@@ -40,7 +41,8 @@ CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", 
            "infinitetalk": "InfiniteTalk", "flux1-dev": "Flux", "qwen-image": "QwenImage",
            "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL",
            "ace-step-xl": "Music",
-           "stable-audio-3": "Sound", "qwen3-tts": "Speech"}
+           "stable-audio-3": "Sound", "qwen3-tts": "Speech",
+           "breeze-tts": "Breeze"}
 
 
 def main() -> int:

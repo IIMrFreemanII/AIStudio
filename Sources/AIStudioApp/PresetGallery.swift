@@ -182,7 +182,7 @@ struct SavePresetSheet: View {
                "RemoteLongCatAvatar", "RemoteInfiniteTalk") { return .video }
         if has("TextToAudio", "RemoteTextToSound") { return .sound }
         if has("TextToMusic", "RemoteTextToMusic") { return .music }
-        if has("TextToSpeech", "RemoteTextToSpeech") { return .speech }
+        if has("TextToSpeech", "RemoteTextToSpeech", "RemoteBreezeSpeech") { return .speech }
         return .image
     }
 }

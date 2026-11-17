@@ -113,6 +113,9 @@ class FakeModelWorker:
                 sink.preview(pattern(params.get("width") or 64, params.get("height") or 64, step / steps, params["seed"]),
                              step, steps)
         if task.kind == "audio":
+            if task.id == "breeze-tts":  # the real worker's checks (text, a transcript with a reference)
+                from .breeze import request
+                request(params, inputs)
             # Each audio model's own rate and channels; length from its seconds (speech: from the text).
             rate, channels = {"music": (48000, 2), "sound": (44100, 2)}.get(task.family, (24000, 1))
             seconds = params.get("seconds") or min(10.0, max(1.0, len(params.get("text", "")) / 15))

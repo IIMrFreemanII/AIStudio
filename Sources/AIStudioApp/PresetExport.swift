@@ -338,6 +338,16 @@ enum PresetExport {
                             "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
                      ])
                  }),
+            Spec(id: "cloud-breeze-tts", name: "Breeze TTS 2 · Cloud GPU (non-commercial)", category: .speech,
+                 models: [], modelName: "Breeze TTS 2 on a GPU server",
+                 summary: "Expressive English and Chinese speech: design a voice from a description, or connect Load Audio to reference (with its exact transcript) to clone and direct a voice. Research and non-commercial use only.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteBreezeSpeech", literals: [
+                        "text": .string("(sigh) Welcome aboard. This voice was designed from a description, on a cloud GPU."),
+                        "instruction": .string("A warm, thoughtful young woman with a clear voice and a calm, reflective delivery."),
+                        "seed": .int(1),
+                     ], output: "audio", prefix: "speech", outputDirectory: out)
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

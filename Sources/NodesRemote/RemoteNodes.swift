@@ -14,7 +14,7 @@ public enum RemoteNodes {
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
-        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self,
+        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self,
     ]
 
     /// Nodes that only prepare inputs for the job nodes above (no server, no job of their own).
@@ -32,7 +32,7 @@ public enum RemoteNodes {
         "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
         "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
-        "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts",
+        "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts",
     ]
 
     public static func taskID(forNodeType type: String) -> String? { taskIDs[type] }
@@ -986,5 +986,40 @@ public struct RemoteTextToSpeechNode: NodeImplementation {
             mono = AudioClip(samples: mono.samples[0..., ..<limit], sampleRate: mono.sampleRate)
         }
         return mono
+    }
+}
+
+/// Breeze TTS 2 on the GPU server (English and Chinese; non-commercial): clone a clip's voice (with its exact
+/// transcript), direct that voice with an instruction, or design a new one from a description.
+public struct RemoteBreezeSpeechNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteBreezeSpeech", displayName: "Breeze TTS 2 Speech (Cloud GPU, non-commercial)", category: "remote",
+        inputs: [
+            InputSpec("reference", .audio, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("text", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("instruction", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("reference_text", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("cfg_scale", .float, default: .double(0), widget: .number(min: 0, max: 10, step: 0.5),
+                      zeroLabel: "auto"),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+        ],
+        outputs: [OutputSpec("audio", .audio)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let params: [String: Any] = [
+            "text": try inputs.string("text"), "instruction": try inputs.string("instruction"),
+            "reference_text": try inputs.string("reference_text"), "cfg_scale": try inputs.float("cfg_scale"),
+            "seed": try inputs.int("seed"),
+        ]
+        var audios: [String: AudioClip] = [:]
+        // Mono, whole: the transcript has to match all of it.
+        if let reference = inputs.optionalObject("reference", as: AudioClip.self) {
+            audios["reference"] = MediaOps.channels(reference, 1)
+        }
+        let (url, _) = try await runRemoteJob(task: "breeze-tts", params: params, audios: audios, inputs: inputs,
+                                              context: context)
+        return ["audio": .object(try await loadAudio(url))]
     }
 }

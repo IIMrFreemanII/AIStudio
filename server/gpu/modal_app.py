@@ -18,7 +18,8 @@ Layout:
 - ``SD35`` (Stable Diffusion 3.5 Large, with its Turbo mode) and ``SDXL`` (L40S): the same, for the Stable Diffusion
   family. SD 3.5 is gated: accept the licences of both repos (``stable-diffusion-3.5-large`` and ``…-large-turbo``)
   with the Hugging Face account of the ``huggingface`` secret.
-- ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3) and ``Speech`` (Qwen3-TTS), on L40S: the same, for audio.
+- ``Music`` (ACE-Step 1.5 XL), ``Sound`` (Stable Audio 3), ``Speech`` (Qwen3-TTS) and ``Breeze`` (Breeze TTS 2,
+  non-commercial), on L40S: the same, for audio.
   ACE-Step and Qwen3-TTS pin their own torch and transformers versions, so each has its own container image.
 - Volume ``aistudio-gpu-models``: the weights, written once by ``modal_download.py``.
 - ``LLM`` / ``LLMSnap`` / ``LLMLlamaCpp``: one container per installed language model (vLLM's OpenAI server, or llama.cpp's for
@@ -210,14 +211,26 @@ music_image = (
     .add_local_python_source("aistudio_gpu"))
 
 # Qwen3-TTS: its package pins transformers 4.57.3; installed without its demo UI (gradio).
-speech_image = (
+speech_base = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("sox", "libsndfile1", "ffmpeg")
     .uv_pip_install("torch==2.10.0", "torchaudio==2.10.0", "transformers==4.57.3", "accelerate==1.12.0", "librosa",
                     "soundfile", "sox", "onnxruntime", "einops", "huggingface_hub", "safetensors",
                     "fastapi==0.162.2", "numpy", "pillow", "imageio-ffmpeg")
-    .uv_pip_install("qwen-tts==0.1.1", extra_options="--no-deps")
-    .env(env)
+    .uv_pip_install("qwen-tts==0.1.1", extra_options="--no-deps"))
+speech_image = speech_base.env(env).add_local_python_source("aistudio_gpu")
+
+# Breeze TTS 2's inference code at a pinned commit, on the same packages: it pins qwen-tts 0.1.1 and transformers 4.57.3
+# too (and torch 2.9.1; it runs eagerly, which 2.10 does as well). Its `breeze_infer` and `models` packages sit at the
+# repo's root, hence the PYTHONPATH.
+BREEZE_COMMIT = "daa6cb2efe5471f09369229f322d20bb956cb3c3"
+breeze_image = (
+    speech_base
+    .apt_install("git")
+    .run_commands("git init -q /opt/breeze && cd /opt/breeze && git remote add origin "
+                  f"https://github.com/breezeblue-ai/breeze-tts && git fetch -q --depth 1 origin {BREEZE_COMMIT} "
+                  "&& git checkout -q FETCH_HEAD")
+    .env({**env, "PYTHONPATH": "/opt/breeze"})
     .add_local_python_source("aistudio_gpu"))
 
 
@@ -335,6 +348,14 @@ def _repo_imports():
 def _speech_imports():
     import qwen_tts  # noqa: F401
     import torch  # noqa: F401
+
+    import aistudio_gpu.modal_runner  # noqa: F401
+
+
+def _breeze_imports():
+    import qwen_tts  # noqa: F401
+    import torch  # noqa: F401
+    import transformers  # noqa: F401
 
     import aistudio_gpu.modal_runner  # noqa: F401
 
@@ -600,6 +621,26 @@ class Speech:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("speech", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(image=breeze_image, gpu=GPU_AUDIO, memory=(8192, 32768))
+class Breeze:
+    @modal.enter(snap=True)
+    def imports(self):
+        _breeze_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("breeze", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1388,7 +1429,7 @@ def api():
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "music": Music,
-                          "sound": Sound, "speech": Speech}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "sound": Sound, "speech": Speech, "breeze": Breeze}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

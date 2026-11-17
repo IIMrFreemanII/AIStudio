@@ -292,6 +292,16 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "reference_text": Param("string", ""),  # what the reference clip says (better clones; optional)
         "seed": SEED,
     }, optional_inputs=("reference",), models=("qwen3-tts",)),
+    # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
+    TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
+        "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]
+        # With a reference clip: how to say the text ("slowly, restrained"; voice direction); without one: the voice to
+        # make ("a warm young woman, calm"; voice design).
+        "instruction": Param("string", ""),
+        "reference_text": Param("string", ""),  # the reference clip's exact transcript; needed with a reference
+        "cfg_scale": Param("float", 0.0, min=0, max=10),  # 0: 4 with an instruction (the repo's advice), else 1
+        "seed": SEED,
+    }, optional_inputs=("reference",), models=("breeze-tts",)),
     # CPU tasks for tests and for checking a deployment end to end without spending GPU time.
     TaskSpec("test-video", "Test pattern video", "video", "test", "CPU", {
         "width": Param("int", 320, min=16, max=1920, multiple=16),
@@ -394,6 +404,9 @@ def make_worker(family: str) -> Worker:
     if family == "speech":
         from .speech import SpeechWorker
         return SpeechWorker()
+    if family == "breeze":
+        from .breeze import BreezeWorker
+        return BreezeWorker()
     raise KeyError(family)
 
 

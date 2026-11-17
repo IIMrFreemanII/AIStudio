@@ -547,7 +547,7 @@ final class AppModel {
     }
 
     /// What titles a queue row: the prompt-like text of the first generating node, speech text included.
-    static let titleFields = promptFields.merging(["TextToSpeech": "text", "RemoteTextToSpeech": "text"]) { a, _ in a }
+    static let titleFields = promptFields.merging(["TextToSpeech": "text", "RemoteTextToSpeech": "text", "RemoteBreezeSpeech": "text"]) { a, _ in a }
 
     func title(for g: Graph) -> String {
         // In the order of the graph, like the history's titles.
