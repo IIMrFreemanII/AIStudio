@@ -273,7 +273,7 @@ struct MovieEditPage: View {
         }
         var i = lo - 1
         while i >= 0, i >= lo - 3 {
-            if position < subs[i].end { return subs[i].text }
+            if position < subs[i].end { return subs[i].shown }
             i -= 1
         }
         return nil

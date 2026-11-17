@@ -37,7 +37,7 @@ struct MovieVoicesPage: View {
                 .mgHelp(noVoice > 0 ? "A voice for each speaking character without one (you see the cost first)"
                         : "A new voice take for every speaking character")
                 .mgTestAnchor("movie-make-voices")
-            if !doc.movie.videoEngine.makesSound {
+            if lines > 0 {
             Button(silent > 0 ? (silent == lines ? "Speak Lines…" : "Speak Missing Lines…") : "Retake Lines…") {
                 model.requestLines(doc)
             }
@@ -142,7 +142,8 @@ private struct ShotLinesCard: View {
     let number: Int
 
     var body: some View {
-        let needed = MovieVoices.neededDuration(shot)
+        let needed = MovieVoices.neededDuration(shot, incoming: MovieVoices.incoming(doc.movie)[shot.id] ?? 0,
+                                                canCarry: MovieVoices.canCarry(number - 1, in: doc.movie))
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text("\(number)").font(.mg(size: 12, weight: .bold)).monospacedDigit()
@@ -173,6 +174,7 @@ private struct ShotLinesCard: View {
                         if !line.delivery.isEmpty {
                             Text("(\(line.delivery))").font(.mgFootnote).foregroundStyle(MG.tertiaryLabel)
                         }
+                        LineCutMarks(line: line)
                     }
                     if !line.takes.isEmpty {
                         SoundTakeStrip(doc: doc, takes: line.takes, selected: line.selectedTake,
@@ -187,6 +189,29 @@ private struct ShotLinesCard: View {
         .overlay(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous).strokeBorder(MG.separator))
         .mgTestAnchor("movie-lines-card")
         .mgScrollTarget("movie-lines:\(shot.id.uuidString)")
+    }
+}
+
+/// A line's marks: off screen or voice-over, and a J or L cut.
+struct LineCutMarks: View {
+    let line: DialogueLine
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if line.mode != .onScreen {
+                Text(line.mode.mark).font(.mg(size: 9.5, weight: .semibold)).foregroundStyle(MG.accent)
+                    .mgHelp(line.mode == .offScreen ? "Spoken off screen: heard, not lip-synced"
+                            : "Voice-over: heard over the picture, not lip-synced")
+            }
+            if line.lead > 0 {
+                Text("J −\(MovieFormat.seconds(line.lead))").font(.mg(size: 9.5, weight: .semibold)).foregroundStyle(MG.secondaryLabel)
+                    .mgHelp("A J cut: it starts over the end of the shot before")
+            }
+            if line.carry {
+                Text("L →").font(.mg(size: 9.5, weight: .semibold)).foregroundStyle(MG.secondaryLabel)
+                    .mgHelp("An L cut: it runs on over the next shot")
+            }
+        }
     }
 }
 

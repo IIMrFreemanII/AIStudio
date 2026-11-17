@@ -50,7 +50,7 @@ public enum MovieH3 {
     public static func lineTimes(_ shot: Shot) -> [Placed] {
         var t = leadIn
         var out: [Placed] = []
-        for line in shot.dialogue {
+        for line in shot.dialogue where line.mode == .onScreen {
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             let s = estimatedSeconds(text)
@@ -117,10 +117,12 @@ public enum MovieH3 {
         return unfit
     }
 
-    /// The characters who speak in the shot, in the order they first speak.
+    /// The characters who speak on screen in the shot (in the clip), in the order they first speak. Off-screen
+    /// lines and narration are spoken by the voice engine and laid over the clip.
     public static func speakers(_ shot: Shot) -> [String] {
         var out: [String] = []
-        for line in shot.dialogue where !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        for line in shot.dialogue where line.mode == .onScreen
+            && !line.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if !out.contains(line.character) { out.append(line.character) }
         }
         return out
@@ -155,7 +157,7 @@ public enum MovieH3 {
         let ids = speakers(shot)
         return shot.dialogue.compactMap { line -> String? in
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty, let k = ids.firstIndex(of: line.character) else { return nil }
+            guard line.mode == .onScreen, !text.isEmpty, let k = ids.firstIndex(of: line.character) else { return nil }
             let c = movie.character(line.character)
             var speaker = who(line.character) ?? c?.name ?? line.character
             let voice = c?.voice.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

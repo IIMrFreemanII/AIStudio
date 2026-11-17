@@ -49,7 +49,8 @@ extension AppModel {
                     + "of GPU time each."
             case .longcat:
                 "Talking shots are animated from their lines by LongCat Avatar (lips in sync, 8 steps). With two "
-                    + "speakers, the first to speak is taken to be on the left."
+                    + "speakers, each keeps the side of the frame the shot list gave them (else the first to speak is "
+                    + "taken to be on the left)."
             case .infiniteTalk:
                 "Talking shots are made like the others, then InfiniteTalk re-syncs the speaker to their lines (lips, "
                     + "head and body; the camera move stays)."
@@ -168,7 +169,8 @@ extension AppModel {
             } else if lipSync {
                 // The shot's lines as one recording as long as the shot: what the lips follow.
                 let voice = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot))
-                try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration, to: voice)
+                let incoming = MovieVoices.incoming(doc.movie)[shot.id] ?? 0
+                try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration, incoming: incoming, to: voice)
                 let name = MovieShots.TemplateName.talking(engine)
                 template = self.movieTemplate(name, for: doc) { MovieShots.talkingTemplate(for: engine) }
                 switch engine {
@@ -176,14 +178,15 @@ extension AppModel {
                     render = MovieShots.talkingRender(shot, movie: doc.movie, startImage: start, voice: voice,
                                                       seed: seed, server: server)
                 case .longcat:
-                    // Two speakers: one track each (the first to speak on the left), on the shot's timeline.
-                    let speakers = MovieVoices.speakers(shot)
+                    // Two speakers: one track each (left first, by the scene's blocking), on the shot's timeline.
+                    let speakers = MovieShots.leftToRight(MovieVoices.speakers(shot),
+                                                          scene: doc.movie.scenes.first { $0.id == shot.scene })
                     var voices = [voice]
                     if speakers.count >= 2 {
                         voices = try speakers.prefix(2).enumerated().map { k, character in
                             let url = folder.appendingPathComponent(MovieShots.voiceTrackFile(for: shot, speaker: k))
                             try MovieVoices.voiceTrack(shot, folder: folder, duration: shot.duration,
-                                                       speaker: character, to: url)
+                                                       incoming: incoming, speaker: character, to: url)
                             return url
                         }
                     }

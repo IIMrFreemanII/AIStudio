@@ -278,6 +278,12 @@ extension AppModel {
             }
             MovieWriters.apply(outline, to: &doc.movie)
             doc.shotNotes = [:]
+            // Breeze says each line as its delivery directs, in English and Chinese: the voice for those scripts,
+            // until a voice is made (then it's the user's choice on the Voices page).
+            if !doc.movie.characters.contains(where: { !$0.voiceSamples.isEmpty }) {
+                let text = [doc.movie.idea, doc.movie.premise, doc.movie.logline].joined(separator: " ")
+                doc.movie.voiceEngine = MovieVoices.suitsBreeze(text) ? .breeze : .qwen3
+            }
             doc.movie.approve(.idea)
             doc.sequence = doc.movie.sequences.count > 1 ? doc.movie.sequences.first?.id : nil
             doc.stage = .story

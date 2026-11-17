@@ -234,7 +234,7 @@ public enum MovieComposer {
         let fontSize = size.height * 0.055
         for s in subtitles {
             let layer = CATextLayer()
-            layer.string = s.text
+            layer.string = s.shown
             layer.fontSize = fontSize
             layer.foregroundColor = CGColor(gray: 1, alpha: 1)
             layer.alignmentMode = .center

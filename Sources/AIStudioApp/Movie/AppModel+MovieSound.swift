@@ -66,7 +66,7 @@ extension AppModel {
     /// a new take of each.
     func requestLines(_ doc: MovieDocument, shots ids: [UUID]? = nil) {
         let shots = ids.map { ids in doc.movie.shots.filter { ids.contains($0.id) } } ?? doc.scopeShots
-        let all = shots.flatMap { s in s.dialogue.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+        let all = shots.flatMap { s in s.dialogue.filter { doc.movie.isSpoken($0) }
             .map { (ref: LineRef(shot: s.id, line: $0.id), line: $0) } }
         let missing = all.filter { $0.line.takes.isEmpty }
         let items = missing.isEmpty ? all : missing
@@ -315,17 +315,19 @@ extension MovieCharacter {
 }
 
 extension MovieProject {
+    /// Whether a line is spoken by the voice engine: every line with words, except on-screen ones when the clips
+    /// speak their own (MiniMax H3).
+    func isSpoken(_ line: DialogueLine) -> Bool {
+        !line.text.trimmingCharacters(in: .whitespaces).isEmpty && (!videoEngine.makesSound || line.mode != .onScreen)
+    }
+
     /// Lines that will play silent: no chosen take (in a sequence, or nil: the film).
     func silentLines(in sequence: String? = nil) -> Int {
-        shots(inSequence: sequence).reduce(0) { n, s in
-            n + s.dialogue.filter { $0.selectedTake == nil && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count
-        }
+        shots(inSequence: sequence).reduce(0) { n, s in n + s.dialogue.filter { $0.selectedTake == nil && isSpoken($0) }.count }
     }
 
     func lineCount(in sequence: String? = nil) -> Int {
-        shots(inSequence: sequence).reduce(0) {
-            $0 + $1.dialogue.filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }.count
-        }
+        shots(inSequence: sequence).reduce(0) { $0 + $1.dialogue.filter(isSpoken).count }
     }
 
     var silentLines: Int { silentLines() }

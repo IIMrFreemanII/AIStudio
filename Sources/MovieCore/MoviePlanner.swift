@@ -69,7 +69,10 @@ public enum MoviePlanner {
         - motion: what moves during the shot (people, camera, environment), one or two sentences.
         - coverage: establishing, master, single, ots, reaction or insert.
         - dialogue: only the lines spoken during this shot (copied from the scene, every line in exactly one shot), \
-        each by a character id.
+        each by a character id, with its mode: "on" (the speaker is in the shot), "off" (heard from off screen) or \
+        "vo" (narration). Edit like a film: a line may start over the end of the shot before ("lead": seconds, a \
+        J cut; the shot's first line) or run on over the next shot ("carry": true, an L cut; the shot's last line), \
+        so the next shot can be the listener's reaction.
         - talking: true when the speaker's face is on screen while they talk, in a medium shot or closer (it gets \
         lip-sync); false for wide shots, voice-over or an off-screen speaker.
         - continues: true only when the shot continues the previous shot's exact moment and place without a cut in \
@@ -80,7 +83,7 @@ public enum MoviePlanner {
         {"blocking": {"<character id>": "left | right"}, \
         "shots": [{"duration": 5, "framing": "wide", "camera": "slow push in", "coverage": "master", "keyframe": "...", \
         "motion": "...", "characters": ["<character id>"], "dialogue": [{"character": "<id>", "text": "...", \
-        "delivery": "..."}], "talking": false, "continues": false, \
+        "delivery": "...", "mode": "on", "lead": 0, "carry": false}], "talking": false, "continues": false, \
         "transition": "cut | crossfade | fadeFromBlack | fadeToBlack", "sfx": "..."}]}
         """
         let cast = movie.characters.map {
@@ -88,7 +91,9 @@ public enum MoviePlanner {
         }.joined(separator: "\n")
         let place = movie.locations.first { $0.id == scene.location }
         let sides = scene.blocking.sorted { $0.key < $1.key }.map { "\($0.key) on the \($0.value.rawValue)" }
-        let lines = scene.dialogue.map { "\($0.character): \($0.text)\($0.delivery.isEmpty ? "" : " (\($0.delivery))")" }
+        let lines = scene.dialogue.map {
+            "\($0.character)\($0.mode == .onScreen ? "" : " [\($0.mode.rawValue)]"): \($0.text)\($0.delivery.isEmpty ? "" : " (\($0.delivery))")"
+        }
         let others = movie.scenes.map { "\($0.id). \($0.heading) – \($0.summary)" }.joined(separator: "\n")
         let seconds = sceneSeconds(for: movie)[scene.id] ?? 15
         let shots = max(1, Int((seconds / (scene.dialogue.count > 2 ? 5 : 4.5)).rounded()))
@@ -117,6 +122,17 @@ public enum MoviePlanner {
         var character: String?
         var text: String?
         var delivery: String?
+        var mode: String?
+        var lead: Flexible?
+        var carry: Flexible?
+    }
+
+    /// "off", "O.S.", "off-screen" → off screen; "vo", "V.O.", "voice-over", "narration" → voice-over; else on screen.
+    static func mode(_ s: String?) -> LineMode {
+        let m = (s ?? "").lowercased().filter { $0.isLetter }
+        if m.hasPrefix("vo") || m.hasPrefix("voice") || m.hasPrefix("narrat") { return .voiceOver }
+        if m.hasPrefix("off") || m == "os" { return .offScreen }
+        return .onScreen
     }
 
     private struct ShotsReply: Decodable {
@@ -191,7 +207,10 @@ public enum MoviePlanner {
         (replies ?? []).compactMap { l in
             let text = clean(l.text)
             guard !text.isEmpty, let who = resolve(l.character, in: cast) else { return nil }
-            return DialogueLine(character: who, text: text, delivery: clean(l.delivery))
+            let narrator = cast.first { $0.id == who }?.isNarrator ?? false
+            let lead = l.lead?.number.flatMap { $0.isFinite ? min(max(0, $0), DialogueLine.maxLead) : nil } ?? 0
+            return DialogueLine(character: who, text: text, delivery: clean(l.delivery),
+                                mode: narrator ? .voiceOver : mode(l.mode), lead: lead, carry: l.carry?.bool ?? false)
         }
     }
 

@@ -85,6 +85,19 @@ public struct MovieTimeline: Sendable, Equatable {
         public var end: Double
         public var speaker: String
         public var text: String
+        /// How the line is heard (an off-screen line or narration is marked so in the subtitles).
+        public var mode: LineMode = .onScreen
+
+        public init(start: Double, end: Double, speaker: String, text: String, mode: LineMode = .onScreen) {
+            self.start = start
+            self.end = end
+            self.speaker = speaker
+            self.text = text
+            self.mode = mode
+        }
+
+        /// As shown: an off-screen line or narration marked ("(V.O.) …").
+        public var shown: String { mode == .onScreen ? text : "(\(mode.mark)) \(text)" }
     }
 
     public struct VolumePoint: Sendable, Equatable {
@@ -201,6 +214,27 @@ public struct MovieTimeline: Sendable, Equatable {
         var out: [Sound] = []
         var subs: [Subtitle] = []
         let index = movie.shotIndex
+        let incoming = MovieVoices.incoming(movie)
+        /// The shot's voiced lines (passing `only`) at their places: a J cut's line starts before the clip (over the
+        /// clip before), an L cut's runs on past it (over the next shot); other lines stay inside the clip.
+        func addLines(_ shot: Shot, at i: Int, clip c: Clip, only: (DialogueLine) -> Bool) {
+            let placed = MovieVoices.layout(shot, incoming: incoming[shot.id] ?? 0, only: only)
+            let carries = MovieVoices.canCarry(i, in: movie)
+            for (k, p) in placed.enumerated() {
+                guard let line = shot.dialogue.first(where: { $0.id == p.line }),
+                      let take = line.takes.first(where: { $0.id == line.selectedTake }) else { continue }
+                let t0 = c.start - c.trimStart + p.start
+                let lo = k == 0 && p.start < 0 ? max(0, t0) : max(t0, c.start)
+                let hi = k == placed.count - 1 && line.carry && carries ? t0 + p.seconds : min(t0 + p.seconds, c.end)
+                guard hi - lo >= 0.05 else { continue }
+                let name = movie.character(line.character)?.name ?? line.character
+                out.append(Sound(id: "line-\(line.id.uuidString)", kind: .dialogue, file: take.file, label: name, start: lo,
+                                 offset: lo - t0, duration: hi - lo, gain: movie.mix.dialogue * Self.linear(take.gainDB),
+                                 fadeIn: 0.02, fadeOut: 0.05, track: 0))
+                subs.append(Subtitle(start: lo, end: hi, speaker: name,
+                                     text: line.text.trimmingCharacters(in: .whitespacesAndNewlines), mode: line.mode))
+            }
+        }
         for c in clips {
             guard let i = index[c.shot] else { continue }
             let shot = movie.shots[i]
@@ -220,21 +254,11 @@ public struct MovieTimeline: Sendable, Equatable {
                     subs.append(Subtitle(start: lo, end: hi, speaker: movie.character(line.character)?.name ?? line.character,
                                          text: line.text.trimmingCharacters(in: .whitespacesAndNewlines)))
                 }
+                // Off-screen lines and narration aren't in the clip: their spoken takes go over it.
+                addLines(shot, at: i, clip: c) { $0.mode != .onScreen }
                 continue
             }
-            for p in MovieVoices.layout(shot) {
-                guard let line = shot.dialogue.first(where: { $0.id == p.line }),
-                      let take = line.takes.first(where: { $0.id == line.selectedTake }) else { continue }
-                let t0 = c.start - c.trimStart + p.start
-                let lo = max(t0, c.start), hi = min(t0 + p.seconds, c.end)
-                guard hi - lo >= 0.05 else { continue }
-                let name = movie.character(line.character)?.name ?? line.character
-                out.append(Sound(id: "line-\(line.id.uuidString)", kind: .dialogue, file: take.file, label: name, start: lo,
-                                 offset: lo - t0, duration: hi - lo, gain: movie.mix.dialogue * Self.linear(take.gainDB),
-                                 fadeIn: 0.02, fadeOut: 0.05, track: 0))
-                subs.append(Subtitle(start: lo, end: hi, speaker: name,
-                                     text: line.text.trimmingCharacters(in: .whitespacesAndNewlines)))
-            }
+            addLines(shot, at: i, clip: c) { _ in true }
             if let take = shot.sounds.first(where: { $0.id == shot.selectedSound }), let len = length(take) {
                 let d = min(c.duration, len - c.trimStart)
                 if d > 0.05 {
