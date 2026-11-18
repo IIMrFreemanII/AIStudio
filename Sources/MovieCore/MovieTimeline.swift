@@ -100,7 +100,29 @@ public struct MovieTimeline: Sendable, Equatable {
 
         /// As shown: an off-screen line or narration marked ("(V.O.) …").
         public var shown: String { mode == .onScreen ? text : "(\(mode.mark)) \(text)" }
+
+        /// With who says it, as the .srt has it: "MARA: …", "NARRATOR (V.O.): …".
+        public var labelled: String {
+            let name = speaker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !name.isEmpty else { return shown }
+            return mode == .onScreen ? "\(name): \(text)" : "\(name) (\(mode.mark)): \(text)"
+        }
     }
+
+    /// A chapter of the exported film: one per sequence.
+    public struct Chapter: Sendable, Equatable {
+        public var start: Double
+        public var title: String
+
+        public init(start: Double, title: String) {
+            self.start = start
+            self.title = title
+        }
+    }
+
+    /// The film's chapters, in order, the first from 0: one for each sequence that has a clip ("Act 1 · …"). None
+    /// for a film of one sequence (or one sequence exported on its own).
+    public var chapters: [Chapter] = []
 
     public struct VolumePoint: Sendable, Equatable {
         public var time: Double
@@ -206,10 +228,30 @@ public struct MovieTimeline: Sendable, Equatable {
         self.clips = clips
         self.missing = missing
         duck = movie.mix.duck
+        chapters = Self.chapters(movie: movie, clips: clips)
         buildSound(movie: movie, durations: durations)
     }
 
     private static func linear(_ db: Double?) -> Double { pow(10, (db ?? 0) / 20) }
+
+    private static func chapters(movie: MovieProject, clips: [Clip]) -> [Chapter] {
+        guard movie.sequences.count > 1 else { return [] }
+        let index = movie.shotIndex
+        let sequenceOf = movie.sequenceByScene
+        let first = movie.sequences[0].id
+        var starts: [String: Double] = [:]
+        for c in clips {
+            guard let i = index[c.shot] else { continue }
+            let q = sequenceOf[movie.shots[i].scene] ?? first
+            starts[q] = min(starts[q] ?? .infinity, c.start)
+        }
+        var out = movie.sequences.enumerated().compactMap { i, q in
+            starts[q.id].map { Chapter(start: $0, title: q.chapterTitle(number: i + 1)) }
+        }.sorted { $0.start < $1.start }
+        guard out.count > 1 else { return [] }
+        out[0].start = 0
+        return out
+    }
 
     private mutating func buildSound(movie: MovieProject, durations: [String: Double]) {
         func length(_ take: Take) -> Double? { take.seconds ?? durations[take.file] }

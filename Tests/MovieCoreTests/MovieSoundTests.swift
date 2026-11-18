@@ -250,11 +250,11 @@ private func soundMovie() -> MovieProject {
     #expect(MovieSubtitles.srt(subs) == """
     1
     00:00:01,250 --> 00:00:02,500
-    Hello.
+    A: Hello.
 
     2
     01:02:03,500 --> 01:02:05,000
-    Later.
+    B: Later.
 
 
     """)

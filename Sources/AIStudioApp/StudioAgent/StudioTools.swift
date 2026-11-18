@@ -185,12 +185,17 @@ final class StudioSession {
     /// Shows the sequence `a` names (its number or id), when it names one.
     func selectSequence(_ doc: MovieDocument, _ a: ToolArgs) throws {
         guard let raw = a.string("sequence")?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return }
+        doc.show(sequence: try namedSequence(doc, raw))
+    }
+
+    /// The sequence `raw` names (its number, id or title); nil for the whole film.
+    func namedSequence(_ doc: MovieDocument, _ raw: String) throws -> String? {
         let qs = doc.movie.sequences
-        if ["all", "film", "whole film"].contains(raw.lowercased()) { doc.show(sequence: nil); return }
+        if ["all", "film", "whole film"].contains(raw.lowercased()) { return nil }
         let q = Int(raw).flatMap { qs.indices.contains($0 - 1) ? qs[$0 - 1] : nil }
             ?? qs.first { $0.id == raw.lowercased() || $0.title.lowercased() == raw.lowercased() }
         guard let q else { throw ToolError("no sequence \(raw): this film has \(qs.count) (1…\(qs.count))") }
-        doc.show(sequence: q.id)
+        return q.id
     }
 
     func movieOverview(_ d: MovieDocument) -> String {
@@ -788,11 +793,19 @@ final class StudioSession {
         guard !doc.isBusy else { throw ToolError("the movie is busy: wait for it to finish") }
         let folder = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies")
-        let name = a.string("name").flatMap { $0.isEmpty ? nil : $0 } ?? doc.movie.title
+        let raw = a.string("sequence")?.trimmingCharacters(in: .whitespaces) ?? ""
+        let sequence = raw.isEmpty ? nil : try namedSequence(doc, raw)
+        if let sequence, !doc.movie.shots(inSequence: sequence).contains(where: { $0.selectedVideoTake != nil }) {
+            throw ToolError("that sequence has no clips yet")
+        }
+        let name = a.string("name").flatMap { $0.isEmpty ? nil : $0 }
+            ?? String(app.exportName(doc, sequence: sequence).dropLast(4))
         let url = StudioFiles.unused(name, ext: "mp4", in: folder) { FileManager.default.fileExists(atPath: $0.path) }
-        let made = try await studio.act(StudioStep(doing: "Exporting the film", done: "Exported the film", target: "movie-export"),
+        let what = sequence == nil ? "the film" : "the sequence"
+        let made = try await studio.act(StudioStep(doing: "Exporting \(what)", done: "Exported \(what)",
+                                                   target: sequence == nil ? "movie-export" : "movie-export-sequence"),
                                         at: .movie(doc.id, .edit), callID: id) {
-            await app.exportMovie(doc, to: url)
+            await app.exportMovie(doc, to: url, sequence: sequence)
         }
         guard let made else { return "The export failed: \(doc.error ?? "unknown error")" }
         return "Exported to \(made.path) (a new file; nothing was overwritten)."

@@ -117,7 +117,8 @@ private func conversation(_ a: [DialogueLine], _ b: [DialogueLine], _ c: [Dialog
     vo.characters = [MovieCharacter(id: "narrator", name: "Narrator", look: "", voice: "", isNarrator: true)]
     let t = MovieTimeline(movie: vo, durations: [:])
     #expect(t.subtitles.first?.shown == "(V.O.) That night, she was alone.")
-    #expect(MovieSubtitles.srt(t.subtitles).contains("(V.O.) That night"))
+    #expect(MovieSubtitles.srt(t.subtitles).contains("NARRATOR (V.O.): That\nnight, she was alone."), "two even rows")
+    #expect(MovieSubtitles.srt(t.subtitles, speakers: false).contains("(V.O.) That night"))
 }
 
 @Test func h3SpeaksOnScreenLinesInTheClipAndTheRestOverIt() {
