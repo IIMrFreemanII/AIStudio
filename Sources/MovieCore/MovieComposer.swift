@@ -49,6 +49,8 @@ public enum MovieComposer {
         /// The sound's volumes (nil when the film has no sound).
         public let audioMix: AVMutableAudioMix?
         public let subtitles: [MovieTimeline.Subtitle]
+        /// One per sequence (none for a film of one): written into the MP4 after the export.
+        public var chapters: [MovieTimeline.Chapter] = []
         public var duration: Double { asset.duration.seconds }
     }
 
@@ -174,7 +176,8 @@ public enum MovieComposer {
             mix = AVMutableAudioMix()
             mix!.inputParameters = order.compactMap { params[$0] }
         }
-        return Composition(asset: comp, video: video, audioMix: mix, subtitles: timeline.subtitles)
+        return Composition(asset: comp, video: video, audioMix: mix, subtitles: timeline.subtitles,
+                           chapters: timeline.chapters)
     }
 
     /// Scales a source to cover the render size and centres it (a clip of another shape is cropped, not stretched).
@@ -190,7 +193,7 @@ public enum MovieComposer {
                                              y: (size.height - shown.height * s) / 2))
     }
 
-    /// Writes the film as an MP4. `progress` hears 0…1 while it runs.
+    /// Writes the film as an MP4, with its chapters when it has some. `progress` hears 0…1 while it runs.
     public static func export(_ composition: Composition, to url: URL, codec: Codec = .h264,
                               burnSubtitles: Bool = false, progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws {
         let preset = codec == .hevc ? AVAssetExportPresetHEVCHighestQuality : AVAssetExportPresetHighestQuality
@@ -205,9 +208,11 @@ public enum MovieComposer {
         session.shouldOptimizeForNetworkUse = true
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: url)
+        // Adding the chapters copies the file once more: the last few percent.
+        let share = composition.chapters.isEmpty ? 1 : 0.95
         let watcher = Task {
             for await state in session.states(updateInterval: 0.25) {
-                if case .exporting(let p) = state { progress(p.fractionCompleted) }
+                if case .exporting(let p) = state { progress(p.fractionCompleted * share) }
             }
         }
         defer { watcher.cancel() }
@@ -215,6 +220,11 @@ public enum MovieComposer {
             try await session.export(to: url, as: .mp4)
         } catch {
             throw ComposerError.exportFailed(error.localizedDescription)
+        }
+        watcher.cancel()
+        if !composition.chapters.isEmpty {
+            progress(share)
+            try await MovieChapters.write(composition.chapters, into: url)
         }
         progress(1)
     }
@@ -231,10 +241,13 @@ public enum MovieComposer {
         let videoLayer = CALayer()
         videoLayer.frame = parent.frame
         parent.addSublayer(videoLayer)
-        let fontSize = size.height * 0.055
-        for s in subtitles {
+        // As big as a 16:9 picture's, smaller on a narrow one, so a row still holds a good part of a sentence.
+        let fontSize = min(size.height * 0.055, size.width * 0.05)
+        for card in subtitles.flatMap({ s in
+            MovieSubtitles.cards(s.shown, start: s.start, end: s.end, rowLength: burnedRowLength(size, fontSize: fontSize))
+        }) {
             let layer = CATextLayer()
-            layer.string = s.shown
+            layer.string = card.text
             layer.fontSize = fontSize
             layer.foregroundColor = CGColor(gray: 1, alpha: 1)
             layer.alignmentMode = .center
@@ -245,14 +258,15 @@ public enum MovieComposer {
             layer.shadowRadius = 3
             layer.shadowOffset = .zero
             let width = size.width * 0.9
-            let height = fontSize * 3.4
+            // One or two rows, sitting on the same line near the bottom.
+            let height = fontSize * (1.25 * CGFloat(card.rows.count) + 0.3)
             layer.frame = CGRect(x: (size.width - width) / 2, y: size.height * 0.06, width: width, height: height)
             layer.opacity = 0
             let show = CABasicAnimation(keyPath: "opacity")
             show.fromValue = 1
             show.toValue = 1
-            show.beginTime = AVCoreAnimationBeginTimeAtZero + s.start
-            show.duration = max(0.01, s.end - s.start)
+            show.beginTime = AVCoreAnimationBeginTimeAtZero + card.start
+            show.duration = max(0.01, card.end - card.start)
             show.isRemovedOnCompletion = false
             show.fillMode = .removed
             layer.add(show, forKey: "show")
@@ -262,9 +276,15 @@ public enum MovieComposer {
         return copy
     }
 
-    public static func writeSRT(_ subtitles: [MovieTimeline.Subtitle], to url: URL) throws {
+    /// How many characters fit in a burned-in row (the system font's letters average about half their size).
+    static func burnedRowLength(_ size: CGSize, fontSize: CGFloat) -> Int {
+        max(16, Int(size.width * 0.9 / (fontSize * 0.55)))
+    }
+
+    /// `speakers`: each line starts with who says it ("MARA: …").
+    public static func writeSRT(_ subtitles: [MovieTimeline.Subtitle], to url: URL, speakers: Bool = true) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try MovieSubtitles.srt(subtitles).write(to: url, atomically: true, encoding: .utf8)
+        try MovieSubtitles.srt(subtitles, speakers: speakers).write(to: url, atomically: true, encoding: .utf8)
     }
 
     // MARK: frames

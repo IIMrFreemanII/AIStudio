@@ -444,6 +444,12 @@ public struct MovieSequence: Codable, Identifiable, Sendable, Equatable, Hashabl
 
     /// What movies made before sequences have: one holding every scene.
     public static let wholeFilm = MovieSequence(id: "q1", title: "Whole film")
+
+    /// Its chapter in the exported film: "Act 2 · The Storm" (`number` names an untitled one).
+    public func chapterTitle(number: Int) -> String {
+        let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "Act \(act) · " + (name.isEmpty ? "Sequence \(number)" : name)
+    }
 }
 
 public struct MovieScene: Codable, Identifiable, Sendable, Equatable {
@@ -697,14 +703,29 @@ public struct MovieMix: Codable, Sendable, Equatable {
     public var duck: Double
     /// Burn the subtitles into the exported picture (an SRT is written beside the MP4 either way).
     public var burnSubtitles: Bool
+    /// Name the speaker in the .srt ("MARA: …").
+    public var speakerNames: Bool
 
     public init(dialogue: Double = 1, effects: Double = 0.5, music: Double = 0.35, duck: Double = 0.3,
-                burnSubtitles: Bool = false) {
+                burnSubtitles: Bool = false, speakerNames: Bool = true) {
         self.dialogue = dialogue
         self.effects = effects
         self.music = music
         self.duck = duck
         self.burnSubtitles = burnSubtitles
+        self.speakerNames = speakerNames
+    }
+
+    // Mixes saved before a setting existed get its default.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = MovieMix()
+        dialogue = try c.decodeIfPresent(Double.self, forKey: .dialogue) ?? d.dialogue
+        effects = try c.decodeIfPresent(Double.self, forKey: .effects) ?? d.effects
+        music = try c.decodeIfPresent(Double.self, forKey: .music) ?? d.music
+        duck = try c.decodeIfPresent(Double.self, forKey: .duck) ?? d.duck
+        burnSubtitles = try c.decodeIfPresent(Bool.self, forKey: .burnSubtitles) ?? d.burnSubtitles
+        speakerNames = try c.decodeIfPresent(Bool.self, forKey: .speakerNames) ?? d.speakerNames
     }
 }
 
@@ -892,6 +913,13 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         let first = sequences.first?.id ?? MovieSequence.wholeFilm.id
         for s in scenes { out[s.id] = known.contains(s.sequence) ? s.sequence : first }
         return out
+    }
+
+    /// The film cut down to one sequence's shots, to export it on its own (its scenes' music comes with them).
+    public func excerpt(sequence: String) -> MovieProject {
+        var m = self
+        m.shots = shots(inSequence: sequence)
+        return m
     }
 
     /// The shots of one sequence (nil: the whole film), in film order.

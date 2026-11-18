@@ -286,14 +286,25 @@ struct MovieEditPage: View {
             MGSegmentedPicker(selection: $codec, options: MovieComposer.Codec.allCases.map { ($0, $0.title) })
                 .frame(width: 140)
                 .mgHelp("H.264 plays everywhere; HEVC is smaller")
-            Toggle("Burn In Subtitles", isOn: $doc.movie.mix.burnSubtitles)
-                .toggleStyle(.checkbox)
-                .mgHelp("Draws the lines into the exported picture; an .srt file is written beside the MP4 either way")
-                .mgTestAnchor("movie-burn-subtitles")
+            if doc.movie.sequences.count > 1 {
+                MGMenuButton("Export Sequence") {
+                    MGMenuItem.header("One sequence on its own")
+                    for (i, q) in doc.movie.sequences.enumerated() {
+                        MGMenuItem.button(q.chapterTitle(number: i + 1) + "…",
+                                          enabled: !doc.isBusy && doc.movie.shots(inSequence: q.id).contains { $0.selectedVideoTake != nil }) {
+                            model.exportMovieAs(doc, codec: codec, sequence: q.id)
+                        }
+                    }
+                }
+                .disabled(doc.isBusy)
+                .mgHelp("Writes one sequence as its own MP4, to review it before the rest is done")
+                .mgTestAnchor("movie-export-sequence")
+            }
             Button("Export…") { model.exportMovieAs(doc, codec: codec) }
                 .buttonStyle(.mg(.prominent))
                 .disabled(doc.isBusy || (timeline?.clips.isEmpty ?? true))
-                .mgHelp("Writes the film as an MP4 (on this Mac, free)")
+                .mgHelp(doc.movie.sequences.count > 1 ? "Writes the film as an MP4 with a chapter per sequence (on this Mac, free)"
+                        : "Writes the film as an MP4 (on this Mac, free)")
                 .mgTestAnchor("movie-export")
             if let last = doc.lastExport {
                 Button { NSWorkspace.shared.activateFileViewerSelecting([last]) } label: { Image(systemName: "folder") }
@@ -339,6 +350,16 @@ struct MovieEditPage: View {
                             Text("\(timeline.missing.count) shots have no clip").font(.mgFootnote).foregroundStyle(MG.warning)
                         }
                         Spacer()
+                        // How the export writes the subtitles.
+                        Toggle("Burn In Subtitles", isOn: $doc.movie.mix.burnSubtitles)
+                            .toggleStyle(.checkbox).font(.mgFootnote).fixedSize()
+                            .mgHelp("Draws the lines into the exported picture, two rows at most; an .srt file is written beside the MP4 either way")
+                            .mgTestAnchor("movie-burn-subtitles")
+                        Toggle("Speaker Names in .srt", isOn: $doc.movie.mix.speakerNames)
+                            .toggleStyle(.checkbox).font(.mgFootnote).fixedSize()
+                            .mgHelp("Starts each line in the .srt with who says it (MARA: …)")
+                            .mgTestAnchor("movie-speaker-names")
+                            .padding(.trailing, 12)
                         Image(systemName: "minus.magnifyingglass").foregroundStyle(MG.tertiaryLabel)
                         MGSlider(value: $scale, in: 30...240).frame(width: 140)
                             .mgHelp("Timeline zoom")

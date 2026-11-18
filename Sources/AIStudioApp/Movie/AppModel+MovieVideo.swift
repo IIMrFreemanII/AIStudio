@@ -243,12 +243,14 @@ extension AppModel {
     // MARK: edit
 
     /// The edit's timeline, with each chosen clip's real length.
-    func movieTimeline(_ doc: MovieDocument) async -> MovieTimeline {
+    /// The edit's timeline: the whole film, or one sequence (`sequence`) on its own.
+    func movieTimeline(_ doc: MovieDocument, sequence: String? = nil) async -> MovieTimeline {
         let folder = movieStore.folder(doc.id)
         await findClipVoices(doc, in: folder)
-        let files = doc.movie.shots.compactMap(\.selectedVideoFile)
+        let movie = sequence.map { doc.movie.excerpt(sequence: $0) } ?? doc.movie
+        let files = movie.shots.compactMap(\.selectedVideoFile)
         let durations = await MovieComposer.durations(of: files, in: folder)
-        return MovieTimeline(movie: doc.movie, durations: durations)
+        return MovieTimeline(movie: movie, durations: durations)
     }
 
     /// Finds where the chosen H3 clips of talking shots speak, for takes made before that was recorded, and saves.
@@ -266,18 +268,29 @@ extension AppModel {
         if found { saveMovie(doc) }
     }
 
-    /// Edit › Export: the film as an MP4 at `url` (nil: `renders/<title>.mp4` in the movie's folder). Runs as the
-    /// movie's job; returns where it wrote.
+    /// The export's file name: "<title>.mp4", or "<title> – <sequence>.mp4" for one sequence.
+    func exportName(_ doc: MovieDocument, sequence: String? = nil) -> String {
+        var name = doc.movie.title
+        if let sequence, let i = doc.movie.sequences.firstIndex(where: { $0.id == sequence }) {
+            let q = doc.movie.sequences[i]
+            name += " – " + (q.title.trimmingCharacters(in: .whitespaces).isEmpty ? "Sequence \(i + 1)" : q.title)
+        }
+        return name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-") + ".mp4"
+    }
+
+    /// Edit › Export: the film (or one sequence of it, `sequence`) as an MP4 at `url` (nil: `renders/<name>.mp4` in
+    /// the movie's folder), with a chapter per sequence and an .srt beside it. Runs as the movie's job; returns where
+    /// it wrote.
     @discardableResult
-    func exportMovie(_ doc: MovieDocument, to url: URL? = nil, codec: MovieComposer.Codec = .h264) async -> URL? {
+    func exportMovie(_ doc: MovieDocument, to url: URL? = nil, codec: MovieComposer.Codec = .h264,
+                     sequence: String? = nil) async -> URL? {
         guard doc.job == nil else { return nil }
         doc.error = nil
-        let name = doc.movie.title.replacingOccurrences(of: "/", with: "-")
-        let url = url ?? movieStore.folder(doc.id, .renders).appendingPathComponent(name + ".mp4")
+        let url = url ?? movieStore.folder(doc.id, .renders).appendingPathComponent(exportName(doc, sequence: sequence))
         doc.job = MovieJob(title: "Exporting \(url.lastPathComponent)", detail: codec.title, progress: 0)
         defer { doc.job = nil }
         do {
-            let timeline = await movieTimeline(doc)
+            let timeline = await movieTimeline(doc, sequence: sequence)
             let composition = try await MovieComposer.build(timeline, folder: movieStore.folder(doc.id),
                                                             size: doc.movie.videoSize)
             try await MovieComposer.export(composition, to: url, codec: codec,
@@ -287,7 +300,7 @@ extension AppModel {
             // The lines as subtitles beside the film (players pick up a same-named .srt).
             let srt = url.deletingPathExtension().appendingPathExtension("srt")
             if timeline.subtitles.isEmpty { try? FileManager.default.removeItem(at: srt) }
-            else { try MovieComposer.writeSRT(timeline.subtitles, to: srt) }
+            else { try MovieComposer.writeSRT(timeline.subtitles, to: srt, speakers: doc.movie.mix.speakerNames) }
             doc.lastExport = url
             return url
         } catch {
@@ -296,15 +309,15 @@ extension AppModel {
         }
     }
 
-    /// Asks where to save, then exports.
-    func exportMovieAs(_ doc: MovieDocument, codec: MovieComposer.Codec) {
+    /// Asks where to save, then exports the film (or one sequence).
+    func exportMovieAs(_ doc: MovieDocument, codec: MovieComposer.Codec, sequence: String? = nil) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.mpeg4Movie]
-        panel.nameFieldStringValue = doc.movie.title.replacingOccurrences(of: "/", with: "-") + ".mp4"
+        panel.nameFieldStringValue = exportName(doc, sequence: sequence)
         panel.directoryURL = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { @MainActor in
-            if let out = await exportMovie(doc, to: url, codec: codec) {
+            if let out = await exportMovie(doc, to: url, codec: codec, sequence: sequence) {
                 NSWorkspace.shared.activateFileViewerSelecting([out])
             }
         }

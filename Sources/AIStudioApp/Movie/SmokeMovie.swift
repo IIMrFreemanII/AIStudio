@@ -519,6 +519,10 @@ extension SmokeTest {
             check(!audio.isEmpty, "with sound")
             let srt = (try? String(contentsOf: film.deletingPathExtension().appendingPathExtension("srt"), encoding: .utf8)) ?? ""
             check(srt.hasPrefix("1\n00:00:") && srt.contains("Grandpa, the light!"), "and an .srt beside it")
+            check(srt.contains(": Grandpa, the light!"), "that names who speaks")
+            let chapters = (try? await MovieChapters.read(film)) ?? []
+            check(chapters.map(\.title) == trimmed.chapters.map(\.title) && chapters.count == doc.movie.sequences.count
+                  && chapters.count > 1, "and a chapter per sequence: \(chapters.map(\.title))")
         }
         doc.movie.mix.burnSubtitles = true
         let burned = await model.exportMovie(doc, to: store.folder(doc.id, .renders).appendingPathComponent("burned.mp4"))
@@ -626,6 +630,30 @@ extension SmokeTest {
             doc.job = nil
             for s in [MovieStage.keyframes, .voices, .video, .sound] { doc.approve(s) }
             check(doc.movie.editIsApprovable && doc.movie.isUnlocked(.edit), "approved again, the edit can be")
+            // Exported, the film has a chapter per sequence; one sequence exports on its own.
+            let renders = store.folder(doc.id, .renders)
+            if let film = await model.exportMovie(doc, to: renders.appendingPathComponent("chapters.mp4")) {
+                let chapters = (try? await MovieChapters.read(film)) ?? []
+                check(chapters.map(\.title) == ["Act 1 · Opening", "Act 3 · Ending"] && chapters.first?.start == 0,
+                      "the film has a chapter per sequence: \(chapters)")
+                let audio = (try? await AVURLAsset(url: film).loadTracks(withMediaType: .audio)) ?? []
+                check(!audio.isEmpty, "and keeps its sound")
+            } else {
+                check(false, "the film in sequences exports: \(doc.error ?? "")")
+            }
+            check(model.exportName(doc, sequence: "q2") == "\(doc.movie.title) – Ending.mp4", "a sequence's file is named after it")
+            let alone = await model.movieTimeline(doc, sequence: "q2")
+            if let ending = await model.exportMovie(doc, sequence: "q2") {
+                let d = (try? await AVURLAsset(url: ending).load(.duration).seconds) ?? 0
+                check(ending.lastPathComponent == model.exportName(doc, sequence: "q2") && abs(d - alone.duration) < 0.1
+                      && alone.clips.count == q2.count,
+                      "sequence 2 exports on its own: \(ending.lastPathComponent), \(d) s of \(alone.duration)")
+                check((try? await MovieChapters.read(ending))?.isEmpty == true, "without chapters")
+            } else {
+                check(false, "sequence 2 exports: \(doc.error ?? "")")
+            }
+            doc.stage = .edit
+            await snapshots("edit")
             doc.movie.budget = 0.5
             doc.stage = .idea
             await snapshots("budget")
