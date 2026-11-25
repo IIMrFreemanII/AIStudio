@@ -207,7 +207,7 @@ extension AppModel {
         }
         guard !text.isEmpty || !doc.pending.isEmpty, !doc.isStreaming, !doc.compacting, doc.preparingVideos == 0 else { return }
         doc.draft = ""
-        if doc.transcript.turns.isEmpty {
+        if doc.transcript.turns.isEmpty, !doc.isCharacter {
             doc.transcript.title = ChatTranscript.title(from: text.isEmpty ? doc.pending.first?.name ?? "" : text)
         }
         let files = doc.pending.compactMap { if case .file(let f) = $0 { return f }; return nil }
@@ -338,6 +338,7 @@ extension AppModel {
             return
         }
         lastChatModel = key
+        if doc.isCharacter { characterReply(doc, key: key, client: client, add: add); return }
         if let root = doc.projectURL {
             let skills = loadSkills(root: root)
             let inline = llm.model(key)?.reasoningParser == nil
@@ -527,9 +528,14 @@ extension AppModel {
         // Models without a tool parser can't take tools (vLLM refuses them): no chat tools, nothing said about them.
         let callsTools = llm.model(key)?.toolParser != nil
         let plain = setup.tools.isEmpty
-        var config = AgentConfig(model: key.modelID, tools: setup.tools + (callsTools ? ChatTools.all : []),
+        var config = AgentConfig(model: key.modelID, tools: setup.tools + (callsTools && !setup.character ? ChatTools.all : []),
                                  mode: doc.mode, rules: doc.rules)
         config.reasoningEffort = doc.transcript.reasoningEffort
+        if setup.character {
+            config.temperature = setup.temperature
+            config.topP = setup.topP
+            config.summarySystem = setup.summarySystem
+        }
         config.inlineThinking = llm.model(key)?.reasoningParser == nil
         config.vision = vision
         let limit = contextLimit(for: key)
@@ -617,6 +623,7 @@ extension AppModel {
         // The first assistant message takes the reply's place (a retry's sibling); the rest follow it.
         var start = ChatTurn(role: .assistant, text: "", model: key.modelID)
         start.effort = doc.transcript.reasoningEffort
+        if setup.character { start.speaker = setup.speaker }
         add(start)
         doc.liveTurnID = start.id
         let st = AgentRunState(turn: start.id, inline: config.inlineThinking)
@@ -625,7 +632,7 @@ extension AppModel {
             @MainActor func publish() { st.publish(into: doc) }
             // One system message: the chat's own prompt, the agent's, and the chat features.
             let own = await setup.system()
-            let system = plain ? ChatPrompt.system(user: sent.systemPrompt, tools: callsTools)
+            let system = setup.character ? own : plain ? ChatPrompt.system(user: sent.systemPrompt, tools: callsTools)
                 : [sent.systemPrompt ?? "", own, ChatPrompt.section(tools: callsTools)]
                     .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: "\n\n")
             doc.contextOverhead = TokenEstimate.text(system) + toolTokens
@@ -636,7 +643,8 @@ extension AppModel {
                 if let limit, history.count >= 2, Double(Compactor.estimate(history)) > 0.75 * Double(limit),
                    let lastUser = sent.turns.last(where: { $0.role == .user && $0.summary != true }),
                    let summary = try? await Compactor.summarize(client: client.chat, model: key.modelID,
-                                                                messages: [.system(system)] + history.dropLast(), limit: limit) {
+                                                                messages: [.system(system)] + history.dropLast(), limit: limit,
+                                                                system: setup.summarySystem ?? Compactor.summarySystem) {
                     var t = ChatTurn(role: .user, text: summary + "\n\n## The latest message\n" + lastUser.textForModel)
                     t.summary = true
                     // The summary goes between the last message and the reply being written.
@@ -690,6 +698,7 @@ extension AppModel {
                                 if !st.first {
                                     var t = ChatTurn(role: .assistant, text: "", model: key.modelID)
                                     t.effort = doc.transcript.reasoningEffort
+                                    if setup.character { t.speaker = setup.speaker }
                                     doc.transcript.append(t)
                                     st.turn = t.id
                                     doc.liveTurnID = t.id
@@ -893,6 +902,7 @@ extension AppModel {
 
     func restoreOpenChats() {
         reloadChats()
+        reloadCharacters()
         guard persistSettings, !Self.isAutomatedRun else { return }
         for s in UserDefaults.standard.stringArray(forKey: "openChats") ?? [] {
             if let id = UUID(uuidString: s), var t = chatStore.load(id) {
@@ -921,6 +931,13 @@ struct AgentSetup {
     var uiTools = false
     /// Tool results' images are saved with the chat (their step rows show them).
     var saveImages = false
+    /// A character chat: no chat tools, `system` is the whole prompt, replies are written by `speaker`.
+    var character = false
+    var speaker: UUID?
+    var temperature: Double?
+    var topP: Double?
+    /// The compaction prompt (nil: the coding one).
+    var summarySystem: String?
 
     init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
         self.tools = tools

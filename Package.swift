@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "LLMClient", targets: ["LLMClient"]),
         .library(name: "Agent", targets: ["Agent"]),
         .library(name: "MovieCore", targets: ["MovieCore"]),
+        .library(name: "CharacterCore", targets: ["CharacterCore"]),
         .library(name: "AIStudioServer", targets: ["AIStudioServer"]),
         .executable(name: "ltx-probe-text", targets: ["ltx-probe-text"]),
         .executable(name: "ltx-probe-dit", targets: ["ltx-probe-dit"]),
@@ -341,6 +342,11 @@ let package = Package(
             name: "MovieCore",
             dependencies: ["GraphRuntime", "LLMClient", "Agent"]
         ),
+        // Character chat: companion characters, memory, prompts, media tags and storage (no UI).
+        .target(
+            name: "CharacterCore",
+            dependencies: ["MovieCore", "LLMClient", "Agent"]
+        ),
         // Drives other Mac apps for the coding agent's UI testing: accessibility, CGEvent, ScreenCaptureKit, AVFoundation.
         .target(
             name: "UIControl",
@@ -424,6 +430,7 @@ let package = Package(
                 "LLMClient",
                 "Agent",
                 "MovieCore",
+                "CharacterCore",
                 "UIControl",
                 "CodeEditing",
                 .product(name: "MLX", package: "mlx-swift"),
@@ -489,6 +496,10 @@ let package = Package(
         .testTarget(
             name: "MovieCoreTests",
             dependencies: ["MovieCore", "GraphRuntime", "LLMClient", "Agent"]
+        ),
+        .testTarget(
+            name: "CharacterCoreTests",
+            dependencies: ["CharacterCore", "LLMClient", "Agent"]
         ),
         .testTarget(
             name: "UIControlTests",

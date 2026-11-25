@@ -138,8 +138,9 @@ struct ChatHeader: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
                     modelMenu
-                    if doc.isCoding { Rectangle().fill(MG.separator).frame(width: 1, height: 16) }
+                    if doc.isCoding || doc.isCharacter { Rectangle().fill(MG.separator).frame(width: 1, height: 16) }
                     CodingHeaderItems(doc: doc)
+                    if doc.isCharacter { CharacterHeaderItems(doc: doc) }
                     Spacer(minLength: 8)
                     cost
                 }
@@ -158,6 +159,7 @@ struct ChatHeader: View {
             }
             HStack(spacing: 8) {
                 CodingHeaderItems(doc: doc)
+                if doc.isCharacter { CharacterHeaderItems(doc: doc) }
                 Spacer(minLength: 4)
                 cost
             }
@@ -403,7 +405,8 @@ struct ChatTranscriptView: View {
                     let folding = doc.isStudio ? nil : RunFolding(open: doc.openRuns, results: results, streaming: doc.isStreaming,
                                                                   asking: doc.permission?.call.id)
                     ForEach(TranscriptRow.rows(shown, live: doc.liveTurnID, files: doc.isCoding ? doc.fileIndex : nil,
-                                               bare: runs.bare, folding: folding)) { row in
+                                               bare: runs.bare, folding: folding,
+                                               display: doc.isCharacter ? { CharacterDisplay.markdown($0.text) } : nil)) { row in
                         ChatTurnView(doc: doc, turn: row.turn, results: results, part: row.part,
                                      run: runs.steps[row.turn.id], latest: runs.latest.contains(row.turn.id))
                             .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)
@@ -618,7 +621,8 @@ struct TranscriptRow: Identifiable {
     /// `bare`: replies with nothing under them (mid-run, no tool calls, no error, no other versions): no tail row.
     /// `folding`: runs with tool calls fold their work into one row (see `RunFolding`); nil: every piece is a row.
     @MainActor static func rows(_ turns: [ChatTurn], live: UUID?, files: ProjectFileIndex? = nil,
-                                bare: Set<UUID> = [], folding: RunFolding? = nil) -> [TranscriptRow] {
+                                bare: Set<UUID> = [], folding: RunFolding? = nil,
+                                display: ((ChatTurn) -> String)? = nil) -> [TranscriptRow] {
         var out: [TranscriptRow] = []
         // A message's first row has the message's ID (what `scrollTo` and highlights use); its other rows a stable
         // name (a position would change while a reply streams in and gains pieces, and the row would lose its state).
@@ -627,13 +631,15 @@ struct TranscriptRow: Identifiable {
             out.append(TranscriptRow(id: id, turn: t, part: p, gap: out.isEmpty ? 0 : gap))
         }
         func segments(_ t: ChatTurn) -> [(TurnPart, String)] {
-            MarkdownSegments.of(t.text, files: files).enumerated().map { (.segment($0.element), "s\($0.offset)") }
+            MarkdownSegments.of(display?(t) ?? t.text, files: files).enumerated().map { (.segment($0.element), "s\($0.offset)") }
         }
         func reply(_ t: ChatTurn) {
             let isLive = live == t.id
             var parts: [(TurnPart, String)] = []
-            if !(t.reasoning ?? "").isEmpty || (t.text.isEmpty && isLive) { parts.append((.head, "head")) }
-            if !t.text.isEmpty { parts += segments(t) }
+            let text = display?(t) ?? t.text
+            // A character's name (and avatar) heads each of its replies.
+            if !(t.reasoning ?? "").isEmpty || (text.isEmpty && isLive) || t.speaker != nil { parts.append((.head, "head")) }
+            if !text.isEmpty { parts += segments(t) }
             if !t.toolCalls.isEmpty || t.error != nil || (!isLive && !bare.contains(t.id)) { parts.append((.tail, "tail")) }
             if parts.isEmpty { parts = [(.head, "head")] }
             for (k, (p, name)) in parts.enumerated() {
@@ -647,7 +653,7 @@ struct TranscriptRow: Identifiable {
             let open = f.open.contains(key)
             let final = run[run.count - 1]
             // The answer shows outside: a finished run's last reply; while live, the last reply while it's only text.
-            let finalOutside = !final.text.isEmpty && (!isLive || final.toolCalls.isEmpty)
+            let finalOutside = !(display?(final) ?? final.text).isEmpty && (!isLive || final.toolCalls.isEmpty)
             let summary = RunSummary.of(run, results: f.results, live: isLive)
             emit(run[0], isLive && !open
                  ? .liveBox(LiveRunInfo(key: key, summary: summary, steps: run, lastTextOutside: finalOutside))
@@ -908,11 +914,19 @@ struct ChatTurnView: View {
     }
 
     @ViewBuilder var assistantHead: some View {
-        if let r = turn.reasoning, !r.isEmpty {
-            ThinkingDisclosure(doc: doc, turnID: turn.id, text: r, seconds: turn.thinkingSeconds, live: live && turn.text.isEmpty)
-        } else if turn.text.isEmpty, turn.toolCalls.isEmpty, live {
-            // (A message that is only tool calls isn't waiting for the model: its cards say what it waits for.)
-            WaitingLine(doc: doc)
+        VStack(alignment: .leading, spacing: 8) {
+            if let who = turn.speaker, let c = model.character(who) {
+                HStack(spacing: 8) {
+                    CharacterAvatar(name: c.name, size: 22)
+                    Text(c.name).font(.mgCallout.weight(.semibold))
+                }
+            }
+            if let r = turn.reasoning, !r.isEmpty {
+                ThinkingDisclosure(doc: doc, turnID: turn.id, text: r, seconds: turn.thinkingSeconds, live: live && turn.text.isEmpty)
+            } else if turn.text.isEmpty, turn.toolCalls.isEmpty, live {
+                // (A message that is only tool calls isn't waiting for the model: its cards say what it waits for.)
+                WaitingLine(doc: doc)
+            }
         }
     }
 

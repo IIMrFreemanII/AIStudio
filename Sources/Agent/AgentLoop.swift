@@ -87,6 +87,11 @@ public struct AgentConfig: Sendable {
     public var reviewer: AutoReviewer?
     /// Blocks in one reply after which the next reviewed call asks the user instead.
     public var maxBlocks = 3
+    /// Sampling for every request (nil: the server's default).
+    public var temperature: Double?
+    public var topP: Double?
+    /// The compaction summary's instructions (nil: `Compactor.summarySystem`, written for coding chats).
+    public var summarySystem: String?
 
     public init(model: String, tools: [any AgentTool] = CodingTools.all, mode: PermissionMode = .ask,
                 rules: AllowRules = AllowRules()) {
@@ -121,6 +126,8 @@ public enum AgentLoop {
             var request = ChatRequest(model: config.model, messages: messages)
             request.tools = config.tools.filter { $0.name != "exit_plan" || ctx.mode == .plan }.map(\.spec)
             request.reasoningEffort = config.reasoningEffort
+            request.temperature = config.temperature
+            request.topP = config.topP
             await events(.assistantStarted)
             var acc = ReplyAccumulator(inlineThinking: config.inlineThinking)
             for try await e in client.stream(request) {
@@ -220,7 +227,8 @@ public enum AgentLoop {
                     if Double(usedAfterTrim) > threshold {
                         do {
                             let summary = try await Compactor.summarize(client: client, model: config.model, messages: messages,
-                                                                        limit: limit)
+                                                                        limit: limit,
+                                                                        system: config.summarySystem ?? Compactor.summarySystem)
                             var fresh: [ChatMessage] = []
                             if let first = messages.first, first.role == .system { fresh.append(first) }
                             fresh.append(.user(ChatTurn.summaryPrefix + summary + "\n\nContinue the task from where it left off."))
@@ -431,10 +439,10 @@ public enum Compactor {
         return out
     }
 
-    static let summarySystem = "You compact a conversation between a user and a coding agent so the agent can continue with less context. Write a summary that keeps everything needed to continue: the user's requests and preferences, decisions made, files read and changed (paths and what changed), commands run and their results, errors, and the exact current state: what was being done and what comes next. Use short headed sections and bullets. Don't add anything new."
+    public static let summarySystem = "You compact a conversation between a user and a coding agent so the agent can continue with less context. Write a summary that keeps everything needed to continue: the user's requests and preferences, decisions made, files read and changed (paths and what changed), commands run and their results, errors, and the exact current state: what was being done and what comes next. Use short headed sections and bullets. Don't add anything new."
 
     public static func summarize(client: any ChatStreaming, model: String, messages: [ChatMessage],
-                                 limit: Int?) async throws -> String {
+                                 limit: Int?, system: String = summarySystem) async throws -> String {
         var parts: [String] = []
         for m in messages {
             switch m.role {
@@ -448,7 +456,7 @@ public enum Compactor {
             }
         }
         let render = clip(parts.joined(separator: "\n\n"), max: max((limit ?? 32_768) * 2, 20_000))
-        let request = ChatRequest(model: model, messages: [.system(summarySystem), .user(render + "\n\nWrite the summary now.")])
+        let request = ChatRequest(model: model, messages: [.system(system), .user(render + "\n\nWrite the summary now.")])
         var acc = ReplyAccumulator(inlineThinking: true)
         for try await e in client.stream(request) { acc.add(e) }
         acc.finish()

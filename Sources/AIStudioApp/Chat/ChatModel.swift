@@ -247,6 +247,8 @@ final class ChatDocument: Identifiable {
     var isAgent: Bool { isCoding || isGraphHelper || isStudio }
     /// The Studio agent (it drives AIStudio from the floating panel).
     var isStudio: Bool { transcript.studioAgent == true }
+    /// A chat with one or more characters (see `characterReply`).
+    var isCharacter: Bool { transcript.characterIDs?.isEmpty == false }
     /// The workflow tab a docked helper belongs to.
     var workflowID: UUID?
     /// The graph before and after the helper's last reply that changed it (for its Undo button).
@@ -351,6 +353,7 @@ struct ChatSummary: Identifiable, Hashable {
     var coding = false
     var helper = false
     var studio = false
+    var character = false
     var status: SessionStatus = .idle
     var pinned = false
     var archived = false
@@ -400,7 +403,7 @@ struct ChatStore {
             else { return nil }
             let progress = t.todoProgress
             return ChatSummary(id: t.id, title: t.title, updated: t.updated, modelID: t.modelID, coding: t.projectPath != nil,
-                               helper: t.graphHelper == true, studio: t.studioAgent == true, status: t.savedStatus, pinned: t.pinned == true,
+                               helper: t.graphHelper == true, studio: t.studioAgent == true, character: t.characterIDs?.isEmpty == false, status: t.savedStatus, pinned: t.pinned == true,
                                archived: t.archived == true, parentID: t.parentID, branch: t.worktree?.branch,
                                projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
                                projectPath: t.worktree?.repo ?? t.projectPath,

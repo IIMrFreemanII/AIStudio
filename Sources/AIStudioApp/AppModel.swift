@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CharacterCore
 import MovieCore
 import GraphRuntime
 import ImageIO
@@ -85,6 +86,11 @@ final class AppModel {
 
     /// Loaded chats: the recent ones (`isRecent`) and hidden sessions that are still working.
     var chats: [ChatDocument] = []
+    /// Saved characters (CharacterCore), newest first.
+    var characters: [CharacterCore.Character] = []
+    var showCharacterGallery = false
+    var editingCharacter: CharacterEdit?
+    var memoryCharacter: CharacterRef?
     /// The chat in front of the graph (nil: the active workflow is in front).
     var activeChatID: UUID? {
         didSet {
