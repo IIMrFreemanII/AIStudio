@@ -44,6 +44,7 @@ extension SmokeTest {
         guard llm.model(key)?.installed == true else { say("FAIL \(modelID) isn't installed on \(conn.name)"); return false }
         // Photos and voice run without asking (the run's setting only, kept in memory); videos are approved below.
         model.characterAutoMediaUSD = 1.0
+        if CommandLine.arguments.contains("--smoke-real-group") { return await realGroup(model, key: key, say: say) }
 
         var c = CharacterTemplates.make(CharacterTemplates.all[0])
         c.initiative = 0  // no media on her own: the test checks she sends only what she's asked for
@@ -191,6 +192,107 @@ extension SmokeTest {
 
         model.deleteChat(doc.id)
         model.deleteCharacter(c.id)
+        say(ok ? "ok all passed" : "FAIL some checks failed")
+        return ok
+    }
+
+    /// `--smoke-characters-real <model> --smoke-real-group`: text only (no portraits or media). A group chat with two
+    /// template characters for three rounds (both answer, one is named, both again), checking each reply is from the
+    /// right character, in character, without a name in front or lines for the other; then a one-to-one chat whose
+    /// last message was 9 hours ago, where she writes first.
+    static func realGroup(_ model: AppModel, key: LLMKey, say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        func make(_ i: Int) -> AppModel.Companion {
+            var c = CharacterTemplates.make(CharacterTemplates.all[i])
+            c.media = []
+            c.initiative = 0
+            return c
+        }
+        let a = make(0), b = make(2)
+        check(model.saveCharacter(a).isEmpty && model.saveCharacter(b).isEmpty, "\(a.name) and \(b.name) are saved")
+        let banned = ["as an ai", "language model", "<|", "[inst]"]
+        func wait(_ doc: ChatDocument, replies: Int, since: Int) async -> [ChatTurn] {
+            let start = Date()
+            func answers() -> [ChatTurn] { doc.transcript.turns.dropFirst(since).filter { $0.role == .assistant } }
+            var phase: String?
+            // Done once nothing streams and the answers are in; or nothing has streamed for 3 s (the next one
+            // starts within a moment of the last ending, so a quiet spell means the round is over).
+            var quietSince: Date?
+            while Date().timeIntervalSince(start) < 1200 {
+                let now = doc.engine.map { "\($0.state) \($0.phase ?? "")" }
+                if let now, now != phase { say("  engine at \(Int(Date().timeIntervalSince(start))) s: \(now)") }
+                phase = now ?? phase
+                if doc.isStreaming {
+                    quietSince = nil
+                } else {
+                    if quietSince == nil { quietSince = Date() }
+                    if answers().count >= replies || answers().contains(where: { $0.error != nil })
+                        || Date().timeIntervalSince(quietSince!) > 3 { break }
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)  // nobody else starts
+            return answers()
+        }
+        func name(_ id: UUID?) -> String { id.flatMap { model.character($0)?.name } ?? "?" }
+
+        let group = model.newCharacterChat([a.id, b.id], model: key)
+        let rounds: [(String, [UUID])] = [
+            ("Hi you two! I'm so glad we could all chat. What are you both up to this evening?", [a.id, b.id]),
+            ("\(b.name), what do you do for work? I don't think you've told me.", [b.id]),
+            ("What should the three of us do together this weekend?", [a.id, b.id]),
+        ]
+        for (text, expected) in rounds {
+            let since = group.transcript.turns.count + 1
+            let start = Date()
+            model.sendText(group, text)
+            let replies = await wait(group, replies: expected.count, since: since)
+            say("you: \(text)")
+            for r in replies {
+                say("\(name(r.speaker)) (\(Int(Date().timeIntervalSince(start)))s): \(r.text)\(r.error.map { " [error: \($0)]" } ?? "")")
+            }
+            check(replies.map(\.speaker) == expected, "the round goes to \(expected.map(name)) (\(replies.map { name($0.speaker) }))")
+            for r in replies {
+                let me = name(r.speaker), other = r.speaker == a.id ? b.name : a.name
+                let lower = r.text.lowercased()
+                check(r.error == nil && !r.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "\(me)'s reply came back")
+                check(!banned.contains { lower.contains($0) }, "\(me) stays in character")
+                check(!lower.hasPrefix(me.lowercased() + ":") && !lower.hasPrefix("**" + me.lowercased()),
+                      "\(me)'s reply has no name in front")
+                check(!r.text.contains("\(other):") && !r.text.contains("\n\(other) "), "\(me) doesn't write \(other)'s lines")
+            }
+        }
+
+        // Writing first, one to one.
+        let solo = model.newCharacterChat([a.id], model: key)
+        let since = solo.transcript.turns.count + 1
+        model.sendText(solo, "I'm off to bed, talk tomorrow? I have a big presentation in the morning.")
+        let night = await wait(solo, replies: 1, since: since)
+        say("\(a.name): \(night.first?.text ?? "none")")
+        if let last = solo.transcript.turns.last {
+            let past = Date().addingTimeInterval(-9 * 3600)
+            solo.transcript.update(last.id) { $0.date = past; $0.ended = past }
+        }
+        let before = solo.transcript.turns.count
+        model.characterCheckInIfDue(solo)
+        let first = await wait(solo, replies: 1, since: before)
+        say("\(a.name) writes first: \(first.first?.text ?? "none")\(first.first?.error.map { " [error: \($0)]" } ?? "")")
+        check(first.count == 1 && first.first?.speaker == a.id && first.first?.error == nil
+              && !(first.first?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "she writes first after 9 hours")
+        check(!(first.first?.text ?? "").contains("note") && !(first.first?.text ?? "").contains("["),
+              "her message doesn't mention the note")
+
+        let spent = model.characterStore.memory(a.id).spentUSD + model.characterStore.memory(b.id).spentUSD
+        say("memory passes spent $\(String(format: "%.3f", spent)); chat replies: see the server's costs")
+        let cost = (group.transcript.costUSD + solo.transcript.costUSD)
+        say("the chats' GPU time cost $\(String(format: "%.3f", cost))")
+        model.deleteChat(group.id)
+        model.deleteChat(solo.id)
+        model.deleteCharacter(a.id)
+        model.deleteCharacter(b.id)
         say(ok ? "ok all passed" : "FAIL some checks failed")
         return ok
     }

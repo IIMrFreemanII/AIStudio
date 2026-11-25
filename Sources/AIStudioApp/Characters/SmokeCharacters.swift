@@ -234,8 +234,15 @@ extension SmokeTest {
                 guard let u = turns.lastIndex(where: { $0.role == .user }) else { return [] }
                 return Array(turns[(u + 1)...].filter { $0.role == .assistant })
             }
-            while Date().timeIntervalSince(start) < 30,
-                  doc.isStreaming || answers().count < replies || answers().contains(where: { $0.ended == nil && $0.error == nil }) {
+            // Done once nothing streams and the answers are in (or nothing has streamed for 2 s).
+            var quietSince: Date?
+            while Date().timeIntervalSince(start) < 30 {
+                if doc.isStreaming {
+                    quietSince = nil
+                } else {
+                    if quietSince == nil { quietSince = Date() }
+                    if answers().count >= replies || Date().timeIntervalSince(quietSince!) > 2 { break }
+                }
                 try? await Task.sleep(nanoseconds: 50_000_000)
             }
             try? await Task.sleep(nanoseconds: 300_000_000)  // nobody else starts
