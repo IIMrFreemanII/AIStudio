@@ -65,9 +65,10 @@ extension SmokeTest {
         func waitForGate(_ doc: MovieDocument) async {
             for _ in 0..<100 where doc.pendingGate == nil && doc.error == nil { try? await Task.sleep(for: .milliseconds(100)) }
         }
-        /// Returns the most renders seen running at once (the job bar's lines).
+        /// Returns the most renders seen running at once (the job bar's lines). The limit is generous: on a busy Mac the
+        /// fake renders take minutes, and a step that starts while the last job still runs finds no gate.
         @discardableResult
-        func waitForJob(_ doc: MovieDocument, seconds: Int = 60) async -> Int {
+        func waitForJob(_ doc: MovieDocument, seconds: Int = 300) async -> Int {
             var most = 0
             for _ in 0..<(seconds * 10) where doc.job != nil {
                 most = max(most, doc.job?.lines.count ?? 0)
@@ -353,7 +354,11 @@ extension SmokeTest {
             }
             doc.pendingGate = nil
             gate.run()
-            await waitForJob(doc)
+            // InfiniteTalk renders each talking shot twice (the clip, then the dub): past the default minute when the
+            // Mac is busy, and the checks below (and H3's gate after) need the job over.
+            let started = Date()
+            await waitForJob(doc, seconds: 600)
+            check(doc.job == nil, "the \(engine.title) job finished (\(Int(Date().timeIntervalSince(started))) s)")
             // Switching to InfiniteTalk (the Shots page's picker) re-fits the shots and warns that these lines are
             // longer than its talking shots can be; any other error is a failure.
             if engine == .infiniteTalk, doc.error?.contains("longer than the shot can be") == true { doc.error = nil }
