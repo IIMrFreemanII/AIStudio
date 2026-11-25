@@ -1,4 +1,5 @@
 import CharacterCore
+import MovieCore
 import SwiftUI
 
 /// New Character: a character made step by step from option chips: who they are, their look, personality and
@@ -12,6 +13,12 @@ struct CharacterCreator: View {
     @State private var step: Int
     @State private var saved = false
     @State private var saveProblems: [String] = []
+    /// The name came from Surprise Me (so the written details may rename them).
+    @State private var rolledName = false
+    @State private var writing: Task<Void, Never>?
+    @State private var writingPhase = ""
+    @State private var writeNote: String?
+    @State private var writeProblem: String?
 
     static let steps = ["Basics", "Look", "Personality", "Habits", "Photo", "Voice"]
     private static let genders = ["woman", "man", "non-binary"]
@@ -73,7 +80,10 @@ struct CharacterCreator: View {
         }
         .frame(width: 640, height: 660)
         .onChange(of: c) { saveProblems = [] }
-        .onDisappear { if !saved { model.discardDraft(c.id) } }
+        .onDisappear {
+            writing?.cancel()
+            if !saved { model.discardDraft(c.id) }
+        }
     }
 
     /// The photo step with no photo chosen yet: its button says Skip.
@@ -89,6 +99,27 @@ struct CharacterCreator: View {
                         .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                 }
                 Spacer()
+                Button { surprise() } label: { Label("Surprise Me", systemImage: "dice") }
+                    .buttonStyle(.mg(.bordered)).disabled(writing != nil)
+                    .mgHelp("Pick a random name, age and options on every step (their text is cleared)")
+                Button { writeDetails() } label: { Label("Write Details", systemImage: "sparkles") }
+                    .buttonStyle(.mg(.bordered)).disabled(writing != nil || model.defaultChatModel == nil)
+                    .mgHelp(model.defaultChatModel == nil ? "Install a chat model on your GPU server first"
+                            : "Your chat model writes their story, personality, likes, texting style and first message from the options")
+            }
+            if writing != nil {
+                HStack(spacing: 8) {
+                    MGSpinner().controlSize(.small)
+                    Text("Writing their details… \(writingPhase)").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button("Stop") { writing?.cancel() }
+                        .buttonStyle(.mg(.bordered)).controlSize(.small)
+                        .mgHelp("Stop writing (nothing is changed)")
+                }
+            } else if let note = writeProblem ?? writeNote {
+                Text(note).font(.mgFootnote).foregroundStyle(writeProblem == nil ? MG.secondaryLabel : MG.destructive)
+                    .lineLimit(2)
             }
             HStack(spacing: 6) {
                 ForEach(Self.steps.indices, id: \.self) { i in
@@ -139,6 +170,13 @@ struct CharacterCreator: View {
         case 2:
             MGSection("Personality") {
                 TraitGroupView(group: .personality, c: $c, detailsTitle: "More about them", details: $c.personality)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Their first message").foregroundStyle(MG.label)
+                    MGTextEditor(text: $c.greeting).frame(height: 52)
+                }
+                .padding(.vertical, 4)
+            } footer: {
+                Text("Their first message opens a new chat with them. Leave it empty to start yourself.")
             }
         case 3:
             MGSection("Habits and interests") {
@@ -166,6 +204,37 @@ struct CharacterCreator: View {
             CharacterLookSection(c: $c, title: "Profile photo", thumbSize: 132)
         default:
             CharacterVoiceSection(c: $c)
+        }
+    }
+
+    private func surprise() {
+        c = CharacterSurprise.roll(c)
+        rolledName = true
+        writeProblem = nil
+        writeNote = "A random \(c.gender), \(c.age). Write Details adds their story and first message."
+    }
+
+    private func writeDetails() {
+        guard writing == nil else { return }
+        writeProblem = nil
+        writeNote = nil
+        writingPhase = ""
+        let snapshot = c
+        let rename = rolledName || c.name.trimmingCharacters(in: .whitespaces).isEmpty
+        writing = Task { @MainActor in
+            defer { writing = nil }
+            do {
+                let (details, cost) = try await model.writeCharacterDetails(snapshot, newName: rename) { writingPhase = $0 }
+                guard !Task.isCancelled else { return }
+                c = details.apply(to: c, name: rename)
+                if rename { rolledName = false }
+                writeNote = "Written by your chat model" + (cost > 0 ? " for \(CostEstimate.format(cost))." : ".")
+                    + " Edit anything on the steps."
+            } catch {
+                if !Task.isCancelled, !(error is CancellationError) {
+                    writeProblem = (error as? CustomStringConvertible)?.description ?? error.localizedDescription
+                }
+            }
         }
     }
 

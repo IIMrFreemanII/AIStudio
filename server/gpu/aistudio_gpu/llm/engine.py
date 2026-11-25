@@ -474,6 +474,13 @@ FAKE_CHARACTER_MEMORY = json.dumps({"new_facts": ["The user loves hiking", "The 
                                     "forget": [], "affection_delta": 3, "stage": "flirting", "mood": "happy",
                                     "summary": "They met, talked about hiking, and the user told them about Miso the cat."})
 
+FAKE_CHARACTER_DETAILS = json.dumps({"name": "Juno", "look": "a thin gold ring on her thumb",
+                                     "personality": "Quick to laugh and slow to judge.",
+                                     "backstory": "Grew up by the sea and moved to the city for work. Restores old bikes on weekends.",
+                                     "speaking_style": "short texts with dry jokes",
+                                     "likes": "night swims, vinyl, ramen, crosswords",
+                                     "greeting": "Hey! I was told you're good company. Prove it?"})
+
 
 # Scripts for "run a flow" / "run a slow flow" (the flow tool's JS), see FakeEngine.
 FAKE_FLOW = """export const meta = { name: 'smoke-flow', description: 'Two reviewers, verify each finding, one edit', phases: [{ title: 'Review' }, { title: 'Verify' }, { title: 'Edit' }] }
@@ -542,7 +549,7 @@ class FakeEngine:
     before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
     FAKE_PR; the Movie Studio writers' room with FAKE_MOVIE_BIBLE/OUTLINE/SCENE/CRITIQUE and its shot prompts with
     FAKE_MOVIE_SHOTS. With the ui tools offered, "test the ui" calls ui_apps, then "Done: " and the result.
-    Character chats: "Task: character memory" answers FAKE_CHARACTER_MEMORY; "send a selfie", "send a video", "send a
+    Character chats: "Task: character memory" answers FAKE_CHARACTER_MEMORY, "Task: character details" FAKE_CHARACTER_DETAILS; "send a selfie", "send a video", "send a
     voice message" and "say it on camera" answer with a <photo>, <video>, <voice> or <talk> tag; and "who are you"
     answers "I'm {name}." with the name from the system prompt."""
 
@@ -704,6 +711,8 @@ class FakeEngine:
             words = FAKE_MOVIE_CRITIQUE.split(" ")
         elif last.startswith("Task: character memory"):
             words = FAKE_CHARACTER_MEMORY.split(" ")
+        elif last.startswith("Task: character details"):
+            words = FAKE_CHARACTER_DETAILS.split(" ")
         elif "Break down this scene" in last:
             words = FAKE_MOVIE_SHOTS.split(" ")
         elif "send a selfie" in last.lower():
