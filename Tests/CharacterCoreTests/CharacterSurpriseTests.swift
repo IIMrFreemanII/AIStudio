@@ -73,4 +73,11 @@ private struct Seeded: RandomNumberGenerator {
         #expect(u.hasPrefix("Task: character details\n"))
         #expect(u.contains("auburn hair") && u.contains("suggest a new one") && u.contains("Habits: "))
     }
+
+    @Test func detailsThatTripTheAgeGuardAreProblems() {
+        let c = Character(name: "Mia", age: 27, gender: "woman")
+        #expect(CharacterWriter.problems(CharacterDetails(backstory: "Grew up by the sea."), for: c, newName: false).isEmpty)
+        let bad = CharacterWriter.problems(CharacterDetails(backstory: "She babysits the neighbors' kids."), for: c, newName: false)
+        #expect(bad.count == 1 && bad[0].contains("Backstory") && bad[0].contains("Rewrite"))
+    }
 }

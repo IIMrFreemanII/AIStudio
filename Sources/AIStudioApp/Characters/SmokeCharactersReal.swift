@@ -48,6 +48,7 @@ extension SmokeTest {
         await llm.refresh(conn.id)
         let key = LLMKey(serverID: conn.id, modelID: modelID)
         guard llm.model(key)?.installed == true else { say("FAIL \(modelID) isn't installed on \(conn.name)"); return false }
+        if CommandLine.arguments.contains("--smoke-real-details") { return await realDetails(model, key: key, say: say) }
         // Photos and voice run without asking (the run's setting only, kept in memory); videos are approved below.
         model.characterAutoMediaUSD = 1.0
         if CommandLine.arguments.contains("--smoke-real-group") { return await realGroup(model, key: key, say: say) }
@@ -246,6 +247,44 @@ extension SmokeTest {
               "saved with its profile photo and voice")
         say("spent $\(String(format: "%.3f", model.characterStore.memory(c.id).spentUSD))")
         model.deleteCharacter(c.id)
+        say(ok ? "ok all passed" : "FAIL some checks failed")
+        return ok
+    }
+
+    /// `--smoke-characters-real <model> --smoke-real-details`: no media. Two Surprise Me rolls (a woman and a man),
+    /// each with its details written by the model; prints the picks and what it wrote, and the time and cost.
+    static func realDetails(_ model: AppModel, key: LLMKey, say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        var total = 0.0
+        for gender in ["woman", "man"] {
+            let rolled = CharacterSurprise.roll(AppModel.Companion(name: "", age: 25, gender: gender))
+            say("rolled \(rolled.name), \(rolled.age), \(rolled.gender)")
+            say("  look: \(rolled.fullLook)")
+            say("  personality: \(rolled.fullPersonality) | texting: \(rolled.fullSpeakingStyle)")
+            say("  backstory: \(rolled.fullBackstory) | habits: \(rolled.habits) | likes: \(rolled.fullLikes)")
+            let start = Date()
+            do {
+                let (d, cost) = try await model.writeCharacterDetails(rolled, newName: true, model: key) { say("  model: \($0)") }
+                total += cost
+                let c = d.apply(to: rolled, name: true)
+                say("  took \(Int(Date().timeIntervalSince(start))) s, $\(String(format: "%.3f", cost))")
+                for (label, text) in [("name", c.name), ("look detail", c.look), ("personality", c.personality),
+                                      ("backstory", c.backstory), ("texting", c.speakingStyle), ("likes", c.likes),
+                                      ("first message", c.greeting)] {
+                    say("  \(label): \(text)")
+                }
+                check(![d.personality, d.backstory, d.likes, d.greeting].contains { ($0 ?? "").isEmpty },
+                      "every field is written for the \(gender)")
+                let guardProblems = AgeGuard.problems(c)
+                check(guardProblems.isEmpty, "nothing in it trips the age guard \(guardProblems)")
+            } catch {
+                check(false, "details for the \(gender): \(error)")
+            }
+        }
+        say("spent $\(String(format: "%.3f", total))")
         say(ok ? "ok all passed" : "FAIL some checks failed")
         return ok
     }
