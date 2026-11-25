@@ -166,6 +166,7 @@ private func sample(_ name: String = "Ava", age: Int = 28) -> Character {
         #expect(p.contains("at most 2 more today"))
         let q = CharacterPrompt.system(sample(), memory: CharacterMemory(), scene: nil)
         #expect(!q.contains("<photo>") && !q.contains("Right now"))
+        #expect(q.contains(CharacterPrompt.noMedia) && !p.contains(CharacterPrompt.noMedia))
     }
 }
 

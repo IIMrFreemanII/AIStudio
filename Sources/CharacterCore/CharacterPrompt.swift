@@ -2,6 +2,10 @@ import Foundation
 
 /// Builds the system prompt of a character chat.
 public enum CharacterPrompt {
+    /// With no media kinds on, models otherwise "attach" a photo that never arrives.
+    public static let noMedia = "You can't send photos, videos or voice notes in this chat. If asked for one, say in character "
+        + "that you can't right now; never pretend to send or attach anything."
+
     public static func system(_ c: Character, memory: CharacterMemory, scene: Scenario?, others: [Character] = [],
                               media: [MediaKind] = [], initiativeLeft: Int = 0, now: Date = Date(),
                               calendar: Calendar = .current) -> String {
@@ -55,6 +59,8 @@ public enum CharacterPrompt {
                 ? "You may send one on your own when it fits, at most \(initiativeLeft) more today; otherwise only when asked."
                 : "Send one only when you are asked to."
             sections.append(MediaTags.instructions(media) + "\n" + rule)
+        } else {
+            sections.append(Self.noMedia)
         }
         return sections.joined(separator: "\n\n")
     }
