@@ -13,6 +13,16 @@ private var utc: Calendar {
 }
 
 @Suite struct CharacterMediaTests {
+    @Test func voiceDescriptionSaysWhoSpeaks() {
+        var c = hero()
+        #expect(CharacterMedia.voiceDescription(c) == "A 28-year-old woman's voice")
+        c.traits = CharacterOptions.toggle(c.traits, category: "voicePitch", option: "low")
+        c.voice = "a little raspy"
+        #expect(CharacterMedia.voiceDescription(c) == "A 28-year-old woman's voice: low-pitched, a little raspy")
+        let render = CharacterMedia.voiceSampleRender(c, seed: 1, server: "s")
+        #expect(render.values["description"] == .string("A 28-year-old woman's voice: low-pitched, a little raspy"))
+    }
+
     @Test func askDetection() {
         #expect(MediaAsk.asked(.photo, in: "send me a selfie"))
         #expect(!MediaAsk.asked(.photo, in: "what a lovely picnic"))
