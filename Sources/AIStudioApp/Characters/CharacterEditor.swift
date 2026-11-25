@@ -89,6 +89,20 @@ struct CharacterEditor: View {
                                 .mgHelp("How many photos, videos or voice messages they send unasked each day")
                         }
                     }
+                    MGFormRow("Texts you first") {
+                        MGMenuButton(kind: .bordered) {
+                            for h in CheckIn.choices {
+                                MGMenuItem.button(CheckIn.label(h), checked: c.checkInHours == h) { c.checkInHours = h }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(CheckIn.label(c.checkInHours))
+                                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(MG.secondaryLabel)
+                            }
+                        }
+                        .mgHelp("When you open your chat after this long away, they send a message first (it uses the chat's model)")
+                    }
                     CharacterMediaKindsRow(c: $c)
                 } footer: {
                     Text("Videos and video messages always wait for your OK before they're made.")

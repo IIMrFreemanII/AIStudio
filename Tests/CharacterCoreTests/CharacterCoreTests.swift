@@ -162,7 +162,7 @@ private func sample(_ name: String = "Ava", age: Int = 28) -> Character {
         #expect(p.hasPrefix("You are Ava, a 28-year-old woman."))
         #expect(p.contains("Looks: red hair") && p.contains("- The user has a cat called Miso"))
         #expect(p.contains("Coffee date") && p.contains("It's Tuesday, 10:13 PM."))
-        #expect(p.contains("Also in this chat: Bella.") && p.contains("<photo>") && !p.contains("<voice>"))
+        #expect(p.contains("Also in it: Bella.") && p.contains("<photo>") && !p.contains("<voice>"))
         #expect(p.contains("at most 2 more today"))
         let q = CharacterPrompt.system(sample(), memory: CharacterMemory(), scene: nil)
         #expect(!q.contains("<photo>") && !q.contains("Right now"))

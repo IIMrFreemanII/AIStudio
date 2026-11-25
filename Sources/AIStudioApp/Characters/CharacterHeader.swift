@@ -11,18 +11,26 @@ struct CharacterHeaderItems: View {
         let store = model.characterStore
         let scene = model.scene(of: doc)
         MGMenuButton(kind: .bordered) {
-            if let first = people.first {
+            if people.count == 1, let first = people.first {
                 MGMenuItem.button("Edit Character…", icon: "pencil") {
                     model.editingCharacter = CharacterEdit(character: first, isNew: false)
                 }
                 MGMenuItem.button("Memory…", icon: "brain") { model.memoryCharacter = CharacterRef(id: first.id) }
+            } else if !people.isEmpty {
+                for c in people {
+                    MGMenuItem.header(c.name)
+                    MGMenuItem.button("Edit \(c.name)…", icon: "pencil") {
+                        model.editingCharacter = CharacterEdit(character: c, isNew: false)
+                    }
+                    MGMenuItem.button("\(c.name)'s Memory…", icon: "brain") { model.memoryCharacter = CharacterRef(id: c.id) }
+                }
             } else {
                 MGMenuItem.header("This character was deleted")
             }
         } label: {
             HStack(spacing: 6) {
-                if let first = people.first { CharacterAvatar(name: first.name, size: 18) }
-                Text(people.isEmpty ? "Deleted character" : people.map(\.name).joined(separator: " & ")).lineLimit(1)
+                ForEach(people.prefix(3)) { CharacterAvatar(name: $0.name, size: 18) }
+                Text(people.isEmpty ? "Deleted character" : ListFormatter.localizedString(byJoining: people.map(\.name))).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
             }
         }
@@ -39,7 +47,7 @@ struct CharacterHeaderItems: View {
             }
         }
         .mgHelp("Where and when this chat happens; it shapes their replies")
-        if let first = people.first {
+        if people.count == 1, let first = people.first {
             let r = store.memory(first.id).relationship
             Text("\(r.stage.label) · \(r.affection)♥")
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)

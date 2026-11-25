@@ -293,6 +293,34 @@ enum Snapshot {
         m.characters = [mia, CharacterTemplates.make(CharacterTemplates.all[2])]
         await render(sheet(CharacterGallery().environment(m)), to: dir.appendingPathComponent("61-character-gallery.png"),
                      size: CGSize(width: 768, height: 648))
+        // 61b: choosing a group chat's cast, one ticked.
+        await render(sheet(CharacterGallery(group: [mia.id]).environment(m)),
+                     to: dir.appendingPathComponent("61b-character-group-pick.png"), size: CGSize(width: 768, height: 648))
+        // 61c: a group chat: both answer in turn, each with their name.
+        let other = m.characters[1]
+        let key = LLMKey(serverID: "snapshot", modelID: "dolphin-venice-24b-fp8")
+        var g = ChatTranscript(title: "\(mia.name) and \(other.name)", serverID: key.serverID, modelID: key.modelID)
+        g.characterIDs = [mia.id, other.id]
+        g.sceneID = "coffee"
+        g.append(ChatTurn(role: .user, text: "Hi you two! What are you both up to tonight?"))
+        var a = ChatTurn(role: .assistant, text: "Closing up the café, then painting till late. Want to swing by? ☕", model: key.modelID)
+        a.speaker = mia.id
+        g.append(a)
+        var b = ChatTurn(role: .assistant, text: "Sketching a library façade. \(mia.name), save me a cup too.", model: key.modelID)
+        b.speaker = other.id
+        g.append(b)
+        g.append(ChatTurn(role: .user, text: "\(other.name), what's the library like?"))
+        var c3 = ChatTurn(role: .assistant, text: "Brutalist, all concrete fins. Ugly in daylight, gorgeous at dusk.", model: key.modelID)
+        c3.speaker = other.id
+        g.append(c3)
+        let groupDoc = ChatDocument(transcript: g)
+        m.chats = [groupDoc]
+        m.activeChatID = groupDoc.id
+        panel(.chats)
+        await render(m, to: dir.appendingPathComponent("61c-character-group-chat.png"))
+        m.chats = []
+        m.activeChatID = nil
+        panel(nil)
         var bad = CharacterTemplates.make(CharacterTemplates.all[1])
         bad.name = ""
         await render(sheet(CharacterEditor(edit: CharacterEdit(character: bad, isNew: true)).environment(m)),

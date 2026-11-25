@@ -32,6 +32,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
+  <key>NSMicrophoneUsageDescription</key><string>AIStudio listens while a chat's microphone button is on, to type what you say.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>AIStudio turns what you say into chat messages on this Mac.</string>
 </dict>
 </plist>
 PLIST

@@ -185,6 +185,8 @@ extension AppModel {
 
     /// Sends the draft as a user message and streams the reply.
     func send(_ doc: ChatDocument) {
+        // Dictation's later words would otherwise fill the emptied composer again.
+        if ChatDictation.shared.isOn(doc) { ChatDictation.shared.stop() }
         flushOpenFiles(doc)
         let text = doc.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         // A question card is open: what's typed answers it ("Other" for each question), and the reply goes on.
@@ -338,7 +340,12 @@ extension AppModel {
             return
         }
         lastChatModel = key
-        if doc.isCharacter { characterReply(doc, key: key, client: client, add: add); return }
+        if doc.isCharacter {
+            // A retry is the same character's reply again; a new message goes to whoever answers it.
+            let again = sibling.flatMap { doc.transcript.turn($0)?.speaker }.map { [$0] }
+            characterReply(doc, key: key, client: client, add: add, speakers: again)
+            return
+        }
         if let root = doc.projectURL {
             let skills = loadSkills(root: root)
             let inline = llm.model(key)?.reasoningParser == nil
@@ -638,7 +645,10 @@ extension AppModel {
             doc.contextOverhead = TokenEstimate.text(system) + toolTokens
             do {
                 let media = try await self?.mediaURLs(sent, doc: doc, vision: vision, client: client) ?? [:]
-                var history = sent.messages(system: false) { media[$0] }
+                var history = setup.group
+                    ? sent.messages(system: false, image: { media[$0] }, speaker: setup.speaker, others: setup.others)
+                    : sent.messages(system: false) { media[$0] }
+                if let nudge = setup.nudge { history.append(.user(nudge)) }
                 // A history that already fills most of the context: summarize all but the last message first.
                 if let limit, history.count >= 2, Double(Compactor.estimate(history)) > 0.75 * Double(limit),
                    let lastUser = sent.turns.last(where: { $0.role == .user && $0.summary != true }),
@@ -943,6 +953,11 @@ struct AgentSetup {
     var topP: Double?
     /// The compaction prompt (nil: the coding one).
     var summarySystem: String?
+    /// A group character chat: the history as `speaker` sees it, the others' replies as user lines (`others`).
+    var group = false
+    var others: (ChatTurn) -> String? = { _ in nil }
+    /// A note for the model after the history, not kept in the chat (a character writing first).
+    var nudge: String?
 
     init(tools: [any AgentTool], root: URL, system: @escaping @MainActor () async -> String) {
         self.tools = tools

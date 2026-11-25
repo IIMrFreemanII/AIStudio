@@ -92,6 +92,7 @@ struct ChatView: View {
             model.refreshGitSoon(doc)
             model.refreshCodeGraph(doc)
             model.refreshProjectFiles(doc)  // also for links to files in replies
+            if inFront { model.characterChatShown(doc) }
         }
         .onChange(of: inFront) { _, on in
             // Back in front (it was kept built): as a fresh view would, look at the repository again.
@@ -99,6 +100,7 @@ struct ChatView: View {
                 model.refreshGitSoon(doc)
                 model.refreshCodeGraph(doc)
                 model.refreshProjectFiles(doc)
+                model.characterChatShown(doc)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -108,6 +110,7 @@ struct ChatView: View {
             model.refreshProjectFiles(doc)
             model.checkOpenFiles(doc)
             doc.filesRevision += 1
+            if inFront { model.characterChatShown(doc) }
         }
         .task(id: doc.git?.pr.map { "\($0.number)-\($0.pending)" }) {
             // Checks are running: look again every 30 seconds.
@@ -1429,7 +1432,7 @@ struct ChatComposer: View {
                 .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
             }
             if let note = blind ? "This model can't see images or videos: they're left out of what it gets."
-                : (notice ?? doc.attachNote) {
+                : (notice ?? doc.attachNote ?? ChatDictation.shared.problem(in: doc)) {
                 Label(note, systemImage: "exclamationmark.triangle").font(.mgFootnote).foregroundStyle(MG.warning)
             }
             if doc.rewindTarget != nil { RewindCard(doc: doc) }
@@ -1446,6 +1449,7 @@ struct ChatComposer: View {
                     .buttonStyle(.mg(.icon))
                     .controlSize(.large)
                     .mgHelp("Attach images, videos or text files (or drop them on the chat)")
+                DictationButton(doc: doc)
                 ZStack(alignment: .topLeading) {
                     TextEditor(text: $doc.draft)
                         .font(.mgBody)

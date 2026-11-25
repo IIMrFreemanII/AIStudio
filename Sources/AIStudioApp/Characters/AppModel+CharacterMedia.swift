@@ -72,13 +72,25 @@ extension AppModel {
     /// Makes a `ChatMedia` for each tag of the turn's text and starts the ones that run at once (the rest wait for
     /// the user). Media the user didn't ask for counts against the character's daily initiative, and is skipped once
     /// that is used up.
+    /// The user's message a reply answers: its parent, or in a group the user's message before the other characters'
+    /// replies of the same round. "" when it follows the character's own reply (a check-in): media in it is unasked.
+    func askingText(_ doc: ChatDocument, before turn: ChatTurn) -> String {
+        var id = turn.parent
+        while let p = id.flatMap({ doc.transcript.turn($0) }) {
+            if p.role == .user { return p.text }
+            guard p.role == .assistant, let who = p.speaker, who != turn.speaker else { return "" }
+            id = p.parent
+        }
+        return ""
+    }
+
     func startCharacterMedia(_ doc: ChatDocument, turnID: UUID, character c: Companion) {
         guard let turn = doc.transcript.turn(turnID), turn.error == nil, turn.speaker == c.id, turn.media == nil else { return }
         let requests = MediaTags.parse(turn.text).requests
         guard !requests.isEmpty else { return }
         let server = photoServer(for: doc)
         let kinds = mediaKinds(c, server: server)
-        let asking = turn.parent.flatMap { doc.transcript.turn($0) }.flatMap { $0.role == .user ? $0.text : nil } ?? ""
+        let asking = askingText(doc, before: turn)
         var left = CharacterCost.initiativeLeft(c, memory: characterStore.memory(c.id))
         var own = 0
         let media = requests.map { r -> ChatMedia in

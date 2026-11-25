@@ -33,6 +33,8 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
     public var media: [MediaKind]
     /// Own-initiative media per day.
     public var initiative: Int
+    /// Hours away after which they text you first when you open the chat; 0: never.
+    public var checkInHours: Int
     public var temperature: Double
     public var topP: Double
     /// The built-in template it was made from.
@@ -63,6 +65,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         self.selectedVoiceSample = nil
         self.media = MediaKind.allCases
         self.initiative = 3
+        self.checkInHours = 8
         self.temperature = 0.9
         self.topP = 0.95
         self.templateID = nil
@@ -72,7 +75,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, age, gender, look, personality, backstory, speakingStyle, likes, greeting, voice, artModel
-        case loras, portraits, selectedPortrait, voiceEngine, voiceSamples, selectedVoiceSample, media, initiative, temperature, topP, templateID, created, updated
+        case loras, portraits, selectedPortrait, voiceEngine, voiceSamples, selectedVoiceSample, media, initiative, checkInHours, temperature, topP, templateID, created, updated
     }
 
     public init(from decoder: Decoder) throws {
@@ -97,6 +100,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         selectedVoiceSample = try c.decodeIfPresent(String.self, forKey: .selectedVoiceSample)
         media = try c.decodeIfPresent([MediaKind].self, forKey: .media) ?? MediaKind.allCases
         initiative = try c.decodeIfPresent(Int.self, forKey: .initiative) ?? 3
+        checkInHours = try c.decodeIfPresent(Int.self, forKey: .checkInHours) ?? 8
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.9
         topP = try c.decodeIfPresent(Double.self, forKey: .topP) ?? 0.95
         templateID = try c.decodeIfPresent(String.self, forKey: .templateID)
