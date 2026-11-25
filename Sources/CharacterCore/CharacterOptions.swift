@@ -217,6 +217,11 @@ public enum CharacterOptions {
 
 extension Character {
     public var fullLook: String { CharacterOptions.join(CharacterOptions.phrases(traits, group: .look), look) }
+    /// The look without the clothing style picks (a photo that asks for an outfit: the picks would fight it).
+    public var lookWithoutClothes: String {
+        let ids = CharacterOptions.categories(.look).map(\.id).filter { $0 != "clothes" }
+        return CharacterOptions.join(CharacterOptions.phrases(traits, categories: ids), look)
+    }
     public var fullPersonality: String {
         CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["traits", "flirting"]), personality)
     }

@@ -130,4 +130,18 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         let edge = CharacterArt.faceCrop(face: CGRect(x: 0.0, y: 0.6, width: 0.9, height: 0.4), imageWidth: 832, imageHeight: 1216)
         #expect(edge.minX == 0 && edge.minY == 0 && edge.width == 832 && edge.height == 832)
     }
+
+    @Test func anOutfitAskLeavesTheClothingStylePicksOut() {
+        var c = hero()
+        c.traits = CharacterOptions.toggle(c.traits, category: "clothes", option: "casual")
+        c.traits = CharacterOptions.toggle(c.traits, category: "hairColor", option: "auburn")
+        let style = CharacterOptions.phrases(c.traits, categories: ["clothes"]).first!
+        #expect(CharacterArt.portraitPrompt(c).contains(style))
+        #expect(CharacterArt.photoPrompt(c, request: "a selfie on the beach", scene: nil).contains(style))
+        let dressed = CharacterArt.photoPrompt(c, request: "wearing a red evening dress", scene: nil)
+        #expect(!dressed.contains(style) && dressed.contains("auburn hair") && dressed.contains("red hair"))
+        let scene = Scenario(id: "x", title: "Gala", place: "a ballroom", outfit: "a black gown")
+        #expect(!CharacterArt.photoPrompt(c, request: "a selfie", scene: scene).contains(style))
+        #expect(CharacterArt.setsOutfit("in her pajamas") && !CharacterArt.setsOutfit("laughing at the camera"))
+    }
 }
