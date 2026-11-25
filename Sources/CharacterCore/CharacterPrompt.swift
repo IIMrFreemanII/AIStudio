@@ -51,7 +51,7 @@ public enum CharacterPrompt {
 
         if !others.isEmpty {
             let names = others.map(\.name).joined(separator: ", ")
-            sections.append("Also in this chat: \(names). Write only your own lines as \(c.name); never speak for them.")
+            sections.append("This is a group chat. Also in it: \(names). Their messages reach you as \"Name: …\"; everything else is from the user. Write only your own message as \(c.name), without your name in front, and never write lines for the others.")
         }
 
         if !media.isEmpty {

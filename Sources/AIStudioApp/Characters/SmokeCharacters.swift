@@ -203,6 +203,69 @@ extension SmokeTest {
         check(kinds == [.photo, .photo, .voice, .video, .talk], "the album lists the voice message and both videos (\(kinds))")
         check(model.characterStore.memory(c.id).ownMedia.isEmpty, "asked-for media uses none of her initiative")
 
+        // g4. She texts first after time away (her chat's last message 9 hours ago), once.
+        if let last = doc.transcript.turns.last {
+            let past = Date().addingTimeInterval(-9 * 3600)
+            doc.transcript.update(last.id) { $0.date = past; $0.ended = past }
+        }
+        let beforeCheckIn = doc.transcript.turns.count
+        model.characterCheckInIfDue(doc)
+        let checkInStart = Date()
+        while doc.isStreaming, Date().timeIntervalSince(checkInStart) < 30 { try? await Task.sleep(nanoseconds: 50_000_000) }
+        let checkIn = doc.transcript.turns.last
+        check(doc.transcript.turns.count == beforeCheckIn + 1 && checkIn?.speaker == c.id && checkIn?.error == nil
+              && checkIn?.text.contains("About 9 hours since your last messages") == true,
+              "after 9 hours away she writes first, from the check-in note (\(checkIn?.text.prefix(60) ?? "none"))")
+        model.characterCheckInIfDue(doc)
+        check(!doc.isStreaming && doc.transcript.turns.count == beforeCheckIn + 1, "she doesn't write first twice in a row")
+
+        // g5. A group chat: everyone answers in turn, each from their own prompt, seeing the others' lines; a message
+        // that names one of them gets only that one.
+        let c2 = CharacterTemplates.make(CharacterTemplates.all[1])
+        check(model.saveCharacter(c2).isEmpty, "\(c2.name) is saved")
+        let group = model.newCharacterChat([c.id, c2.id], model: key)
+        check(group.title == "\(c.name) and \(c2.name)" && group.transcript.turns.isEmpty, "a group chat is titled with both names (\(group.title)) and has no greeting")
+        /// Sends and waits for the whole round (the next one answers once the previous reply wraps up).
+        func round(_ doc: ChatDocument, _ text: String, replies: Int) async -> [ChatTurn] {
+            model.sendText(doc, text)
+            let start = Date()
+            func answers() -> [ChatTurn] {
+                let turns = doc.transcript.turns
+                guard let u = turns.lastIndex(where: { $0.role == .user }) else { return [] }
+                return Array(turns[(u + 1)...].filter { $0.role == .assistant })
+            }
+            while Date().timeIntervalSince(start) < 30,
+                  doc.isStreaming || answers().count < replies || answers().contains(where: { $0.ended == nil && $0.error == nil }) {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)  // nobody else starts
+            return answers()
+        }
+        let both = await round(group, "who are you", replies: 2)
+        check(both.map(\.speaker) == [c.id, c2.id] && both.allSatisfy { $0.error == nil },
+              "both answer, \(c.name) first (\(both.map { $0.speaker.flatMap { model.character($0)?.name } ?? "?" }))")
+        check(both.first?.text == "I'm \(c.name)." && both.last?.text == "I'm \(c2.name).",
+              "each answers from their own prompt (\(both.map(\.text)))")
+        let echo = await round(group, "hello there", replies: 2)
+        check(echo.map(\.speaker) == [c2.id, c.id], "the next round starts with the other one")
+        check(echo.last?.text.contains("\(c2.name): You said: hello there") == true,
+              "the second one sees the first one's line after the user's message (\(echo.last?.text ?? "none"))")
+        let named = await round(group, "\(c2.name), who are you", replies: 1)
+        check(named.map(\.speaker) == [c2.id], "naming \(c2.name) gets only \(c2.name)'s answer")
+
+        // g6. An album photo's look comes back as the scene of your chat with her (the group, in front).
+        if let photo = model.characterStore.memory(c.id).album.first(where: { $0.kind == .photo }) {
+            model.reuseAlbumLook(photo, characterID: c.id)
+            let id = "album-\(photo.id.uuidString)"
+            let scene = model.characterStore.scenarios().first { $0.id == id }
+            check(scene?.outfit == photo.prompt.trimmingCharacters(in: .whitespacesAndNewlines) && group.transcript.sceneID == id,
+                  "the photo's look is a saved scene, set on the chat in front")
+        } else {
+            check(false, "an album photo to reuse")
+        }
+        model.deleteChat(group.id)
+        model.deleteCharacter(c2.id)
+
         // h. Saved.
         model.saveChat(doc)
         check(model.chatStore.list().contains { $0.id == doc.id && $0.character }, "the chat is listed as a character chat")

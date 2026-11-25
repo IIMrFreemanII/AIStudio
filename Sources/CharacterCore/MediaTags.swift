@@ -138,6 +138,25 @@ public enum MediaTags {
         return nil
     }
 
+    /// The text with each complete tag as a bracketed note, for another character's history.
+    public static func plain(_ text: String) -> String {
+        var out = ""
+        for piece in scan(text) {
+            switch piece {
+            case .text(let t): out += t
+            case .pending: break
+            case .media(let kind, let body):
+                switch kind {
+                case .photo: out += "[sent a photo: \(body)]"
+                case .video: out += "[sent a video: \(body)]"
+                case .voice: out += "[sent a voice message: \"\(body)\"]"
+                case .talk: out += "[sent a video message: \"\(body)\"]"
+                }
+            }
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The tags' instructions for the system prompt, only for `kinds` (none: "").
     public static func instructions(_ kinds: [MediaKind]) -> String {
         let wanted = MediaKind.allCases.filter { kinds.contains($0) }

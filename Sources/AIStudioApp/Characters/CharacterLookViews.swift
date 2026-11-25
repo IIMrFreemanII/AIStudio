@@ -321,7 +321,14 @@ struct CharacterAlbumGrid: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { NSWorkspace.shared.open(url) }
-                    .mgHelp("Open this photo")
+                    .contextMenu {
+                        Button("Open") { NSWorkspace.shared.open(url) }
+                        if item.kind == .photo || item.kind == .video {
+                            Button("Use This Look Again") { model.reuseAlbumLook(item, characterID: characterID) }
+                        }
+                    }
+                    .mgHelp(item.kind == .photo || item.kind == .video
+                            ? "Open it; right-click to bring this place and outfit back in your chat" : "Open it")
                     .accessibilityAddTraits(.isButton)
                     .accessibilityLabel("Photo from \(item.date.formatted(date: .abbreviated, time: .omitted))")
                 }

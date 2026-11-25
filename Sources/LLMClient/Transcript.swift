@@ -462,7 +462,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     /// The shown branch as OpenAI messages, without failed replies. `image(name)` gives an attached image's data URL,
     /// or a video's URL (`upload:<name>`); nil leaves it out.
     /// `system` false leaves the chat's system prompt out (the caller sends its own, with it inside).
-    public func messages(system: Bool = true, image: (String) -> String? = { _ in nil }) -> [ChatMessage] {
+    /// `speaker` (a group character chat, as one character sees it): other characters' turns become user messages
+    /// of `others(turn)` (left out when nil), and adjacent user messages are joined.
+    public func messages(system: Bool = true, image: (String) -> String? = { _ in nil }, speaker: UUID? = nil,
+                         others: (ChatTurn) -> String? = { _ in nil }) -> [ChatMessage] {
         var out: [ChatMessage] = []
         if system, let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             out.append(.system(systemPrompt))
@@ -501,6 +504,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
                 parts.append(.text(t.textForModel))
                 out.append(ChatMessage(role: .user, parts: parts))
             case .assistant:
+                if let speaker, let who = t.speaker, who != speaker {
+                    if let line = others(t) { out.append(ChatMessage(role: .user, parts: [.text(line)])) }
+                    continue
+                }
                 out.append(ChatMessage(role: .assistant, parts: [.text(t.text)], toolCalls: t.toolCalls))
             case .tool:
                 var text = t.text
@@ -515,7 +522,23 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
             }
         }
         flushShots()
-        return out
+        guard speaker != nil else { return out }
+        var joined: [ChatMessage] = []
+        for m in out {
+            if m.role == .user, var last = joined.last, last.role == .user {
+                var parts = m.parts
+                if case .text(let a)? = last.parts.last, case .text(let b)? = parts.first {
+                    last.parts.removeLast()
+                    parts.removeFirst()
+                    last.parts.append(.text(a + "\n\n" + b))
+                }
+                last.parts += parts
+                joined[joined.count - 1] = last
+            } else {
+                joined.append(m)
+            }
+        }
+        return joined
     }
 
     /// A copy of the shown branch up to and including `turnID`, as a new chat: fresh turn ids, the same settings.

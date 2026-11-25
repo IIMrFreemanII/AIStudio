@@ -18,6 +18,14 @@ public struct Scenario: Codable, Identifiable, Equatable, Sendable, Hashable {
         self.mood = mood
     }
 
+    /// A custom scene that brings an album photo's look back.
+    public static func like(_ item: AlbumItem, base: Scenario?, date: String) -> Scenario {
+        Scenario(id: "album-\(item.id.uuidString)", title: "Like the photo of \(date)",
+                 place: base?.place ?? "the same place as in that photo",
+                 outfit: item.prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                 time: base?.time ?? "", mood: base?.mood ?? "")
+    }
+
     public static let defaultID = "texting"
 
     /// The built-in scenarios.
