@@ -41,6 +41,9 @@ extension SmokeTest {
         if CommandLine.arguments.contains("--smoke-real-outfit") {
             return await realOutfit(model, server: conn.id, keep: keep, say: say)
         }
+        if CommandLine.arguments.contains("--smoke-real-option-images") {
+            return await realOptionImages(model, server: conn.id, out: out, say: say)
+        }
         if CommandLine.arguments.contains("--smoke-real-creator") {
             return await realCreator(model, count: portraitCount, keep: keep, say: say)
         }
@@ -287,6 +290,23 @@ extension SmokeTest {
         say("spent $\(String(format: "%.3f", total))")
         say(ok ? "ok all passed" : "FAIL some checks failed")
         return ok
+    }
+
+    /// `--smoke-characters-real <any> --smoke-real-option-images --smoke-real-out <folder>` (+ `--smoke-real-only
+    /// <category,…>`): no chat. Draws the creator's option example photos (SDXL) into the folder, skipping files already
+    /// there, so a run can be resumed or a bad file deleted and remade. Copy the result into Resources/OptionImages.
+    static func realOptionImages(_ model: AppModel, server: String, out: URL?, say: @escaping (String) -> Void) async -> Bool {
+        guard let out else { say("FAIL --smoke-real-out <folder> is needed"); return false }
+        let only = argument("--smoke-real-only").map { Set($0.split(separator: ",").map(String.init)) }
+        let (made, cost) = await OptionImageMaker.make(model, server: server, out: out, categories: only, say: say)
+        let wanted = CharacterOptions.examples.filter { only?.contains($0.category) ?? true }
+        let missing = wanted.filter {
+            !FileManager.default.fileExists(atPath: out.appendingPathComponent(
+                CharacterOptions.exampleFile(category: $0.category, option: $0.option, gender: $0.gender)).path)
+        }
+        say("made \(made.count), spent $\(String(format: "%.3f", cost)); \(missing.count) of \(wanted.count) missing")
+        say(missing.isEmpty ? "ok all passed" : "FAIL some examples are missing")
+        return missing.isEmpty
     }
 
     /// `--smoke-characters-real <any> --smoke-real-outfit` (+ `--smoke-real-out`): no chat. One portrait of Mia, then

@@ -353,6 +353,24 @@ enum Snapshot {
                          to: dir.appendingPathComponent("64\(letter)-character-creator-\(CharacterCreator.steps[i].lowercased()).png"),
                          size: CGSize(width: 688, height: 708))
         }
+        // 64g/h: every look option (photo tiles, color swatches, hints) for a woman and for a man, at full height; 64i:
+        // the habits icons.
+        for (letter, gender) in [("g", "woman"), ("h", "man")] {
+            var who = mia
+            who.gender = gender
+            who.traits = ["hairStyle": ["long-wavy"], "hairColor": ["auburn"], "body": ["athletic"], "butt": ["round"]]
+            await render(sheet(VStack(alignment: .leading, spacing: 4) {
+                TraitGroupView(group: .look, c: .constant(who))
+            }.padding(20).frame(width: 640, alignment: .topLeading).background(MG.windowBackground).environment(m)),
+                         to: dir.appendingPathComponent("64\(letter)-character-look-options-\(gender).png"),
+                         size: CGSize(width: 688, height: gender == "woman" ? 2000 : 1750))
+        }
+        await render(sheet(VStack(alignment: .leading, spacing: 4) {
+            TraitGroupView(group: .basics, c: .constant(mia))
+            TraitGroupView(group: .habits, c: .constant(mia))
+        }.padding(20).frame(width: 640, alignment: .topLeading).background(MG.windowBackground).environment(m)),
+                     to: dir.appendingPathComponent("64i-character-basics-habits-options.png"),
+                     size: CGSize(width: 688, height: 700))
         m.characterStore.delete(mia.id, useTrash: false)
     }
 

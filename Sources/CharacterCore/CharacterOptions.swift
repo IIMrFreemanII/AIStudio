@@ -82,6 +82,7 @@ public enum CharacterOptions {
             O("average", "Average", "an average build"), O("curvy", "Curvy", "a curvy figure"),
             O("muscular", "Muscular", "a muscular build"), O("plus-size", "Plus-size", "a plus-size figure"),
             O("broad-shouldered", "Broad-shouldered", "broad shoulders"),
+            O("hourglass", "Hourglass", "an hourglass figure", onlyFor: "woman"),
         ]),
         Category("height", "Height", .look, max: 1, [
             O("short", "Short", "short height"), O("average", "Average", "average height"), O("tall", "Tall", "tall"),
@@ -99,6 +100,24 @@ public enum CharacterOptions {
             O("stubble", "Stubble", "stubble", onlyFor: "man"),
             O("bold-makeup", "Bold makeup", "bold makeup", onlyFor: "woman"),
             O("scar", "Scar", "a small scar"), O("warm-smile", "Warm smile", "a warm smile"),
+        ]),
+        Category("bust", "Breasts", .look, max: 1, [
+            O("small", "Small", "small breasts", onlyFor: "woman"),
+            O("medium", "Medium", "medium breasts", onlyFor: "woman"),
+            O("large", "Large", "large breasts", onlyFor: "woman"),
+            O("very-large", "Very large", "very large breasts", onlyFor: "woman"),
+        ]),
+        Category("butt", "Butt", .look, max: 1, [
+            O("small", "Small", "a small butt"), O("perky", "Perky", "a perky butt"),
+            O("round", "Round", "a round butt"), O("big", "Big", "a big butt"),
+        ]),
+        Category("figure", "Figure details", .look, max: 3, [
+            O("narrow-waist", "Narrow waist", "a narrow waist", onlyFor: "woman"),
+            O("wide-hips", "Wide hips", "wide hips", onlyFor: "woman"),
+            O("long-legs", "Long legs", "long legs"), O("thick-thighs", "Thick thighs", "thick thighs"),
+            O("toned-abs", "Toned abs", "toned abs"), O("toned-arms", "Toned arms", "toned arms"),
+            O("broad-chest", "Broad chest", "a broad chest", onlyFor: "man"),
+            O("hairy-chest", "Hairy chest", "a hairy chest", onlyFor: "man"),
         ]),
         Category("traits", "Traits", .personality, max: 4, [
             O("playful", "Playful", "playful"), O("shy", "Shy", "shy"), O("confident", "Confident", "confident"),
@@ -173,21 +192,22 @@ public enum CharacterOptions {
         return category.options.filter { $0.onlyFor == nil || $0.onlyFor == g }
     }
 
-    private static func phrases(_ traits: [String: [String]], in cats: [Category]) -> [String] {
+    private static func phrases(_ traits: [String: [String]], in cats: [Category], gender: String?) -> [String] {
         cats.flatMap { cat -> [String] in
             let picked = Set(traits[cat.id] ?? [])
-            return cat.options.filter { picked.contains($0.id) }.map(\.phrase)
+            let shown = gender.map { options(cat, gender: $0) } ?? cat.options
+            return shown.filter { picked.contains($0.id) }.map(\.phrase)
         }
     }
 
     /// Picked phrases of a group in catalog order (not pick order). Unknown ids are ignored.
-    public static func phrases(_ traits: [String: [String]], group: Group) -> [String] {
-        phrases(traits, in: categories(group))
+    public static func phrases(_ traits: [String: [String]], group: Group, gender: String? = nil) -> [String] {
+        phrases(traits, in: categories(group), gender: gender)
     }
 
     /// Same, for a list of category ids (in the order given).
-    public static func phrases(_ traits: [String: [String]], categories ids: [String]) -> [String] {
-        phrases(traits, in: ids.compactMap { category($0) })
+    public static func phrases(_ traits: [String: [String]], categories ids: [String], gender: String? = nil) -> [String] {
+        phrases(traits, in: ids.compactMap { category($0) }, gender: gender)
     }
 
     /// Tapping a chip: a picked option is removed; a single-pick category replaces; a full one drops its oldest pick.
@@ -216,22 +236,22 @@ public enum CharacterOptions {
 }
 
 extension Character {
-    public var fullLook: String { CharacterOptions.join(CharacterOptions.phrases(traits, group: .look), look) }
+    public var fullLook: String { CharacterOptions.join(CharacterOptions.phrases(traits, group: .look, gender: gender), look) }
     /// The look without the clothing style picks (a photo that asks for an outfit: the picks would fight it).
     public var lookWithoutClothes: String {
         let ids = CharacterOptions.categories(.look).map(\.id).filter { $0 != "clothes" }
-        return CharacterOptions.join(CharacterOptions.phrases(traits, categories: ids), look)
+        return CharacterOptions.join(CharacterOptions.phrases(traits, categories: ids, gender: gender), look)
     }
     public var fullPersonality: String {
-        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["traits", "flirting"]), personality)
+        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["traits", "flirting"], gender: gender), personality)
     }
     public var fullSpeakingStyle: String {
-        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["texting"]), speakingStyle)
+        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["texting"], gender: gender), speakingStyle)
     }
-    public var habits: String { CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["rhythm", "habits"]), "") }
-    public var fullLikes: String { CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["hobbies"]), likes) }
+    public var habits: String { CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["rhythm", "habits"], gender: gender), "") }
+    public var fullLikes: String { CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["hobbies"], gender: gender), likes) }
     public var fullBackstory: String {
-        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["occupation", "met"]), backstory)
+        CharacterOptions.join(CharacterOptions.phrases(traits, categories: ["occupation", "met"], gender: gender), backstory)
     }
-    public var fullVoice: String { CharacterOptions.join(CharacterOptions.phrases(traits, group: .voice), voice) }
+    public var fullVoice: String { CharacterOptions.join(CharacterOptions.phrases(traits, group: .voice, gender: gender), voice) }
 }

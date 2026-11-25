@@ -80,4 +80,13 @@ private struct Seeded: RandomNumberGenerator {
         let bad = CharacterWriter.problems(CharacterDetails(backstory: "She babysits the neighbors' kids."), for: c, newName: false)
         #expect(bad.count == 1 && bad[0].contains("Backstory") && bad[0].contains("Rewrite"))
     }
+
+    @Test func aManGetsNoBreasts() {
+        for seed in 0..<30 {
+            var rng = Seeded(state: UInt64(seed))
+            let c = CharacterSurprise.roll(Character(name: "", age: 30, gender: "man"), using: &rng)
+            #expect(c.traits["bust"] == nil)
+            #expect(!c.fullLook.contains("breasts"))
+        }
+    }
 }
