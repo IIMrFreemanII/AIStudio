@@ -794,6 +794,11 @@ extension AppModel {
                 if outcome == .stepLimit {
                     doc.transcript.update(st.turn) { $0.error = "Stopped after \(config.maxSteps) steps: say how to continue." }
                 }
+                // Nothing at all came back (no text, thinking or tool call): say so, instead of an empty bubble.
+                if st.turn == start.id, let t = doc.transcript.turn(start.id), t.error == nil, t.toolCalls.isEmpty,
+                   t.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, (t.reasoning ?? "").isEmpty {
+                    doc.transcript.update(start.id) { $0.error = "The model sent back an empty reply. Try again." }
+                }
             } catch {
                 st.acc.finish()
                 publish()

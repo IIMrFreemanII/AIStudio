@@ -18,6 +18,8 @@ extension SmokeTest {
         }
         let out = argument("--smoke-real-out").map { URL(fileURLWithPath: $0, isDirectory: true) }
         let portraitCount = argument("--smoke-real-portraits").flatMap(Int.init) ?? 4
+        // `--smoke-real-lines <n>`: only the first n messages (a cheap cold-start check); the memory checks need all.
+        let lineLimit = argument("--smoke-real-lines").flatMap(Int.init)
         let fm = FileManager.default
         func keep(_ file: URL, as name: String) {
             guard let out else { return }
@@ -69,9 +71,21 @@ extension SmokeTest {
             let start = Date()
             // The first reply waits for a cold start (a busy region can take 10+ minutes to find a GPU). A message sent
             // while a reply still runs would be dropped, so a reply that never ends stops the run.
-            while doc.isStreaming, Date().timeIntervalSince(start) < 1200 { try? await Task.sleep(nanoseconds: 200_000_000) }
+            var phase: String?
+            while doc.isStreaming, Date().timeIntervalSince(start) < 1200 {
+                let now = doc.engine.map { "\($0.state) \($0.phase ?? "")" }
+                if let now, now != phase { say("  engine at \(Int(Date().timeIntervalSince(start))) s: \(now)") }
+                phase = now ?? phase
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
             if doc.isStreaming { model.stopReply(doc); return nil }
             guard let reply = doc.transcript.turns.last, reply.role == .assistant else { return nil }
+            if let s = reply.stats {
+                say("  stats: \(String(format: "%.1f", s.seconds)) s, wait \(s.waitSeconds.map { String(format: "%.1f", $0) } ?? "?") s, "
+                    + "tokens \(s.promptTokens.map(String.init) ?? "?")/\(s.completionTokens.map(String.init) ?? "?")")
+            } else {
+                say("  stats: none (the server's usage event never came)")
+            }
             return reply
         }
         /// Waits for the turn's media to finish, approving what waits for an OK; returns the turn as it ends up. A
@@ -93,7 +107,7 @@ extension SmokeTest {
         let doc = model.newCharacterChat([c.id], model: key)
         say("greeting: \(doc.transcript.turns.first?.text ?? "")")
 
-        let lines = [
+        let allLines = [
             "Hi \(c.name)! I just got back from a hike with my dog Miso. How was your day?",
             "Who are you, in a few words? What do you like doing on weekends?",
             "Could you send me a selfie from where you are right now?",
@@ -104,6 +118,7 @@ extension SmokeTest {
             "Send me a short video of you waving from your window?",
             "Could you send me a video message saying hi to Miso?",
         ]
+        let lines = lineLimit.map { Array(allLines.prefix($0)) } ?? allLines
         let asks: [Int: CharacterCore.MediaKind] = [2: .photo, 5: .photo, 6: .voice, 7: .video, 8: .talk]
         let banned = ["as an ai", "language model", "i'm an assistant", "i am an assistant", "<|", "[inst]"]
         var kept: [String: Int] = [:]
@@ -150,6 +165,13 @@ extension SmokeTest {
         // Any other media the chat started (some nobody asked for, say) lands in the album too.
         for t in doc.transcript.turns where t.media != nil { _ = await media(doc, t.id) }
         let made = doc.transcript.turns.flatMap { $0.media ?? [] }.filter { $0.status == .done }.count
+        guard lines.count == allLines.count else {
+            say("spent on \(c.name): $\(String(format: "%.3f", model.characterStore.memory(c.id).spentUSD))")
+            model.deleteChat(doc.id)
+            model.deleteCharacter(c.id)
+            say(ok ? "ok all passed" : "FAIL some checks failed")
+            return ok
+        }
         let deadline = Date().addingTimeInterval(180)
         var memory = model.characterStore.memory(c.id)
         // The pass runs after every MemoryPass.every replies (a reply landing while it runs may be counted or not).
