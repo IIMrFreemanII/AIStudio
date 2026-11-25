@@ -38,6 +38,9 @@ extension SmokeTest {
         model.connections.save(conn, token: token)
         await model.connections.test(conn.id)
         guard case .gpuOnline? = model.connections.status[conn.id] else { say("FAIL \(conn.name) not reachable"); return false }
+        if CommandLine.arguments.contains("--smoke-real-outfit") {
+            return await realOutfit(model, server: conn.id, keep: keep, say: say)
+        }
         if CommandLine.arguments.contains("--smoke-real-creator") {
             return await realCreator(model, count: portraitCount, keep: keep, say: say)
         }
@@ -242,6 +245,44 @@ extension SmokeTest {
         check(model.saveCharacter(c).isEmpty && (count == 0 || model.portraitURL(c) != nil) && model.voiceSampleURL(c) != nil,
               "saved with its profile photo and voice")
         say("spent $\(String(format: "%.3f", model.characterStore.memory(c.id).spentUSD))")
+        model.deleteCharacter(c.id)
+        say(ok ? "ok all passed" : "FAIL some checks failed")
+        return ok
+    }
+
+    /// `--smoke-characters-real <any> --smoke-real-outfit` (+ `--smoke-real-out`): no chat. One portrait of Mia, then
+    /// the same outfit ask with the same seed twice: the face from the whole portrait (as before) and from its face
+    /// crop. Both photos, the portrait and the crop go to the out folder to compare which one wears the asked outfit.
+    static func realOutfit(_ model: AppModel, server: String, keep: (URL, String) -> Void,
+                           say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        var c = CharacterTemplates.make(CharacterTemplates.all[0])
+        check(model.saveCharacter(c).isEmpty, "\(c.name) is saved")
+        let portraits = (try? await model.generatePortraits(for: c, count: 1, progress: { say("portrait: \($0)") })) ?? []
+        c = model.character(c.id) ?? c
+        guard let portrait = model.portraitURL(c) else { say("FAIL no portrait"); return false }
+        keep(portrait, "outfit-portrait.png")
+        let face = await model.faceReference(c)
+        check(face != nil && face != portrait, "Vision found the face and cropped it")
+        if let face { keep(face, "outfit-face-crop.png") }
+        let ask = "wearing a red evening dress at a rooftop party at night, city lights behind her"
+        let prompt = CharacterArt.photoPrompt(c, request: ask, scene: nil)
+        say("prompt: \(prompt)")
+        let seed = 424_242
+        for whole in [true, false] {
+            let file = model.characterStore.albumFolder(c.id).appendingPathComponent(whole ? "whole.png" : "crop.png")
+            do {
+                let cost = try await model.drawPhoto(c, prompt: prompt, server: server, to: file,
+                                                     title: "outfit test", seed: seed, wholePortrait: whole) { _ in }
+                say("\(whole ? "whole portrait" : "face crop"): $\(String(format: "%.3f", cost ?? 0))")
+                keep(file, whole ? "outfit-from-whole-portrait.png" : "outfit-from-face-crop.png")
+            } catch { check(false, "photo (\(whole ? "whole" : "crop")): \(error)") }
+        }
+        check(portraits.count == 1, "a portrait was made")
+        say("spent $\(String(format: "%.3f", model.characterStore.memory(c.id).spentUSD)) on portraits")
         model.deleteCharacter(c.id)
         say(ok ? "ok all passed" : "FAIL some checks failed")
         return ok

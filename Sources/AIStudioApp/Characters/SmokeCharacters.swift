@@ -306,6 +306,22 @@ extension SmokeTest {
         model.discardDraft(cancelled.id)
         check(!FileManager.default.fileExists(atPath: model.characterStore.folder(cancelled.id).path),
               "a cancelled draft leaves no folder")
+        // Cancelled while its portrait is still being drawn: the portrait that arrives after is removed with the folder.
+        let midway = CharacterTemplates.make(CharacterTemplates.all[2])
+        let drawing = Task { @MainActor in try await model.generatePortraits(for: midway, count: 2) }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        model.discardDraft(midway.id)
+        let midResult = await drawing.result
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        check((try? midResult.get()) == nil
+              && !FileManager.default.fileExists(atPath: model.characterStore.folder(midway.id).path),
+              "a draft cancelled mid-portrait leaves no folder")
+        // The face reference: the fake portraits have no face, so the whole portrait is used.
+        if let stored = model.character(c.id), let face = await model.faceReference(stored) {
+            check(face == model.portraitURL(stored), "with no face found, photos use the whole portrait")
+        } else {
+            check(false, "a face reference for \(c.name)")
+        }
 
         // h. Saved.
         model.saveChat(doc)

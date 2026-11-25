@@ -116,4 +116,18 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         let out = String(decoding: try JSONEncoder().encode(old), as: UTF8.self)
         #expect(out.contains("\"lora\"") && !out.contains("link"))
     }
+
+    @Test func faceCropIsASquareAroundTheFaceInsideThePicture() {
+        // A portrait 832×1216 with the face in the upper middle (Vision's box: origin bottom-left).
+        let r = CharacterArt.faceCrop(face: CGRect(x: 0.35, y: 0.55, width: 0.3, height: 0.2), imageWidth: 832, imageHeight: 1216)
+        #expect(r.width == r.height)
+        #expect(abs(r.width - (0.3 * 832 * CharacterArt.faceCropScale).rounded()) <= 1)
+        #expect(r.minX >= 0 && r.minY >= 0 && r.maxX <= 832 && r.maxY <= 1216)
+        // Its center is near the face's center (top-left origin), a little above it.
+        #expect(abs(r.midX - 0.5 * 832) <= 1)
+        #expect(r.midY < (1 - 0.65) * 1216 && r.midY > (1 - 0.65) * 1216 - 60)
+        // A face at the very top edge, larger than the picture allows: clamped inside.
+        let edge = CharacterArt.faceCrop(face: CGRect(x: 0.0, y: 0.6, width: 0.9, height: 0.4), imageWidth: 832, imageHeight: 1216)
+        #expect(edge.minX == 0 && edge.minY == 0 && edge.width == 832 && edge.height == 832)
+    }
 }

@@ -1,5 +1,7 @@
 import CharacterCore
 import Foundation
+import ImageIO
+import Vision
 import LLMClient
 import MovieCore
 import NodesRemote
@@ -42,6 +44,7 @@ extension AppModel {
             guard let image = outputs.first(where: { $0.kind == .image })?.image else { throw MovieArtError.noImage }
             let name = "portrait-\(UUID().uuidString.prefix(8).lowercased()).png"
             try MovieComposer.writePNG(image, to: folder.appendingPathComponent(name))
+            try dropIfDiscarded(id)
             addPortrait(name, to: id)
             names.append(name)
             added(name)
@@ -67,7 +70,23 @@ extension AppModel {
     func discardDraft(_ id: UUID) {
         let folder = characterStore.folder(id)
         guard !FileManager.default.fileExists(atPath: folder.appendingPathComponent("character.json").path) else { return }
+        discardedDrafts.insert(id)
         try? FileManager.default.removeItem(at: folder)
+    }
+
+    /// After a portrait or voice of a cancelled draft is written (its job outlived the creator): removes the folder
+    /// again and stops.
+    func dropIfDiscarded(_ id: UUID) throws {
+        guard discardedDrafts.contains(id) else { return }
+        try? FileManager.default.removeItem(at: characterStore.folder(id))
+        throw CancellationError()
+    }
+
+    /// Folders of characters never saved and untouched for a day (the app quit while one was being created).
+    func sweepStaleDrafts(now: Date = Date()) {
+        for id in characterStore.drafts(untouchedSince: now.addingTimeInterval(-86_400)) {
+            try? FileManager.default.removeItem(at: characterStore.folder(id))
+        }
     }
 
     /// The selected portrait's file, when it exists.
@@ -75,6 +94,29 @@ extension AppModel {
         guard let name = c.selectedPortrait else { return nil }
         let url = characterStore.portraitsFolder(c.id).appendingPathComponent(name)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// What their photos take the face from: the chosen portrait cropped to the face (found on this Mac by Vision),
+    /// so the portrait's clothes and background don't come along; the whole portrait when no face is found. The crop
+    /// is kept next to the portrait as `.face-<name>.png` until the portrait changes.
+    func faceReference(_ c: Companion) async -> URL? {
+        guard let portrait = portraitURL(c) else { return nil }
+        let crop = portrait.deletingLastPathComponent()
+            .appendingPathComponent(".face-\(portrait.deletingPathExtension().lastPathComponent).png")
+        let fm = FileManager.default
+        func modified(_ u: URL) -> Date? { (try? fm.attributesOfItem(atPath: u.path))?[.modificationDate] as? Date }
+        if let made = modified(crop), let source = modified(portrait), made >= source { return crop }
+        let made = await Task.detached(priority: .userInitiated) { () -> Bool in
+            guard let src = CGImageSourceCreateWithURL(portrait as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return false }
+            let request = VNDetectFaceRectanglesRequest()
+            try? VNImageRequestHandler(cgImage: image).perform([request])
+            guard let face = request.results?.max(by: { $0.boundingBox.width < $1.boundingBox.width })?.boundingBox,
+                  let cropped = image.cropping(to: CharacterArt.faceCrop(face: face, imageWidth: image.width,
+                                                                         imageHeight: image.height)) else { return false }
+            return (try? MovieComposer.writePNG(cropped, to: crop)) != nil
+        }.value
+        return made ? crop : portrait
     }
 
     private func addPortrait(_ name: String, to id: UUID) {
@@ -101,6 +143,8 @@ extension AppModel {
         let url = characterStore.portraitsFolder(id).appendingPathComponent(name)
         if Self.isAutomatedRun { try? FileManager.default.removeItem(at: url) }
         else { try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+        try? FileManager.default.removeItem(at: url.deletingLastPathComponent()
+            .appendingPathComponent(".face-\(url.deletingPathExtension().lastPathComponent).png"))
     }
 }
 

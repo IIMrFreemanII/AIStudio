@@ -92,6 +92,8 @@ final class AppModel {
     var editingCharacter: CharacterEdit?
     /// The step-by-step creator of a new character (File › New Character Chat… › New Character).
     var creatingCharacter: CharacterEdit?
+    /// Unsaved characters that were cancelled: a portrait or voice still being made for one removes its folder again.
+    @ObservationIgnored var discardedDrafts: Set<UUID> = []
     var memoryCharacter: CharacterRef?
     /// The chat in front of the graph (nil: the active workflow is in front).
     var activeChatID: UUID? {

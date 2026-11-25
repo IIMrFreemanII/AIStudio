@@ -79,6 +79,7 @@ struct CharacterGallery: View {
             .padding(14)
         }
         .frame(width: 720, height: 600)
+        .onAppear { model.sweepStaleDrafts() }
     }
 
     private func grid(_ items: [AppModel.Companion], mine: Bool) -> some View {

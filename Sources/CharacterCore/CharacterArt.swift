@@ -75,6 +75,26 @@ public enum CharacterArt {
         }
     }
 
+    /// How much of the head around a detected face goes into the face reference (side of the square, in face widths).
+    public static let faceCropScale = 1.7
+
+    /// The face reference's crop of a portrait: a square around the detected face (`face`: Vision's normalized box,
+    /// origin bottom-left), `faceCropScale` times its size and nudged up for hair, in pixels with the origin top-left,
+    /// kept inside the picture. The whole portrait would also carry its clothes and background into every photo
+    /// (the face adapter copies what it sees), so outfits asked for in a chat lose to the portrait's.
+    public static func faceCrop(face: CGRect, imageWidth: Int, imageHeight: Int) -> CGRect {
+        let w = Double(imageWidth), h = Double(imageHeight)
+        let fw = face.width * w, fh = face.height * h
+        var side = max(fw, fh) * faceCropScale
+        side = min(side, w, h)
+        let cx = face.midX * w
+        let cy = (1 - face.midY) * h - fh * 0.1
+        var x = cx - side / 2, y = cy - side / 2
+        x = min(max(x, 0), w - side)
+        y = min(max(y, 0), h - side)
+        return CGRect(x: x.rounded(), y: y.rounded(), width: side.rounded(), height: side.rounded())
+    }
+
     /// Throws `CharacterArtError.youthTerm(term)` when AgeGuard finds a youth term in the request.
     public static func check(_ request: String) throws {
         if let term = AgeGuard.youthTerm(in: request) { throw CharacterArtError.youthTerm(term) }
