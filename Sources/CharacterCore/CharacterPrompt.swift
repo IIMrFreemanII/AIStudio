@@ -57,7 +57,8 @@ public enum CharacterPrompt {
         if !media.isEmpty {
             let rule = initiativeLeft > 0
                 ? "You may send one on your own when it fits, at most \(initiativeLeft) more today; otherwise only when asked."
-                : "Send one only when you are asked to."
+                : "Send one only when the user's last message asks you for one. Never send one on your own, "
+                    + "and asking the user for a picture is not a reason to send yours."
             sections.append(MediaTags.instructions(media) + "\n" + rule)
         } else {
             sections.append(Self.noMedia)

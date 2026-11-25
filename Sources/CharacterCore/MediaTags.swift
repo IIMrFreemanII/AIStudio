@@ -146,7 +146,8 @@ public enum MediaTags {
         for k in wanted {
             switch k {
             case .photo:
-                lines.append("- <photo>what the photo shows: your outfit, pose, expression and the place</photo> sends a photo of you.")
+                lines.append("- <photo>what the photo shows: your outfit, pose, expression and the place</photo> sends a photo of you. "
+                    + "Write it as a short caption without \"you\", \"I\" or your name, starting with the pose or the place.")
             case .video:
                 lines.append("- <video>what happens in a few seconds of video of you</video> sends a short video of you.")
             case .voice:

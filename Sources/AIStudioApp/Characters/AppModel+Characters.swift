@@ -103,9 +103,10 @@ extension AppModel {
         let others = Array(people.dropFirst())
         let store = characterStore
         let scene = scene(of: doc)
+        let photos = photoServer(for: doc) != nil
         var setup = AgentSetup(tools: [], root: library.root) {
             let memory = store.memory(c.id)
-            return CharacterPrompt.system(c, memory: memory, scene: scene, others: others, media: [], initiativeLeft: 0)
+            return CharacterPrompt.system(c, memory: memory, scene: scene, others: others, media: photos ? [.photo] : [], initiativeLeft: 0)
         }
         setup.character = true
         setup.speaker = c.id
@@ -114,6 +115,9 @@ extension AppModel {
         setup.summarySystem = MemoryPass.summarySystem
         setup.finished = { [weak self, weak doc] in
             guard let self, let doc else { return }
+            if let turn = doc.transcript.turns.last(where: { $0.role == .assistant && $0.speaker == c.id }) {
+                self.startCharacterMedia(doc, turnID: turn.id, character: c)
+            }
             self.memoryPassIfDue(doc, character: c, key: key, client: client)
         }
         runAgent(doc, key: key, client: client, setup: setup, add: add)

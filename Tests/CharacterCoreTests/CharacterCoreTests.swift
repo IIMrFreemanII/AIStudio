@@ -23,7 +23,7 @@ private func sample(_ name: String = "Ava", age: Int = 28) -> Character {
 
     @Test func roundTrip() throws {
         var c = sample()
-        c.loras = [CharacterLoRA(link: "civitai:1", strength: 0.5)]
+        c.loras = [CharacterLoRA(lora: "civitai:1", strength: 0.5)]
         c.artModel = ArtModel(family: .chroma, style: .anime, variant: "v1")
         c.selectedPortrait = "a.png"
         let data = try CharacterStore.encoder.encode(c)

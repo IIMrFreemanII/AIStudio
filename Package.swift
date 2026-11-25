@@ -345,7 +345,7 @@ let package = Package(
         // Character chat: companion characters, memory, prompts, media tags and storage (no UI).
         .target(
             name: "CharacterCore",
-            dependencies: ["MovieCore", "LLMClient", "Agent"]
+            dependencies: ["MovieCore", "LLMClient", "Agent", "GraphRuntime"]
         ),
         // Drives other Mac apps for the coding agent's UI testing: accessibility, CGEvent, ScreenCaptureKit, AVFoundation.
         .target(

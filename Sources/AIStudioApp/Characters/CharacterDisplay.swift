@@ -1,10 +1,16 @@
 import CharacterCore
+import LLMClient
+import MovieCore
 import SwiftUI
 
-/// How a character's reply shows in the transcript. Media are generated in a later update; for now a tag shows as a
-/// placeholder line.
+/// How a character's reply shows in the transcript: a photo tag is its picture once taken, else a line about where it
+/// is; the other kinds are placeholder lines for now.
 enum CharacterDisplay {
     static func markdown(_ text: String) -> String {
+        markdown(ChatTurn(role: .assistant, text: text))
+    }
+
+    static func markdown(_ turn: ChatTurn) -> String {
         func label(_ k: CharacterCore.MediaKind) -> (icon: String, name: String) {
             switch k {
             case .photo: ("📷", "Photo")
@@ -13,11 +19,25 @@ enum CharacterDisplay {
             case .talk: ("🗣", "Video message")
             }
         }
-        return MediaTags.segments(text).map { seg -> String in
+        var index = 0
+        return MediaTags.segments(turn.text).map { seg -> String in
             switch seg {
             case .text(let s): return s
             case .media(let r):
                 let l = label(r.kind)
+                defer { index += 1 }
+                if r.kind == .photo, let media = turn.media, media.indices.contains(index) {
+                    let m = media[index]
+                    switch m.status {
+                    case .done:
+                        if let file = m.file { return "![Photo](\(file))" }
+                    case .running: return "> 📷 *Taking a photo…*"
+                    case .waiting:
+                        return "> 📷 *Photo · about \(m.estimateUSD.map { CostEstimate.format($0) } ?? "?") — waiting for your OK*"
+                    case .failed: return "> 📷 *Couldn't take that photo: \(m.error ?? "unknown error")*"
+                    case .skipped: return "> 📷 *Photo skipped*"
+                    }
+                }
                 return "> \(l.icon) *\(l.name):* \(r.text)"
             case .pending(let k):
                 let l = label(k)

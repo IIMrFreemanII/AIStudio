@@ -249,7 +249,29 @@ enum Snapshot {
     /// 61–63: the character gallery, the editor on a template, and a character's memory with two facts.
     static func renderCharacters(to dir: URL) async {
         let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
-        let mia = CharacterTemplates.make(CharacterTemplates.all[0])
+        var mia = CharacterTemplates.make(CharacterTemplates.all[0])
+        // Dummy portraits and album photos (flat colours), in the throwaway store.
+        func dummy(_ name: String, in folder: URL, hue: CGFloat) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let img = NSImage(size: NSSize(width: 160, height: 200))
+            img.lockFocus()
+            NSColor(hue: hue, saturation: 0.45, brightness: 0.85, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: 160, height: 200).fill()
+            NSColor(hue: hue, saturation: 0.6, brightness: 0.6, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 45, y: 60, width: 70, height: 90)).fill()
+            img.unlockFocus()
+            if let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: folder.appendingPathComponent(name))
+            }
+        }
+        let portraitsDir = m.characterStore.portraitsFolder(mia.id)
+        for (i, n) in ["portrait-a.png", "portrait-b.png", "portrait-c.png"].enumerated() {
+            dummy(n, in: portraitsDir, hue: 0.05 + CGFloat(i) * 0.3)
+        }
+        mia.portraits = ["portrait-a.png", "portrait-b.png", "portrait-c.png"]
+        mia.selectedPortrait = "portrait-b.png"
+        mia.loras = [CharacterLoRA(lora: "detail-tweaker", strength: 0.6), CharacterLoRA(lora: "soft-light", strength: 1.1)]
         m.characters = [mia, CharacterTemplates.make(CharacterTemplates.all[2])]
         await render(sheet(CharacterGallery().environment(m)), to: dir.appendingPathComponent("61-character-gallery.png"),
                      size: CGSize(width: 768, height: 648))
@@ -269,6 +291,12 @@ enum Snapshot {
         memory.relationship.affection = 47
         memory.summary = "You met on a rainy Tuesday and talked about painting until closing time."
         memory.spentUSD = 0.04
+        let albumDir = m.characterStore.albumFolder(mia.id)
+        for i in 0..<5 {
+            dummy("photo-\(i).png", in: albumDir, hue: 0.1 + CGFloat(i) * 0.17)
+            memory.album.append(AlbumItem(file: "photo-\(i).png", kind: .photo, prompt: "selfie",
+                                          date: Date(timeIntervalSinceNow: -Double(i) * 86_400)))
+        }
         try? m.characterStore.saveMemory(memory, for: mia.id)
         await render(sheet(CharacterMemoryView(characterID: mia.id).environment(m)),
                      to: dir.appendingPathComponent("63-character-memory.png"), size: CGSize(width: 608, height: 728))

@@ -168,6 +168,10 @@ public enum MovieArt {
     public struct Render: Sendable, Equatable {
         public var values: [String: JSONValue]
         public var unusedPictures: Set<String>
+        public init(values: [String: JSONValue], unusedPictures: Set<String>) {
+            self.values = values
+            self.unusedPictures = unusedPictures
+        }
     }
 
     public static func sheetRender(_ c: MovieCharacter, movie: MovieProject, seed: Int, server: String) -> Render {

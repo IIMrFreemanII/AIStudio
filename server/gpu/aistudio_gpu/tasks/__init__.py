@@ -318,8 +318,10 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "sampler": Param("string", "dpmpp-2m-karras", choices=("dpmpp-2m-karras", "euler-a", "euler")),
         # A fine-tune installed from a link (variants.py), by its id; "base" is SDXL 1.0 itself.
         "model": Param("string", "base"),
+        # How strongly the face picture (the optional `face` input) steers the result.
+        "face_strength": Param("float", 0.6, min=0.0, max=1.0),
         **_lora_params(),
-    }, optional_inputs=LORA_INPUTS, models=("sdxl",)),
+    }, optional_inputs=("face",) + LORA_INPUTS, models=("sdxl",)),
     TaskSpec("ace-step-xl", "ACE-Step 1.5 XL music", "audio", "music", GPU_AUDIO, {
         "tags": Param("string", ""),  # the style: genre, instruments, mood, voice
         "lyrics": Param("string", "[Instrumental]"),

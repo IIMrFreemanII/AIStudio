@@ -62,6 +62,8 @@ struct CharacterEditor: View {
                 } footer: {
                     Text("Greeting: their first message in a new chat. Leave empty to start yourself.")
                 }
+                CharacterLookSection(c: $c, isNew: edit.isNew)
+                CharacterPhotosSection(c: $c)
                 MGSection("Voice") {
                     MGFormRow("Voice description") { TextField("soft, warm and bright", text: $c.voice).frame(maxWidth: 300) }
                 } footer: {
@@ -91,7 +93,7 @@ struct CharacterEditor: View {
                         }
                     }
                 } footer: {
-                    Text("Photos and videos arrive in a later update.")
+                    Text("Videos and voice messages arrive in a later update.")
                 }
             }
             MGDivider()
