@@ -12,7 +12,7 @@ script (fetched at the diffusers release the server pins, checked by its hash).
 
 The image models of the Stable Diffusion family: SD 3.5 Large (gated, ≈ 27.6 GB: bf16 transformer, three text
 encoders, VAE), its Large Turbo transformer (gated, ≈ 16.3 GB; everything else is shared with Large) and SDXL 1.0
-(≈ 7 GB, the fp16 files only). Their repos also hold fp16 duplicates, ComfyUI single files, flax, onnx and openvino
+(≈ 7 GB, the fp16 files only), and Chroma1-HD with its Flash transformer and a face adapter (≈ 48 GB). Their repos also hold fp16 duplicates, ComfyUI single files, flax, onnx and openvino
 copies; the allow lists leave those out.
 """
 
@@ -162,6 +162,22 @@ MODELS: dict[str, dict] = {
     "sdxl-face": {"repo": "h94/IP-Adapter", "revision": "018e402774aeeddd60609b4ecdb7e298259dc729",
                   "allow": ["models/image_encoder/config.json", "models/image_encoder/model.safetensors",
                             "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors"]},
+    # Chroma1-HD (Apache-2.0, an 8.9B Flux-based model, lodestones): the diffusers layout only (bf16 transformer
+    # ≈ 17.8 GB, the T5-XXL text encoder ≈ 9.5 GB, the VAE), not the repo's single-file copy. ≈ 27.5 GB.
+    "chroma": {"repo": "lodestones/Chroma1-HD", "revision": "0e0c60ece1e82b17cb7f77342d765ba5024c40c0", "allow": [
+        "model_index.json", "scheduler/*", "text_encoder/*", "tokenizer/*", "transformer/*", "vae/*"]},
+    # Chroma1-Flash (Apache-2.0): Chroma1-HD with CFG baked in (few steps, no guidance pass); only its transformer
+    # (≈ 17.8 GB), swapped into the loaded pipeline in place, like SD 3.5 Large Turbo.
+    "chroma-flash": {"repo": "lodestones/Chroma1-Flash", "revision": "093c4f63b60507234aa53a073f1f9f565b3f4336",
+                     "allow": ["transformer/*"]},
+    # A face picture for Chroma: XLabs' FLUX.1 IP-Adapter v2 (Apache-2.0, 16 image tokens, ≈ 1.06 GB) with the CLIP
+    # ViT-L/14 image encoder it was trained on (≈ 1.7 GB). Chroma's transformer keeps Flux's 19 double blocks.
+    "chroma-face": {"repo": "XLabs-AI/flux-ip-adapter-v2", "parts": [
+        ("XLabs-AI/flux-ip-adapter-v2", "d1507fa7314df9f7dbe30a1e9659e5e634a58464", "adapter", {
+            "ip_adapter.safetensors": "ip_adapter.safetensors"}),
+        ("openai/clip-vit-large-patch14", "32bd64288804d66eefd0ccbe215aa642df71cc41", "image_encoder", [
+            "config.json", "model.safetensors", "preprocessor_config.json"]),
+    ]},
 }
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"],
@@ -172,7 +188,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
           "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"],
-          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face"]}
+          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face"],
+          "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"
                  "convert_stable_audio_3_to_diffusers.py",
                  "ee782fa2dfacc637251d00add7cee93f6c3aafcbed6abf111ff209947d98267f")

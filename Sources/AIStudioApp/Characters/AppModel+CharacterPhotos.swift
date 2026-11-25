@@ -4,8 +4,8 @@ import LLMClient
 import MovieCore
 import NodesRemote
 
-/// The pictures in a character chat: the photos a reply's tags ask for (SDXL on the chat's Cloud GPU server, keeping
-/// the face of the character's portrait), and the portraits themselves.
+/// The pictures in a character chat: the photos a reply's tags ask for (SDXL or Chroma on the chat's Cloud GPU server,
+/// keeping the face of the character's portrait), and the portraits themselves.
 extension AppModel {
     /// What one photo may cost without asking (UserDefaults; 5 cents when unset).
     /// Automated runs keep it in memory: they must not change the user's setting.
@@ -28,15 +28,16 @@ extension AppModel {
         return connections.gpuServers.first?.id
     }
 
-    /// What one more photo would cost on `server` (its job, plus loading the model when it's cold); nil when the
-    /// price isn't known.
-    func photoEstimate(server: String) -> Double? {
+    /// What one more photo of `family` would cost on `server` (its job, plus loading the model when it's cold); nil
+    /// when the price isn't known.
+    func photoEstimate(server: String, family: ArtModel.Family = .sdxl) -> Double? {
+        let task = CharacterArt.task(family)
         guard case .gpuOnline(let info)? = connections.status[server],
-              let price = info.task("sdxl")?.pricePerSecond else { return nil }
+              let price = info.task(task)?.pricePerSecond else { return nil }
         let timings = GPUTimings.load(gpuTimingsURL)
-        let warm = timings.isWarm(task: "sdxl", idleSeconds: Double(info.idleSeconds ?? 120))
+        let warm = timings.isWarm(task: task, idleSeconds: Double(info.idleSeconds ?? 120))
         let mp = Double(CharacterArt.photoSize.width * CharacterArt.photoSize.height) / 1e6
-        let seconds = timings.seconds(task: "sdxl", megapixels: mp) + (warm ? 0 : timings.loadSeconds(task: "sdxl"))
+        let seconds = timings.seconds(task: task, megapixels: mp) + (warm ? 0 : timings.loadSeconds(task: task))
         return seconds * price
     }
 
@@ -48,7 +49,7 @@ extension AppModel {
         let requests = MediaTags.parse(turn.text).requests
         guard !requests.isEmpty else { return }
         let server = photoServer(for: doc)
-        let estimate = server.flatMap { photoEstimate(server: $0) }
+        let estimate = server.flatMap { photoEstimate(server: $0, family: c.artModel.family) }
         let media = requests.map { r -> ChatMedia in
             guard r.kind == .photo else {
                 return ChatMedia(kind: r.kind.rawValue, prompt: r.text, status: .skipped, error: "Only photos for now")
@@ -124,7 +125,7 @@ extension AppModel {
         let render = CharacterArt.render(c, prompt: CharacterArt.photoPrompt(c, request: media.prompt, scene: scene),
                                          seed: Int.random(in: 0..<Int(Int32.max)), server: server, face: face)
         do {
-            let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(loras: c.loras.count),
+            let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
                                                              render: render, title: "\(c.name)'s photo")
             // The jobs cost money even if the picture then can't be saved.
             let cost = recordGPUJobs(jobs)
@@ -168,7 +169,7 @@ extension AppModel {
             let render = CharacterArt.render(c, prompt: CharacterArt.portraitPrompt(c), seed: Int.random(in: 0..<Int(Int32.max)),
                                              server: server, face: nil)
             let (outputs, jobs) = try await runHeadlessGraph(
-                template: CharacterArt.template(loras: c.loras.count), render: render,
+                template: CharacterArt.template(c.artModel.family, loras: c.loras.count), render: render,
                 title: "\(c.name)'s portrait \(i + 1) of \(count)", progress: progress)
             let cost = recordGPUJobs(jobs)
             var m = characterStore.memory(id)

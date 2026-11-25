@@ -1239,7 +1239,7 @@ extension SmokeTest {
         for (i, url) in loras.enumerated() { try? Data(repeating: UInt8(i + 1), count: 1 << 20).write(to: url) }
         for (id, video) in [("cloud-flux", false), ("cloud-flux-lora", false), ("cloud-qwen-image", false),
                             ("cloud-qwen-edit", false), ("cloud-sd35", false), ("cloud-sdxl", false),
-                            ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
+                            ("cloud-chroma", false), ("cloud-wan-t2v", true), ("cloud-wan-i2v", true)] {
             guard let p = model.preset(id: id) else { say("\(id): missing"); ok = false; continue }
             let doc = model.openPreset(p)
             model.setLiteral(.int(id == "cloud-sdxl" ? 512 : 256), node: "cloud", input: "width", undoManager: nil)
@@ -1253,7 +1253,7 @@ extension SmokeTest {
                 guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
                 model.addCloudLoRA(loras[1], strength: 0.7, undoManager: nil)
             }
-            if id == "cloud-qwen-image" || id == "cloud-sdxl" {  // a LoRA chain on the Qwen-Image / SDXL node, from Add to Workflow
+            if id == "cloud-qwen-image" || id == "cloud-sdxl" || id == "cloud-chroma" {  // a LoRA chain on the Qwen-Image / SDXL / Chroma node, from Add to Workflow
                 guard model.canAdd(.lora) else { say("\(id): Add to Workflow › LoRA unavailable"); ok = false; continue }
                 model.addCloudLoRA(loras[0], undoManager: nil)
             }
@@ -1274,7 +1274,7 @@ extension SmokeTest {
             let cost = doc.nodeStatus["cloud"] ?? ""
             let embedded = video ? await MediaIO.readMetadata(result)["aistudio.graph"] : AppModel.embeddedGraph(in: result).map { _ in "png" }
             var loraOK = true
-            if id == "cloud-flux-lora" || id == "cloud-qwen-image" || id == "cloud-sdxl" {
+            if id == "cloud-flux-lora" || id == "cloud-qwen-image" || id == "cloud-sdxl" || id == "cloud-chroma" {
                 let count: Float = id == "cloud-flux-lora" ? 2 : 1
                 let image = (try? ImageArray.load(result)).map { ImageArray.array(from: $0) }
                 let top = image.map { abs($0[0, 0..., ..<3] - count / 4).max().item(Float.self) } ?? 1
@@ -1367,7 +1367,7 @@ extension SmokeTest {
             var modelRemote = remote
             modelRemote.kind = .model
             for (family, presetID) in [("flux.1", "cloud-flux"), ("qwen-image", "cloud-qwen-image"),
-                                       ("sdxl", "cloud-sdxl"), ("wan-2.2-t2v", "cloud-wan-t2v")] {
+                                       ("sdxl", "cloud-sdxl"), ("chroma", "cloud-chroma"), ("wan-2.2-t2v", "cloud-wan-t2v")] {
                 guard let preset = model.preset(id: presetID) else { ok = false; continue }
                 var fineTune = modelRemote
                 if family.hasPrefix("wan") { fineTune.expert = "low" }  // one expert's file; the other stays the base's

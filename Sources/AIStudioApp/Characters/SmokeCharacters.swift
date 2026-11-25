@@ -1,6 +1,7 @@
 import CharacterCore
 import Foundation
 import LLMClient
+import MovieCore
 
 extension SmokeTest {
     /// `--smoke-characters <url>`: against a GPU server run with `AISTUDIO_FAKE_LLM=1`, checks the age guard, saving a
@@ -133,6 +134,27 @@ extension SmokeTest {
         check(model.scene(of: doc)?.id == "dinner", "the scene is the dinner date")
         let after = await send(doc, "how is the food")
         check(after?.error == nil && after?.text == "You said: how is the food", "a reply in the new scene")
+
+        // g2. The same character drawn by Chroma: the selfie runs the server's `chroma` task (full Chroma, with the
+        // portrait as the face).
+        if var chroma = model.character(c.id) {
+            chroma.artModel.family = .chroma
+            check(model.saveCharacter(chroma).isEmpty, "\(c.name) now draws with Chroma")
+        }
+        let chromaJobsBefore = GPUTimings.load(model.gpuTimingsURL).lastJob["chroma"]
+        let chromaSelfie = await send(doc, "send a selfie")
+        var chromaTurn = chromaSelfie
+        let chromaDeadline = Date().addingTimeInterval(30)
+        while Date() < chromaDeadline {
+            chromaTurn = chromaSelfie.flatMap { doc.transcript.turn($0.id) }
+            if let st = chromaTurn?.media?.first?.status, st == .done || st == .failed { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let chromaPhoto = chromaTurn?.media?.first
+        let chromaJob = GPUTimings.load(model.gpuTimingsURL).lastJob["chroma"]
+        check(chromaPhoto?.status == .done && chromaJob != nil && chromaJob != chromaJobsBefore,
+              "the Chroma photo is done by the chroma task (\(chromaPhoto?.status.rawValue ?? "none") \(chromaPhoto?.error ?? ""))")
+        check(model.characterStore.memory(c.id).album.count == 2, "the album lists both photos")
 
         // h. Saved.
         model.saveChat(doc)

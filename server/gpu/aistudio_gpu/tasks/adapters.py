@@ -42,16 +42,14 @@ class AdapterSlots:
     def _use_variant(self, vid: str, sink) -> None:
         """Loads a fine-tune's transformer weights in place (or the base model's again); a re-run with the same model
         costs nothing. A Wan fine-tune of one expert leaves the other transformer the base's."""
-        from .. import variants
-
         vid = vid or "base"
         if vid == self.variant:
             return
-        if vid != "base" and not variants.installed(self.models_root, self.family, vid):
+        if vid != "base" and not self._variant_installed(vid):
             raise ValueError(f"the model {vid!r} isn't installed on this server: install it from the app's Models window")
         parts = self.variant_components or self.components
-        base = {c: variants.transformer_dir(self.models_root, self.family, "base", c) for c in parts}
-        wanted = {c: variants.transformer_dir(self.models_root, self.family, vid, c) for c in parts}
+        base = {c: self._variant_dir("base", c) for c in parts}
+        wanted = {c: self._variant_dir(vid, c) for c in parts}
         changed = [c for c in parts if self.loaded.get(c, base[c]) != wanted[c]]
         self.variant = None  # half-loaded if this fails: the next job reloads
         if changed:
@@ -63,6 +61,17 @@ class AdapterSlots:
             _copy_weights(getattr(self.pipe, c), wanted[c], vid)
             self.loaded[c] = wanted[c]
         self.variant = vid
+
+    def _variant_installed(self, vid: str) -> bool:
+        from .. import variants
+
+        return variants.installed(self.models_root, self.family, vid)
+
+    def _variant_dir(self, vid: str, component: str) -> Path:
+        """Where a variant's weights for ``component`` are; a worker may add its own (Chroma's Flash transformer)."""
+        from .. import variants
+
+        return variants.transformer_dir(self.models_root, self.family, vid, component)
 
     # MARK: LoRAs
 

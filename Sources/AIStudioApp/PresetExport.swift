@@ -386,6 +386,15 @@ enum PresetExport {
                             "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
                      ])
                  }),
+            Spec(id: "cloud-chroma", name: "Chroma · Cloud GPU", category: .image, models: [],
+                 modelName: "Chroma1-HD on a GPU server",
+                 summary: "Chroma1-HD, a Flux-based open model, on an NVIDIA GPU. Fast mode runs Chroma1-Flash (16 steps); Chroma fine-tunes and LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteChroma", literals: [
+                        "prompt": .string("A portrait of an old fisherman, weathered face, golden hour light, shallow depth of field, photo"),
+                        "negative": .string("low quality, blurry, deformed, watermark"),
+                     ], output: "image", outputDirectory: out)
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

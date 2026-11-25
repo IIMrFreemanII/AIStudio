@@ -50,7 +50,7 @@ struct LibrarySection: View {
         } footer: {
             Text(kind == .lora
                  ? "On this Mac they're kept in \(LoRADownloads.folder(models: store.modelsDirectory).path). Most Civitai files need your API key (below); a GPU server uses its own (the civitai Modal secret)."
-                 : "On this Mac a fine-tune is converted to 8-bit next to its base model (in \(store.modelsDirectory.path)), which must be installed first; SDXL fine-tunes run only on a GPU server. A GPU server downloads and converts it itself (a few minutes of CPU time; 7–24 GB on its models Volume).")
+                 : "On this Mac a fine-tune is converted to 8-bit next to its base model (in \(store.modelsDirectory.path)), which must be installed first; SDXL and Chroma fine-tunes run only on a GPU server. A GPU server downloads and converts it itself (a few minutes of CPU time; 7–24 GB on its models Volume).")
                 .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
         }
         .task(id: model.connections.gpuServers.map(\.id)) { lib.checkServers(model.connections.gpuServers.map(\.id)) }
@@ -118,7 +118,7 @@ struct LibraryRow: View {
         let mac = lib.macState(item)
         MGMenuItem.button("Rename…") { newTitle = item.title; renaming = true }
         MGMenuItem.menu("Family") {
-            for f in [nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "wan-2.2-t2v", "wan-2.2-i2v"] as [String?] {
+            for f in [nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v"] as [String?] {
                 MGMenuItem.button(LoRASources.familyName(f), checked: item.family == f) { lib.setFamily(item.id, f) }
             }
         }
@@ -294,7 +294,7 @@ struct LibraryAddSheet: View {
             if canChooseDetails {
                 MGFormRow("Name") { TextField("Name", text: $title).frame(width: 300) }
                 MGFormRow("Family") {
-                    MGPicker(selection: $family, options: ([nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large",
+                    MGPicker(selection: $family, options: ([nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "chroma",
                                                             "wan-2.2-t2v", "wan-2.2-i2v"] as [String?]).map { ($0, LoRASources.familyName($0)) })
                 }
                 VStack(alignment: .leading, spacing: 6) {
@@ -321,7 +321,7 @@ struct LibraryAddSheet: View {
                             .foregroundStyle(MG.warning).fixedSize(horizontal: false, vertical: true)
                     }
                     if isModel && family == nil {
-                        Text("Pick the family: FLUX.1, Qwen-Image (cloud), Qwen-Image 2.1 (this Mac), SDXL (cloud), SD 3.5 Large (cloud) or Wan 2.2.")
+                        Text("Pick the family: FLUX.1, Qwen-Image (cloud), Qwen-Image 2.1 (this Mac), SDXL (cloud), SD 3.5 Large (cloud), Chroma (cloud) or Wan 2.2.")
                             .foregroundStyle(MG.warning)
                     }
                     ForEach(model.connections.gpuServers) { s in
@@ -414,11 +414,11 @@ struct LibraryAddSheet: View {
             title = (r.title ?? r.fileName).components(separatedBy: " · ").first ?? r.fileName
             family = r.baseModel.flatMap(LoRASources.family(forBaseModel:))
             if r.baseModel != nil, family == nil {
-                lookup = .failed("This \(r.kind == .lora ? "LoRA" : "model") is for \(r.baseModel!), which the app doesn't run (FLUX.1, Qwen-Image, SDXL, SD 3.5 and Wan 2.2 do).")
+                lookup = .failed("This \(r.kind == .lora ? "LoRA" : "model") is for \(r.baseModel!), which the app doesn't run (FLUX.1, Qwen-Image, SDXL, SD 3.5, Chroma and Wan 2.2 do).")
                 return
             }
             if r.kind == .model { onMac = LinkLibrary.macModelRefusal(family) == nil }
-            // A LoRA for a model this Mac doesn't run (SDXL, SD 3.5, Qwen-Image 20B): off unless asked for, since a
+            // A LoRA for a model this Mac doesn't run (SDXL, SD 3.5, Chroma, Qwen-Image 20B): off unless asked for, since a
             // server downloads a linked LoRA itself.
             else { onMac = family.map { LinkLibrary.macModelBases[$0] != nil } ?? true }
             async let mac = LoRADownloads.probe(r, models: ModelPaths.directory)

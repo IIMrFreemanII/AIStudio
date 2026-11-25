@@ -210,6 +210,8 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(LoRASources.familyName("sdxl") == "SDXL")
         #expect(LoRASources.familyName("sd3.5-large") == "SD 3.5 Large")
         #expect(LoRASources.familyName("sd3.5-medium") == "SD 3.5 Medium")
+        #expect(LoRASources.family(forBaseModel: "Chroma") == "chroma")
+        #expect(LoRASources.familyName("chroma") == "Chroma")
     }
 
     @Test func sdxlAndSD35LoRAsMustFitTheirModels() throws {
@@ -223,6 +225,9 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(throws: LoRASourceError.wrongBaseModel("SD 3.5 Medium", expected: "SD 3.5 Large")) {
             try lora("SD 3.5 Medium").checkFits("sd3.5-large")
         }
+        try lora("Chroma").checkFits("chroma")
+        // Chroma is Flux-based, but FLUX.1 LoRAs don't fit its pruned transformer well: refused.
+        #expect(throws: LoRASourceError.wrongBaseModel("Flux.1 D", expected: "Chroma")) { try lora("Flux.1 D").checkFits("chroma") }
     }
 
     @Test func cloudImageNodesAreRegistered() {
@@ -230,7 +235,10 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.taskID(forNodeType: "RemoteSDXL") == "sdxl")
         #expect(RemoteNodes.libraryFamilies["RemoteSD35"] == "sd3.5-large")
         #expect(RemoteNodes.libraryFamilies["RemoteSDXL"] == "sdxl")
-        #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL"]))
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteChroma") == "chroma")
+        #expect(RemoteNodes.libraryFamilies["RemoteChroma"] == "chroma")
+        #expect(RemoteNodes.baseTitle(family: "chroma") == "Chroma1-HD (base)")
+        #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))
     }
 
     @Test func huggingFaceTreeAndRedirectHeaders() throws {

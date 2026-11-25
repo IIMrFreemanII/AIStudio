@@ -295,6 +295,28 @@ def test_fake_models_sdxl_accepts_a_face_picture(tmp_path, monkeypatch):
     assert Image.open(out.path).size == (512, 512)
 
 
+def test_fake_models_chroma_accepts_a_face_picture(tmp_path, monkeypatch):
+    """Character photos on Chroma against the fake server: a face picture is accepted and the size kept."""
+    from PIL import Image
+
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+
+    class Sink:
+        def status(self, t): pass
+        def progress(self, s, t): pass
+        def preview(self, *a): pass
+        def check(self): pass
+
+    face = tmp_path / "face.png"
+    Image.new("RGB", (16, 16), (200, 150, 120)).save(face)
+    spec = TASKS["chroma"]
+    out = make_worker(spec.family).run(spec, spec.normalize({"width": 512, "height": 768}), {"face": face}, Sink(),
+                                       tmp_path)
+    assert Image.open(out.path).size == (512, 768)
+
+
 def test_fake_models_image_to_video_starts_and_ends_on_its_pictures(tmp_path, monkeypatch):
     """The movie studio's shots against the fake server: the first frame is the start picture, the last frame the
     end picture (``last_image``) when there is one."""

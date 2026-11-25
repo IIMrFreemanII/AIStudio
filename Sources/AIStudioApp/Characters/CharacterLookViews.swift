@@ -67,7 +67,7 @@ struct CharacterLookSection: View {
 
     private var footer: String {
         var s = "Their face in photos comes from the chosen portrait."
-        if let server, let each = model.photoEstimate(server: server) {
+        if let server, let each = model.photoEstimate(server: server, family: c.artModel.family) {
             s += " Making 4 costs about \(CostEstimate.format(4 * each))."
         }
         return s
@@ -186,18 +186,28 @@ private struct PortraitThumb: View {
     }
 }
 
-/// The art style, SDXL model and LoRAs their photos use, and what one photo may cost without asking.
+/// The image model (SDXL or Chroma, and a fine-tune of it), art style and LoRAs their photos use, and what one photo
+/// may cost without asking.
 struct CharacterPhotosSection: View {
     @Environment(AppModel.self) private var model
     @Binding var c: AppModel.Companion
     @State private var autoUSD = 0.05
 
     private var library: LinkLibrary? { model.store?.library }
-    private var fineTunes: [LibraryEntry] { library?.models(for: "sdxl") ?? [] }
-    private var loras: [LibraryEntry] { library?.loras(for: "sdxl") ?? [] }
+    /// The library family of the character's image model.
+    private var family: String { c.artModel.family.rawValue }
+    private var familyName: String { LoRASources.familyName(family) }
+    private var fineTunes: [LibraryEntry] { library?.models(for: family) ?? [] }
+    private var loras: [LibraryEntry] { library?.loras(for: family) ?? [] }
 
     var body: some View {
         MGSection("Photos") {
+            MGFormRow("Image model") {
+                MGSegmentedPicker(selection: modelFamily,
+                                  options: ArtModel.Family.allCases.map { ($0, $0 == .chroma ? "Chroma" : "SDXL") })
+                    .frame(width: 200)
+                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo")
+            }
             MGFormRow("Style") {
                 MGSegmentedPicker(selection: $c.artModel.style,
                                   options: ArtModel.Style.allCases.map { ($0, $0 == .anime ? "Anime" : "Photoreal") })
@@ -206,14 +216,14 @@ struct CharacterPhotosSection: View {
             }
             MGFormRow("Model") {
                 MGPicker(selection: variant, options: variantOptions, maxWidth: 260)
-                    .mgHelp("The SDXL fine-tune that draws their photos (from the Models library)")
+                    .mgHelp("The \(familyName) fine-tune that draws their photos (from the Models library)")
             }
             ForEach(Array(c.loras.enumerated()), id: \.offset) { i, _ in loraRow(i) }
             if c.loras.count < CharacterArt.maxLoRAs {
                 HStack {
                     Button("Add LoRA") { c.loras.append(CharacterLoRA(lora: loras.first?.id ?? "")) }
                         .buttonStyle(.mg(.bordered)).controlSize(.small).disabled(loras.isEmpty)
-                        .mgHelp(loras.isEmpty ? "Add an SDXL LoRA in the Models library first"
+                        .mgHelp(loras.isEmpty ? "Add a \(familyName) LoRA in the Models library first"
                                 : "Add a LoRA that shapes their photos (up to \(CharacterArt.maxLoRAs))")
                     Spacer(minLength: 0)
                 }
@@ -233,12 +243,22 @@ struct CharacterPhotosSection: View {
         .onAppear { autoUSD = min(max(model.characterAutoPhotoUSD, 0.01), 0.50) }
     }
 
+    /// Switching families drops the fine-tune and LoRAs: they only fit the model they were made for.
+    private var modelFamily: Binding<ArtModel.Family> {
+        Binding(get: { c.artModel.family }, set: { f in
+            guard f != c.artModel.family else { return }
+            c.artModel.family = f
+            c.artModel.variant = nil
+            c.loras = []
+        })
+    }
+
     private var variant: Binding<String> {
         Binding(get: { c.artModel.variant ?? "" }, set: { c.artModel.variant = $0.isEmpty ? nil : $0 })
     }
 
     private var variantOptions: [(value: String, title: String)] {
-        var o: [(value: String, title: String)] = [("", RemoteNodes.baseTitle(family: "sdxl"))]
+        var o: [(value: String, title: String)] = [("", RemoteNodes.baseTitle(family: family))]
         o += fineTunes.map { ($0.id, $0.title) }
         if let v = c.artModel.variant, !o.contains(where: { $0.value == v }) { o.append((v, "Missing: \(v)")) }
         return o
@@ -258,7 +278,7 @@ struct CharacterPhotosSection: View {
                 MGPicker(selection: Binding(get: { c.loras.indices.contains(i) ? c.loras[i].lora : "" },
                                             set: { if c.loras.indices.contains(i) { c.loras[i].lora = $0 } }),
                          options: loraOptions(current: c.loras[i].lora), placeholder: "Pick a LoRA", maxWidth: 170)
-                    .mgHelp("An SDXL LoRA from the Models library")
+                    .mgHelp("A \(familyName) LoRA from the Models library")
                 MGSlider(value: Binding(get: { c.loras.indices.contains(i) ? c.loras[i].strength : 0 },
                                         set: { if c.loras.indices.contains(i) { c.loras[i].strength = $0 } }),
                          in: -1...2, step: 0.05).frame(width: 100)

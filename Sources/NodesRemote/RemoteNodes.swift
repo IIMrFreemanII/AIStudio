@@ -13,7 +13,7 @@ public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
-        RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self,
+        RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteChromaNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self,
     ]
 
@@ -23,7 +23,7 @@ public enum RemoteNodes {
     /// The node types that need a GPU server (the app's server picker and presets look for these).
     public static var types: Set<String> { Set(all.map { $0.schema.type }) }
 
-    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large and SDXL tasks (`lora1` … `lora4`).
+    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL and Chroma tasks (`lora1` … `lora4`).
     public static let maxFluxLoRAs = 4
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
@@ -32,6 +32,7 @@ public enum RemoteNodes {
         "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
         "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
+        "RemoteChroma": "chroma",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
     ]
 
@@ -55,7 +56,7 @@ public enum RemoteNodes {
     /// The library family each cloud image node's `model` and LoRAs come from.
     public static let libraryFamilies: [String: String] = [
         "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
-        "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
+        "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
     ]
 
     /// The base model's name in a cloud node's `model` menu.
@@ -63,6 +64,7 @@ public enum RemoteNodes {
         switch family {
         case "qwen-image": return "Qwen-Image (base)"
         case "sdxl": return "SDXL 1.0 (base)"
+        case "chroma": return "Chroma1-HD (base)"
         case "sd3.5-large": return "SD 3.5 Large (base)"
         case "wan-2.2-t2v": return "Wan 2.2 T2V (base)"
         case "wan-2.2-i2v": return "Wan 2.2 I2V (base)"
@@ -639,7 +641,7 @@ public struct CloudLoRA: Sendable, Equatable {
     }
 }
 
-/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Wan 2.2) uses. Chain several (up to
+/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Chroma, Wan 2.2) uses. Chain several (up to
 /// four) to stack them; the model node refuses ones made for another model. A Wan 2.2 LoRA from Civitai or Hugging
 /// Face that comes as a high/low pair goes to each expert; a single file to both, or to the one its name says. `lora` picks it from the library (Models window); `path` (a file) is for graphs saved before the library.
 /// A LoRA from a link is downloaded by the GPU server itself; one that only exists on this Mac is uploaded with the
@@ -879,6 +881,54 @@ public struct RemoteSDXLNode: NodeImplementation {
                                                   family: "sdxl", to: &params)
         let (url, _) = try await runRemoteJob(task: "sdxl", params: params, images: images, files: files, links: links,
                                               inputs: inputs, context: context)
+        return ["image": .object(try loadImage(url))]
+    }
+}
+
+/// Chroma1-HD on a GPU server (Flux-based, uncensored), or a Chroma fine-tune from the library. `fast` runs
+/// Chroma1-Flash (CFG baked in: few steps, no guidance pass); the negative prompt needs `guidance` above 1 (the full
+/// model's default, 3), which doubles the GPU time per step. A face picture keeps the face (the server's FLUX.1
+/// IP-Adapter). A fine-tune always runs as full Chroma.
+public struct RemoteChromaNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteChroma", displayName: "Chroma (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("loras", .cloudLoRAs, optional: true),
+            InputSpec("face", .image, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 256, max: 2048, step: 16)),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 256, max: 2048, step: 16)),
+            // Chroma1-Flash: 16 steps without guidance.
+            InputSpec("fast", .bool, default: .bool(true), widget: .toggle),
+            // 0 = automatic (16 with fast, else 40).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
+            // 0 = automatic (none with fast, else 3).
+            InputSpec("guidance", .float, default: .double(0), widget: .number(min: 0, max: 20, step: 0.5), zeroLabel: "auto"),
+            // A Chroma fine-tune from the library, installed on the server (empty: Chroma1-HD itself).
+            InputSpec("model", .string, default: .string(""), widget: .library("model")),
+            InputSpec("face_strength", .float, default: .double(0.6), widget: .number(min: 0, max: 1, step: 0.05)),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "fast": try inputs.bool("fast"), "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+            "face_strength": try inputs.float("face_strength"),
+        ]
+        var images: [String: MLXArray] = [:]
+        if let face = inputs.optionalObject("face", as: MLXArray.self) { images["face"] = face }
+        let model = (try? inputs.string("model")) ?? ""
+        params["model"] = model.isEmpty ? "base" : model
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "chroma", to: &params)
+        let (url, _) = try await runRemoteJob(task: "chroma", params: params, images: images, files: files,
+                                              links: links, inputs: inputs, context: context)
         return ["image": .object(try loadImage(url))]
     }
 }

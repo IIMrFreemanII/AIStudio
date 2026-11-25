@@ -2,7 +2,8 @@ import Foundation
 import GraphRuntime
 import MovieCore
 
-/// What a character's photos are drawn with: the prompts (by the character's art style) and the SDXL graph.
+/// What a character's photos are drawn with: the prompts (by the character's art style) and the graph (SDXL or
+/// Chroma on a Cloud GPU server, by the character's art model).
 public enum CharacterArt {
     public static let photoSize = (width: 832, height: 1216)
     public static let faceStrength = 0.6
@@ -79,8 +80,18 @@ public enum CharacterArt {
         if let term = AgeGuard.youthTerm(in: request) { throw CharacterArtError.youthTerm(term) }
     }
 
-    /// The graph: Load Image (face) → SDXL (Cloud GPU) ← a chain of `loras` LoRA nodes → Preview Image.
-    public static func template(loras: Int) -> MovieTemplate {
+    /// The server task that draws a family's pictures (for prices and timings).
+    public static func task(_ family: ArtModel.Family) -> String {
+        switch family {
+        case .sdxl: "sdxl"
+        case .chroma: "chroma"
+        }
+    }
+
+    /// The graph: Load Image (face) → SDXL or Chroma (Cloud GPU) ← a chain of `loras` LoRA nodes → Preview Image.
+    /// Chroma runs in full (40 steps with guidance), not Flash: only guidance uses the negative prompt, which holds
+    /// AgeGuard's terms.
+    public static func template(_ family: ArtModel.Family = .sdxl, loras: Int) -> MovieTemplate {
         let n = min(max(loras, 0), maxLoRAs)
         var nodes = [GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))],
                                position: GraphPoint(x: 40, y: 40))]
@@ -89,9 +100,18 @@ public enum CharacterArt {
             "prompt": .value(.string("")), "negative": .value(.string("")), "seed": .value(.int(0)),
             "width": .value(.int(photoSize.width)), "height": .value(.int(photoSize.height)),
             "server": .value(.string("")), "model": .value(.string("")), "face_strength": .value(.double(faceStrength)),
-            "steps": .value(.int(30)), "guidance": .value(.double(6)), "sampler": .value(.string("dpmpp-2m-karras")),
             "face": .link(node: "face", output: "image"),
         ]
+        switch family {
+        case .sdxl:
+            gen["steps"] = .value(.int(30))
+            gen["guidance"] = .value(.double(6))
+            gen["sampler"] = .value(.string("dpmpp-2m-karras"))
+        case .chroma:
+            gen["fast"] = .value(.bool(false))
+            gen["steps"] = .value(.int(0))  // automatic: 40 at guidance 3
+            gen["guidance"] = .value(.double(0))
+        }
         for k in stride(from: 1, through: n, by: 1) {
             var inputs: [String: NodeInput] = ["lora": .value(.string("")), "strength": .value(.double(1))]
             if k > 1 { inputs["loras"] = .link(node: "lora\(k - 1)", output: "loras") }
@@ -101,7 +121,8 @@ public enum CharacterArt {
             slots["lora\(k)_strength"] = .init(node: "lora\(k)", input: "strength")
         }
         if n > 0 { gen["loras"] = .link(node: "lora\(n)", output: "loras") }
-        nodes.append(GraphNode(id: "image", type: "RemoteSDXL", inputs: gen, position: GraphPoint(x: 400, y: 60)))
+        let type = family == .chroma ? "RemoteChroma" : "RemoteSDXL"
+        nodes.append(GraphNode(id: "image", type: type, inputs: gen, position: GraphPoint(x: 400, y: 60)))
         nodes.append(GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
                                position: GraphPoint(x: 780, y: 80)))
         for name in ["prompt", "negative", "seed", "width", "height", "server", "model", "face_strength"] {
