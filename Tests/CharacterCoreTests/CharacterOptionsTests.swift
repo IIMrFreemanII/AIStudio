@@ -65,6 +65,36 @@ private func person(gender: String = "woman") -> Character {
         for g in ["non-binary", ""] {
             #expect(CharacterOptions.options(extras, gender: g) == extras.options)
         }
+        let bust = try #require(CharacterOptions.category("bust"))
+        #expect(CharacterOptions.options(bust, gender: "man").isEmpty)
+        let figure = try #require(CharacterOptions.category("figure"))
+        let womanFigure = CharacterOptions.options(figure, gender: "woman").map(\.id)
+        #expect(!womanFigure.contains("broad-chest") && !womanFigure.contains("hairy-chest"))
+    }
+
+    @Test func phrasesFollowGender() {
+        var man = person(gender: "man")
+        man.traits = ["bust": ["large"], "hairColor": ["red"]]
+        #expect(man.fullLook == "red hair")
+        var woman = person()
+        woman.traits = ["bust": ["large"], "butt": ["round"]]
+        #expect(woman.fullLook.contains("large breasts") && woman.fullLook.contains("a round butt"))
+        let prompt = CharacterArt.portraitPrompt(woman)
+        #expect(prompt.contains("large breasts") && prompt.contains("a round butt"))
+        woman.traits = ["extras": ["freckles"], "bust": ["small"]]
+        let look = woman.fullLook
+        let f = look.range(of: "freckles"), b = look.range(of: "small breasts")
+        #expect(f != nil && b != nil && f!.lowerBound < b!.lowerBound)
+    }
+
+    @Test func portraitPromptStaysShortWithManyLookPicks() {
+        var c = person()
+        for cat in CharacterOptions.categories(.look) {
+            c.traits[cat.id] = [cat.options[0].id]
+        }
+        let words = CharacterArt.portraitPrompt(c).split(whereSeparator: \.isWhitespace).count
+        print("portrait prompt words: \(words)")
+        #expect(words < 75, "\(words) words")
     }
 
     @Test func decodeWithoutTraitsAndRoundTrip() throws {
@@ -88,6 +118,8 @@ private func person(gender: String = "woman") -> Character {
             for opt in cat.options {
                 #expect(AgeGuard.youthTerm(in: opt.label) == nil, "\(cat.id)/\(opt.id)")
                 #expect(AgeGuard.youthTerm(in: opt.phrase) == nil, "\(cat.id)/\(opt.id)")
+                #expect(AgeGuard.youthTerm(in: CharacterOptions.hint(category: cat.id, option: opt.id)) == nil,
+                        "\(cat.id)/\(opt.id)")
             }
         }
         #expect(CharacterOptions.categories(.voice).map(\.id) == ["voiceTone", "voicePitch", "voicePace", "accent"])

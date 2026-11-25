@@ -164,9 +164,12 @@ public enum CharacterArt {
     }
 
     /// The values to bind for one picture. `face` nil: the face node is removed (portrait candidates).
-    public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?) -> MovieArt.Render {
+    /// `extraNegative` is added to the character's negative prompt (the option example photos use it).
+    public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?,
+                              extraNegative: String = "") -> MovieArt.Render {
+        let negative = extraNegative.isEmpty ? negative(c) : negative(c) + ", " + extraNegative
         var values: [String: JSONValue] = [
-            "prompt": .string(prompt), "negative": .string(negative(c)), "seed": .int(seed),
+            "prompt": .string(prompt), "negative": .string(negative), "seed": .int(seed),
             "width": .int(photoSize.width), "height": .int(photoSize.height), "server": .string(server),
             "model": .string(c.artModel.variant ?? ""), "face_strength": .double(faceStrength),
         ]

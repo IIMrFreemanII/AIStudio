@@ -436,8 +436,9 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
             ],
-            // JetBrains Mono (OFL), the design system's typeface.
-            resources: [.copy("Resources/Fonts")],
+            // JetBrains Mono (OFL), the design system's typeface; the creator's option example photos (made with
+            // OptionImageMaker).
+            resources: [.copy("Resources/Fonts"), .copy("Resources/OptionImages")],
             // AVKit's SwiftUI VideoPlayer (and the chat's PDF and Quick Look previews) need their frameworks linked
             // explicitly in a SwiftPM executable.
             linkerSettings: [.linkedFramework("AVKit"), .linkedFramework("AVFoundation"), .linkedFramework("WebKit"),

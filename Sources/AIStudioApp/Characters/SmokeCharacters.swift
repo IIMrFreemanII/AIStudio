@@ -1,3 +1,4 @@
+import AppKit
 import CharacterCore
 import Foundation
 import LLMClient
@@ -334,6 +335,22 @@ extension SmokeTest {
         } else {
             check(false, "a face reference for \(c.name)")
         }
+        // g9. Option pictures: the example maker on the fake server (two files), and the bundled examples.
+        let examplesOut = FileManager.default.temporaryDirectory.appendingPathComponent("option-examples-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: examplesOut) }
+        let (examples, _) = await OptionImageMaker.make(model, server: conn.id, out: examplesOut, categories: ["hairStyle"],
+                                                        limit: 2, say: say)
+        let sizes = examples.compactMap { NSImage(contentsOf: $0)?.representations.first }
+            .map { ($0.pixelsWide, $0.pixelsHigh) }
+        check(examples.count == 2 && sizes.allSatisfy { max($0.0, $0.1) == OptionImageMaker.maxPixelSize },
+              "the example maker writes small JPEGs (\(sizes))")
+        let bundled = CharacterOptions.examples.filter {
+            OptionImages.url(category: $0.category, option: $0.option, gender: $0.gender) != nil
+        }
+        check(bundled.count == CharacterOptions.examples.count,
+              "every option example is bundled (\(bundled.count) of \(CharacterOptions.examples.count))")
+        check(OptionImages.image(category: "hairStyle", option: "bob", gender: "non-binary") != nil,
+              "another gender gets the woman's example")
 
         // h. Saved.
         model.saveChat(doc)
