@@ -150,6 +150,11 @@ extension AppModel {
         guard let media = doc.transcript.turn(turnID)?.media?.first(where: { $0.id == mediaID }),
               let kind = CharacterCore.MediaKind(rawValue: media.kind) else { return }
         var cost: Double?
+        // Each step's progress shows on the media's line while it's made (cold starts can take minutes).
+        func phase(_ step: String) -> @MainActor (String) -> Void {
+            { [weak doc] text in doc?.mediaPhase[mediaID] = step.isEmpty ? text : "\(step): \(text)" }
+        }
+        defer { doc.mediaPhase[mediaID] = nil }
         func charge(_ c2: Double?) {
             guard let c2 else { return }
             cost = (cost ?? 0) + c2
@@ -169,19 +174,21 @@ extension AppModel {
             case .photo:
                 file = folder.appendingPathComponent("\(base).png")
                 charge(try await drawPhoto(c, prompt: CharacterArt.photoPrompt(c, request: media.prompt, scene: scene),
-                                           server: server, to: file, title: "\(c.name)'s photo"))
+                                           server: server, to: file, title: "\(c.name)'s photo", progress: phase("")))
             case .voice:
-                let (audio, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: base)
+                let (audio, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: base,
+                                                     phase: phase)
                 charge(spent)
                 file = audio
             case .video:
                 let still = folder.appendingPathComponent("\(base)-start.png")
                 charge(try await drawPhoto(c, prompt: CharacterMedia.videoStillPrompt(c, request: media.prompt, scene: scene),
-                                           server: server, to: still, title: "\(c.name)'s video (picture)"))
+                                           server: server, to: still, title: "\(c.name)'s video (picture)",
+                                           progress: phase("picture")))
                 let render = CharacterMedia.videoRender(c, prompt: CharacterMedia.motionPrompt(c, request: media.prompt),
                                                         start: still, seed: Self.mediaSeed(), server: server)
                 let (outputs, jobs) = try await runHeadlessGraph(template: CharacterMedia.videoTemplate(), render: render,
-                                                                 title: "\(c.name)'s video")
+                                                                 title: "\(c.name)'s video", progress: phase("clip"))
                 let s = CharacterMedia.videoSize
                 charge(recordGPUJobs(jobs, work: MovieShots.work(width: s.width, height: s.height,
                                                                  frames: MovieShots.frames(for: CharacterMedia.videoSeconds))))
@@ -189,15 +196,16 @@ extension AppModel {
             case .talk:
                 let still = folder.appendingPathComponent("\(base)-start.png")
                 charge(try await drawPhoto(c, prompt: CharacterMedia.talkStillPrompt(c, scene: scene), server: server,
-                                           to: still, title: "\(c.name)'s video message (picture)"))
-                let (voice, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: "\(base)-voice")
+                                           to: still, title: "\(c.name)'s video message (picture)", progress: phase("picture")))
+                let (voice, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: "\(base)-voice",
+                                                     phase: phase)
                 charge(spent)
                 let seconds = await MovieComposer.duration(of: voice) ?? CharacterMedia.speechSeconds(media.prompt)
                 guard seconds <= CharacterMedia.maxTalkSeconds + 0.05 else { throw CharacterMediaError.tooLong(seconds) }
                 let render = CharacterMedia.talkRender(c, prompt: CharacterMedia.talkPrompt(c), start: still, voice: voice,
                                                        seed: Self.mediaSeed(), server: server)
                 let (outputs, jobs) = try await runHeadlessGraph(template: CharacterMedia.talkTemplate(), render: render,
-                                                                 title: "\(c.name)'s video message")
+                                                                 title: "\(c.name)'s video message", progress: phase("clip"))
                 let s = CharacterMedia.videoSize
                 charge(recordGPUJobs(jobs, work: MovieShots.talkingWork(width: s.width, height: s.height, seconds: seconds)))
                 file = try copyOutput(outputs, .video, to: folder, base: base)
@@ -222,7 +230,8 @@ extension AppModel {
     private static func mediaSeed() -> Int { Int.random(in: 0..<Int(Int32.max)) }
 
     /// Draws one picture of the character (with the chosen portrait's face) into `file` (PNG); returns its cost.
-    private func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String) async throws -> Double? {
+    private func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String,
+                           progress: @escaping @MainActor (String) -> Void) async throws -> Double? {
         var face: URL?
         if let name = c.selectedPortrait {
             let url = characterStore.portraitsFolder(c.id).appendingPathComponent(name)
@@ -230,7 +239,7 @@ extension AppModel {
         }
         let render = CharacterArt.render(c, prompt: prompt, seed: Self.mediaSeed(), server: server, face: face)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
-                                                         render: render, title: title)
+                                                         render: render, title: title, progress: progress)
         // The jobs cost money even if the picture then can't be saved.
         let cost = recordGPUJobs(jobs)
         guard let image = outputs.first(where: { $0.kind == .image })?.image else { throw MovieArtError.noImage }
@@ -239,13 +248,15 @@ extension AppModel {
     }
 
     /// Says `text` in the character's voice (cloned from their chosen sample, made first when they have none) into
-    /// `folder` as `base` plus the file's own extension; returns the file and the cost of its jobs.
-    private func speak(_ c: Companion, text: String, server: String, to folder: URL, base: String) async throws -> (URL, Double?) {
+    /// `folder` as `base` plus the file's own extension; returns the file and the cost of its jobs. `phase` makes each
+    /// step's progress callback.
+    private func speak(_ c: Companion, text: String, server: String, to folder: URL, base: String,
+                       phase: (String) -> @MainActor (String) -> Void) async throws -> (URL, Double?) {
         var cost: Double?
         var sample = voiceSampleURL(c)
         var who = c
         if sample == nil {
-            let made = try await makeVoiceSample(for: c.id, server: server)
+            let made = try await makeVoiceSample(for: c.id, server: server, progress: phase("voice sample"))
             cost = made.cost
             who = character(c.id) ?? c
             sample = voiceSampleURL(who)
@@ -253,7 +264,7 @@ extension AppModel {
         guard let sample else { throw CharacterMediaError.noVoice }
         let render = CharacterMedia.voiceLineRender(who, text: text, sample: sample, seed: Self.mediaSeed(), server: server)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterMedia.voiceLineTemplate(who), render: render,
-                                                         title: "\(c.name)'s voice message")
+                                                         title: "\(c.name)'s voice message", progress: phase("voice"))
         let file = try copyOutput(outputs, .audio, to: folder, base: base)
         let seconds = await MovieComposer.duration(of: file) ?? CharacterMedia.speechSeconds(text)
         if let c2 = recordGPUJobs(jobs, work: MovieVoices.work(seconds: seconds)) { cost = (cost ?? 0) + c2 }
@@ -276,14 +287,15 @@ extension AppModel {
     /// server when nil); it's added to their samples and chosen when they have none chosen. Returns its file name
     /// and cost (also added to what the character has spent).
     @discardableResult
-    func makeVoiceSample(for id: UUID, server: String? = nil) async throws -> (name: String, cost: Double?) {
+    func makeVoiceSample(for id: UUID, server: String? = nil,
+                         progress: @escaping @MainActor (String) -> Void = { _ in }) async throws -> (name: String, cost: Double?) {
         guard let c = character(id) else { throw PortraitError.noCharacter }
         guard let server = server ?? connections.gpuServers.first?.id else { throw PortraitError.noServer }
         let folder = characterStore.voiceFolder(id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let render = CharacterMedia.voiceSampleRender(c, seed: Self.mediaSeed(), server: server)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterMedia.voiceSampleTemplate(c), render: render,
-                                                         title: "\(c.name)'s voice")
+                                                         title: "\(c.name)'s voice", progress: progress)
         let file = try copyOutput(outputs, .audio, to: folder, base: "voice-\(UUID().uuidString.prefix(8).lowercased())")
         let seconds = await MovieComposer.duration(of: file) ?? CharacterMedia.speechSeconds(MovieVoices.sampleText)
         let cost = recordGPUJobs(jobs, work: MovieVoices.work(seconds: seconds))

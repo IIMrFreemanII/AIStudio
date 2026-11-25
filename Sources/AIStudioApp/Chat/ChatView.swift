@@ -407,7 +407,7 @@ struct ChatTranscriptView: View {
                                                                   asking: doc.permission?.call.id)
                     ForEach(TranscriptRow.rows(shown, live: doc.liveTurnID, files: doc.isCoding ? doc.fileIndex : nil,
                                                bare: runs.bare, folding: folding,
-                                               display: doc.isCharacter ? { CharacterDisplay.markdown($0) } : nil)) { row in
+                                               display: doc.isCharacter ? { [phases = doc.mediaPhase] in CharacterDisplay.markdown($0, phases: phases) } : nil)) { row in
                         ChatTurnView(doc: doc, turn: row.turn, results: results, part: row.part,
                                      run: runs.steps[row.turn.id], latest: runs.latest.contains(row.turn.id))
                             .background(RoundedRectangle(cornerRadius: MGRadius.lg, style: .continuous)

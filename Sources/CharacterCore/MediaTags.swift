@@ -156,6 +156,9 @@ public enum MediaTags {
                 lines.append("- <talk>the exact words you say on camera, one or two short sentences</talk> sends a video of you saying them.")
             }
         }
+        if wanted.contains(.voice) || wanted.contains(.talk) {
+            lines.append("The words in a voice or video message are heard, not read: don't also write them outside the tag.")
+        }
         lines.append("Use at most one tag per message, and never describe or mention the tag itself.")
         return lines.joined(separator: "\n")
     }

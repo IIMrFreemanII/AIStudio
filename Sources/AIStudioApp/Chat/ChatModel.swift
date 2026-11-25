@@ -59,6 +59,8 @@ final class ChatDocument: Identifiable {
     var liveTurnID: UUID?
     /// The engine's state reported during the request (cold start phases).
     var engine: EngineStatus?
+    /// What each character media being made is doing ("picture: Starting GPU 0:42"), by `ChatMedia` id; not saved.
+    var mediaPhase: [UUID: String] = [:]
     /// When the request in progress started.
     var requestStarted: Date?
     /// Attachments for the message being written.

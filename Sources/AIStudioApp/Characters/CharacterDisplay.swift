@@ -25,7 +25,8 @@ enum CharacterDisplay {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    static func markdown(_ turn: ChatTurn) -> String {
+    /// `phases`: what each media being made is doing (`ChatDocument.mediaPhase`), shown on its line.
+    static func markdown(_ turn: ChatTurn, phases: [UUID: String] = [:]) -> String {
         var index = 0
         return MediaTags.segments(turn.text).map { seg -> String in
             switch seg {
@@ -41,7 +42,8 @@ enum CharacterDisplay {
                         if let file = m.file {
                             return r.kind == .voice || r.kind == .talk ? "![\(alt(r.text))](\(file))" : "![\(l.name)](\(file))"
                         }
-                    case .running: return "> \(l.icon) *\(l.making)*"
+                    case .running:
+                        return "> \(l.icon) *\(l.making)*" + (phases[m.id].map { " \($0)" } ?? "")
                     case .waiting:
                         return "> \(l.icon) *\(l.name) · about \(m.estimateUSD.map { CostEstimate.format($0) } ?? "?") — waiting for your OK*"
                     case .failed:

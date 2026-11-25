@@ -129,3 +129,11 @@ private var utc: Calendar {
         #expect(back.voiceEngine == .breeze && back.voiceSamples == ["a.wav"] && back.selectedVoiceSample == "a.wav" && back.media == [.photo, .voice])
     }
 }
+
+@Suite struct SpokenWordsInstructionTests {
+    @Test func spokenWordsAreNotRepeated() {
+        #expect(MediaTags.instructions([.voice]).contains("don't also write them outside the tag"))
+        #expect(MediaTags.instructions([.talk]).contains("don't also write them outside the tag"))
+        #expect(!MediaTags.instructions([.photo, .video]).contains("outside the tag"))
+    }
+}
