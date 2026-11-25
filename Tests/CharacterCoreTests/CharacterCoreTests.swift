@@ -175,6 +175,18 @@ private func sample(_ name: String = "Ava", age: Int = 28) -> Character {
         CharacterStore(root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
     }
 
+    @Test func draftsAreFoldersWithoutACharacterUntouchedSinceTheDate() throws {
+        let store = tempStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        let saved = sample("Saved")
+        try store.save(saved)
+        let draft = UUID()
+        try FileManager.default.createDirectory(at: store.portraitsFolder(draft), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: store.portraitsFolder(draft).appendingPathComponent("p.png"))
+        #expect(store.drafts(untouchedSince: Date().addingTimeInterval(60)) == [draft])
+        #expect(store.drafts(untouchedSince: Date().addingTimeInterval(-3600)).isEmpty)
+    }
+
     @Test func roundTrips() throws {
         let store = tempStore()
         defer { try? FileManager.default.removeItem(at: store.root) }

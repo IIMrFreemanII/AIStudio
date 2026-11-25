@@ -50,9 +50,20 @@ public enum CharacterArt {
         prompt(c, request: portraitRequest, scene: nil)
     }
 
+    private static let outfitWords: NSRegularExpression = try! NSRegularExpression(
+        pattern: "\\b(wearing|wears|dressed|dress|dresses|gown|outfit|clothes|shirt|t-shirt|top|blouse|sweater|hoodie|"
+            + "jacket|coat|blazer|suit|jeans|pants|trousers|shorts|skirt|leggings|bikini|swimsuit|lingerie|pajamas|"
+            + "robe|uniform|costume|naked|nude|topless)\\b", options: .caseInsensitive)
+
+    /// The text names clothes (so the clothing style picks are left out of that photo's look).
+    public static func setsOutfit(_ text: String) -> Bool {
+        outfitWords.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
     private static func prompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        let gender = clean(c.gender), look = clean(c.fullLook), request = caption(clean(request))
         let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
+        let dressed = !outfit.isEmpty || setsOutfit(request)
+        let gender = clean(c.gender), look = clean(dressed ? c.lookWithoutClothes : c.fullLook), request = caption(clean(request))
         switch c.artModel.style {
         case .photoreal:
             var out = "Photo of a \(c.age)-year-old adult" + (gender.isEmpty ? "" : " \(gender)")
@@ -73,6 +84,26 @@ public enum CharacterArt {
                         gender.isEmpty ? "adult" : "adult \(gender)", "\(c.age) years old", look, request, place, outfit, time]
             return tags.filter { !$0.isEmpty }.joined(separator: ", ")
         }
+    }
+
+    /// How much of the head around a detected face goes into the face reference (side of the square, in face widths).
+    public static let faceCropScale = 1.3
+
+    /// The face reference's crop of a portrait: a square around the detected face (`face`: Vision's normalized box,
+    /// origin bottom-left), `faceCropScale` times its size and nudged up for hair, in pixels with the origin top-left,
+    /// kept inside the picture. The whole portrait would also carry its clothes and background into every photo
+    /// (the face adapter copies what it sees), so outfits asked for in a chat lose to the portrait's.
+    public static func faceCrop(face: CGRect, imageWidth: Int, imageHeight: Int) -> CGRect {
+        let w = Double(imageWidth), h = Double(imageHeight)
+        let fw = face.width * w, fh = face.height * h
+        var side = max(fw, fh) * faceCropScale
+        side = min(side, w, h)
+        let cx = face.midX * w
+        let cy = (1 - face.midY) * h - fh * 0.15
+        var x = cx - side / 2, y = cy - side / 2
+        x = min(max(x, 0), w - side)
+        y = min(max(y, 0), h - side)
+        return CGRect(x: x.rounded(), y: y.rounded(), width: side.rounded(), height: side.rounded())
     }
 
     /// Throws `CharacterArtError.youthTerm(term)` when AgeGuard finds a youth term in the request.

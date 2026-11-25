@@ -241,15 +241,12 @@ extension AppModel {
 
     private static func mediaSeed() -> Int { Int.random(in: 0..<Int(Int32.max)) }
 
-    /// Draws one picture of the character (with the chosen portrait's face) into `file` (PNG); returns its cost.
-    private func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String,
-                           progress: @escaping @MainActor (String) -> Void) async throws -> Double? {
-        var face: URL?
-        if let name = c.selectedPortrait {
-            let url = characterStore.portraitsFolder(c.id).appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: url.path) { face = url }
-        }
-        let render = CharacterArt.render(c, prompt: prompt, seed: Self.mediaSeed(), server: server, face: face)
+    /// Draws one picture of the character (with the chosen portrait's face, cropped to it unless `wholePortrait`)
+    /// into `file` (PNG); returns its cost.
+    func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String, seed: Int? = nil,
+                   wholePortrait: Bool = false, progress: @escaping @MainActor (String) -> Void) async throws -> Double? {
+        let face = wholePortrait ? portraitURL(c) : await faceReference(c)
+        let render = CharacterArt.render(c, prompt: prompt, seed: seed ?? Self.mediaSeed(), server: server, face: face)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
                                                          render: render, title: title, progress: progress)
         // The jobs cost money even if the picture then can't be saved.
@@ -323,6 +320,7 @@ extension AppModel {
         var m = characterStore.memory(id)
         m.spentUSD += cost ?? 0
         try? characterStore.saveMemory(m, for: id)
+        try dropIfDiscarded(id)
         if var stored = characterStore.load(id) {
             stored.voiceSamples.append(file.lastPathComponent)
             if voiceSampleURL(stored) == nil { stored.selectedVoiceSample = file.lastPathComponent }

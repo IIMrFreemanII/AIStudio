@@ -42,6 +42,25 @@ public struct CharacterStore: Sendable {
         }.sorted { $0.updated > $1.updated }
     }
 
+    /// Folders with no character.json (characters being created, or left behind by a quit) whose newest file is
+    /// older than `date`.
+    public func drafts(untouchedSince date: Date) -> [UUID] {
+        let fm = FileManager.default
+        let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        return dirs.compactMap { dir -> UUID? in
+            guard let id = UUID(uuidString: dir.lastPathComponent),
+                  !fm.fileExists(atPath: dir.appendingPathComponent("character.json").path) else { return nil }
+            var newest = (try? fm.attributesOfItem(atPath: dir.path))?[.modificationDate] as? Date ?? .distantPast
+            if let files = fm.enumerator(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+                for case let file as URL in files {
+                    if let d = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                       d > newest { newest = d }
+                }
+            }
+            return newest < date ? id : nil
+        }
+    }
+
     public func load(_ id: UUID) -> Character? {
         guard let data = try? Data(contentsOf: folder(id).appendingPathComponent("character.json")) else { return nil }
         return try? Self.decoder.decode(Character.self, from: data)
