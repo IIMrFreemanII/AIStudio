@@ -15,7 +15,7 @@ extension SmokeTest {
             if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
         }
 
-        model.characterAutoPhotoUSD = 1.0  // fake prices never gate the photo (in memory only in smoke runs)
+        model.characterAutoMediaUSD = 1.0  // fake prices never gate the photo (in memory only in smoke runs)
         let conn = ServerConnection(name: "Smoke GPU", kind: .gpu, baseURL: url)
         model.connections.save(conn, token: "smoke")
         await model.connections.test(conn.id)
@@ -155,6 +155,53 @@ extension SmokeTest {
         check(chromaPhoto?.status == .done && chromaJob != nil && chromaJob != chromaJobsBefore,
               "the Chroma photo is done by the chroma task (\(chromaPhoto?.status.rawValue ?? "none") \(chromaPhoto?.error ?? ""))")
         check(model.characterStore.memory(c.id).album.count == 2, "the album lists both photos")
+
+        // g3. Voice, video and video messages.
+        func settled(_ turn: ChatTurn?, _ waitFor: Set<ChatMedia.Status> = [.done, .failed, .skipped, .waiting])
+            async -> ChatMedia?
+        {
+            guard let id = turn?.id else { return nil }
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                if let m = doc.transcript.turn(id)?.media?.first, waitFor.contains(m.status) { return m }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            return doc.transcript.turn(id)?.media?.first
+        }
+        func describe(_ m: ChatMedia?) -> String { "\(m?.status.rawValue ?? "none") \(m?.error ?? "")" }
+        do {
+            let made = try await model.makeVoiceSample(for: c.id)
+            let sample = model.characterStore.voiceFolder(c.id).appendingPathComponent(made.name)
+            check(FileManager.default.fileExists(atPath: sample.path) && model.character(c.id)?.selectedVoiceSample == made.name,
+                  "a voice sample is made and chosen")
+        } catch {
+            check(false, "the voice sample (\(error))")
+        }
+        let voiceTurn = await send(doc, "send a voice message")
+        let voice = await settled(voiceTurn, [.done, .failed, .skipped])
+        check(voice?.kind == "voice" && voice?.status == .done && voice?.file?.hasSuffix(".wav") == true,
+              "the voice message is made at once (\(describe(voice)))")
+        check(voiceTurn.flatMap { doc.transcript.turn($0.id) }.map { CharacterDisplay.markdown($0).contains("I miss you already") } == true,
+              "the voice message shows its words")
+        let videoTurn = await send(doc, "send a video")
+        let waiting = await settled(videoTurn)
+        check(waiting?.kind == "video" && waiting?.status == .waiting && waiting?.estimateUSD != nil,
+              "a video waits for the OK with its price (\(describe(waiting)))")
+        if let t = videoTurn, let m = waiting { model.approveMedia(doc, turnID: t.id, mediaID: m.id) }
+        let video = await settled(videoTurn, [.done, .failed])
+        check(video?.status == .done && video?.file?.hasSuffix(".mp4") == true, "the approved video is made (\(describe(video)))")
+        let talkTurn = await send(doc, "say it on camera")
+        let talkWaiting = await settled(talkTurn)
+        check(talkWaiting?.kind == "talk" && talkWaiting?.status == .waiting, "a video message waits for the OK (\(describe(talkWaiting)))")
+        if let t = talkTurn, let m = talkWaiting { model.approveMedia(doc, turnID: t.id, mediaID: m.id) }
+        let talk = await settled(talkTurn, [.done, .failed])
+        check(talk?.status == .done && talk?.file?.hasSuffix(".mp4") == true, "the video message is made (\(describe(talk)))")
+        let skippedTurn = await send(doc, "send a video")
+        if let t = skippedTurn, let m = await settled(skippedTurn) { model.skipMedia(doc, turnID: t.id, mediaID: m.id) }
+        check(skippedTurn.flatMap { doc.transcript.turn($0.id) }?.media?.first?.status == .skipped, "a skipped video stays skipped")
+        let kinds = model.characterStore.memory(c.id).album.map(\.kind)
+        check(kinds == [.photo, .photo, .voice, .video, .talk], "the album lists the voice message and both videos (\(kinds))")
+        check(model.characterStore.memory(c.id).ownMedia.isEmpty, "asked-for media uses none of her initiative")
 
         // h. Saved.
         model.saveChat(doc)

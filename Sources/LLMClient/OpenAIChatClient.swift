@@ -153,17 +153,27 @@ public struct OpenAIChatClient: Sendable {
         var parser = SSEParser()
         var line: [UInt8] = []
         line.reserveCapacity(4096)
+        var finished = false
+        func pass(_ e: ChatEvent) throws {
+            if case .finish = e { finished = true }
+            try yield(e)
+        }
         for try await b in bytes {
             if b == 10 {
                 try tick()
-                if let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try Self.handle(e, yield: yield) { return }
+                if let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try Self.handle(e, yield: pass) { return }
                 line.removeAll(keepingCapacity: true)
             } else {
                 line.append(b)
             }
         }
-        if !line.isEmpty, let e = parser.feed(line: String(decoding: line, as: UTF8.self)) { _ = try Self.handle(e, yield: yield) }
-        if let e = parser.flush() { _ = try Self.handle(e, yield: yield) }
+        if !line.isEmpty, let e = parser.feed(line: String(decoding: line, as: UTF8.self)), try Self.handle(e, yield: pass) {
+            return
+        }
+        if let e = parser.flush(), try Self.handle(e, yield: pass) { return }
+        // Closed before `[DONE]` and before the model finished: the connection dropped (retried when nothing came
+        // yet), not an empty reply. A server that ends without `[DONE]` after its finish reason is fine.
+        if !finished { throw URLError(.networkConnectionLost) }
     }
 
     /// Yields the event's chat events; true at `[DONE]`.

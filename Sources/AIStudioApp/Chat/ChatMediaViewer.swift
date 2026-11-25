@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 /// Files shown full-window from a chat (a message's attachments, an image in a reply), and the one in front.
@@ -76,13 +77,20 @@ struct ChatMediaBlock: View {
     let url: URL?
     let src: String
 
+    /// A video's width / height, once read (portrait clips stay narrow).
+    @State private var aspect: CGFloat = 16 / 9
+
     var isVideo: Bool { url.map { PreviewKind.videoExtensions.contains($0.pathExtension.lowercased()) } ?? false }
+    var isAudio: Bool { url.map { $0.isFileURL && PreviewKind.of($0) == .audio } ?? false }
 
     var body: some View {
         if let url, !url.isFileURL || FileManager.default.fileExists(atPath: url.path) {
             VStack(alignment: .leading, spacing: 4) {
                 if isVideo {
-                    ChatVideoPlayer(url: url).aspectRatio(16 / 9, contentMode: .fit).frame(maxWidth: 560)
+                    ChatVideoPlayer(url: url).aspectRatio(aspect, contentMode: .fit).frame(maxWidth: aspect < 1 ? 300 : 560)
+                        .task(id: url) { if let a = await Self.videoAspect(url) { aspect = a } }
+                } else if isAudio {
+                    ChatAudioPlayer(url: url)
                 } else if url.isFileURL {
                     LocalImage(url: url)
                         .onTapGesture { model.chatViewer = ChatViewerItem(urls: [url], index: 0) }
@@ -106,6 +114,14 @@ struct ChatMediaBlock: View {
         } else {
             missing("Image not found: \(src)")
         }
+    }
+
+    /// Width / height of the video's picture as shown (its rotation applied).
+    static func videoAspect(_ url: URL) async -> CGFloat? {
+        guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first,
+              let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return nil }
+        let r = CGRect(origin: .zero, size: size).applying(transform)
+        return r.height > 0 ? abs(r.width) / abs(r.height) : nil
     }
 
     func missing(_ text: String) -> some View {

@@ -89,6 +89,21 @@ struct StreamRetryTests {
         #expect(StubProtocol.requests == 1 && events == [.content("o")])
     }
 
+    @Test func aStreamClosedBeforeDoneIsADroppedConnection() async {
+        // Closed cleanly while the model was starting: sent again, not taken as an empty reply.
+        let (events, error) = await run([.body(Self.status), .body(Self.reply)])
+        #expect(error == nil && StubProtocol.requests == 2)
+        #expect(events.last == .content("ok"))
+        // Closed mid-reply: an error, not a reply cut short without a word.
+        let partial = "data: {\"choices\": [{\"delta\": {\"content\": \"o\"}}]}\n\n"
+        let (cut, cutError) = await run([.body(partial), .body(Self.reply)])
+        #expect((cutError as? URLError)?.code == .networkConnectionLost && cut == [.content("o")])
+        // A server that sends its finish reason and closes without `[DONE]` ended the reply well.
+        let finished = "data: {\"choices\": [{\"delta\": {\"content\": \"ok\"}, \"finish_reason\": \"stop\"}]}\n\n"
+        let (done, doneError) = await run([.body(finished)])
+        #expect(doneError == nil && StubProtocol.requests == 1 && done.contains(.content("ok")))
+    }
+
     @Test func givesUpAfterItsRetriesAndOnOtherErrors() async {
         let (_, error) = await run([.dropAfter("", .timedOut), .dropAfter("", .timedOut), .dropAfter("", .timedOut)])
         #expect((error as? URLError)?.code == .timedOut && StubProtocol.requests == 3)

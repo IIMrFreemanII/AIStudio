@@ -272,6 +272,24 @@ enum Snapshot {
         mia.portraits = ["portrait-a.png", "portrait-b.png", "portrait-c.png"]
         mia.selectedPortrait = "portrait-b.png"
         mia.loras = [CharacterLoRA(lora: "detail-tweaker", strength: 0.6), CharacterLoRA(lora: "soft-light", strength: 1.1)]
+        // Two dummy voice samples (a 2 s tone, 16-bit mono WAV), the second chosen.
+        let voiceDir = m.characterStore.voiceFolder(mia.id)
+        try? FileManager.default.createDirectory(at: voiceDir, withIntermediateDirectories: true)
+        for (i, n) in ["voice-a.wav", "voice-b.wav"].enumerated() {
+            let rate = 16_000, count = 2 * rate
+            var wav = Data("RIFF".utf8)
+            func le<T: FixedWidthInteger>(_ v: T) { withUnsafeBytes(of: v.littleEndian) { wav.append(contentsOf: $0) } }
+            le(UInt32(36 + count * 2)); wav.append(contentsOf: Data("WAVEfmt ".utf8))
+            le(UInt32(16)); le(UInt16(1)); le(UInt16(1)); le(UInt32(rate)); le(UInt32(rate * 2)); le(UInt16(2)); le(UInt16(16))
+            wav.append(contentsOf: Data("data".utf8)); le(UInt32(count * 2))
+            for s in 0..<count {
+                let envelope = 0.5 + 0.5 * sin(Double(s) / Double(rate) * 6 + Double(i))
+                le(Int16(sin(Double(s) * 2 * .pi * 220 / Double(rate)) * envelope * 12_000))
+            }
+            try? wav.write(to: voiceDir.appendingPathComponent(n))
+        }
+        mia.voiceSamples = ["voice-a.wav", "voice-b.wav"]
+        mia.selectedVoiceSample = "voice-b.wav"
         m.characters = [mia, CharacterTemplates.make(CharacterTemplates.all[2])]
         await render(sheet(CharacterGallery().environment(m)), to: dir.appendingPathComponent("61-character-gallery.png"),
                      size: CGSize(width: 768, height: 648))
@@ -280,9 +298,9 @@ enum Snapshot {
         await render(sheet(CharacterEditor(edit: CharacterEdit(character: bad, isNew: true)).environment(m)),
                      to: dir.appendingPathComponent("62-character-editor.png"), size: CGSize(width: 608, height: 728))
         var tall = CharacterEditor(edit: CharacterEdit(character: mia, isNew: false))
-        tall.height = 1650
+        tall.height = 2050
         await render(sheet(tall.environment(m)),
-                     to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 1700))
+                     to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 2100))
         // The memory sheet reads the store: a throwaway folder entry, removed after.
         var memory = CharacterMemory()
         memory.facts = [CharacterMemory.Fact(text: "Works nights as a nurse and hates mornings"),

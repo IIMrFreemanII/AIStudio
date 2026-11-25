@@ -228,11 +228,11 @@ struct CharacterPhotosSection: View {
                     Spacer(minLength: 0)
                 }
             }
-            MGFormRow("Ask before a photo over") {
+            MGFormRow("Ask before media over") {
                 HStack(spacing: 10) {
-                    MGSlider(value: Binding(get: { autoUSD }, set: { autoUSD = $0; model.characterAutoPhotoUSD = $0 }),
+                    MGSlider(value: Binding(get: { autoUSD }, set: { autoUSD = $0; model.characterAutoMediaUSD = $0 }),
                              in: 0.01...0.50, step: 0.01).frame(width: 160)
-                        .mgHelp("Photos that cost more than this wait for your OK in the chat")
+                        .mgHelp("Photos and voice messages that cost more than this wait for your OK in the chat (videos always do)")
                     Text(CostEstimate.format(autoUSD)).monospacedDigit().foregroundStyle(MG.secondaryLabel)
                         .frame(width: 44, alignment: .trailing)
                 }
@@ -240,7 +240,7 @@ struct CharacterPhotosSection: View {
         } footer: {
             Text("LoRAs shape the look of their photos. The cost limit applies to all characters.")
         }
-        .onAppear { autoUSD = min(max(model.characterAutoPhotoUSD, 0.01), 0.50) }
+        .onAppear { autoUSD = min(max(model.characterAutoMediaUSD, 0.01), 0.50) }
     }
 
     /// Switching families drops the fine-tune and LoRAs: they only fit the model they were made for.

@@ -1,4 +1,5 @@
 import Foundation
+import MovieCore
 
 /// A virtual companion the user chats with. Every character is a fictional adult (see `AgeGuard`).
 public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
@@ -23,6 +24,13 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
     /// File names in the character's portraits/ folder.
     public var portraits: [String]
     public var selectedPortrait: String?
+    /// The speech model that says the character's voice messages.
+    public var voiceEngine: VoiceEngine
+    /// File names in the character's voice/ folder.
+    public var voiceSamples: [String]
+    public var selectedVoiceSample: String?
+    /// The kinds of media the character may send.
+    public var media: [MediaKind]
     /// Own-initiative media per day.
     public var initiative: Int
     public var temperature: Double
@@ -50,6 +58,10 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         self.loras = []
         self.portraits = []
         self.selectedPortrait = nil
+        self.voiceEngine = .qwen3
+        self.voiceSamples = []
+        self.selectedVoiceSample = nil
+        self.media = MediaKind.allCases
         self.initiative = 3
         self.temperature = 0.9
         self.topP = 0.95
@@ -60,7 +72,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, name, age, gender, look, personality, backstory, speakingStyle, likes, greeting, voice, artModel
-        case loras, portraits, selectedPortrait, initiative, temperature, topP, templateID, created, updated
+        case loras, portraits, selectedPortrait, voiceEngine, voiceSamples, selectedVoiceSample, media, initiative, temperature, topP, templateID, created, updated
     }
 
     public init(from decoder: Decoder) throws {
@@ -80,6 +92,10 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         loras = try c.decodeIfPresent([CharacterLoRA].self, forKey: .loras) ?? []
         portraits = try c.decodeIfPresent([String].self, forKey: .portraits) ?? []
         selectedPortrait = try c.decodeIfPresent(String.self, forKey: .selectedPortrait)
+        voiceEngine = try c.decodeIfPresent(VoiceEngine.self, forKey: .voiceEngine) ?? .qwen3
+        voiceSamples = try c.decodeIfPresent([String].self, forKey: .voiceSamples) ?? []
+        selectedVoiceSample = try c.decodeIfPresent(String.self, forKey: .selectedVoiceSample)
+        media = try c.decodeIfPresent([MediaKind].self, forKey: .media) ?? MediaKind.allCases
         initiative = try c.decodeIfPresent(Int.self, forKey: .initiative) ?? 3
         temperature = try c.decodeIfPresent(Double.self, forKey: .temperature) ?? 0.9
         topP = try c.decodeIfPresent(Double.self, forKey: .topP) ?? 0.95
