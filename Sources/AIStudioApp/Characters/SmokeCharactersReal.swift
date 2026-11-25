@@ -65,8 +65,10 @@ extension SmokeTest {
         func send(_ doc: ChatDocument, _ text: String) async -> ChatTurn? {
             model.sendText(doc, text)
             let start = Date()
-            // The first reply waits for a cold start.
-            while doc.isStreaming, Date().timeIntervalSince(start) < 420 { try? await Task.sleep(nanoseconds: 200_000_000) }
+            // The first reply waits for a cold start (a busy region can take 10+ minutes to find a GPU). A message sent
+            // while a reply still runs would be dropped, so a reply that never ends stops the run.
+            while doc.isStreaming, Date().timeIntervalSince(start) < 1200 { try? await Task.sleep(nanoseconds: 200_000_000) }
+            if doc.isStreaming { model.stopReply(doc); return nil }
             guard let reply = doc.transcript.turns.last, reply.role == .assistant else { return nil }
             return reply
         }
@@ -101,6 +103,7 @@ extension SmokeTest {
             let secs = Int(Date().timeIntervalSince(start))
             say("you: \(text)")
             say("\(c.name) (\(secs)s): \(r?.text ?? r?.error ?? "none")")
+            guard r != nil else { check(false, "reply \(i + 1) came back within 20 minutes"); break }
             let reply = r?.text ?? ""
             let lower = reply.lowercased()
             check(r?.error == nil && !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && r?.speaker == c.id,
