@@ -6,13 +6,14 @@ private func describe(_ error: Error) -> String {
     (error as? CustomStringConvertible)?.description ?? error.localizedDescription
 }
 
-/// The character's voice: its description, the speech model, and the voice samples designed from it (the chosen one
-/// is cloned for every voice message and video message). Like the Look section, the sample buttons write the stored
-/// character, so only the sample fields of the edited copy are refreshed here.
+/// The character's voice: its options and description, the speech model, and the voice samples designed from them
+/// (the chosen one is cloned for every voice message and video message). Like the Look section it works before the
+/// character is saved: samples go to its folder and into the edited copy (`c`), and into the stored one if any.
 struct CharacterVoiceSection: View {
     @Environment(AppModel.self) private var model
     @Binding var c: AppModel.Companion
-    let isNew: Bool
+    /// The voice option chips above the description (the editor; the creator shows them itself).
+    var chips = true
     @State private var running = false
     @State private var problem: String?
 
@@ -21,26 +22,27 @@ struct CharacterVoiceSection: View {
 
     var body: some View {
         MGSection("Voice") {
-            MGFormRow("Voice description") { TextField("soft, warm and bright", text: $c.voice).frame(maxWidth: 300) }
+            if chips { TraitGroupView(group: .voice, c: $c) }
+            MGFormRow(chips ? "More about the voice" : "Voice description") {
+                TextField("soft, with a smile in it", text: $c.voice).frame(maxWidth: 300)
+            }
             MGFormRow("Speech model") {
                 MGSegmentedPicker(selection: $c.voiceEngine,
                                   options: VoiceEngine.allCases.map { ($0, $0 == .breeze ? "Breeze 2" : "Qwen3-TTS") })
                     .frame(width: 220)
                     .mgHelp("Qwen3-TTS speaks 10 languages; Breeze TTS 2 speaks English and Chinese more expressively (non-commercial use only)")
             }
-            if !isNew {
-                samples
-                HStack(spacing: 8) {
-                    Button(c.voiceSamples.isEmpty ? "Make a Voice Sample" : "Make Another") { make() }
-                        .buttonStyle(.mg(.bordered)).disabled(server == nil || running)
-                        .mgHelp(server == nil ? "Add a GPU server in Servers first"
-                                : "Design a voice from the description, saying a sample sentence")
-                    if running {
-                        MGSpinner().controlSize(.small)
-                        Text("Designing the voice…").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
-                    }
-                    Spacer(minLength: 0)
+            samples
+            HStack(spacing: 8) {
+                Button(c.voiceSamples.isEmpty ? "Make a Voice Sample" : "Make Another") { make() }
+                    .buttonStyle(.mg(c.voiceSamples.isEmpty ? .prominent : .bordered)).disabled(server == nil || running)
+                    .mgHelp(server == nil ? "Add a GPU server in Servers first"
+                            : "Design a voice from the options and description, saying a sample sentence")
+                if running {
+                    MGSpinner().controlSize(.small)
+                    Text("Designing the voice…").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                 }
+                Spacer(minLength: 0)
             }
         } footer: {
             VStack(alignment: .leading, spacing: 2) {
@@ -51,7 +53,7 @@ struct CharacterVoiceSection: View {
     }
 
     private var footer: String {
-        if isNew { return "Save the character first, then design their voice." }
+        if server == nil { return "Add a GPU server in Servers to hear their voice." }
         var s = "Voice messages and video messages clone the chosen sample. With none, the first voice message makes one."
         if let server, let each = model.mediaEstimate(.voice, character: c, text: Self.typicalLine, server: server) {
             s += " A voice message costs about \(CostEstimate.format(each))\(c.voiceSamples.isEmpty ? ", the first with its sample" : "")."
@@ -69,9 +71,12 @@ struct CharacterVoiceSection: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(MG.accent))
                 } else {
-                    Button("Use") { model.selectVoiceSample(name, for: c.id); refresh() }
-                        .buttonStyle(.mg(.bordered)).controlSize(.small)
-                        .mgHelp("Clone this voice for their messages")
+                    Button("Use") {
+                        c.selectedVoiceSample = name
+                        model.selectVoiceSample(name, for: c.id)
+                    }
+                    .buttonStyle(.mg(.bordered)).controlSize(.small)
+                    .mgHelp("Clone this voice for their messages")
                 }
                 Spacer(minLength: 0)
                 Button { confirmDelete(name) } label: { Image(systemName: "trash") }
@@ -82,27 +87,17 @@ struct CharacterVoiceSection: View {
         }
     }
 
-    private func refresh() {
-        guard let fresh = model.characterStore.load(c.id) else { return }
-        if c.voiceSamples != fresh.voiceSamples { c.voiceSamples = fresh.voiceSamples }
-        if c.selectedVoiceSample != fresh.selectedVoiceSample { c.selectedVoiceSample = fresh.selectedVoiceSample }
-    }
-
     private func make() {
         guard !running else { return }
         running = true
         problem = nil
-        // The sample is designed from the description and model as edited (saved first, keeping the stored
-        // portraits and samples, which the edited copy may not have yet).
-        if var stored = model.characterStore.load(c.id) {
-            stored.voice = c.voice
-            stored.voiceEngine = c.voiceEngine
-            model.saveCharacter(stored)
-        }
-        let id = c.id
+        let snapshot = c
         Task { @MainActor in
-            do { try await model.makeVoiceSample(for: id) } catch { problem = describe(error) }
-            refresh()
+            do {
+                let made = try await model.makeVoiceSample(for: snapshot)
+                if !c.voiceSamples.contains(made.name) { c.voiceSamples.append(made.name) }
+                if c.selectedVoiceSample == nil { c.selectedVoiceSample = made.name }
+            } catch { problem = describe(error) }
             running = false
         }
     }
@@ -112,7 +107,8 @@ struct CharacterVoiceSection: View {
         model.presenter.alert("Delete this voice sample?", message: "The recording moves to the Trash.", actions: [
             .destructive("Delete") {
                 model.deleteVoiceSample(name, for: id)
-                refresh()
+                c.voiceSamples.removeAll { $0 == name }
+                if c.selectedVoiceSample == name { c.selectedVoiceSample = c.voiceSamples.last }
             },
             .cancel(),
         ])

@@ -53,18 +53,25 @@ struct CharacterEditor: View {
                         }
                     }
                     MGFormRow("Gender") { TextField("woman, man, non-binary…", text: $c.gender).frame(maxWidth: 300) }
-                    field("Look", $c.look)
-                    field("Personality", $c.personality)
+                    TraitGroupView(group: .basics, c: $c)
                     field("Backstory", $c.backstory)
-                    field("Speaking style", $c.speakingStyle)
-                    field("Likes", $c.likes)
                     field("Greeting", $c.greeting)
                 } footer: {
                     Text("Greeting: their first message in a new chat. Leave empty to start yourself.")
                 }
-                CharacterLookSection(c: $c, isNew: edit.isNew)
+                MGSection("Look") {
+                    TraitGroupView(group: .look, c: $c, detailsTitle: "More look details", details: $c.look)
+                }
+                MGSection("Personality") {
+                    TraitGroupView(group: .personality, c: $c, detailsTitle: "More about them", details: $c.personality)
+                    field("Speaking style", $c.speakingStyle)
+                }
+                MGSection("Habits and interests") {
+                    TraitGroupView(group: .habits, c: $c, detailsTitle: "Things they love", details: $c.likes)
+                }
+                CharacterLookSection(c: $c, title: "Profile photo")
                 CharacterPhotosSection(c: $c)
-                CharacterVoiceSection(c: $c, isNew: edit.isNew)
+                CharacterVoiceSection(c: $c)
                 MGSection("Chat") {
                     MGFormRow("Temperature") {
                         HStack(spacing: 10) {
@@ -122,7 +129,7 @@ struct CharacterEditor: View {
                             .mgHelp("Delete this character; their chats stay")
                     }
                     Spacer()
-                    Button("Cancel", role: .cancel) { dismiss() }
+                    Button("Cancel", role: .cancel) { cancel() }
                         .buttonStyle(.mg(.bordered)).keyboardShortcut(.cancelAction)
                         .mgHelp("Close without saving")
                     Button("Save") { save(chat: false) }
@@ -145,6 +152,12 @@ struct CharacterEditor: View {
             MGTextEditor(text: text).frame(height: 62)
         }
         .padding(.vertical, 4)
+    }
+
+    /// A new character that was never saved takes the portraits and voices made for it along.
+    private func cancel() {
+        if edit.isNew { model.discardDraft(c.id) }
+        dismiss()
     }
 
     private func save(chat: Bool) {

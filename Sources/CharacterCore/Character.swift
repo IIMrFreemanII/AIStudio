@@ -19,6 +19,8 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
     public var greeting: String
     /// A voice description (used for speech).
     public var voice: String
+    /// Picked catalog options: category id → option ids (see `CharacterOptions`).
+    public var traits: [String: [String]]
     public var artModel: ArtModel
     public var loras: [CharacterLoRA]
     /// File names in the character's portraits/ folder.
@@ -56,6 +58,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         self.likes = likes
         self.greeting = greeting
         self.voice = voice
+        self.traits = [:]
         self.artModel = ArtModel()
         self.loras = []
         self.portraits = []
@@ -74,7 +77,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, age, gender, look, personality, backstory, speakingStyle, likes, greeting, voice, artModel
+        case id, name, age, gender, look, personality, backstory, speakingStyle, likes, greeting, voice, traits, artModel
         case loras, portraits, selectedPortrait, voiceEngine, voiceSamples, selectedVoiceSample, media, initiative, checkInHours, temperature, topP, templateID, created, updated
     }
 
@@ -91,6 +94,7 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
         likes = try c.decodeIfPresent(String.self, forKey: .likes) ?? ""
         greeting = try c.decodeIfPresent(String.self, forKey: .greeting) ?? ""
         voice = try c.decodeIfPresent(String.self, forKey: .voice) ?? ""
+        traits = try c.decodeIfPresent([String: [String]].self, forKey: .traits) ?? [:]
         artModel = try c.decodeIfPresent(ArtModel.self, forKey: .artModel) ?? ArtModel()
         loras = try c.decodeIfPresent([CharacterLoRA].self, forKey: .loras) ?? []
         portraits = try c.decodeIfPresent([String].self, forKey: .portraits) ?? []

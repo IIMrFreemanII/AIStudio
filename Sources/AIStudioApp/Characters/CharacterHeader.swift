@@ -29,7 +29,7 @@ struct CharacterHeaderItems: View {
             }
         } label: {
             HStack(spacing: 6) {
-                ForEach(people.prefix(3)) { CharacterAvatar(name: $0.name, size: 18) }
+                ForEach(people.prefix(3)) { CharacterAvatar($0, model: model, size: 18) }
                 Text(people.isEmpty ? "Deleted character" : ListFormatter.localizedString(byJoining: people.map(\.name))).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(MG.secondaryLabel)
             }

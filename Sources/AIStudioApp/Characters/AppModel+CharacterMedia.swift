@@ -302,6 +302,15 @@ extension AppModel {
     func makeVoiceSample(for id: UUID, server: String? = nil,
                          progress: @escaping @MainActor (String) -> Void = { _ in }) async throws -> (name: String, cost: Double?) {
         guard let c = character(id) else { throw PortraitError.noCharacter }
+        return try await makeVoiceSample(for: c, server: server, progress: progress)
+    }
+
+    /// The same for `c` as given, saved or not yet (the file goes to its voice folder either way; the stored
+    /// character, when there is one, gets it added).
+    @discardableResult
+    func makeVoiceSample(for c: Companion, server: String? = nil,
+                         progress: @escaping @MainActor (String) -> Void = { _ in }) async throws -> (name: String, cost: Double?) {
+        let id = c.id
         guard let server = server ?? connections.gpuServers.first?.id else { throw PortraitError.noServer }
         let folder = characterStore.voiceFolder(id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -329,11 +338,13 @@ extension AppModel {
     }
 
     /// Takes the sample out of the character and its file to the Trash.
+    /// Also for a character not saved yet (only the file goes).
     func deleteVoiceSample(_ name: String, for id: UUID) {
-        guard var c = characterStore.load(id), c.voiceSamples.contains(name) else { return }
-        c.voiceSamples.removeAll { $0 == name }
-        if c.selectedVoiceSample == name { c.selectedVoiceSample = c.voiceSamples.last }
-        saveCharacter(c)
+        if var c = characterStore.load(id), c.voiceSamples.contains(name) {
+            c.voiceSamples.removeAll { $0 == name }
+            if c.selectedVoiceSample == name { c.selectedVoiceSample = c.voiceSamples.last }
+            saveCharacter(c)
+        }
         let url = characterStore.voiceFolder(id).appendingPathComponent(name)
         if Self.isAutomatedRun { try? FileManager.default.removeItem(at: url) }
         else { try? FileManager.default.trashItem(at: url, resultingItemURL: nil) }

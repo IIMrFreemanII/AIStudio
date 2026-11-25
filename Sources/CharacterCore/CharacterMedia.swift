@@ -112,8 +112,17 @@ public enum CharacterMedia {
     }
 
     public static func voiceSampleRender(_ c: Character, seed: Int, server: String) -> MovieArt.Render {
-        MovieVoices.sampleRender(MovieCharacter(id: "character", name: c.name, look: c.look, voice: c.voice),
+        MovieVoices.sampleRender(MovieCharacter(id: "character", name: c.name, look: c.fullLook, voice: voiceDescription(c)),
                                  engine: c.voiceEngine, seed: seed, server: server)
+    }
+
+    /// What the voice is designed from: who speaks (age and gender: the voice options alone, "low-pitched, husky",
+    /// gave a woman a man's voice), then the options and description.
+    public static func voiceDescription(_ c: Character) -> String {
+        let gender = c.gender.trimmingCharacters(in: .whitespacesAndNewlines)
+        let who = "A \(c.age)-year-old " + (gender.isEmpty ? "adult" : gender) + "'s voice"
+        let voice = c.fullVoice
+        return voice.isEmpty ? who : "\(who): \(voice)"
     }
 
     public static func voiceLineTemplate(_ c: Character) -> MovieTemplate {
@@ -139,7 +148,7 @@ public enum CharacterMedia {
     }
 
     public static func motionPrompt(_ c: Character, request: String) -> String {
-        let gender = clean(c.gender), look = clean(c.look), req = CharacterArt.caption(clean(request))
+        let gender = clean(c.gender), look = clean(c.fullLook), req = CharacterArt.caption(clean(request))
         var out = "A \(c.age)-year-old adult" + (gender.isEmpty ? "" : " \(gender)")
         out += look.isEmpty ? "." : ", \(look)."
         if !req.isEmpty { out += " \(req)." }

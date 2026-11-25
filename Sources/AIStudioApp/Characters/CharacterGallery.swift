@@ -27,12 +27,12 @@ struct CharacterGallery: View {
                             : "Chat with two to four of your characters at once")
                 }
                 Button {
-                    open(AppModel.Companion(name: "", age: 25, gender: "woman"), isNew: true)
+                    create(AppModel.Companion(name: "", age: 25, gender: "woman"))
                 } label: {
                     Label("New Character", systemImage: "plus")
                 }
                 .buttonStyle(.mg(.bordered))
-                .mgHelp("Write a character from scratch")
+                .mgHelp("Make a character step by step: looks, personality, habits, photo and voice")
             }
             .padding(18)
             MGDivider()
@@ -85,11 +85,13 @@ struct CharacterGallery: View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: 12)], alignment: .leading, spacing: 12) {
             ForEach(items) { c in
                 if mine, let picked = group {
-                    CharacterPickCard(character: c, picked: picked.contains(c.id), full: picked.count >= 4) {
+                    CharacterPickCard(character: c, photo: model.portraitURL(c), picked: picked.contains(c.id),
+                                      full: picked.count >= 4) {
                         if picked.contains(c.id) { group?.removeAll { $0 == c.id } } else { group?.append(c.id) }
                     }
                 } else {
-                    CharacterCard(character: c, mine: mine, chat: { chat(c) }, edit: { edit(c) }, use: { use(c) })
+                    CharacterCard(character: c, mine: mine, photo: mine ? model.portraitURL(c) : nil,
+                                  chat: { chat(c) }, edit: { edit(c) }, use: { use(c) })
                 }
             }
         }
@@ -98,8 +100,11 @@ struct CharacterGallery: View {
     private func open(_ c: AppModel.Companion, isNew: Bool) {
         model.editingCharacter = CharacterEdit(character: c, isNew: isNew)
     }
+    private func create(_ c: AppModel.Companion) {
+        model.creatingCharacter = CharacterEdit(character: c, isNew: true)
+    }
     private func edit(_ c: AppModel.Companion) { open(c, isNew: false) }
-    private func use(_ t: AppModel.Companion) { open(CharacterTemplates.make(t), isNew: true) }
+    private func use(_ t: AppModel.Companion) { create(CharacterTemplates.make(t)) }
     private func startGroup(_ ids: [UUID]) {
         dismiss()
         model.newCharacterChat(ids)
@@ -113,6 +118,7 @@ struct CharacterGallery: View {
 struct CharacterCard: View {
     let character: AppModel.Companion
     let mine: Bool
+    var photo: URL? = nil
     var chat: () -> Void = {}
     var edit: () -> Void = {}
     var use: () -> Void = {}
@@ -120,12 +126,12 @@ struct CharacterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                CharacterAvatar(name: character.name, size: 40)
+                CharacterAvatar(name: character.name, size: 56, photo: photo)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(character.name.isEmpty ? "Unnamed" : character.name).font(.mgCallout.weight(.semibold)).lineLimit(1)
                     Text("\(character.age) · \(character.gender)").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
                         .lineLimit(1)
-                    Text(character.personality).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                    Text(character.fullPersonality).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
@@ -137,7 +143,7 @@ struct CharacterCard: View {
                         .mgHelp("Change \(character.name)'s persona and settings")
                 } else {
                     Button("Use", action: use).buttonStyle(.mg(.bordered)).controlSize(.small)
-                        .mgHelp("Make your own character from this template")
+                        .mgHelp("Make your own character from this template, step by step")
                 }
             }
         }
@@ -151,6 +157,7 @@ struct CharacterCard: View {
 /// A character card while choosing a group chat's cast: tick it in or out.
 struct CharacterPickCard: View {
     let character: AppModel.Companion
+    var photo: URL? = nil
     let picked: Bool
     /// Four are ticked already: only ticked ones can change.
     let full: Bool
@@ -161,10 +168,10 @@ struct CharacterPickCard: View {
             HStack(spacing: 10) {
                 Image(systemName: picked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 18)).foregroundStyle(picked ? MG.accent : MG.tertiaryLabel)
-                CharacterAvatar(name: character.name, size: 32)
+                CharacterAvatar(name: character.name, size: 32, photo: photo)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(character.name.isEmpty ? "Unnamed" : character.name).font(.mgCallout.weight(.semibold)).lineLimit(1)
-                    Text(character.personality).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                    Text(character.fullPersonality).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }

@@ -38,6 +38,9 @@ extension SmokeTest {
         model.connections.save(conn, token: token)
         await model.connections.test(conn.id)
         guard case .gpuOnline? = model.connections.status[conn.id] else { say("FAIL \(conn.name) not reachable"); return false }
+        if CommandLine.arguments.contains("--smoke-real-creator") {
+            return await realCreator(model, count: portraitCount, keep: keep, say: say)
+        }
         let llm = model.llm
         await llm.refresh(conn.id)
         let key = LLMKey(serverID: conn.id, modelID: modelID)
@@ -191,6 +194,54 @@ extension SmokeTest {
         if let out { say("files in \(out.path)") }
 
         model.deleteChat(doc.id)
+        model.deleteCharacter(c.id)
+        say(ok ? "ok all passed" : "FAIL some checks failed")
+        return ok
+    }
+
+    /// `--smoke-characters-real <any> --smoke-real-creator` (+ `--smoke-real-portraits <n>`, `--smoke-real-out`): no
+    /// chat. A character made only from options, as the creator does: `n` portraits and one voice sample while it's
+    /// still unsaved, then saved with the first portrait as its profile photo, then deleted. Prints the prompts and
+    /// the cost; the pictures and the recording go to the out folder.
+    static func realCreator(_ model: AppModel, count: Int, keep: (URL, String) -> Void,
+                            say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        var c = AppModel.Companion(name: "Nora", age: 29, gender: "woman")
+        for (cat, opt) in [("occupation", "photographer"), ("hairColor", "black"), ("hairStyle", "curly"), ("eyes", "hazel"),
+                           ("skin", "olive"), ("body", "athletic"), ("clothes", "streetwear"), ("extras", "glasses"),
+                           ("extras", "tattoos"), ("traits", "playful"), ("traits", "confident"), ("voiceTone", "husky"),
+                           ("voiceTone", "warm"), ("voicePitch", "low"), ("voicePace", "relaxed"), ("accent", "british")] {
+            c.traits = CharacterOptions.toggle(c.traits, category: cat, option: opt)
+        }
+        say("portrait prompt: \(CharacterArt.portraitPrompt(c))")
+        say("voice: \(c.fullVoice)")
+        let start = Date()
+        var portraits: [String] = []
+        do {
+            portraits = try await model.generatePortraits(for: c, count: count, progress: { say("portrait: \($0)") })
+        } catch { say("portrait failed: \(error)") }
+        say("portraits took \(Int(Date().timeIntervalSince(start))) s")
+        check(portraits.count == count && model.characterStore.load(c.id) == nil, "\(count) portraits of the unsaved character")
+        for (i, name) in portraits.enumerated() {
+            keep(model.characterStore.portraitsFolder(c.id).appendingPathComponent(name), "creator-portrait-\(i + 1).png")
+        }
+        let voiceStart = Date()
+        var sample: String?
+        do { sample = try await model.makeVoiceSample(for: c, progress: { say("voice: \($0)") }).name } catch { say("voice failed: \(error)") }
+        say("voice sample took \(Int(Date().timeIntervalSince(voiceStart))) s")
+        check(sample != nil, "a voice sample of the unsaved character")
+        if let sample { keep(model.characterStore.voiceFolder(c.id).appendingPathComponent(sample), "creator-voice.wav") }
+        c.portraits = portraits
+        c.selectedPortrait = portraits.first
+        c.voiceSamples = sample.map { [$0] } ?? []
+        c.selectedVoiceSample = sample
+        say("voice description: \(CharacterMedia.voiceDescription(c))")
+        check(model.saveCharacter(c).isEmpty && (count == 0 || model.portraitURL(c) != nil) && model.voiceSampleURL(c) != nil,
+              "saved with its profile photo and voice")
+        say("spent $\(String(format: "%.3f", model.characterStore.memory(c.id).spentUSD))")
         model.deleteCharacter(c.id)
         say(ok ? "ok all passed" : "FAIL some checks failed")
         return ok

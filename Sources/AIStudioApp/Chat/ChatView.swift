@@ -921,7 +921,7 @@ struct ChatTurnView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let who = turn.speaker, let c = model.character(who) {
                 HStack(spacing: 8) {
-                    CharacterAvatar(name: c.name, size: 22)
+                    CharacterAvatar(c, model: model, size: 22)
                     Text(c.name).font(.mgCallout.weight(.semibold))
                 }
             }
