@@ -3,22 +3,29 @@ import LLMClient
 import MovieCore
 import SwiftUI
 
-/// How a character's reply shows in the transcript: a photo tag is its picture once taken, else a line about where it
-/// is; the other kinds are placeholder lines for now.
+/// How a character's reply shows in the transcript: a media tag is its photo, video or voice message once made,
+/// else a line about where it is.
 enum CharacterDisplay {
     static func markdown(_ text: String) -> String {
         markdown(ChatTurn(role: .assistant, text: text))
     }
 
-    static func markdown(_ turn: ChatTurn) -> String {
-        func label(_ k: CharacterCore.MediaKind) -> (icon: String, name: String) {
-            switch k {
-            case .photo: ("📷", "Photo")
-            case .video: ("🎬", "Video")
-            case .voice: ("🎙", "Voice message")
-            case .talk: ("🗣", "Video message")
-            }
+    static func label(_ k: CharacterCore.MediaKind) -> (icon: String, name: String, making: String) {
+        switch k {
+        case .photo: ("📷", "Photo", "Taking a photo…")
+        case .video: ("🎬", "Video", "Filming a video…")
+        case .voice: ("🎙", "Voice message", "Recording a voice message…")
+        case .talk: ("🗣", "Video message", "Filming a video message…")
         }
+    }
+
+    /// Text that can stand as a picture's alt text: no brackets, one line.
+    private static func alt(_ s: String) -> String {
+        s.replacingOccurrences(of: "[\\[\\]\\n]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    static func markdown(_ turn: ChatTurn) -> String {
         var index = 0
         return MediaTags.segments(turn.text).map { seg -> String in
             switch seg {
@@ -26,16 +33,22 @@ enum CharacterDisplay {
             case .media(let r):
                 let l = label(r.kind)
                 defer { index += 1 }
-                if r.kind == .photo, let media = turn.media, media.indices.contains(index) {
+                if let media = turn.media, media.indices.contains(index) {
                     let m = media[index]
                     switch m.status {
                     case .done:
-                        if let file = m.file { return "![Photo](\(file))" }
-                    case .running: return "> 📷 *Taking a photo…*"
+                        // A voice message shows its words under the player; a video message its words too.
+                        if let file = m.file {
+                            return r.kind == .voice || r.kind == .talk ? "![\(alt(r.text))](\(file))" : "![\(l.name)](\(file))"
+                        }
+                    case .running: return "> \(l.icon) *\(l.making)*"
                     case .waiting:
-                        return "> 📷 *Photo · about \(m.estimateUSD.map { CostEstimate.format($0) } ?? "?") — waiting for your OK*"
-                    case .failed: return "> 📷 *Couldn't take that photo: \(m.error ?? "unknown error")*"
-                    case .skipped: return "> 📷 *Photo skipped*"
+                        return "> \(l.icon) *\(l.name) · about \(m.estimateUSD.map { CostEstimate.format($0) } ?? "?") — waiting for your OK*"
+                    case .failed:
+                        let what = r.kind == .photo ? "take that photo" : "make that \(l.name.lowercased())"
+                        return "> \(l.icon) *Couldn't \(what): \(m.error ?? "unknown error")*"
+                    case .skipped:
+                        return "> \(l.icon) *\(l.name) skipped\(m.error.map { ": \($0)" } ?? "")*"
                     }
                 }
                 return "> \(l.icon) *\(l.name):* \(r.text)"

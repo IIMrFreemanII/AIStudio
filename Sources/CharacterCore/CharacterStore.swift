@@ -30,6 +30,7 @@ public struct CharacterStore: Sendable {
 
     public func folder(_ id: UUID) -> URL { root.appendingPathComponent(id.uuidString, isDirectory: true) }
     public func portraitsFolder(_ id: UUID) -> URL { folder(id).appendingPathComponent("portraits", isDirectory: true) }
+    public func voiceFolder(_ id: UUID) -> URL { folder(id).appendingPathComponent("voice", isDirectory: true) }
     public func albumFolder(_ id: UUID) -> URL { folder(id).appendingPathComponent("album", isDirectory: true) }
 
     /// Every character, newest `updated` first; unreadable ones are skipped.

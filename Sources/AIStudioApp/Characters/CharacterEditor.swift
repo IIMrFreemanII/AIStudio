@@ -64,11 +64,7 @@ struct CharacterEditor: View {
                 }
                 CharacterLookSection(c: $c, isNew: edit.isNew)
                 CharacterPhotosSection(c: $c)
-                MGSection("Voice") {
-                    MGFormRow("Voice description") { TextField("soft, warm and bright", text: $c.voice).frame(maxWidth: 300) }
-                } footer: {
-                    Text("Used for voice messages in a later update.")
-                }
+                CharacterVoiceSection(c: $c, isNew: edit.isNew)
                 MGSection("Chat") {
                     MGFormRow("Temperature") {
                         HStack(spacing: 10) {
@@ -89,11 +85,13 @@ struct CharacterEditor: View {
                     MGFormRow("Media on their own per day") {
                         HStack(spacing: 10) {
                             Text("\(c.initiative)").monospacedDigit().foregroundStyle(MG.secondaryLabel)
-                            MGStepper(value: $c.initiative, in: 0...10).mgHelp("How many photos or videos they send unasked each day")
+                            MGStepper(value: $c.initiative, in: 0...10)
+                                .mgHelp("How many photos, videos or voice messages they send unasked each day")
                         }
                     }
+                    CharacterMediaKindsRow(c: $c)
                 } footer: {
-                    Text("Videos and voice messages arrive in a later update.")
+                    Text("Videos and video messages always wait for your OK before they're made.")
                 }
             }
             MGDivider()

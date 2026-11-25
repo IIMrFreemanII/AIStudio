@@ -40,9 +40,10 @@ extension SmokeTest {
         let key = LLMKey(serverID: conn.id, modelID: modelID)
         guard llm.model(key)?.installed == true else { say("FAIL \(modelID) isn't installed on \(conn.name)"); return false }
         // Photos run without asking (the run's setting only, kept in memory).
-        model.characterAutoPhotoUSD = 1.0
+        model.characterAutoMediaUSD = 1.0
 
-        let c = CharacterTemplates.make(CharacterTemplates.all[0])
+        var c = CharacterTemplates.make(CharacterTemplates.all[0])
+        c.initiative = 0  // no media on her own: the test checks she sends only what she's asked for
         check(model.saveCharacter(c).isEmpty, "\(c.name) is saved")
 
         // a. Portraits: the first becomes the face of the photos.
@@ -111,7 +112,7 @@ extension SmokeTest {
             check(!banned.contains { lower.contains($0) }, "reply \(i + 1) stays in character")
             let tags = MediaTags.parse(reply).requests
             guard selfieLines.contains(i) else {
-                // Own-initiative photos are off (that limit comes with PR 3): only asked-for ones.
+                // Her own-initiative media is off (initiative 0): only asked-for ones.
                 check(tags.isEmpty, "reply \(i + 1) sends no photo nobody asked for")
                 continue
             }

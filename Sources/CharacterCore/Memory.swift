@@ -52,11 +52,13 @@ public struct CharacterMemory: Codable, Equatable, Sendable {
     public var spentUSD: Double = 0
     /// User turns since the last memory pass.
     public var turnsSinceUpdate = 0
+    /// When the character sent media on its own initiative (not asked).
+    public var ownMedia: [Date] = []
     public init() {}
 
     public static let maxFacts = 60
 
-    enum CodingKeys: String, CodingKey { case facts, relationship, summary, album, spentUSD, turnsSinceUpdate }
+    enum CodingKeys: String, CodingKey { case facts, relationship, summary, album, spentUSD, turnsSinceUpdate, ownMedia }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -66,6 +68,18 @@ public struct CharacterMemory: Codable, Equatable, Sendable {
         album = try c.decodeIfPresent([AlbumItem].self, forKey: .album) ?? []
         spentUSD = try c.decodeIfPresent(Double.self, forKey: .spentUSD) ?? 0
         turnsSinceUpdate = try c.decodeIfPresent(Int.self, forKey: .turnsSinceUpdate) ?? 0
+        ownMedia = try c.decodeIfPresent([Date].self, forKey: .ownMedia) ?? []
+    }
+
+    /// How many unasked media were sent on the same day as `now`.
+    public func ownMediaToday(now: Date = Date(), calendar: Calendar = .current) -> Int {
+        ownMedia.filter { calendar.isDate($0, inSameDayAs: now) }.count
+    }
+
+    /// Records an unasked media and forgets entries older than a week.
+    public mutating func noteOwnMedia(at date: Date = Date()) {
+        ownMedia.append(date)
+        ownMedia.removeAll { date.timeIntervalSince($0) > 7 * 86400 }
     }
 
     /// Merges a memory pass's result: adds new facts (trimmed, skipping empty ones and case-insensitive duplicates),

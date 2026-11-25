@@ -542,8 +542,9 @@ class FakeEngine:
     before the hello.txt script. "Write the commit message now." / "Write the pull request now." answer with FAKE_COMMIT /
     FAKE_PR; the Movie Studio writers' room with FAKE_MOVIE_BIBLE/OUTLINE/SCENE/CRITIQUE and its shot prompts with
     FAKE_MOVIE_SHOTS. With the ui tools offered, "test the ui" calls ui_apps, then "Done: " and the result.
-    Character chats: "Task: character memory" answers FAKE_CHARACTER_MEMORY, "send a selfie" and "send a video" answer
-    with a <photo> or <video> tag, and "who are you" answers "I'm {name}." with the name from the system prompt."""
+    Character chats: "Task: character memory" answers FAKE_CHARACTER_MEMORY; "send a selfie", "send a video", "send a
+    voice message" and "say it on camera" answer with a <photo>, <video>, <voice> or <talk> tag; and "who are you"
+    answers "I'm {name}." with the name from the system prompt."""
 
     def __init__(self, manifest: dict, models_root: Path, on_status: Status, boot_seconds: float | None = None):
         self.manifest, self.on_status = manifest, on_status
@@ -707,6 +708,10 @@ class FakeEngine:
             words = FAKE_MOVIE_SHOTS.split(" ")
         elif "send a selfie" in last.lower():
             words = "Here you go! <photo>a selfie in a red sweater at a sunny cafe, smiling</photo> Do you like it?".split(" ")
+        elif "send a voice message" in last.lower():
+            words = "Listen <voice>Hi there, I miss you already. See you tonight!</voice>".split(" ")
+        elif "say it on camera" in last.lower():
+            words = "Okay <talk>Hello from the beach, wish you were here.</talk>".split(" ")
         elif "send a video" in last.lower():
             words = "Watch this <video>waving at the camera on the beach at sunset</video>".split(" ")
         elif "who are you" in last.lower():

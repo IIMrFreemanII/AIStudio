@@ -3,8 +3,8 @@ import LLMClient
 import MovieCore
 import SwiftUI
 
-/// Above the composer of a character chat: the photos waiting for the user's OK (they cost more than the automatic
-/// limit), one row each with Take It and Skip.
+/// Above the composer of a character chat: the media waiting for the user's OK (videos and video messages always,
+/// photos and voice messages over the automatic limit), one row each with Make It (Take It for a photo) and Skip.
 struct CharacterMediaBar: View {
     let doc: ChatDocument
     @Environment(AppModel.self) private var model
@@ -31,15 +31,19 @@ struct CharacterMediaBar: View {
                 MGDivider()
                 ForEach(waiting) { item in
                     HStack(spacing: 8) {
-                        Text("📷 \(item.name) wants to send a photo"
+                        let kind = CharacterCore.MediaKind(rawValue: item.media.kind) ?? .photo
+                        let l = CharacterDisplay.label(kind)
+                        Text("\(l.icon) \(item.name) wants to send \(kind == .photo ? "a photo" : "a \(l.name.lowercased())")"
                              + (item.media.estimateUSD.map { " · about \(CostEstimate.format($0))" } ?? ""))
                             .font(.mgFootnote).foregroundStyle(MG.secondaryLabel)
                             .lineLimit(1)
                         Spacer(minLength: 8)
                         Button("Skip") { model.skipMedia(doc, turnID: item.turn, mediaID: item.id) }
                             .buttonStyle(.mg(.bordered))
-                        Button("Take It") { model.approveMedia(doc, turnID: item.turn, mediaID: item.id) }
-                            .buttonStyle(.mg(.prominent))
+                        Button(kind == .photo ? "Take It" : "Make It") {
+                            model.approveMedia(doc, turnID: item.turn, mediaID: item.id)
+                        }
+                        .buttonStyle(.mg(.prominent))
                     }
                     .padding(.horizontal, 14).padding(.vertical, 6)
                 }
