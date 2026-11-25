@@ -27,6 +27,15 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(p == "Photo of a 28-year-old adult woman, red hair, green eyes. smiling. Candid smartphone photo, natural light, sharp focus, detailed skin.")
     }
 
+    @Test func captionDropsALeadingPronoun() {
+        #expect(CharacterArt.caption("You on the sofa, smiling") == "On the sofa, smiling")
+        #expect(CharacterArt.caption("I'm at the beach") == "At the beach")
+        #expect(CharacterArt.caption("your favourite cafe at noon") == "your favourite cafe at noon")
+        #expect(CharacterArt.caption("smiling") == "smiling")
+        let p = CharacterArt.photoPrompt(hero(), request: "You holding a latte", scene: nil)
+        #expect(p.contains(" Holding a latte.") && !p.contains("You"))
+    }
+
     @Test func animePromptIsTags() {
         let p = CharacterArt.photoPrompt(hero(style: .anime), request: "waving", scene: cafe)
         #expect(p.hasPrefix("masterpiece, best quality, anime illustration, adult woman, 28 years old"))

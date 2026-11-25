@@ -16,6 +16,17 @@ public enum CharacterArt {
             .trimmingCharacters(in: CharacterSet(charactersIn: " ,.;"))
     }
 
+    /// A photo request as a caption: models sometimes start it with "You …" or "Me …", which the picture model would
+    /// read as a second person.
+    static func caption(_ request: String) -> String {
+        var s = request
+        for lead in ["you're ", "you are ", "you ", "i'm ", "i am ", "me ", "myself "] where s.lowercased().hasPrefix(lead) {
+            s = String(s.dropFirst(lead.count))
+            return s.prefix(1).uppercased() + s.dropFirst()
+        }
+        return s
+    }
+
     private static func styleNegative(_ style: ArtModel.Style) -> String {
         switch style {
         case .photoreal: "cartoon, anime, illustration, painting, 3d render, deformed, extra fingers, blurry, watermark, text"
@@ -39,7 +50,7 @@ public enum CharacterArt {
     }
 
     private static func prompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        let gender = clean(c.gender), look = clean(c.look), request = clean(request)
+        let gender = clean(c.gender), look = clean(c.look), request = caption(clean(request))
         let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
         switch c.artModel.style {
         case .photoreal:
