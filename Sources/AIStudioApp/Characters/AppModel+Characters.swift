@@ -239,11 +239,13 @@ extension AppModel {
 extension AppModel {
     /// The chat model writes `c`'s details (story, personality, likes, texting style, first message, a look detail and,
     /// when `newName`, a name) from its picks, on the default chat model. Returns them and the cost.
-    func writeCharacterDetails(_ c: Companion, newName: Bool,
+    func writeCharacterDetails(_ c: Companion, newName: Bool, model chosen: LLMKey? = nil,
                                progress: @escaping @MainActor (String) -> Void = { _ in }) async throws
         -> (details: CharacterDetails, cost: Double)
     {
-        guard let key = defaultChatModel, let client = llm.client(key.serverID) else { throw CharacterDetailsError.noModel }
+        guard let key = chosen ?? defaultChatModel, let client = llm.client(key.serverID) else {
+            throw CharacterDetailsError.noModel
+        }
         return try await CharacterWriter.run(client: client.chat, model: key.modelID, character: c, newName: newName,
                                              onProgress: { p in
             let text = p.phase ?? (p.characters > 0 ? "Writing…" : "Waiting for the model…")

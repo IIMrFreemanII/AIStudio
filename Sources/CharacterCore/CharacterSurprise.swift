@@ -107,10 +107,10 @@ public enum CharacterWriter {
         - look: one or two small distinctive details the picks don't say (a scar, a favourite necklace), under 15 words.
         - personality: what they're like beyond the picks, one sentence.
         - backstory: two or three sentences: where they live, their job, something that shaped them. They are an adult.
-        - speaking_style: how they text, one short phrase.
+        - speaking_style: how they text, in plain words (e.g. "short lowercase texts, lots of emojis"), one short phrase.
         - likes: four to six specific things they love, comma-separated.
-        - greeting: their first text message to the user, in their voice, one or two sentences.
-        Don't repeat the picks word for word; build on them.
+        - greeting: their first text to the user, like a real person texting a new match: casual, one or two short         sentences, mentioning something specific they're doing right now, written in their texting style. No clichés         ("journey", "delight", "breath of fresh air", "make your acquaintance") and no foreign words unless they         speak that language.
+        Don't repeat the picks word for word; build on them. Never mention children, kids, teens or school years.
         """
 
     /// The request. Its first line is "Task: character details".
@@ -139,7 +139,15 @@ public enum CharacterWriter {
         }
     }
 
-    /// Asks the model (one retry on a parse error); returns the details and the summed cost.
+    /// What would stop the character from being saved with these details (AgeGuard), as notes for the retry.
+    public static func problems(_ d: CharacterDetails, for c: Character, newName: Bool) -> [String] {
+        AgeGuard.problems(d.apply(to: c, name: newName)).map {
+            $0 + " Rewrite it without that word: every character and person mentioned is an adult."
+        }
+    }
+
+    /// Asks the model (once more on a parse error or an AgeGuard problem); returns the details and the summed cost.
+    /// The details may still have problems after the retry: the creator shows them, as for anything typed.
     public static func run(client: any ChatStreaming, model: String, character: Character, newName: Bool,
                            onProgress: @escaping @Sendable (MoviePlanner.Progress) -> Void = { _ in })
         async throws -> (details: CharacterDetails, cost: Double)
@@ -147,7 +155,8 @@ public enum CharacterWriter {
         let box = CostBox()
         let details: CharacterDetails = try await MoviePlanner.ask(
             client: client, model: model, system: system, user: user(character, newName: newName), maxTokens: 700,
-            onProgress: onProgress, onCost: { box.add($0) }, parse: { try parse($0) })
+            onProgress: onProgress, onCost: { box.add($0) },
+            check: { problems($0, for: character, newName: newName) }, parse: { try parse($0) })
         return (details, box.total)
     }
 }
