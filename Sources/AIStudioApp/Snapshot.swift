@@ -326,9 +326,9 @@ enum Snapshot {
         await render(sheet(CharacterEditor(edit: CharacterEdit(character: bad, isNew: true)).environment(m)),
                      to: dir.appendingPathComponent("62-character-editor.png"), size: CGSize(width: 608, height: 728))
         var tall = CharacterEditor(edit: CharacterEdit(character: mia, isNew: false))
-        tall.height = 2050
+        tall.height = 3300
         await render(sheet(tall.environment(m)),
-                     to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 2100))
+                     to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 3350))
         // The memory sheet reads the store: a throwaway folder entry, removed after.
         var memory = CharacterMemory()
         memory.facts = [CharacterMemory.Fact(text: "Works nights as a nurse and hates mornings"),
@@ -346,6 +346,13 @@ enum Snapshot {
         try? m.characterStore.saveMemory(memory, for: mia.id)
         await render(sheet(CharacterMemoryView(characterID: mia.id).environment(m)),
                      to: dir.appendingPathComponent("63-character-memory.png"), size: CGSize(width: 608, height: 728))
+        // 64a–f: the creator's six steps on the template, with its portraits and voice samples (last: a closed
+        // creator discards an unsaved character's folder).
+        for (i, letter) in ["a", "b", "c", "d", "e", "f"].enumerated() {
+            await render(sheet(CharacterCreator(edit: CharacterEdit(character: mia, isNew: true), step: i).environment(m)),
+                         to: dir.appendingPathComponent("64\(letter)-character-creator-\(CharacterCreator.steps[i].lowercased()).png"),
+                         size: CGSize(width: 688, height: 708))
+        }
         m.characterStore.delete(mia.id, useTrash: false)
     }
 

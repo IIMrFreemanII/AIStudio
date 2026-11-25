@@ -12,8 +12,8 @@ public enum CharacterPrompt {
         var sections: [String] = []
 
         var intro = ["You are \(c.name), a \(c.age)-year-old \(c.gender)."]
-        for (label, text) in [("Looks", c.look), ("Personality", c.personality), ("Backstory", c.backstory),
-                              ("Speaking style", c.speakingStyle), ("Likes", c.likes)] where !text.isEmpty {
+        for (label, text) in [("Looks", c.fullLook), ("Personality", c.fullPersonality), ("Backstory", c.fullBackstory),
+                              ("Speaking style", c.fullSpeakingStyle), ("Habits", c.habits), ("Likes", c.fullLikes)] where !text.isEmpty {
             intro.append("\(label): \(text)")
         }
         sections.append(intro.joined(separator: "\n"))

@@ -1,4 +1,5 @@
 import CharacterCore
+import ImageIO
 import LLMClient
 import MovieCore
 import SwiftUI
@@ -69,18 +70,62 @@ enum CharacterDisplay {
     }
 }
 
-/// A circle with the name's first letter on a colour from the name.
+/// A character's profile photo in a circle (their chosen portrait, top of the picture so the face shows); the
+/// name's first letter on a colour from the name when they have none.
 struct CharacterAvatar: View {
     let name: String
     var size: CGFloat = 32
+    /// The portrait file (`AppModel.portraitURL`).
+    var photo: URL? = nil
+    @State private var image: CGImage?
+
+    init(name: String, size: CGFloat = 32, photo: URL? = nil) {
+        self.name = name
+        self.size = size
+        self.photo = photo
+    }
+
+    init(_ c: AppModel.Companion, model: AppModel, size: CGFloat = 32) {
+        self.init(name: c.name, size: size, photo: model.portraitURL(c))
+    }
 
     var body: some View {
         let hue = CharacterDisplay.hue(name)
-        Text(String(name.trimmingCharacters(in: .whitespaces).first ?? "?").uppercased())
-            .font(.system(size: size * 0.46, weight: .semibold))
-            .foregroundStyle(hue)
-            .frame(width: size, height: size)
-            .background(Circle().fill(hue.opacity(0.18)))
-            .overlay(Circle().strokeBorder(hue.opacity(0.5), lineWidth: 1))
+        Group {
+            if let image, photo != nil {
+                Image(decorative: image, scale: 1).resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size, alignment: .top)
+                    .clipShape(Circle())
+                    .overlay(Circle().strokeBorder(MG.separator, lineWidth: 0.5))
+            } else {
+                Text(String(name.trimmingCharacters(in: .whitespaces).first ?? "?").uppercased())
+                    .font(.system(size: size * 0.46, weight: .semibold))
+                    .foregroundStyle(hue)
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(hue.opacity(0.18)))
+                    .overlay(Circle().strokeBorder(hue.opacity(0.5), lineWidth: 1))
+            }
+        }
+        .frame(width: size, height: size)
+        .task(id: photo) { image = await Self.thumbnail(photo, pixels: Int(size * 4)) }
+    }
+
+    private static let cache = NSCache<NSString, CGImage>()
+
+    /// A small copy of the picture, kept for the next avatar of it.
+    private static func thumbnail(_ url: URL?, pixels: Int) async -> CGImage? {
+        guard let url else { return nil }
+        let key = "\(url.path)#\(pixels)" as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        let image = await Task.detached(priority: .utility) { () -> CGImage? in
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+            return CGImageSourceCreateThumbnailAtIndex(src, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: pixels,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+            ] as CFDictionary)
+        }.value
+        if let image { cache.setObject(image, forKey: key) }
+        return image
     }
 }

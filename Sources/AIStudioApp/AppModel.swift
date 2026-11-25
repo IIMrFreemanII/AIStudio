@@ -90,6 +90,8 @@ final class AppModel {
     var characters: [CharacterCore.Character] = []
     var showCharacterGallery = false
     var editingCharacter: CharacterEdit?
+    /// The step-by-step creator of a new character (File › New Character Chat… › New Character).
+    var creatingCharacter: CharacterEdit?
     var memoryCharacter: CharacterRef?
     /// The chat in front of the graph (nil: the active workflow is in front).
     var activeChatID: UUID? {

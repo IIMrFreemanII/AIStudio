@@ -112,7 +112,7 @@ public enum CharacterMedia {
     }
 
     public static func voiceSampleRender(_ c: Character, seed: Int, server: String) -> MovieArt.Render {
-        MovieVoices.sampleRender(MovieCharacter(id: "character", name: c.name, look: c.look, voice: c.voice),
+        MovieVoices.sampleRender(MovieCharacter(id: "character", name: c.name, look: c.fullLook, voice: c.fullVoice),
                                  engine: c.voiceEngine, seed: seed, server: server)
     }
 
@@ -139,7 +139,7 @@ public enum CharacterMedia {
     }
 
     public static func motionPrompt(_ c: Character, request: String) -> String {
-        let gender = clean(c.gender), look = clean(c.look), req = CharacterArt.caption(clean(request))
+        let gender = clean(c.gender), look = clean(c.fullLook), req = CharacterArt.caption(clean(request))
         var out = "A \(c.age)-year-old adult" + (gender.isEmpty ? "" : " \(gender)")
         out += look.isEmpty ? "." : ", \(look)."
         if !req.isEmpty { out += " \(req)." }

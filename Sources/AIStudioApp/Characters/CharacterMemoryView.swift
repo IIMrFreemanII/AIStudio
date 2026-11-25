@@ -14,7 +14,7 @@ struct CharacterMemoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if let character { CharacterAvatar(name: character.name, size: 28) }
+                if let character { CharacterAvatar(character, model: model, size: 28) }
                 Text("\(character?.name ?? "Character")'s Memory").font(.mgTitle3)
                 Spacer()
             }

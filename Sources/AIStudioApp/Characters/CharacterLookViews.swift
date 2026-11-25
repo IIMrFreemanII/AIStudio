@@ -10,12 +10,15 @@ private func describe(_ error: Error) -> String {
     (error as? CustomStringConvertible)?.description ?? error.localizedDescription
 }
 
-/// The character's portraits: make or import them, and choose which one is the face in photos. The editor edits a
-/// copy of the character while these functions write the stored one, so only the portrait fields are refreshed here.
+/// The character's portraits: make or import them, and choose which one is their profile photo and the face in
+/// their photos. Works before the character is saved: the files go to its folder, the names into the edited copy
+/// (`c`); for a saved character the stored one gets them too, so a portrait isn't lost when the editor is cancelled.
 struct CharacterLookSection: View {
     @Environment(AppModel.self) private var model
     @Binding var c: AppModel.Companion
-    let isNew: Bool
+    var title = "Look"
+    /// The thumbnails' side (the creator shows them larger).
+    var thumbSize: CGFloat = 96
     @State private var running = false
     @State private var progress = ""
     @State private var task: Task<Void, Never>?
@@ -24,49 +27,36 @@ struct CharacterLookSection: View {
     private var server: String? { model.connections.gpuServers.first?.id }
 
     var body: some View {
-        if isNew {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Look").font(.mgCallout).foregroundStyle(MG.secondaryLabel).padding(.horizontal, 10)
-                Text("Save the character first, then make or import portraits.")
-                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).padding(.horizontal, 10)
-            }
-        } else {
-            MGSection("Look") {
-                thumbnails
-                HStack(spacing: 8) {
-                    Button("Make 4 Portraits") { generate() }
-                        .buttonStyle(.mg(.bordered)).disabled(server == nil || running)
-                        .mgHelp(server == nil ? "Add a GPU server in Servers first" : "Draw 4 portrait candidates on your GPU server")
-                    Button("Import Artwork…") { chooseArtwork() }
-                        .buttonStyle(.mg(.bordered)).disabled(running)
-                        .mgHelp("Use a picture of a fictional adult as a portrait")
-                    if running {
-                        MGSpinner().controlSize(.small)
-                        Text(progress).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
-                        Spacer(minLength: 0)
-                        Button("Cancel") { task?.cancel() }
-                            .buttonStyle(.mg(.bordered)).controlSize(.small)
-                            .mgHelp("Stop making portraits (finished ones are kept)")
-                    }
-                }
-            } footer: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(footer)
-                    if let problem { Text(problem).foregroundStyle(MG.destructive) }
+        MGSection(title) {
+            thumbnails
+            HStack(spacing: 8) {
+                Button(c.portraits.isEmpty ? "Make 4 Photos" : "Make 4 More") { generate() }
+                    .buttonStyle(.mg(c.portraits.isEmpty ? .prominent : .bordered)).disabled(server == nil || running)
+                    .mgHelp(server == nil ? "Add a GPU server in Servers first"
+                            : "Draw 4 portraits from their look on your GPU server, then pick one")
+                Button("Import Artwork…") { chooseArtwork() }
+                    .buttonStyle(.mg(.bordered)).disabled(running)
+                    .mgHelp("Use a picture of a fictional adult as a portrait")
+                if running {
+                    MGSpinner().controlSize(.small)
+                    Text(progress).font(.mgFootnote).foregroundStyle(MG.secondaryLabel).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Button("Cancel") { task?.cancel() }
+                        .buttonStyle(.mg(.bordered)).controlSize(.small)
+                        .mgHelp("Stop making portraits (finished ones are kept)")
                 }
             }
-            .task(id: running) {
-                // Portraits are stored as each one finishes: show them as they arrive.
-                while running, !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    refresh()
-                }
+        } footer: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(footer)
+                if let problem { Text(problem).foregroundStyle(MG.destructive) }
             }
         }
     }
 
     private var footer: String {
-        var s = "Their face in photos comes from the chosen portrait."
+        if server == nil { return "Add a GPU server in Servers to draw their photo." }
+        var s = "The chosen portrait is their profile photo and their face in photos."
         if let server, let each = model.photoEstimate(server: server, family: c.artModel.family) {
             s += " Making 4 costs about \(CostEstimate.format(4 * each))."
         }
@@ -81,9 +71,8 @@ struct CharacterLookSection: View {
                 HStack(spacing: 10) {
                     ForEach(c.portraits, id: \.self) { name in
                         PortraitThumb(url: model.characterStore.portraitsFolder(c.id).appendingPathComponent(name),
-                                      selected: c.selectedPortrait == name,
-                                      select: { model.selectPortrait(name, for: c.id); refresh() },
-                                      delete: { confirmDelete(name) })
+                                      selected: c.selectedPortrait == name, size: thumbSize,
+                                      select: { select(name) }, delete: { confirmDelete(name) })
                     }
                 }
                 .padding(.vertical, 4)
@@ -92,10 +81,14 @@ struct CharacterLookSection: View {
         }
     }
 
-    private func refresh() {
-        guard let fresh = model.characterStore.load(c.id) else { return }
-        if c.portraits != fresh.portraits { c.portraits = fresh.portraits }
-        if c.selectedPortrait != fresh.selectedPortrait { c.selectedPortrait = fresh.selectedPortrait }
+    private func add(_ name: String) {
+        if !c.portraits.contains(name) { c.portraits.append(name) }
+        if c.selectedPortrait == nil { c.selectedPortrait = name }
+    }
+
+    private func select(_ name: String) {
+        c.selectedPortrait = name
+        model.selectPortrait(name, for: c.id)
     }
 
     private func generate() {
@@ -103,14 +96,13 @@ struct CharacterLookSection: View {
         running = true
         problem = nil
         progress = "Starting…"
-        let id = c.id
+        let snapshot = c
         task = Task { @MainActor in
             do {
-                _ = try await model.generatePortraits(for: id, count: 4) { progress = $0 }
+                _ = try await model.generatePortraits(for: snapshot, count: 4, progress: { progress = $0 }, added: { add($0) })
             } catch {
                 if !Task.isCancelled, !(error is CancellationError) { problem = describe(error) }
             }
-            refresh()
             running = false
         }
     }
@@ -125,8 +117,7 @@ struct CharacterLookSection: View {
                               message: "Only use artwork of a fictional adult — not a photo of a real person.", actions: [
             MGAlertAction(label: "Import") {
                 problem = nil
-                do { _ = try model.importPortrait(url, for: id) } catch { problem = describe(error) }
-                refresh()
+                do { add(try model.importPortrait(url, for: id)) } catch { problem = describe(error) }
             },
             .cancel(),
         ])
@@ -137,7 +128,8 @@ struct CharacterLookSection: View {
         model.presenter.alert("Delete this portrait?", message: "The picture moves to the Trash.", actions: [
             .destructive("Delete") {
                 model.deletePortrait(name, for: id)
-                refresh()
+                c.portraits.removeAll { $0 == name }
+                if c.selectedPortrait == name { c.selectedPortrait = c.portraits.last }
             },
             .cancel(),
         ])
@@ -148,6 +140,7 @@ struct CharacterLookSection: View {
 private struct PortraitThumb: View {
     let url: URL
     let selected: Bool
+    var size: CGFloat = 96
     let select: () -> Void
     let delete: () -> Void
     @State private var hover = false
@@ -155,13 +148,13 @@ private struct PortraitThumb: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: MGRadius.md, style: .continuous)
         MGFileThumb(url: url)
-            .frame(width: 96, height: 96)
+            .frame(width: size, height: size)
             .background(MG.fill)
             .clipShape(shape)
             .overlay { if selected { shape.strokeBorder(MG.accent, lineWidth: 3) } }
             .overlay(alignment: .bottomLeading) {
                 if selected {
-                    Text("Face").font(.mgFootnote).foregroundStyle(MG.accentForeground)
+                    Text("Profile").font(.mgFootnote).foregroundStyle(MG.accentForeground)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(MG.accent))
                         .padding(6)
@@ -180,9 +173,9 @@ private struct PortraitThumb: View {
             .contentShape(shape)
             .onTapGesture(perform: select)
             .onHover { hover = $0 }
-            .mgHelp(selected ? "Their face in photos" : "Use this portrait for their face")
+            .mgHelp(selected ? "Their profile photo and face in photos" : "Use this portrait as their profile photo and face")
             .accessibilityAddTraits(.isButton)
-            .accessibilityLabel(selected ? "Portrait, chosen as the face" : "Portrait")
+            .accessibilityLabel(selected ? "Portrait, chosen as the profile photo" : "Portrait")
     }
 }
 

@@ -273,6 +273,40 @@ extension SmokeTest {
         model.deleteChat(group.id)
         model.deleteCharacter(c2.id)
 
+        // g7. The creator: a character picked from options gets a photo and a voice before it's saved; a cancelled
+        // one leaves nothing behind.
+        var draft = CharacterTemplates.make(CharacterTemplates.all[0])
+        draft.name = "Draft Mia"
+        for (cat, opt) in [("hairColor", "red"), ("hairStyle", "curly"), ("habits", "yoga"), ("voiceTone", "husky")] {
+            draft.traits = CharacterOptions.toggle(draft.traits, category: cat, option: opt)
+        }
+        check(CharacterArt.portraitPrompt(draft).contains("red hair") && CharacterArt.portraitPrompt(draft).contains("curly hair"),
+              "the portrait prompt has the picked look")
+        check(draft.fullVoice.contains("husky") && CharacterPrompt.system(draft, memory: CharacterMemory(), scene: nil)
+              .contains("Habits: "), "the voice and the prompt have the picked options")
+        var arrived: [String] = []
+        let drafted = (try? await model.generatePortraits(for: draft, count: 1, added: { arrived.append($0) })) ?? []
+        let draftSample = try? await model.makeVoiceSample(for: draft)
+        check(drafted.count == 1 && arrived == drafted && draftSample != nil
+              && FileManager.default.fileExists(atPath: model.characterStore.portraitsFolder(draft.id)
+                  .appendingPathComponent(drafted[0]).path)
+              && !model.characters.contains { $0.id == draft.id },
+              "an unsaved character gets a portrait and a voice sample, and isn't listed yet")
+        draft.portraits = drafted
+        draft.selectedPortrait = drafted.first
+        if let s = draftSample { draft.voiceSamples = [s.name]; draft.selectedVoiceSample = s.name }
+        check(model.saveCharacter(draft).isEmpty && model.character(draft.id)?.selectedPortrait == drafted.first
+              && model.portraitURL(draft) != nil && model.voiceSampleURL(draft) != nil,
+              "saved, its portrait is the profile photo and its sample the voice")
+        model.discardDraft(draft.id)
+        check(model.characterStore.load(draft.id) != nil, "a saved character isn't discarded as a draft")
+        model.deleteCharacter(draft.id)
+        let cancelled = CharacterTemplates.make(CharacterTemplates.all[1])
+        _ = try? await model.generatePortraits(for: cancelled, count: 1)
+        model.discardDraft(cancelled.id)
+        check(!FileManager.default.fileExists(atPath: model.characterStore.folder(cancelled.id).path),
+              "a cancelled draft leaves no folder")
+
         // h. Saved.
         model.saveChat(doc)
         check(model.chatStore.list().contains { $0.id == doc.id && $0.character }, "the chat is listed as a character chat")

@@ -51,7 +51,7 @@ public enum CharacterArt {
     }
 
     private static func prompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        let gender = clean(c.gender), look = clean(c.look), request = caption(clean(request))
+        let gender = clean(c.gender), look = clean(c.fullLook), request = caption(clean(request))
         let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
         switch c.artModel.style {
         case .photoreal:
