@@ -206,7 +206,7 @@ struct CharacterPhotosSection: View {
                 MGSegmentedPicker(selection: modelFamily,
                                   options: ArtModel.Family.allCases.map { ($0, $0 == .chroma ? "Chroma" : "SDXL") })
                     .frame(width: 200)
-                    .mgHelp("SDXL is quick and has many fine-tunes; Chroma (Flux-based) follows long descriptions more closely but costs several times more per photo")
+                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo")
             }
             MGFormRow("Style") {
                 MGSegmentedPicker(selection: $c.artModel.style,
