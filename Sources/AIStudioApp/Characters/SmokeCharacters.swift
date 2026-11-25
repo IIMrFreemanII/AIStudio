@@ -316,6 +316,18 @@ extension SmokeTest {
         check((try? midResult.get()) == nil
               && !FileManager.default.fileExists(atPath: model.characterStore.folder(midway.id).path),
               "a draft cancelled mid-portrait leaves no folder")
+        // g8. Surprise Me: a random character, then its details written by the chat model.
+        let rolled = CharacterSurprise.roll(CharacterTemplates.make(CharacterTemplates.all[0]))
+        check(CharacterOptions.all.allSatisfy { !(rolled.traits[$0.id] ?? []).isEmpty } && rolled.greeting.isEmpty
+              && !rolled.name.isEmpty, "Surprise Me picks every option and a name (\(rolled.name), \(rolled.age))")
+        do {
+            let (details, _) = try await model.writeCharacterDetails(rolled, newName: true)
+            let written = details.apply(to: rolled, name: true)
+            check(written.name == "Juno" && written.greeting.hasPrefix("Hey!") && written.likes.contains("vinyl")
+                  && AgeGuard.problems(written).isEmpty, "the chat model writes their name, story and first message")
+        } catch {
+            check(false, "the written details (\(error))")
+        }
         // The face reference: the fake portraits have no face, so the whole portrait is used.
         if let stored = model.character(c.id), let face = await model.faceReference(stored) {
             check(face == model.portraitURL(stored), "with no face found, photos use the whole portrait")
