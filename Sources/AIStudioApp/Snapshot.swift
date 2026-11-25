@@ -1,5 +1,6 @@
 import Agent
 import AppKit
+import CharacterCore
 import GraphRuntime
 import LLMClient
 import ImageIO
@@ -39,6 +40,8 @@ enum Snapshot {
 
     static func renderAll(to dir: URL) async {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // `--only characters`: just the character sheets.
+        if SmokeTest.argument("--only") == "characters" { await renderCharacters(to: dir); return }
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
         let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab", "wireStyle", "showModelWires", "showMinimap",
@@ -240,6 +243,36 @@ enum Snapshot {
         await renderLLMSettings(to: dir)
         await renderLLMContext(to: dir)
         await renderChrome(m, to: dir)
+        await renderCharacters(to: dir)
+    }
+
+    /// 61–63: the character gallery, the editor on a template, and a character's memory with two facts.
+    static func renderCharacters(to dir: URL) async {
+        let m = makeModel(URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs"))
+        let mia = CharacterTemplates.make(CharacterTemplates.all[0])
+        m.characters = [mia, CharacterTemplates.make(CharacterTemplates.all[2])]
+        await render(sheet(CharacterGallery().environment(m)), to: dir.appendingPathComponent("61-character-gallery.png"),
+                     size: CGSize(width: 768, height: 648))
+        var bad = CharacterTemplates.make(CharacterTemplates.all[1])
+        bad.name = ""
+        await render(sheet(CharacterEditor(edit: CharacterEdit(character: bad, isNew: true)).environment(m)),
+                     to: dir.appendingPathComponent("62-character-editor.png"), size: CGSize(width: 608, height: 728))
+        var tall = CharacterEditor(edit: CharacterEdit(character: mia, isNew: false))
+        tall.height = 1650
+        await render(sheet(tall.environment(m)),
+                     to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 1700))
+        // The memory sheet reads the store: a throwaway folder entry, removed after.
+        var memory = CharacterMemory()
+        memory.facts = [CharacterMemory.Fact(text: "Works nights as a nurse and hates mornings"),
+                        CharacterMemory.Fact(text: "Has a dog called Biscuit")]
+        memory.relationship.stage = .flirting
+        memory.relationship.affection = 47
+        memory.summary = "You met on a rainy Tuesday and talked about painting until closing time."
+        memory.spentUSD = 0.04
+        try? m.characterStore.saveMemory(memory, for: mia.id)
+        await render(sheet(CharacterMemoryView(characterID: mia.id).environment(m)),
+                     to: dir.appendingPathComponent("63-character-memory.png"), size: CGSize(width: 608, height: 728))
+        m.characterStore.delete(mia.id, useTrash: false)
     }
 
     /// 51: a coding chat: an edit's diff card, a finished command, and a write waiting for permission.

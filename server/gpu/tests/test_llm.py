@@ -15,6 +15,7 @@ from aistudio_gpu.files import FileStore
 from aistudio_gpu.jobs import JobManager
 from aistudio_gpu.llm import proxy, sizing
 from aistudio_gpu.llm.engine import (
+    FAKE_CHARACTER_MEMORY,
     FAKE_COMMIT,
     FAKE_MOVIE_BIBLE,
     FAKE_MOVIE_CRITIQUE,
@@ -1366,3 +1367,21 @@ def test_vllm_command_for_deepseek_v41(tmp_path):
     # Other models still draft with MTP.
     qwen = vllm_command({"id": "q", "count": 1, "context": 8192, "engineArgs": [], "mtpLayers": 1}, tmp_path, 8000)
     assert json.loads(qwen[qwen.index("--speculative-config") + 1])["method"] == "mtp"
+
+
+def test_fake_character_chat_replies(client):
+    mid = install(client)
+
+    def text_of(messages):
+        events = chat(client, mid, "", messages=messages)
+        chunks = [json.loads(d) for n, d in events if n is None and d != "[DONE]"]
+        return "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks if c["choices"])
+
+    memory = json.loads(text_of([{"role": "user", "content": "Task: character memory\nChat: hiking, Miso"}]))
+    assert memory == json.loads(FAKE_CHARACTER_MEMORY) and memory["stage"] == "flirting"
+    selfie = text_of([{"role": "user", "content": "Please send a selfie"}])
+    assert "<photo>" in selfie and "</photo>" in selfie
+    assert "<video>" in text_of([{"role": "user", "content": "Can you send a video?"}])
+    who = [{"role": "system", "content": "You are Mia, a 27-year-old woman. Be kind."},
+           {"role": "user", "content": "Who are you?"}]
+    assert text_of(who) == "I'm Mia."

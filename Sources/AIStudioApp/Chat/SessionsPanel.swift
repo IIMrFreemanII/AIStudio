@@ -18,6 +18,7 @@ struct SessionItem: Identifiable, Equatable {
     var coding: Bool
     var helper: Bool
     var studio = false
+    var character = false
     var open: Bool
     var snippet: String?
     var depth = 0
@@ -90,7 +91,7 @@ struct SessionsPanel: View {
             return SessionItem(id: s.id, title: s.title, modelID: s.modelID ?? "", date: s.updated, status: s.status,
                                pinned: s.pinned, archived: s.archived, parentID: s.parentID, branch: s.branch,
                                projectName: s.projectName, projectPath: s.projectPath, coding: s.coding, helper: s.helper,
-                               studio: s.studio, open: false, todoDone: s.todoDone, todoTotal: s.todoTotal)
+                               studio: s.studio, character: s.character, open: false, todoDone: s.todoDone, todoTotal: s.todoTotal)
         }
         let saved = Set(model.chatSummaries.map(\.id))
         for d in model.chats where !saved.contains(d.id) { items.append(item(of: d, date: nil)) }
@@ -106,7 +107,7 @@ struct SessionsPanel: View {
                            branch: t.worktree?.branch,
                            projectName: (t.worktree?.repo ?? t.projectPath).map { ($0 as NSString).lastPathComponent },
                            projectPath: t.worktree?.repo ?? t.projectPath,
-                           coding: d.isCoding, helper: d.isGraphHelper, studio: d.isStudio, open: d.isRecent,
+                           coding: d.isCoding, helper: d.isGraphHelper, studio: d.isStudio, character: d.isCharacter, open: d.isRecent,
                            todoDone: progress?.0, todoTotal: progress?.1)
     }
 
@@ -171,6 +172,7 @@ struct SessionsPanel: View {
                 MGMenuItem.button("Choose a Folder…", icon: "folder.badge.plus") { model.chooseProjectAndChat() }
                 MGMenuItem.divider
                 MGMenuItem.button("New Chat", icon: "bubble.left") { _ = model.newChat() }
+                MGMenuItem.button("New Character Chat…", icon: "heart") { model.showCharacterGallery = true }
             } label: {
                 Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).frame(height: 30)
             }
@@ -195,7 +197,8 @@ struct SessionsPanel: View {
         let coding = rest.filter { $0.coding && !$0.helper }
         let projects = Dictionary(grouping: coding) { $0.projectPath ?? $0.projectName ?? "" }
             .sorted { ($0.value.first?.date ?? .distantFuture) > ($1.value.first?.date ?? .distantFuture) }
-        let chats = rest.filter { !$0.coding && !$0.helper }
+        let characterChats = rest.filter { $0.character }
+        let chats = rest.filter { !$0.coding && !$0.helper && !$0.character }
         let helpers = rest.filter(\.helper)
         let archived = items.filter(\.archived)
         group("pinned", "Pinned", icon: "pin", pinned)
@@ -203,6 +206,7 @@ struct SessionsPanel: View {
             group("project:" + p.key, p.value.first?.projectName ?? "Project", icon: "folder", p.value,
                   newIn: p.value.first?.projectPath.map { URL(fileURLWithPath: $0) })
         }
+        group("characters", "Characters", icon: "heart", characterChats)
         group("chats", "Chats", icon: "bubble.left", chats)
         group("helpers", "Workflow helpers", icon: "wand.and.sparkles", helpers)
         group("archived", "Archived", icon: "archivebox", archived)
@@ -371,7 +375,7 @@ struct SessionRow: View {
     @State private var hover = false
 
     private var kindIcon: String {
-        item.studio ? "sparkles" : item.helper ? "wand.and.sparkles" : item.coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left"
+        item.studio ? "sparkles" : item.character ? "heart" : item.helper ? "wand.and.sparkles" : item.coding ? "chevron.left.forwardslash.chevron.right" : "bubble.left"
     }
 
     var body: some View {

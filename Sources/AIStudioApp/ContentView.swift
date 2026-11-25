@@ -142,6 +142,9 @@ struct ContentView: View {
         .task { if model.autoloadModel { model.preloadModel(atLaunch: true) } }
         .mgSheet("plot", isPresented: $showPlot) { PlotSheet() }
         .mgSheet("preset-gallery", isPresented: $model.showPresetGallery) { PresetGallery() }
+        .mgSheet("character-gallery", isPresented: $model.showCharacterGallery) { CharacterGallery() }
+        .mgSheet("character-editor", item: $model.editingCharacter) { e in CharacterEditor(edit: e) }
+        .mgSheet("character-memory", item: $model.memoryCharacter) { r in CharacterMemoryView(characterID: r.id) }
         .mgSheet("mask-editor", item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }
         .mgSheet("library-add", item: $model.libraryRequest) { r in
             if let lib = model.store?.library { LibraryAddSheet(request: r, library: lib) }

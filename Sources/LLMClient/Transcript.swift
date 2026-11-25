@@ -219,6 +219,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var sessionEvent: SessionEvent?
     /// A user turn: a finished flow run's result (the model gets it as a bracketed note).
     public var flowEvent: FlowEvent?
+    /// A character chat's assistant turn: the character who wrote it.
+    public var speaker: UUID?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,
@@ -283,6 +285,10 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
     /// The Studio agent: its tools use AIStudio itself (movies, workflows, the viewer), and it lives in the floating
     /// Studio Agent panel.
     public var studioAgent: Bool?
+    /// A character chat: the characters in it (CharacterCore ids), in cast order. Nil or empty: not a character chat.
+    public var characterIDs: [UUID]?
+    /// A character chat's scene (a `Scenario` id).
+    public var sceneID: String?
     /// "Always allow" for a graph helper's workflow runs.
     public var allowRuns: Bool?
     /// "Always allow" for web domains (`web_fetch`).
@@ -499,6 +505,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         copy.allowControlApps = allowControlApps
         copy.graphHelper = graphHelper
         copy.studioAgent = studioAgent
+        copy.characterIDs = characterIDs
+        copy.sceneID = sceneID
         copy.allowRuns = allowRuns
         copy.brief = brief
         copy.parentID = id
@@ -531,7 +539,7 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, id, title, created, updated, serverID, modelID, systemPrompt, reasoningEffort, nodes, activeLeaf
-        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, studioAgent, allowRuns, allowDomains
+        case choices, turns, projectPath, permissionMode, allowEdits, allowCommands, graphHelper, studioAgent, characterIDs, sceneID, allowRuns, allowDomains
         case allowObserveApps, allowControlApps
         case pinned, archived, lastViewed, parentID, worktree, brief, depth, changesOpen, sidePanel, sidePanelClosed, browserURL
         case openFiles, activeFile
@@ -553,6 +561,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         allowCommands = try c.decodeIfPresent([String].self, forKey: .allowCommands)
         graphHelper = try c.decodeIfPresent(Bool.self, forKey: .graphHelper)
         studioAgent = try c.decodeIfPresent(Bool.self, forKey: .studioAgent)
+        characterIDs = try c.decodeIfPresent([UUID].self, forKey: .characterIDs)
+        sceneID = try c.decodeIfPresent(String.self, forKey: .sceneID)
         allowRuns = try c.decodeIfPresent(Bool.self, forKey: .allowRuns)
         allowDomains = try c.decodeIfPresent([String].self, forKey: .allowDomains)
         allowObserveApps = try c.decodeIfPresent([String].self, forKey: .allowObserveApps)
@@ -597,6 +607,8 @@ public struct ChatTranscript: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(allowCommands, forKey: .allowCommands)
         try c.encodeIfPresent(graphHelper, forKey: .graphHelper)
         try c.encodeIfPresent(studioAgent, forKey: .studioAgent)
+        try c.encodeIfPresent(characterIDs, forKey: .characterIDs)
+        try c.encodeIfPresent(sceneID, forKey: .sceneID)
         try c.encodeIfPresent(allowRuns, forKey: .allowRuns)
         try c.encodeIfPresent(allowDomains, forKey: .allowDomains)
         try c.encodeIfPresent(allowObserveApps, forKey: .allowObserveApps)
