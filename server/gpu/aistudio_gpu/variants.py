@@ -30,10 +30,10 @@ from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safe
 
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
 FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
-            "sdxl": "sdxl"}
+            "sdxl": "sdxl", "chroma": "chroma"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
-                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl"}
+                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
 COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
@@ -272,14 +272,16 @@ def _download_repo_transformer(repo: str, work: Path, token: str | None, progres
 def convert_checkpoint(family: str, ckpt: Path, base: Path, out: Path, component: str = "transformer") -> None:
     """A single-file transformer checkpoint → a diffusers transformer folder (bf16), with the base's config."""
     import torch
-    from diffusers import FluxTransformer2DModel
+    from diffusers import ChromaTransformer2DModel, FluxTransformer2DModel
     from safetensors import safe_open
 
     if family == "qwen-image":
         return copy_diffusers_named(ckpt, base / component, out)
     if family.startswith("wan-2.2"):
         return convert_wan(ckpt, base / component, out)
-    assert family == "flux.1"
+    assert family in ("flux.1", "chroma")
+    # Chroma is Flux's layout with a pruned modulation (its own diffusers class and single-file conversion).
+    model_class = ChromaTransformer2DModel if family == "chroma" else FluxTransformer2DModel
     with safe_open(str(ckpt), "pt") as f:
         keys = list(f.keys())
     prefix = "transformer." if any(k.startswith("transformer.transformer_blocks.") for k in keys) else ""
@@ -287,16 +289,16 @@ def convert_checkpoint(family: str, ckpt: Path, base: Path, out: Path, component
         # Already diffusers names: build from the base's config and load the weights as they are.
         from safetensors.torch import load_file
 
-        config = FluxTransformer2DModel.load_config(str(base / "transformer"))
+        config = model_class.load_config(str(base / "transformer"))
         with torch.device("meta"):
-            model = FluxTransformer2DModel.from_config(config)
+            model = model_class.from_config(config)
         state = {k[len(prefix):]: v.to(torch.bfloat16) for k, v in load_file(str(ckpt)).items()
                  if k.startswith(prefix)}
         model.load_state_dict(state, strict=True, assign=True)
     else:
         # BFL / ComfyUI names (`double_blocks.*`, `model.diffusion_model.*`), fp8 included: diffusers converts them.
-        model = FluxTransformer2DModel.from_single_file(str(ckpt), config=str(base), subfolder="transformer",
-                                                        torch_dtype=torch.bfloat16, local_files_only=True)
+        model = model_class.from_single_file(str(ckpt), config=str(base), subfolder="transformer",
+                                             torch_dtype=torch.bfloat16, local_files_only=True)
     model.to(torch.bfloat16).save_pretrained(str(out), max_shard_size="5GB")
 
 

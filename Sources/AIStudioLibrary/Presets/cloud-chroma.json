@@ -1,0 +1,46 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "negative" : "low quality, blurry, deformed, watermark",
+          "prompt" : "A portrait of an old fisherman, weathered face, golden hour light, shallow depth of field, photo"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteChroma"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-chroma",
+  "modelName" : "Chroma1-HD on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Chroma · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 340,
+  "summary" : "Chroma1-HD, a Flux-based open model, on an NVIDIA GPU. Fast mode runs Chroma1-Flash (16 steps); Chroma fine-tunes and LoRAs from the library work too.",
+  "symbol" : "cloud"
+}

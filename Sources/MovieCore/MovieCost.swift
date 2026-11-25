@@ -178,6 +178,9 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         "sdxl": (5, 1.0, 15),
         "sd35-large": (3, 1.0, 40),
         "flux1-dev": (20, 1.0, 45),
+        // Chroma1-Flash (16 steps, no guidance pass) on an L40S, scaled from FLUX.1 dev's 28 steps; ≈ 28 GB to load.
+        // A guess until measured (full Chroma, 40 steps with guidance, is ≈ 5× this).
+        "chroma": (12, 1.0, 60),
         // A clip's "megapixels" are megapixels × frames (`MovieShots.work`): 832×480 × 81 frames ≈ 32.3. Measured
         // on Modal's H100 on 2026-11-10: 24 s a clip with fast on, about 90 s to load.
         "wan22-i2v": (24, 32.3, 90),

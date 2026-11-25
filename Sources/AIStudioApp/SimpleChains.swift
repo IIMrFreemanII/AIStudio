@@ -350,7 +350,7 @@ extension AppModel {
 
     // MARK: Cloud GPU LoRAs
 
-    /// The first cloud node that takes LoRAs (FLUX.1 dev, Qwen-Image, SD 3.5, SDXL, Wan 2.2: `RemoteNodes.libraryFamilies`).
+    /// The first cloud node that takes LoRAs (FLUX.1 dev, Qwen-Image, SD 3.5, SDXL, Chroma, Wan 2.2: `RemoteNodes.libraryFamilies`).
     var cloudImageNode: GraphNode? {
         graph.nodes.first { RemoteNodes.libraryFamilies[$0.type] != nil }
     }

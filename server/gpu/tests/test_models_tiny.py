@@ -186,6 +186,35 @@ def tiny_sdxl(root: Path) -> None:
 QWEN_IMAGE = ("Qwen/Qwen-Image", "75e0b4be04f60ec59a75f475837eced720f823b6")
 
 
+def tiny_chroma_transformer(seed: int):
+    from diffusers import ChromaTransformer2DModel
+
+    torch.manual_seed(seed)
+    return ChromaTransformer2DModel(patch_size=1, in_channels=4, num_layers=1, num_single_layers=1,
+                                    attention_head_dim=16, num_attention_heads=2, joint_attention_dim=32,
+                                    axes_dims_rope=[4, 4, 8], approximator_num_channels=16,
+                                    approximator_hidden_dim=32, approximator_layers=1)
+
+
+def tiny_chroma(root: Path) -> None:
+    """A tiny Chroma1-HD folder, and a second random transformer as Chroma1-Flash's (same config)."""
+    from diffusers import AutoencoderKL, ChromaPipeline, FlowMatchEulerDiscreteScheduler
+    from transformers import AutoTokenizer, T5EncoderModel
+
+    torch.manual_seed(0)
+    pipe = ChromaPipeline(
+        transformer=tiny_chroma_transformer(0),
+        vae=AutoencoderKL(sample_size=32, in_channels=3, out_channels=3, block_out_channels=(4,), layers_per_block=1,
+                          latent_channels=1, norm_num_groups=1, use_quant_conv=False, use_post_quant_conv=False,
+                          shift_factor=0.0609, scaling_factor=1.5035),
+        scheduler=FlowMatchEulerDiscreteScheduler(), text_encoder=T5EncoderModel.from_pretrained(TINY_T5),
+        tokenizer=AutoTokenizer.from_pretrained(TINY_T5))
+    pipe.save_pretrained(root / "chroma")
+    (root / "chroma" / ".complete").write_text("{}")
+    tiny_chroma_transformer(1).save_pretrained(root / "chroma-flash" / "transformer")
+    (root / "chroma-flash" / ".complete").write_text("{}")
+
+
 def tiny_qwen(root: Path) -> None:
     """A random Qwen-Image (two blocks, a 2-layer Qwen2.5-VL) with the real tokenizer (≈ 11 MB, fetched once: the
     tiny test tokenizers don't load in this transformers version), plus a Lightning-style LoRA."""
@@ -242,6 +271,7 @@ def models(tmp_path_factory):
     tiny_qwen(root)
     tiny_sd35(root)
     tiny_sdxl(root)
+    tiny_chroma(root)
     return root
 
 
@@ -969,6 +999,71 @@ def test_sd35_loras(models, tmp_path):
     assert "Loading LoRA 1" not in sink.statuses and np.abs(large_a - large_plain).max() > 0
     assert np.array_equal(jobs({"lora1": a})[0], with_a)  # and back to Turbo, the LoRA still applies
     assert np.array_equal(jobs()[0], plain)
+
+
+def test_chroma_fast_and_full(models, tmp_path):
+    """Fast (the default) is Chroma1-Flash: 16 steps, no guidance pass, the negative unused. Full swaps Chroma1-HD's
+    transformer in place (guidance 3, the negative used), and back again gives the first image exactly."""
+    jobs = ImageJobs("chroma", models, tmp_path)
+    assert jobs.worker.has_fast and jobs.worker.variant == "@flash"
+    fast, sink, out = jobs(negative="blurry", steps=2)
+    assert out.extra["fast"] is True and out.extra["guidance"] == 1.0 and out.extra["face"] is False
+    assert "Sampling (fast)" in sink.statuses and not any(s.startswith("Loading") for s in sink.statuses)
+    _, sink, out = jobs()
+    assert out.extra["steps"] == 16 and sink.steps[-1] == (16, 16) and [s for _, s in sink.previews] == [4, 8, 12]
+    assert sink.previews[0][0] == (64, 64, 3)
+    full, sink, out = jobs(fast=False, steps=2)
+    assert "Loading the base model" in sink.statuses and "Sampling" in sink.statuses
+    assert out.extra["fast"] is False and out.extra["guidance"] == 3.0
+    assert np.abs(full - fast).max() > 0
+    again, sink, _ = jobs(negative="blurry", steps=2)
+    assert "Loading @flash" in sink.statuses and np.array_equal(again, fast)
+
+
+def test_chroma_without_flash_runs_hd_only(models, tmp_path):
+    """Without Flash installed there's no fast mode: a job asking for it runs Chroma1-HD."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "chroma").symlink_to(models / "chroma")
+    jobs = ImageJobs("chroma", root, tmp_path)
+    assert not jobs.worker.has_fast and jobs.worker.variant == "base"
+    _, _, out = jobs(steps=2)
+    assert out.extra["fast"] is False and out.extra["guidance"] == 3.0
+
+
+def test_chroma_loras_and_a_fine_tune(models, tmp_path):
+    """A LoRA changes the image and survives the Flash / HD swap; a fine-tune from a single file (diffusers names)
+    runs as full Chroma even when fast is asked for, and the base comes back exactly."""
+    from safetensors.torch import save_file
+
+    from aistudio_gpu import variants
+
+    jobs = ImageJobs("chroma", models, tmp_path, steps=2)
+    plain, _, _ = jobs()
+    a = lora_on_attention(jobs.worker.pipe.transformer, tmp_path / ("c" * 64 + ".safetensors"), "transformer", 3)
+    styled, _, out = jobs({"lora1": a}, lora1_strength=1.0)
+    assert out.extra["loras"] == 1 and np.abs(styled - plain).max() > 0
+    hd_styled, _, _ = jobs({"lora1": a}, lora1_strength=1.0, fast=False)
+    assert np.abs(hd_styled - styled).max() > 0
+    again, _, _ = jobs({"lora1": a}, lora1_strength=1.0)
+    assert np.array_equal(again, styled)
+
+    tuned = tiny_chroma_transformer(5)
+    ckpt = tmp_path / "chroma-ft.safetensors"
+    save_file({k: v.contiguous() for k, v in tuned.state_dict().items()}, str(ckpt))
+    work = tmp_path / "ft"
+    variants.convert_checkpoint("chroma", ckpt, models / "chroma", work)
+    dest = variants.variant_dir(models, "chroma", "tiny-chroma-ft")
+    shutil.copytree(work, dest / "transformer")
+    (dest / ".complete").write_text("{}")
+    try:
+        ft, sink, out = jobs(model="tiny-chroma-ft")
+        assert out.extra["fast"] is False and "Loading tiny-chroma-ft" in sink.statuses
+        assert np.abs(ft - plain).max() > 0
+        back, _, _ = jobs()
+        assert np.array_equal(back, plain)
+    finally:
+        shutil.rmtree(dest)
 
 
 def test_sdxl_samplers(models, tmp_path):

@@ -350,7 +350,16 @@ transformer in place from the Volume when the mode changes. Up to four LoRAs; th
 licence for both repos must be accepted (above). Fits an L40S (`AISTUDIO_GPU_SD`).
 
 **Stable Diffusion XL (`sdxl`):** SDXL 1.0 base, 30 steps, guidance 6, a negative prompt, and a **sampler** (DPM++ 2M
-Karras, Euler a, Euler). It takes up to four LoRAs and fine-tunes from links (above), picked with `model`.
+Karras, Euler a, Euler). It takes up to four LoRAs and fine-tunes from links (above), picked with `model`. An
+optional **face** picture keeps that face (IP-Adapter plus-face, download `sdxl-face`, ≈ 3.4 GB; `face_strength`).
+
+**Chroma (`chroma`):** Chroma1-HD (Apache-2.0, 8.9B, Flux-based), ≈ 27.5 GB. **fast** (on by default) runs
+Chroma1-Flash's transformer (CFG baked in: 16 steps, no guidance pass; `chroma-flash`, ≈ 17.8 GB, swapped in place
+like SD 3.5 Turbo); **fast** off runs Chroma1-HD (40 steps, guidance 3). The **negative** prompt is used only with
+guidance above 1. Up to four Chroma LoRAs (FLUX.1 ones are refused) and Chroma fine-tunes from links; a fine-tune
+always runs as full Chroma. An optional **face** picture steers the face with XLabs' FLUX.1 IP-Adapter v2 and its
+CLIP ViT-L encoder (`chroma-face`, ≈ 2.8 GB); it was trained on FLUX.1 dev, so how well it holds a face on Chroma
+is worth checking per character. `--models chroma` downloads all three. Fits an L40S (`AISTUDIO_GPU_CHROMA`).
 
 The Wan nodes' **negative** prompt ("blurry, static, distorted hands") works in both modes:
 

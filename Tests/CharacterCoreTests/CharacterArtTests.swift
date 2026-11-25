@@ -89,6 +89,25 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(CharacterArt.template(loras: 9).graph.nodes.filter { $0.type == "RemoteLoRA" }.count == CharacterArt.maxLoRAs)
     }
 
+    @Test func chromaTemplateRunsFullChromaWithTheNegative() throws {
+        var c = hero()
+        c.artModel = ArtModel(family: .chroma, variant: "chroma-ft")
+        c.loras = [CharacterLoRA(lora: "a")]
+        let r = CharacterArt.render(c, prompt: "p", seed: 3, server: "s", face: URL(fileURLWithPath: "/tmp/f.png"))
+        let g = try CharacterArt.template(.chroma, loras: 1).bind(r.values, optional: Set(r.values.keys),
+                                                                 remove: r.unusedPictures)
+        #expect(g["image"]?.type == "RemoteChroma" && g["image"]?.inputs["sampler"] == nil)
+        // Flash has no guidance pass, so it would drop the negative (AgeGuard's terms): photos run full Chroma.
+        #expect(g["image"]?.inputs["fast"] == .value(.bool(false)))
+        #expect(g["image"]?.inputs["negative"] == .value(.string(CharacterArt.negative(c))))
+        #expect(CharacterArt.negative(c).contains(AgeGuard.negative))
+        #expect(g["image"]?.inputs["model"] == .value(.string("chroma-ft")))
+        #expect(g["image"]?.inputs["face"] == .link(node: "face", output: "image"))
+        #expect(g["image"]?.inputs["loras"] == .link(node: "lora1", output: "loras"))
+        #expect(CharacterArt.template(loras: 0).graph.nodes.contains { $0.type == "RemoteSDXL" })
+        #expect(CharacterArt.task(.chroma) == "chroma" && CharacterArt.task(.sdxl) == "sdxl")
+    }
+
     @Test func loraDecodesOldLinkKey() throws {
         let old = try JSONDecoder().decode(CharacterLoRA.self, from: Data(#"{"link": "x", "strength": 0.5}"#.utf8))
         #expect(old == CharacterLoRA(lora: "x", strength: 0.5))
