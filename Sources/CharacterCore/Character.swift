@@ -106,10 +106,26 @@ public struct ArtModel: Codable, Equatable, Sendable, Hashable {
 
 /// A LoRA applied when drawing the character.
 public struct CharacterLoRA: Codable, Equatable, Sendable, Hashable {
-    public var link: String
+    /// The library item id of the LoRA (the app's Models library; the `RemoteLoRA` node's `lora` input takes it).
+    public var lora: String
     public var strength: Double = 0.8
-    public init(link: String, strength: Double = 0.8) {
-        self.link = link
+    public init(lora: String, strength: Double = 0.8) {
+        self.lora = lora
         self.strength = strength
+    }
+
+    enum CodingKeys: String, CodingKey { case lora, link, strength }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // Older files called it `link`.
+        lora = try c.decodeIfPresent(String.self, forKey: .lora) ?? c.decode(String.self, forKey: .link)
+        strength = try c.decodeIfPresent(Double.self, forKey: .strength) ?? 0.8
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(lora, forKey: .lora)
+        try c.encode(strength, forKey: .strength)
     }
 }

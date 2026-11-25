@@ -6,6 +6,10 @@ The download keeps only the fp16 files (≈ 7 GB); they run in bf16 on the GPU, 
 Civitai: its UNet and both CLIP text encoders are swapped into the loaded pipeline in place, the VAE stays SDXL's.
 LoRAs load into the UNet and, when the file has them, both text encoders.
 
+An optional ``face`` picture steers the result towards that face (diffusers IP-Adapter "plus face" with its ViT-H image
+encoder, ``sdxl-face``, loaded on the first job that has a face and unloaded again for jobs without one or when the
+fine-tune changes). Jobs without a face run exactly as before.
+
 The sampler is chosen per job from three schedulers built once: DPM++ 2M Karras (the default), Euler a, Euler.
 """
 
@@ -22,6 +26,8 @@ from .adapters import AdapterSlots
 from .device import generator, pick_device
 from .previews import remember_x0
 
+FACE_DIR = "sdxl-face"
+FACE_WEIGHTS = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
 PREVIEW_EVERY = 5  # a VAE decode per preview: every few steps is plenty
 
 
@@ -34,6 +40,8 @@ class SDXLWorker(AdapterSlots):
     def __init__(self):
         self.pipe = None
         self.schedulers: dict = {}
+        self.face_loaded = False
+        self.image_encoder = None  # the face model's CLIP ViT-H, kept once loaded
         self.x0: dict = {}  # the last step's estimate of the finished latents, for previews (``previews.remember_x0``)
         self._init_slots()
 
@@ -76,8 +84,22 @@ class SDXLWorker(AdapterSlots):
                     pass
             return kwargs
 
-        self._use_variant(params.get("model") or "base", sink)
+        wanted = params.get("model") or "base"
+        if self.face_loaded and wanted != self.variant:
+            self._unload_face()  # a fine-tune swap changes the UNet the adapter's attention layers sit in
+        self._use_variant(wanted, sink)
         loras = self._use_loras(params, inputs, sink)
+        face = inputs.get("face")
+        extra_args = {}
+        if face:
+            from PIL import Image
+
+            self._load_face(sink)
+            self.pipe.set_ip_adapter_scale(params["face_strength"])
+            with Image.open(face) as picture:
+                extra_args["ip_adapter_image"] = picture.convert("RGB")
+        elif self.face_loaded:
+            self._unload_face()
         self.pipe.scheduler = self.schedulers[sampler]
         self.x0.clear()
         sink.status("Sampling")
@@ -86,12 +108,36 @@ class SDXLWorker(AdapterSlots):
             image = self.pipe(prompt=params["prompt"], negative_prompt=params["negative"].strip() or None,
                               width=width, height=height, num_inference_steps=steps, guidance_scale=guidance,
                               generator=generator(params["seed"]), callback_on_step_end=on_step,
-                              callback_on_step_end_tensor_inputs=["latents"]).images[0]
+                              callback_on_step_end_tensor_inputs=["latents"], **extra_args).images[0]
         path = out_dir / "result.png"
         write_png(np.asarray(image), path)
         return Output(path, "image", "image/png",
                       extra={"steps": steps, "guidance": guidance, "sampler": sampler, "loras": loras,
-                             "sampleSeconds": round(time.monotonic() - start, 2)})
+                             "face": bool(face), "sampleSeconds": round(time.monotonic() - start, 2)})
+
+    def _load_face(self, sink) -> None:
+        if self.face_loaded:
+            return
+        import transformers
+
+        root = self.models_root / FACE_DIR
+        if not (root / ".complete").exists():
+            raise ValueError("The face reference model isn't on this GPU server yet: download sdxl-face "
+                             "(python -m aistudio_gpu download --models sdxl-face).")
+        sink.status("Loading the face reference")
+        if self.image_encoder is None:
+            self.image_encoder = transformers.CLIPVisionModelWithProjection.from_pretrained(
+                root / "models" / "image_encoder", dtype=self.dtype).to(self.device)
+        self.pipe.load_ip_adapter(str(root), subfolder="sdxl_models", weight_name=FACE_WEIGHTS,
+                                  image_encoder_folder=None)
+        self.pipe.register_modules(image_encoder=self.image_encoder)
+        if getattr(self.pipe, "feature_extractor", None) is None:
+            self.pipe.register_modules(feature_extractor=transformers.CLIPImageProcessor())
+        self.face_loaded = True
+
+    def _unload_face(self) -> None:
+        self.pipe.unload_ip_adapter()
+        self.face_loaded = False
 
     def _preview(self, latents) -> np.ndarray:
         import torch

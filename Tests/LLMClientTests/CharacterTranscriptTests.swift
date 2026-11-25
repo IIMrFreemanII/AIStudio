@@ -60,4 +60,20 @@ struct CharacterTranscriptTests {
         #expect(copy.characterIDs == [ada])
         #expect(copy.sceneID == "market")
     }
+
+    @Test func mediaRoundTripsAndOldTurnsDecodeWithoutIt() throws {
+        var turn = ChatTurn(role: .assistant, text: "Here you go", date: when)
+        turn.media = [
+            ChatMedia(kind: "photo", prompt: "at the beach", status: .done, file: "a.png", estimateUSD: 0.02, costUSD: 0.01),
+            ChatMedia(kind: "video", prompt: "waving", status: .waiting, estimateUSD: 0.5),
+        ]
+        let back = try decoder().decode(ChatTurn.self, from: try coder().encode(turn))
+        #expect(back == turn)
+        #expect(back.media?.count == 2 && back.media?[1].status == .waiting)
+        let json = """
+        {"id":"8F1C1B2A-0000-4000-8000-000000000002","role":"assistant","text":"hi","images":[],"toolCalls":[],
+         "date":"2026-11-20T10:00:00Z"}
+        """
+        #expect(try decoder().decode(ChatTurn.self, from: Data(json.utf8)).media == nil)
+    }
 }

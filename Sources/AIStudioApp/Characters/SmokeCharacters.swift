@@ -5,7 +5,8 @@ import LLMClient
 extension SmokeTest {
     /// `--smoke-characters <url>`: against a GPU server run with `AISTUDIO_FAKE_LLM=1`, checks the age guard, saving a
     /// character, a chat with it (greeting, speaker, the character's own prompt, photo tags), the memory pass after six
-    /// replies, scenes, and the saved chat. Everything it makes is deleted at the end.
+    /// replies, scenes, a generated portrait and the selfie it takes, and the saved chat. The server must also run with
+    /// `AISTUDIO_FAKE_MODELS=1`. Everything it makes is deleted at the end.
     static func runCharacters(_ model: AppModel, url: String) async -> Bool {
         var ok = true
         func say(_ s: String) { print("[smoke-characters] \(s)"); fflush(stdout) }
@@ -13,6 +14,7 @@ extension SmokeTest {
             if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
         }
 
+        model.characterAutoPhotoUSD = 1.0  // fake prices never gate the photo (in memory only in smoke runs)
         let conn = ServerConnection(name: "Smoke GPU", kind: .gpu, baseURL: url)
         model.connections.save(conn, token: "smoke")
         await model.connections.test(conn.id)
@@ -78,10 +80,35 @@ extension SmokeTest {
         check(who?.error == nil && who?.text == "I'm \(c.name)." && who?.speaker == c.id,
               "the reply comes from her prompt (\(who?.text ?? who?.error ?? "none"))")
 
-        // e. A photo tag in a reply.
+        // e. A portrait, then a photo tag in a reply that becomes a picture.
+        var portraits: [String] = []
+        do { portraits = try await model.generatePortraits(for: c.id, count: 1) } catch { say("portrait failed: \(error)") }
+        let portraitFile = portraits.first.map { model.characterStore.portraitsFolder(c.id).appendingPathComponent($0) }
+        check(portraits.count == 1 && portraitFile.map { FileManager.default.fileExists(atPath: $0.path) } == true
+              && model.character(c.id)?.selectedPortrait == portraits.first, "a portrait is made and selected")
         let selfie = await send(doc, "send a selfie")
         let requests = MediaTags.parse(selfie?.text ?? "").requests
         check(selfie?.error == nil && requests.count == 1 && requests.first?.kind == .photo, "a selfie reply has one photo tag")
+        let photoDeadline = Date().addingTimeInterval(30)
+        var photoTurn = selfie
+        while Date() < photoDeadline {
+            photoTurn = selfie.flatMap { doc.transcript.turn($0.id) }
+            if let st = photoTurn?.media?.first?.status, st == .done || st == .failed { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let photo = photoTurn?.media?.first
+        check(photo?.status == .done, "the photo is done (\(photo?.status.rawValue ?? "none") \(photo?.error ?? ""))")
+        if let file = photo?.file {
+            let inChat = model.chatStore.filesFolder(doc.id).appendingPathComponent(file)
+            let inAlbum = model.characterStore.albumFolder(c.id).appendingPathComponent(file)
+            check(FileManager.default.fileExists(atPath: inChat.path), "the photo is in the chat's files")
+            check(FileManager.default.fileExists(atPath: inAlbum.path), "the photo is in the album folder")
+            let album = model.characterStore.memory(c.id).album
+            check(album.count == 1 && album.first?.kind == .photo && album.first?.file == file, "the album lists the photo")
+        } else {
+            check(false, "the photo has a file")
+        }
+        check(photoTurn.map { CharacterDisplay.markdown($0).contains("![Photo](") } == true, "the reply shows the picture")
 
         // f. Six replies: the memory pass runs.
         for text in ["I went hiking today", "it was lovely", "what about you", "tell me more"] {

@@ -169,6 +169,35 @@ public struct FlowEvent: Codable, Equatable, Sendable, Hashable {
     }
 }
 
+/// A photo, video or voice note a character's reply asked for (its n-th media tag), and how making it went.
+public struct ChatMedia: Codable, Equatable, Sendable, Identifiable {
+    public enum Status: String, Codable, Sendable { case waiting, running, done, failed, skipped }
+    // waiting: over the automatic-cost threshold, needs the user's OK. skipped: the user said no.
+    public var id: UUID
+    /// A `CharacterCore.MediaKind` raw value ("photo", "video", "voice", "talk").
+    public var kind: String
+    /// The tag's text.
+    public var prompt: String
+    public var status: Status
+    /// File name in the chat's files folder, when done.
+    public var file: String?
+    public var estimateUSD: Double?
+    public var costUSD: Double?
+    public var error: String?
+
+    public init(id: UUID = UUID(), kind: String, prompt: String, status: Status = .running, file: String? = nil,
+                estimateUSD: Double? = nil, costUSD: Double? = nil, error: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.prompt = prompt
+        self.status = status
+        self.file = file
+        self.estimateUSD = estimateUSD
+        self.costUSD = costUSD
+        self.error = error
+    }
+}
+
 /// One message of a saved chat, with what the app shows around it (thinking, stats, errors).
 public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public enum Role: String, Codable, Sendable { case user, assistant, tool }
@@ -221,6 +250,8 @@ public struct ChatTurn: Codable, Identifiable, Equatable, Sendable {
     public var flowEvent: FlowEvent?
     /// A character chat's assistant turn: the character who wrote it.
     public var speaker: UUID?
+    /// A character chat's assistant turn: the photos, videos and voice notes its tags asked for (nil: none).
+    public var media: [ChatMedia]?
 
     public init(id: UUID = UUID(), role: Role, text: String, reasoning: String? = nil, images: [String] = [],
                 files: [ChatFile]? = nil, toolCalls: [ToolCall] = [], toolCallID: String? = nil, model: String? = nil,

@@ -158,6 +158,10 @@ MODELS: dict[str, dict] = {
         "text_encoder_2/config.json", "text_encoder_2/model.fp16.safetensors",
         "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
+    # IP-Adapter "plus face" for SDXL (Apache-2.0): the ViT-H image encoder (≈ 2.5 GB) and the face adapter (≈ 0.85 GB).
+    "sdxl-face": {"repo": "h94/IP-Adapter", "revision": "018e402774aeeddd60609b4ecdb7e298259dc729",
+                  "allow": ["models/image_encoder/config.json", "models/image_encoder/model.safetensors",
+                            "sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors"]},
 }
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"],
@@ -167,8 +171,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
           "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
-          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl"],
-          "sd": ["sd35-large", "sd35-large-turbo", "sdxl"]}
+          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"],
+          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"
                  "convert_stable_audio_3_to_diffusers.py",
                  "ee782fa2dfacc637251d00add7cee93f6c3aafcbed6abf111ff209947d98267f")

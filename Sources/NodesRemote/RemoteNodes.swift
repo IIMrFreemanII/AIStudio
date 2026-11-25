@@ -840,12 +840,14 @@ public struct RemoteSD35Node: NodeImplementation {
     }
 }
 
-/// SDXL 1.0 on a GPU server, or an SDXL fine-tune (Juggernaut, Pony, Illustrious…) from the library.
+/// SDXL 1.0 on a GPU server, or an SDXL fine-tune (Juggernaut, Pony, Illustrious…) from the library. A face picture
+/// keeps the face (the server's IP-Adapter).
 public struct RemoteSDXLNode: NodeImplementation {
     public static let schema = NodeSchema(
         type: "RemoteSDXL", displayName: "SDXL (Cloud GPU)", category: "remote",
         inputs: [
             InputSpec("loras", .cloudLoRAs, optional: true),
+            InputSpec("face", .image, optional: true),
             RemoteNodes.serverInput,
             InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
             InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
@@ -857,6 +859,7 @@ public struct RemoteSDXLNode: NodeImplementation {
             InputSpec("sampler", .string, default: .string("dpmpp-2m-karras"), widget: .choice(RemoteNodes.sdxlSamplers)),
             // An SDXL fine-tune from the library (Juggernaut, Pony, Illustrious…), installed on the server (empty: SDXL 1.0 itself).
             InputSpec("model", .string, default: .string(""), widget: .library("model")),
+            InputSpec("face_strength", .float, default: .double(0.6), widget: .number(min: 0, max: 1, step: 0.05)),
         ],
         outputs: [OutputSpec("image", .image)])
     public init() {}
@@ -866,13 +869,15 @@ public struct RemoteSDXLNode: NodeImplementation {
             "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
             "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
             "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
-            "sampler": try inputs.string("sampler"),
+            "sampler": try inputs.string("sampler"), "face_strength": try inputs.float("face_strength"),
         ]
+        var images: [String: MLXArray] = [:]
+        if let face = inputs.optionalObject("face", as: MLXArray.self) { images["face"] = face }
         let model = (try? inputs.string("model")) ?? ""
         params["model"] = model.isEmpty ? "base" : model
         let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
                                                   family: "sdxl", to: &params)
-        let (url, _) = try await runRemoteJob(task: "sdxl", params: params, files: files, links: links,
+        let (url, _) = try await runRemoteJob(task: "sdxl", params: params, images: images, files: files, links: links,
                                               inputs: inputs, context: context)
         return ["image": .object(try loadImage(url))]
     }

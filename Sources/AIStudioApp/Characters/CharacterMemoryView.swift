@@ -55,10 +55,15 @@ struct CharacterMemoryView: View {
                             .mgHelp("Add this to what they know about you")
                     }
                 }
+                MGSection("Album") {
+                    CharacterAlbumGrid(characterID: characterID, items: memory.album)
+                } footer: {
+                    Text("Click a photo to open it.")
+                }
                 MGSection("Your story so far") {
                     MGTextEditor(text: $memory.summary).frame(height: 110).padding(.vertical, 4)
                 } footer: {
-                    Text(String(format: "Memory updates cost so far: $%.2f", memory.spentUSD))
+                    Text(String(format: "Spent on this character so far (memory updates, portraits and photos): $%.2f", memory.spentUSD))
                 }
             }
             MGDivider()

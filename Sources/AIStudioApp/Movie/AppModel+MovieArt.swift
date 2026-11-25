@@ -383,41 +383,19 @@ extension AppModel {
     func runMovieGraph(_ doc: MovieDocument, template: MovieTemplate, render: MovieArt.Render, title: String)
         async throws -> (outputs: [EngineOutput], jobs: [RemoteJobRecord])
     {
-        let graph = try template.bind(render.values, optional: Set(render.values.keys), remove: render.unusedPictures)
-        // Only this graph's GPU jobs (others may run at the same time), and its events to its own lane's line.
-        let jobs = JobRecords()
-        let scope = UUID()
-        let token = RemoteJobLog.observe(scope: scope) { jobs.append($0) }
-        defer { RemoteJobLog.remove(token) }
         let lane = MovieJob.lane
         // (Read first: assigning through `doc.job?` while reading it in the same statement is an exclusive-access
         // conflict.)
         let what = doc.job?.detail ?? ""
-        let outputs = try await RemoteJobLog.$scope.withValue(scope) {
-            try await movieRenderer.run(graph, on: localBackend, title: title) { event in
-                MovieJob.$lane.withValue(lane) {
-                    if case .progress(_, let step, let total, _) = event, total > 0 {
-                        doc.job?.detail = what + " · step \(step)/\(total)"
-                    } else if case .status(_, let text?) = event, !text.isEmpty, !text.hasPrefix("GPU ") {
-                        doc.job?.detail = what + " · \(text)"
-                    }
-                }
-            }
+        return try await runHeadlessGraph(template: template, render: render, title: title) { text in
+            MovieJob.$lane.withValue(lane) { doc.job?.detail = what + " · " + text }
         }
-        return (outputs, jobs.all)
     }
 
     /// Adds the jobs' cost to the movie's spend and their times to the learned timings; returns the cost. `work`
     /// is a job's size for the timings when it isn't its picture's megapixels (a clip's megapixels × frames).
     func recordJobs(_ records: [RemoteJobRecord], doc: MovieDocument, work: Double? = nil) -> Double? {
-        var cost: Double?
-        var timings = GPUTimings.load(gpuTimingsURL)
-        for r in records {
-            if let c = r.costUSD { cost = (cost ?? 0) + c }
-            let mp = work ?? Double((r.width ?? 0) * (r.height ?? 0)) / 1e6
-            timings.record(task: r.task, megapixels: mp > 0 ? mp : 1, gpuSeconds: r.gpuSeconds, loadSeconds: r.loadSeconds)
-        }
-        try? timings.save(gpuTimingsURL)
+        let cost = recordGPUJobs(records, work: work)
         if let cost { doc.movie.costSpent += cost }
         return cost
     }
@@ -511,12 +489,4 @@ enum MovieArtError: Error, CustomStringConvertible {
 /// Renders finished so far in a job whose renders run at once.
 @MainActor private final class DoneCount {
     var value = 0
-}
-
-/// Finished Cloud GPU jobs heard while one render runs.
-final class JobRecords: @unchecked Sendable {
-    private let lock = NSLock()
-    private var records: [RemoteJobRecord] = []
-    func append(_ r: RemoteJobRecord) { lock.withLock { records.append(r) } }
-    var all: [RemoteJobRecord] { lock.withLock { records } }
 }
