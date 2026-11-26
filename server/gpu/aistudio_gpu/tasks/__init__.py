@@ -132,7 +132,7 @@ class TaskSpec:
         return d
 
 
-FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image (and Edit), SD 3.5, SDXL and Wan tasks
+FLUX_LORAS = 4  # LoRA slots on the FLUX, Qwen-Image (and Edit), SD 3.5, SDXL, Chroma, Wan and MiniMax H3 tasks
 
 
 def _lora_params() -> dict[str, Param]:
@@ -206,6 +206,9 @@ def _h3_params() -> dict[str, Param]:
         # LightX2V's Turbo LoRA, 8 model evaluations; off: the base model at 49 (≈ 6× the GPU time).
         "fast": Param("bool", True),
         "steps": Param("int", 0, min=0, max=100),  # model evaluations; 0 = 8 fast, 49 full
+        # Community LoRAs (lora1 … lora4: musubi-tuner, ai-toolkit, kohya, DiffSynth files; diffusers converts them),
+        # for this task's partition; with `fast` they stack on the Turbo LoRA.
+        **_lora_params(),
     }
 
 TASKS: dict[str, TaskSpec] = {t.id: t for t in [
@@ -371,10 +374,11 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     # MiniMax H3 (Community Licence: not for the US, EU, UK or Korea without MiniMax's licence; above $20M revenue
     # MiniMax's written permission; products made with it show "MiniMax H3"): video with its own sound, 24 fps.
     TaskSpec("h3-video", "MiniMax H3 video with sound (licence: not US/EU/UK/Korea)", "video", "h3-video", GPU_H3,
-             _h3_params(), optional_inputs=("image", "last_image"), models=("minimax-h3",), fallback_gpus=H3_FALLBACKS),
+             _h3_params(), optional_inputs=("image", "last_image") + LORA_INPUTS, models=("minimax-h3",), fallback_gpus=H3_FALLBACKS),
     TaskSpec("h3-references", "MiniMax H3 from references, with sound (licence: not US/EU/UK/Korea)", "video",
              "h3-references", GPU_H3, _h3_params(), inputs=("image1",),
-             optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3"), models=("minimax-h3",),
+             optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3") + LORA_INPUTS,
+             models=("minimax-h3",),
              fallback_gpus=H3_FALLBACKS),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {

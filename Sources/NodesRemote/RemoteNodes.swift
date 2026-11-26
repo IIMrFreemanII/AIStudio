@@ -23,7 +23,7 @@ public enum RemoteNodes {
     /// The node types that need a GPU server (the app's server picker and presets look for these).
     public static var types: Set<String> { Set(all.map { $0.schema.type }) }
 
-    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL and Chroma tasks (`lora1` … `lora4`).
+    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL, Chroma, Wan 2.2 and MiniMax H3 tasks (`lora1` … `lora4`).
     public static let maxFluxLoRAs = 4
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
@@ -53,10 +53,11 @@ public enum RemoteNodes {
         return r
     }
 
-    /// The library family each cloud image node's `model` and LoRAs come from.
+    /// The library family each cloud image, Wan 2.2 and MiniMax H3 node's `model` and LoRAs come from.
     public static let libraryFamilies: [String: String] = [
         "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
         "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
+        "RemoteH3Video": "minimax-h3", "RemoteH3References": "minimax-h3-ref",
     ]
 
     /// The base model's name in a cloud node's `model` menu.
@@ -68,6 +69,7 @@ public enum RemoteNodes {
         case "sd3.5-large": return "SD 3.5 Large (base)"
         case "wan-2.2-t2v": return "Wan 2.2 T2V (base)"
         case "wan-2.2-i2v": return "Wan 2.2 I2V (base)"
+        case "minimax-h3", "minimax-h3-ref": return "MiniMax H3 (base)"
         default: return "FLUX.1 dev (base)"
         }
     }
@@ -608,13 +610,14 @@ public struct CloudLoRA: Sendable, Equatable {
     public var expert: String? = nil
 
     /// Refuses a LoRA made for another model family before anything is uploaded or downloaded. (Wan 2.2 T2V and
-    /// I2V LoRAs are accepted by either Wan node.)
+    /// I2V LoRAs are accepted by either Wan node, and a "MiniMax H3" LoRA by either H3 node.)
     public func checkFits(_ family: String) throws {
         guard let base = baseModel, let f = LoRASources.family(forBaseModel: base) else {
             if let base = baseModel { throw LoRASourceError.wrongBaseModel(base, expected: LoRASources.familyName(family)) }
             return
         }
-        if f == family || (f.hasPrefix("wan-2.2") && family.hasPrefix("wan-2.2")) { return }
+        if f == family || (f.hasPrefix("wan-2.2") && family.hasPrefix("wan-2.2"))
+            || (f.hasPrefix("minimax-h3") && family.hasPrefix("minimax-h3")) { return }
         throw LoRASourceError.wrongBaseModel(base, expected: LoRASources.familyName(family))
     }
 
@@ -641,7 +644,7 @@ public struct CloudLoRA: Sendable, Equatable {
     }
 }
 
-/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Chroma, Wan 2.2) uses. Chain several (up to
+/// Adds a LoRA to the LoRAs a Cloud GPU model node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Chroma, Wan 2.2, MiniMax H3) uses. Chain several (up to
 /// four) to stack them; the model node refuses ones made for another model. A Wan 2.2 LoRA from Civitai or Hugging
 /// Face that comes as a high/low pair goes to each expert; a single file to both, or to the one its name says. `lora` picks it from the library (Models window); `path` (a file) is for graphs saved before the library.
 /// A LoRA from a link is downloaded by the GPU server itself; one that only exists on this Mac is uploaded with the
@@ -1106,7 +1109,8 @@ private func h3Params(_ inputs: NodeInputs) throws -> [String: Any] {
 public struct RemoteH3VideoNode: NodeImplementation {
     public static let schema = NodeSchema(
         type: "RemoteH3Video", displayName: "MiniMax H3 Video with Sound (Cloud GPU)", category: "remote",
-        inputs: [InputSpec("image", .image, optional: true), InputSpec("last_image", .image, optional: true)] + h3Inputs(),
+        inputs: [InputSpec("loras", .cloudLoRAs, optional: true), InputSpec("image", .image, optional: true),
+                 InputSpec("last_image", .image, optional: true)] + h3Inputs(),
         outputs: [OutputSpec("video", .video)])
     public init() {}
 
@@ -1114,8 +1118,11 @@ public struct RemoteH3VideoNode: NodeImplementation {
         var images: [String: MLXArray] = [:]
         images["image"] = inputs.optionalObject("image", as: MLXArray.self)
         images["last_image"] = inputs.optionalObject("last_image", as: MLXArray.self)
-        let (url, _) = try await runRemoteJob(task: "h3-video", params: try h3Params(inputs), images: images,
-                                              inputs: inputs, context: context)
+        var params = try h3Params(inputs)
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "minimax-h3", to: &params)
+        let (url, _) = try await runRemoteJob(task: "h3-video", params: params, images: images, files: files,
+                                              links: links, inputs: inputs, context: context)
         return ["video": .object(try await loadVideo(url))]
     }
 }
@@ -1129,7 +1136,7 @@ public struct RemoteH3ReferencesNode: NodeImplementation {
 
     public static let schema = NodeSchema(
         type: "RemoteH3References", displayName: "MiniMax H3 from References (Cloud GPU)", category: "remote",
-        inputs: [InputSpec("image1", .image)] + pictures.dropFirst().map { InputSpec($0, .image, optional: true) }
+        inputs: [InputSpec("loras", .cloudLoRAs, optional: true), InputSpec("image1", .image)] + pictures.dropFirst().map { InputSpec($0, .image, optional: true) }
             + voices.map { InputSpec($0, .audio, optional: true) } + h3Inputs(),
         outputs: [OutputSpec("video", .video)])
     public init() {}
@@ -1139,8 +1146,12 @@ public struct RemoteH3ReferencesNode: NodeImplementation {
         for name in Self.pictures.dropFirst() { images[name] = inputs.optionalObject(name, as: MLXArray.self) }
         var audios: [String: AudioClip] = [:]
         for name in Self.voices { audios[name] = inputs.optionalObject(name, as: AudioClip.self) }
-        let (url, _) = try await runRemoteJob(task: "h3-references", params: try h3Params(inputs), images: images,
-                                              audios: audios, inputs: inputs, context: context)
+        var params = try h3Params(inputs)
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "minimax-h3-ref", to: &params)
+        let (url, _) = try await runRemoteJob(task: "h3-references", params: params, images: images,
+                                              audios: audios, files: files, links: links, inputs: inputs,
+                                              context: context)
         return ["video": .object(try await loadVideo(url))]
     }
 }
