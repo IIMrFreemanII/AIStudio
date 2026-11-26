@@ -30,7 +30,7 @@ Layout:
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
-default H200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default B200; empty for none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+default H200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default B200; empty for none), ``AISTUDIO_GPU_LTX`` (LTX-2.3, default H100) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default H200; empty for none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
 L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
@@ -45,7 +45,7 @@ from pathlib import Path
 import modal
 
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
-from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, MIN_CPU  # noqa: E402
+from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
 # GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
@@ -58,6 +58,9 @@ GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")
 # Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
 GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
 H3_GPUS = [GPU_H3, *H3_FALLBACKS]
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
+GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
+LTX_GPUS = [GPU_LTX, *LTX_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")
@@ -127,6 +130,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
        "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
+       "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -585,6 +589,33 @@ class H3References:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("h3-references", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# LTX-2.3: the 49 GB text encoder and the 38 GB transformer wait in host RAM and take turns on the GPU (model offload);
+# a text-to-video and an image-to-video pipeline share them. No torchvision needed. PyAV re-encodes an image-to-video start picture through H.264 the way LTX was
+# trained (diffusers' `image_crf`), so its image adds `av`.
+ltx_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS, "av==19.0.2")
+             .env(env).add_local_python_source("aistudio_gpu"))
+
+
+@_gpu_class(image=ltx_image, gpu=LTX_GPUS, **_container("ltx23"))
+class LTX23:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("ltx23", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1554,7 +1585,7 @@ def api():
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sd15": SD15, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
-                          "h3-video": H3Video, "h3-references": H3References}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

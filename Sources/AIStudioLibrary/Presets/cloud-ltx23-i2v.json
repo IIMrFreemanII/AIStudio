@@ -1,0 +1,61 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "first_frame",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 140
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "image" : {
+            "node" : "first_frame",
+            "output" : "image"
+          },
+          "prompt" : "The scene comes to life: gentle camera push-in, natural motion and ambient sound",
+          "seed" : 1
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteLTX23"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "video",
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "SaveVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-ltx23-i2v",
+  "modelName" : "LTX-2.3 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "LTX-2.3 · Image to Video · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 340,
+  "summary" : "Animate a picture into a clip with its own sound: the picture is the first frame.",
+  "symbol" : "cloud"
+}

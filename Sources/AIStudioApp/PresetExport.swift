@@ -367,6 +367,24 @@ enum PresetExport {
                         "prompt": .string(Self.h3Prompt), "seed": .int(1),
                      ], startImage: true, output: "video", outputDirectory: out)
                  }),
+            Spec(id: "cloud-ltx23-t2v", name: "LTX-2.3 · Text to Video · Cloud GPU", category: .video, models: [],
+                 modelName: "LTX-2.3 on a GPU server",
+                 summary: "A clip with its own sound from one prompt. Fast mode runs the distilled model in 8 steps; LTX-2.3 fine-tunes and LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteLTX23", literals: [
+                        "prompt": .string("A golden retriever runs along a beach at sunset, waves rolling in, its paws splashing; the sound of the surf and its happy barking"),
+                        "seed": .int(1),
+                     ], output: "video", outputDirectory: out)
+                 }),
+            Spec(id: "cloud-ltx23-i2v", name: "LTX-2.3 · Image to Video · Cloud GPU", category: .video, models: [],
+                 modelName: "LTX-2.3 on a GPU server",
+                 summary: "Animate a picture into a clip with its own sound: the picture is the first frame.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteLTX23", literals: [
+                        "prompt": .string("The scene comes to life: gentle camera push-in, natural motion and ambient sound"),
+                        "seed": .int(1),
+                     ], startImage: true, output: "video", outputDirectory: out)
+                 }),
             Spec(id: "cloud-h3-references", name: "MiniMax H3 from References · Cloud GPU", category: .video, models: [],
                  modelName: "MiniMax H3 on a GPU server",
                  summary: "A clip from a reference picture and a voice clip: name them <Picture 1> and <Audio 1> in the prompt, and the character speaks in that voice. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",

@@ -30,10 +30,12 @@ from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safe
 
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
 FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
-            "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15", "anima": "anima"}
+            "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15", "anima": "anima",
+            "ltx-2.3": "ltx23"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
-                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5", "anima": "anima"}
+                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5", "anima": "anima",
+                 "ltx23": "ltx-2.3"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
 COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
@@ -284,6 +286,8 @@ def convert_checkpoint(family: str, ckpt: Path, base: Path, out: Path, component
         return copy_diffusers_named(ckpt, base / component, out)
     if family.startswith("wan-2.2"):
         return convert_wan(ckpt, base / component, out)
+    if family == "ltx-2.3":
+        return convert_ltx23(ckpt, base / component, out)
     assert family in ("flux.1", "chroma")
     # Chroma is Flux's layout with a pruned modulation (its own diffusers class and single-file conversion).
     model_class = ChromaTransformer2DModel if family == "chroma" else FluxTransformer2DModel
@@ -423,6 +427,34 @@ def convert_wan(ckpt: Path, base_transformer: Path, out: Path) -> None:
     shutil.copy(base_transformer / "config.json", out / "config.json")
 
 
+LTX_SCALE_SUFFIXES = (".weight_scale", ".input_scale", ".scale_weight", ".scale_input", ".comfy_quant", ".scaled_fp8")
+
+
+def convert_ltx23(ckpt: Path, base_transformer: Path, out: Path) -> None:
+    """A ComfyUI LTX-2.3 single file (the original names under ``model.diffusion_model.``, next to the VAEs, the
+    vocoder and the text projection; bf16 or fp8, ComfyUI's ``weight_scale`` files included) → the base's diffusers
+    transformer folder (bf16). diffusers' ``convert_ltx2_transformer_to_diffusers`` renames the weights (and drops the
+    embeddings connectors: the base's connectors stay); it doesn't know LTX-2.3's ``prompt_adaln_single`` /
+    ``audio_prompt_adaln_single`` (diffusers: ``prompt_adaln`` / ``audio_prompt_adaln``, as its LoRA converter has
+    them). Only the names are renamed up front; tensors are read, dequantized and written one at a time."""
+    from diffusers.loaders.single_file_utils import convert_ltx2_transformer_to_diffusers
+    from safetensors import safe_open
+
+    names = _base_names(base_transformer)
+    with safe_open(str(ckpt), "pt") as f:
+        keys = set(f.keys())
+        prefix = next((p for p in PREFIXES if any(k.startswith(p + "transformer_blocks.0.") for k in keys)), None)
+        if prefix is None:
+            raise ValueError("this file isn't an LTX-2.3 checkpoint (no transformer_blocks.0 weights)")
+        kept = [k for k in keys if k.startswith(prefix) and not k.endswith(LTX_SCALE_SUFFIXES)]
+        # name → the file's key (the converter only moves values, so the keys stand in for the tensors)
+        renamed = convert_ltx2_transformer_to_diffusers({"model.diffusion_model." + k[len(prefix):]: k for k in kept})
+        source = {n.replace("prompt_adaln_single", "prompt_adaln"): k for n, k in renamed.items()}
+        _check_complete(names, set(source))
+        _write_shards(((n, _dequantized(f, keys, source[n])) for n in names), out)
+    shutil.copy(base_transformer / "config.json", out / "config.json")
+
+
 GGUF_MAGIC = b"GGUF"
 
 
@@ -466,13 +498,14 @@ def _write_wan_state(state: dict, names: list[str], base_transformer: Path, out:
 
 
 def _dequantized(f, keys: set, key: str):
-    """One tensor as bf16; fp8 weights times their ``scale_weight`` when the file has one (ComfyUI "scaled" fp8)."""
+    """One tensor as bf16; fp8 weights times their scale when the file has one: ``x.scale_weight`` (ComfyUI "scaled"
+    fp8) or ``x.weight_scale`` (ComfyUI's mixed-precision files; for the key ``x.weight``)."""
     import torch
 
     t = f.get_tensor(key)
     if t.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-        scale = key.rpartition(".")[0] + ".scale_weight"
-        t = t.to(torch.float32) * (f.get_tensor(scale).to(torch.float32) if scale in keys else 1.0)
+        scale = next((s for s in (key.rpartition(".")[0] + ".scale_weight", key + "_scale") if s in keys), None)
+        t = t.to(torch.float32) * (f.get_tensor(scale).to(torch.float32) if scale else 1.0)
     return t.to(torch.bfloat16).contiguous()
 
 

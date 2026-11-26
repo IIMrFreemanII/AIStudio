@@ -298,6 +298,20 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(names.contains("loras") && names.contains("model") && !names.contains("sampler") && !names.contains("face"))
     }
 
+    @Test func ltx23Family() throws {
+        #expect(LoRASources.family(forBaseModel: "LTXV 2.3") == "ltx-2.3")
+        #expect(LoRASources.family(forBaseModel: "LTXV") != "ltx-2.3")
+        #expect(LoRASources.family(forBaseModel: "LTXV 2") != "ltx-2.3")
+        #expect(LoRASources.familyName("ltx-2.3") == "LTX-2.3")
+        #expect(LoRASources.families.contains("ltx-2.3"))
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteLTX23") == "ltx23-video")
+        #expect(RemoteNodes.libraryFamilies["RemoteLTX23"] == "ltx-2.3")
+        #expect(RemoteNodes.baseTitle(family: "ltx-2.3") == "LTX-2.3 (base)")
+        let names = RemoteLTX23Node.schema.inputs.map(\.name)
+        for n in ["image", "loras", "model", "fast", "seconds"] { #expect(names.contains(n), "\(n)") }
+        #expect(RemoteLTX23Node.schema.inputs.first { $0.name == "image" }?.optional == true)
+    }
+
     @Test func miniMaxH3LoRAFamilies() throws {
         #expect(LoRASources.family(forBaseModel: "MiniMax H3") == "minimax-h3")
         #expect(LoRASources.familyName("minimax-h3") == "MiniMax H3")

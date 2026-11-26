@@ -321,6 +321,44 @@ def test_sd15_task_wiring(tmp_path, monkeypatch):
     assert Image.open(out.path).size == (256, 256)
 
 
+def test_ltx23_task_wiring(tmp_path, monkeypatch):
+    from aistudio_gpu import download, variants
+    from aistudio_gpu.tasks import CONTAINERS, GPU_PRICES, TASKS, container_price, make_worker
+
+    spec = TASKS["ltx23-video"]
+    assert spec.family == "ltx23" and spec.kind == "video" and spec.models == ("ltx23",) and spec.gpu == "H100"
+    assert CONTAINERS["ltx23"] == (131072, 196608, 8) and spec.fallback_gpus == ("H200",)
+    assert spec.optional_inputs == ("image", "lora1", "lora2", "lora3", "lora4") and spec.inputs == ()
+    p = spec.normalize({})
+    assert (p["seconds"], p["width"], p["height"], p["fast"], p["steps"], p["guidance"], p["model"], p["negative"]) == (
+        5.0, 768, 512, True, 0, 3.0, "base", "")
+    assert spec.normalize({"width": 770})["width"] == 768 and "lora4_strength" in p
+    with pytest.raises(ValueError, match="at most 10"):
+        spec.normalize({"seconds": 11})
+    with pytest.raises(ValueError, match="at least 1"):
+        spec.normalize({"guidance": 0.5})
+    d = spec.describe(installed=True)
+    assert d["fallbackGpu"] == "H200" and d["pricePerSecond"] == GPU_PRICES["H100"] + container_price("ltx23")
+    assert variants.FAMILIES["ltx-2.3"] == "ltx23" and variants.TASK_FAMILIES["ltx23"] == "ltx-2.3"
+    assert variants.components("ltx-2.3") == ("transformer",)
+    models = download.MODELS
+    allow = models["ltx23"]["allow"]
+    assert models["ltx23"]["repo"] == "diffusers/LTX-2.3-Diffusers" and "connectors/diffusion_pytorch_model.safetensors" not in allow
+    assert "connectors/diffusion_pytorch_model-*.safetensors" in allow and "text_encoder/*" in allow
+    assert models["ltx23-distilled"]["allow"] == ["transformer/*"]
+    assert download.expand(["ltx23"]) == ["ltx23", "ltx23-distilled"]
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+
+    class Sink:
+        def status(self, t): pass
+        def progress(self, s, t): pass
+        def preview(self, *a): pass
+        def check(self): pass
+
+    out = make_worker(spec.family).run(spec, spec.normalize({"width": 256, "height": 256}), {}, Sink(), tmp_path)
+    assert out.kind == "video" and out.path.exists()
+
+
 def test_anima_task_wiring(tmp_path, monkeypatch):
     from aistudio_gpu import download, variants
     from aistudio_gpu.tasks import CONTAINERS, TASKS, make_worker
