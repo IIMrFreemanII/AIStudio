@@ -344,6 +344,7 @@ extension SmokeTest {
         let rolled = CharacterSurprise.roll(CharacterTemplates.make(CharacterTemplates.all[0]))
         let core = CharacterOptions.all.filter {
             $0.group != .intimate && !CharacterOptions.detailCategories.contains($0.id)
+                && !CharacterOptions.raceCategories.contains($0.id)
                 && !CharacterOptions.options($0, gender: rolled.gender).isEmpty
         }
         check(core.allSatisfy { !(rolled.traits[$0.id] ?? []).isEmpty } && rolled.greeting.isEmpty && !rolled.name.isEmpty

@@ -314,6 +314,12 @@ enum Snapshot {
                         "muscle": ["toned"], "bodyMarks": ["small-tattoos"]]) { $1 }
         await render(PromptBuilderView(draft: .constant(f)).mgWindow("Prompt Builder").environment(m),
                      to: dir.appendingPathComponent("75-prompt-builder-details.png"), size: CGSize(width: 1000, height: 2600))
+        // 77: a race (kitsune) with an eye effect: the race section open, the race in the subject.
+        var r = d
+        r.model = .minimaxImage
+        r.traits = ["race": ["kitsune"], "fantasyEyes": ["glowing"], "hairColor": ["red"], "heritage": ["japanese"]]
+        await render(PromptBuilderView(draft: .constant(r)).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("77-prompt-builder-race.png"), size: CGSize(width: 1000, height: 1400))
         // 76: the look folded, so the chip rows below show the Nudity row.
         var n = f
         n.traits = [:]
