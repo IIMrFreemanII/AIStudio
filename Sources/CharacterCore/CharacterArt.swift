@@ -111,6 +111,7 @@ public enum CharacterArt {
         default: s.pronoun = .they
         }
         s.action = caption(clean(request))
+        if !parts.race.isEmpty { s.subject += ", " + parts.race }
         s.details = parts.details
         let free = clean(c.look)
         if !free.isEmpty { s.details.append(PromptDetail(free)) }

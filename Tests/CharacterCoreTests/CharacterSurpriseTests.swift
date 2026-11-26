@@ -28,8 +28,8 @@ private struct Seeded: RandomNumberGenerator {
             #expect(CharacterSurprise.ages.contains(c.age))
             for category in CharacterOptions.all {
                 let picks = c.traits[category.id] ?? []
-                if category.group == .intimate {
-                    #expect(picks.isEmpty, "never rolls 18+ \(category.id)")
+                if category.group == .intimate || CharacterOptions.raceCategories.contains(category.id) {
+                    #expect(picks.isEmpty, "never rolls 18+ or a race: \(category.id)")
                     continue
                 }
                 let optional = CharacterOptions.detailCategories.contains(category.id)

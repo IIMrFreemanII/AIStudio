@@ -87,4 +87,30 @@ private typealias CO = CharacterOptions
             #expect(CO.intimateCategories.allSatisfy { c.traits[$0] == nil })
         }
     }
+
+    @Test func aRaceWritesItsLookAndFeatureChipsReplaceParts() {
+        func parts(_ traits: [String: [String]]) -> CO.LookParts { CO.lookParts(traits, gender: "woman") }
+        #expect(parts(["race": ["elf"]]).race == "an elf with long pointed elf ears")
+        #expect(parts(["race": ["witch"]]).race == "a witch with an air of magic")
+        // A picked feature chip replaces that part of the race's look; the other parts stay.
+        let demon = parts(["race": ["demon"], "horns": ["antlers"]])
+        #expect(demon.race == "a demon with a thin spade-tipped tail" && demon.details.map(\.text) == ["antlers"])
+        // A human skin tone replaces the race's skin; a fantasy skin replaces the human one.
+        let oni = parts(["race": ["oni"], "skin": ["tan"]])
+        #expect(oni.race == "an oni with oni horns and small fangs" && oni.details.map(\.text) == ["tan skin"])
+        #expect(parts(["skin": ["tan"], "fantasySkin": ["blue"]]).details.map(\.text) == ["blue skin"])
+        #expect(parts(["hairColor": ["red"]]).race.isEmpty)
+        // In a photo prompt the race comes first, right after who they are.
+        var c = person()
+        c.traits = ["race": ["kitsune"], "hairColor": ["red"]]
+        c.artModel = ArtModel(family: .chroma)
+        let prompt = CharacterArt.photoPrompt(c, request: "a selfie in the garden", scene: nil)
+        #expect(prompt.contains("of a 28-year-old adult woman, a kitsune with fox ears and several fluffy fox tails")
+                && prompt.contains("She has red hair"), "\(prompt)")
+        // The chat model knows the race (it's part of their looks).
+        #expect(c.fullLook.hasPrefix("a kitsune"))
+        // Every race of every gender has a look entry or a phrase, and the finer heritages exist.
+        #expect(["japanese", "nordic", "west-african", "polynesian"].allSatisfy { id in
+            CO.category("heritage")!.options.contains { $0.id == id } })
+    }
 }
