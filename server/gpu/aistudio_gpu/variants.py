@@ -30,16 +30,17 @@ from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safe
 
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
 FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
-            "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15"}
+            "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15", "anima": "anima"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
-                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5"}
+                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5", "anima": "anima"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
 COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
-              "sdxl": ("unet", "text_encoder", "text_encoder_2"), "sd1.5": ("unet", "text_encoder")}
+              "sdxl": ("unet", "text_encoder", "text_encoder_2"), "sd1.5": ("unet", "text_encoder"),
+              "anima": ("transformer", "text_conditioner")}
 # Families whose fine-tune is one checkpoint file (UNet + text encoders), and how their name reads in errors.
-SINGLE_FILE = {"sdxl": "SDXL", "sd1.5": "SD 1.5"}
+SINGLE_FILE = {"sdxl": "SDXL", "sd1.5": "SD 1.5", "anima": "Anima"}
 ROLES = {"high": "transformer", "low": "transformer_2"}
 
 
@@ -146,10 +147,10 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
                               (lambda p: progress({**p, "file": 1, "files": 1})), extra_hosts, cancelled)
                 progress({"state": "converting", "file": 1, "files": 1})
                 if fake:
-                    (work / "unet").mkdir()
-                    os.replace(ckpt, work / "unet" / "diffusion_pytorch_model.safetensors")
+                    (work / parts[0]).mkdir()
+                    os.replace(ckpt, work / parts[0] / "diffusion_pytorch_model.safetensors")
                 else:
-                    (convert_sdxl if family == "sdxl" else convert_sd15)(ckpt, base, work)
+                    SINGLE_FILE_CONVERTERS[family](ckpt, base, work)
                     ckpt.unlink(missing_ok=True)
                 done = [c for c in parts if (work / c).exists()]
             for f in [] if family in SINGLE_FILE else files:
@@ -337,6 +338,41 @@ def convert_sd15(ckpt: Path, base: Path, out: Path) -> None:
     for component in ("unet", "text_encoder"):
         getattr(pipe, component).to(torch.bfloat16).save_pretrained(str(out / component), max_shard_size="5GB")
 
+
+def convert_anima(ckpt: Path, base: Path, out: Path) -> None:
+    """An Anima ComfyUI single-file checkpoint (the Cosmos-2.0 names under ``net.`` or ``model.diffusion_model.``, the
+    text conditioner as ``llm_adapter.*``, fp8 or bf16) → ``out/transformer`` and, when the file has one,
+    ``out/text_conditioner`` (bf16, sharded like the base). The VAE and Qwen3 text encoder in a full checkpoint are
+    ignored: the base's stay. A file without ``llm_adapter`` keeps the base's text conditioner."""
+    from diffusers.loaders.single_file_utils import convert_cosmos_transformer_checkpoint_to_diffusers
+    from safetensors import safe_open
+
+    probe = "blocks.0.self_attn.q_proj.weight"
+    with safe_open(str(ckpt), "pt") as f:
+        keys = set(f.keys())
+        prefix = next((p for p in ANIMA_PREFIXES if p + probe in keys), None)
+        if prefix is None:
+            raise ValueError("this file isn't an Anima checkpoint (no blocks.0.self_attn.q_proj.weight)")
+        adapter = prefix + "llm_adapter."
+        conditioner = {k[len(adapter):]: _dequantized(f, keys, k) for k in keys if k.startswith(adapter)
+                       and not k.endswith((".scale_weight", ".scale_input"))}
+        original = {"net." + k[len(prefix):]: _dequantized(f, keys, k) for k in keys
+                    if k.startswith(prefix) and not k.startswith(adapter)
+                    and not k.endswith((".scale_weight", ".scale_input")) and k != "scaled_fp8"}
+    state = convert_cosmos_transformer_checkpoint_to_diffusers(original)
+    names = _base_names(base / "transformer")
+    _check_complete(names, set(state))
+    if conditioner:
+        cond_names = _base_names(base / "text_conditioner")
+        _check_complete(cond_names, set(conditioner))
+        _write_shards(((n, conditioner.pop(n)) for n in cond_names), out / "text_conditioner")
+        shutil.copy(base / "text_conditioner" / "config.json", out / "text_conditioner" / "config.json")
+    _write_shards(((n, state.pop(n)) for n in names), out / "transformer")
+    shutil.copy(base / "transformer" / "config.json", out / "transformer" / "config.json")
+
+
+ANIMA_PREFIXES = ("net.", "model.diffusion_model.", "diffusion_model.", "")
+SINGLE_FILE_CONVERTERS = {"sdxl": convert_sdxl, "sd1.5": convert_sd15, "anima": convert_anima}
 
 PREFIXES = ("model.diffusion_model.", "diffusion_model.", "transformer.", "")
 SHARD_BYTES = 5 * 2**30

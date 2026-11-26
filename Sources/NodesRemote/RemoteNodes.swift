@@ -13,7 +13,7 @@ public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
-        RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteSD15Node.self, RemoteChromaNode.self,
+        RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteSD15Node.self, RemoteAnimaNode.self, RemoteChromaNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self,
     ]
 
@@ -23,7 +23,7 @@ public enum RemoteNodes {
     /// The node types that need a GPU server (the app's server picker and presets look for these).
     public static var types: Set<String> { Set(all.map { $0.schema.type }) }
 
-    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Chroma, Wan 2.2 and MiniMax H3 tasks (`lora1` … `lora4`).
+    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2 and MiniMax H3 tasks (`lora1` … `lora4`).
     public static let maxFluxLoRAs = 4
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
@@ -32,7 +32,7 @@ public enum RemoteNodes {
         "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
         "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
-        "RemoteSD15": "sd15", "RemoteChroma": "chroma",
+        "RemoteSD15": "sd15", "RemoteAnima": "anima", "RemoteChroma": "chroma",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
     ]
 
@@ -56,7 +56,7 @@ public enum RemoteNodes {
     /// The library family each cloud image, Wan 2.2 and MiniMax H3 node's `model` and LoRAs come from.
     public static let libraryFamilies: [String: String] = [
         "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
-        "RemoteSD15": "sd1.5", "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
+        "RemoteSD15": "sd1.5", "RemoteAnima": "anima", "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
         "RemoteH3Video": "minimax-h3", "RemoteH3References": "minimax-h3-ref",
     ]
 
@@ -66,6 +66,7 @@ public enum RemoteNodes {
         case "qwen-image": return "Qwen-Image (base)"
         case "sdxl": return "SDXL 1.0 (base)"
         case "sd1.5": return "Stable Diffusion 1.5 (base)"
+        case "anima": return "Anima (base)"
         case "chroma": return "Chroma1-HD (base)"
         case "sd3.5-large": return "SD 3.5 Large (base)"
         case "wan-2.2-t2v": return "Wan 2.2 T2V (base)"
@@ -922,6 +923,44 @@ public struct RemoteSD15Node: NodeImplementation {
         let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
                                                   family: "sd1.5", to: &params)
         let (url, _) = try await runRemoteJob(task: "sd15", params: params, images: [:], files: files, links: links,
+                                              inputs: inputs, context: context)
+        return ["image": .object(try loadImage(url))]
+    }
+}
+
+/// Anima: a 2B anime text-to-image model (Danbooru-style tags or natural language) on the cloud GPU, or an Anima fine-tune from the library.
+public struct RemoteAnimaNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteAnima", displayName: "Anima (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("loras", .cloudLoRAs, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string,
+                      default: .string("worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"),
+                      widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 512, max: 1536, step: 16)),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 512, max: 1536, step: 16)),
+            InputSpec("steps", .int, default: .int(30), widget: .number(min: 1, max: 80, step: 1)),
+            InputSpec("guidance", .float, default: .double(4), widget: .number(min: 1, max: 10, step: 0.5)),
+            // An Anima fine-tune from the library, installed on the server (empty: Anima itself).
+            InputSpec("model", .string, default: .string(""), widget: .library("model")),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+        ]
+        let model = (try? inputs.string("model")) ?? ""
+        params["model"] = model.isEmpty ? "base" : model
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "anima", to: &params)
+        let (url, _) = try await runRemoteJob(task: "anima", params: params, images: [:], files: files, links: links,
                                               inputs: inputs, context: context)
         return ["image": .object(try loadImage(url))]
     }

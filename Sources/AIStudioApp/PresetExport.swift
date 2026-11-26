@@ -404,6 +404,15 @@ enum PresetExport {
                         "negative": .string("blurry, low quality, watermark, deformed"),
                      ], output: "image", outputDirectory: out)
                  }),
+            Spec(id: "cloud-anima", name: "Anima · Cloud GPU", category: .image, models: [],
+                 modelName: "Anima on a GPU server",
+                 summary: "Anima: a 2B anime text-to-image model (Danbooru-style tags or natural language) on the cloud GPU. Anima fine-tunes and LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteAnima", literals: [
+                        "prompt": .string("masterpiece, best quality, score_7, safe, 1girl, solo, silver hair, red eyes, school uniform, cherry blossoms, park, smile, looking at viewer, upper body"),
+                        "negative": .string("worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration"),
+                     ], output: "image", outputDirectory: out)
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
