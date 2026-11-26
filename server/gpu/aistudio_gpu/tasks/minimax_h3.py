@@ -137,7 +137,12 @@ def gpu_name() -> str:
     return next((k for k in ("B200", "H200", "H100", "A100", "L40S") if k in name), name)
 
 
-RESIDENT_GIB = 80  # the most model weight kept on the GPU at once: one 61.7 GiB transformer or conditioner, plus the VAE
+# Everything resident (the user's rule, residency.py): this partition's 61.7 GiB transformer, the 62.1 GiB conditioner
+# and the 9.7 GiB of VAEs (≈ 134 GiB) stay on a B200 (178 GiB), leaving ≈ 45 GiB for a clip's activations. A smaller
+# card (an opt-in fallback) or a clip that runs out of memory beside the weights falls back to the offload below.
+RESIDENT_MARGIN_GIB = 40
+
+RESIDENT_GIB = 80  # offload fallback: the most model weight kept on the GPU at once: one 61.7 GiB transformer or conditioner, plus the VAE
 
 
 def offload_margin(total_bytes: int) -> int:
@@ -160,6 +165,7 @@ class H3Worker(AdapterSlots):
         self.manager = None
         self.dtype = None
         self.pipe = None
+        self.resident = False  # all parts on the GPU (else the components manager's offload)
         self._init_slots()
 
     def _load_lora(self, name: str, parts: list[tuple[Path, str]], slot: int) -> None:
@@ -192,8 +198,35 @@ class H3Worker(AdapterSlots):
         self.pipe.load_components(workflow=self.workflow, dtype=torch.bfloat16, pretrained_model_name_or_path=str(root))
         self.manager = manager
         self._load_turbo(status)
-        self._enable_offload()
+        self._place(status)
         self._denoise = denoise
+
+    def _modules(self) -> dict:
+        from .residency import modules_of
+
+        return modules_of({n: getattr(self.pipe, n, None) for n in self.pipe.components})
+
+    def _place(self, status=lambda _: None) -> None:
+        """All parts onto the GPU when they fit with room for a clip (a B200); else the offload fallback."""
+        import torch
+
+        from .residency import fits, weight_bytes
+
+        weights = sum(weight_bytes(m) for m in self._modules().values())
+        total = torch.cuda.mem_get_info()[1]
+        if fits(weights, total, RESIDENT_MARGIN_GIB):
+            status("Moving MiniMax H3 onto the GPU")
+            self._resident_mode()
+        else:
+            print(f"h3: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room for a clip; "
+                  "offloading", flush=True)
+            self.resident = False
+            self._enable_offload()
+
+    def _resident_mode(self) -> None:
+        for module in self._modules().values():
+            module.to("cuda")
+        self.resident = True
 
     def _load_turbo(self, status) -> None:
         """LightX2V's Turbo LoRA for this partition, as the adapter "turbo" (the loaded transformer takes it, also a
@@ -247,7 +280,8 @@ class H3Worker(AdapterSlots):
         sink.status(f"Loading {vid} ({layout} layout)" if vid != "base" else "Loading the base model (full layout)")
         # Unknown until this finishes: a failure leaves no transformer, so the next job rebuilds whatever it needs.
         self.variant, self.layout, self.loaded[component] = None, None, None
-        self.manager.disable_auto_cpu_offload()
+        if not self.resident:
+            self.manager.disable_auto_cpu_offload()
         self.pipe.unload_components(component)
         self.loras.clear()
         gc.collect()
@@ -256,8 +290,11 @@ class H3Worker(AdapterSlots):
         model = model_class.from_pretrained(str(folder), torch_dtype=self.dtype)
         self.pipe.update_components(**{component: model})
         del model
+        if self.resident:
+            getattr(self.pipe, component).to("cuda")
         self._load_turbo(lambda _: None)
-        self._enable_offload()
+        if not self.resident:
+            self._enable_offload()
         self.loaded[component] = folder
         self.variant, self.layout = vid, layout
 
@@ -324,10 +361,28 @@ class H3Worker(AdapterSlots):
         sink.status("Sampling")
         t0 = clock["last"] = time.monotonic()
         loop.progress_bar = lambda self, iterable=None, total=None: Progress(total=total)
+        offloaded = False
         try:
-            result = self.pipe(**kwargs)
+            try:
+                result = self.pipe(**kwargs)
+            except torch.OutOfMemoryError:
+                if not self.resident:
+                    raise
+                # Too big to run beside all the weights: this clip only, with the parts taking turns.
+                offloaded = True
+                sink.status("Sampling (offloaded: too big for the GPU beside the weights)")
+                gc.collect()
+                torch.cuda.empty_cache()
+                self.resident = False
+                self._enable_offload()
+                step_times.clear()
+                clock.update(last=time.monotonic(), done=0)
+                result = self.pipe(**kwargs)
         finally:
             loop.progress_bar = original
+            if offloaded:
+                self.manager.disable_auto_cpu_offload()
+                self._resident_mode()
         sample_seconds = round(time.monotonic() - t0, 2)
         # The first "step" includes the conditioner and VAE encode (and moving the transformer onto the GPU).
         setup_seconds = round(step_times[0], 2) if step_times else 0.0
@@ -342,7 +397,7 @@ class H3Worker(AdapterSlots):
         path = out_dir / "result.mp4"
         write_mp4(frames, path, fps=FPS, audio=sound)
         return Output(path, "video", "video/mp4",
-                      extra={"gpu": gpu_name(), "workflow": workflow, "fast": fast, "steps": steps, "loras": loras,
+                      extra={"gpu": gpu_name(), "resident": not offloaded and self.resident, "workflow": workflow, "fast": fast, "steps": steps, "loras": loras,
                              "frames": int(len(frames)),
                              "width": int(frames.shape[2]), "height": int(frames.shape[1]),
                              "seconds": round(len(frames) / FPS, 3), "sampleRate": rate,

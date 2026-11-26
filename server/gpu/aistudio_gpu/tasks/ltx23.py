@@ -9,11 +9,11 @@ loaded transformer in place when a job asks for the other (as Chroma's ``@flash`
 installed. A fine-tune keeps its own weights in either mode: ``fast`` then only picks the schedule.
 
 The text-to-video and image-to-video pipelines share every module object (the 49 GB Gemma 3 text encoder, the 38 GB
-transformer, the VAEs, the vocoder). Model offload is enabled on the text-to-video pipeline only: accelerate's hooks sit
-on the shared modules, so the other pipeline runs through them (building a second hook chain would replace the first
-one's, and each pipeline's ``maybe_free_model_hooks`` would re-install its own over the other's). LoRAs and fine-tune
-weights loaded through the text-to-video pipeline land in the shared modules, so both see them. After every job the
-text-to-video pipeline's ``maybe_free_model_hooks`` puts all modules back on the CPU, whichever pipeline ran.
+transformer, the VAEs, the vocoder). All of them stay on the GPU together (the user's rule, residency.py): ≈ 84 GiB on
+an H200 (140 GiB) leaves ≈ 56 GiB for a clip. Only on a smaller card (an opt-in fallback) or for a clip that runs out of
+memory beside the weights is model offload enabled, on the text-to-video pipeline only: accelerate's hooks sit on the
+shared modules, so the other pipeline runs through them (a second hook chain would replace the first one's). LoRAs and
+fine-tune weights loaded through the text-to-video pipeline land in the shared modules, so both see them.
 
 The base scheduler stretches and shifts whatever sigmas it is given (dynamic shifting, ``shift_terminal`` 0.1); the
 distilled schedule must run as it is, so fast jobs use a scheduler configured like the distilled repo's (no shifting).
@@ -28,6 +28,9 @@ import numpy as np
 
 from ..media import write_mp4, write_wav
 from . import Output, TaskSpec
+from .residency import fits, modules_of, weight_bytes
+
+RESIDENT_MARGIN_GIB = 32  # room for a clip's activations beside all the weights
 from .adapters import AdapterSlots
 from .device import pick_device
 from .minimax_h3 import gpu_name
@@ -51,7 +54,8 @@ class LTX23Worker(AdapterSlots):
     components = ("transformer",)
 
     def __init__(self):
-        self.pipe = None  # text to video; owns the offload hooks
+        self.pipe = None  # text to video; owns the offload hooks (fallback only)
+        self.resident = False  # every module on the GPU
         self.i2v = None  # image to video, over the same modules
         self.has_fast = False
         self.dtype = None
@@ -83,7 +87,16 @@ class LTX23Worker(AdapterSlots):
             from diffusers.utils.torch_utils import TorchDeviceBackend
 
             TorchDeviceBackend._detect_device_type.cache_clear()
-            pipe.enable_model_cpu_offload(device="cuda")  # only here: the hooks live on the shared modules
+            weights = sum(weight_bytes(m) for m in modules_of(pipe.components).values())
+            total = torch.cuda.mem_get_info()[1]
+            if fits(weights, total, RESIDENT_MARGIN_GIB):
+                status("Moving LTX-2.3 onto the GPU")
+                pipe.to("cuda")
+                self.resident = True
+            else:
+                print(f"ltx23: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room for a "
+                      "clip; offloading", flush=True)
+                pipe.enable_model_cpu_offload(device="cuda")  # only here: the hooks live on the shared modules
         else:
             pipe.to(device)
         for p in (pipe, self.i2v):
@@ -166,10 +179,25 @@ class LTX23Worker(AdapterSlots):
             pipe = self.i2v
         sink.status("Sampling" + (" (fast)" if fast else ""))
         start = time.monotonic()
+        offloaded = False
         try:
-            video, audio = pipe(**kwargs)
+            try:
+                video, audio = pipe(**kwargs)
+            except torch.OutOfMemoryError:
+                if not self.resident:
+                    raise
+                # Too big to run beside all the weights: this clip only, with the modules taking turns.
+                offloaded = True
+                sink.status("Sampling (offloaded: too big for the GPU beside the weights)")
+                torch.cuda.empty_cache()
+                self.pipe.enable_model_cpu_offload(device="cuda")
+                video, audio = pipe(**kwargs)
         finally:
-            self.pipe.maybe_free_model_hooks()  # everything back on the CPU, also after a cancel or an error
+            if offloaded or not self.resident:
+                self.pipe.maybe_free_model_hooks()  # everything back on the CPU, also after a cancel or an error
+            if offloaded:
+                self.pipe.remove_all_hooks()
+                self.pipe.to("cuda")
         sample_seconds = round(time.monotonic() - start, 2)
 
         sink.status("Encoding video")
@@ -181,7 +209,7 @@ class LTX23Worker(AdapterSlots):
         path = out_dir / "result.mp4"
         write_mp4(frames, path, fps=FPS, audio=sound)
         return Output(path, "video", "video/mp4",
-                      extra={"gpu": gpu_name(), "fast": fast, "steps": steps, "loras": loras,
+                      extra={"gpu": gpu_name(), "resident": self.resident and not offloaded, "fast": fast, "steps": steps, "loras": loras,
                              "frames": int(len(frames)), "width": int(frames.shape[2]),
                              "height": int(frames.shape[1]), "seconds": round(len(frames) / FPS, 3),
                              "sampleRate": rate, "sampleSeconds": sample_seconds})

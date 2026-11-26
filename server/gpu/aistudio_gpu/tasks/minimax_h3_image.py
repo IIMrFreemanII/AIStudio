@@ -23,6 +23,7 @@ import numpy as np
 
 from ..media import write_png
 from . import Output, TaskSpec
+from .residency import fits, weight_bytes
 
 STEPS = 6  # the checkpoint's sampling grid (one output head per step)
 CANVAS_MULTIPLE = 32  # VAE ×16, then 2×2 patches
@@ -32,16 +33,9 @@ OFFLOAD_MARGIN_GIB = 16  # a picture's activations are small (≤ 20k tokens), u
 RESIDENT_MARGIN_GIB = 24  # what must stay free beside all the weights (activations, the VAE decode at 16 MP)
 
 
-def weight_bytes(module) -> int:
-    """Bytes of a torch module's parameters and buffers (0 for tokenizers and processors)."""
-    if not hasattr(module, "parameters"):
-        return 0
-    return sum(t.numel() * t.element_size() for t in [*module.parameters(), *module.buffers()])
-
-
 def fits_resident(weights: int, gpu_total: int) -> bool:
     """Whether all the weights fit on the GPU at once with room to run (else the components take turns)."""
-    return gpu_total - weights >= RESIDENT_MARGIN_GIB * 2**30
+    return fits(weights, gpu_total, RESIDENT_MARGIN_GIB)
 
 
 def output_size(params: dict) -> tuple[int, int]:

@@ -173,9 +173,10 @@ def _wan_params() -> dict[str, Param]:
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
-GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 62 GB conditioner take turns on it
-# Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
-GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
+# MiniMax H3 video: a partition's 61.7 GiB transformer, the 62.1 GiB conditioner and the VAEs (≈ 134 GiB) all stay on a
+# B200. No fallback by default (an H200 would swap them every clip); AISTUDIO_GPU_H3_FALLBACK=H200 accepts that.
+GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "B200")
+GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "")
 H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3)
 # MiniMax H3 Image: its 66 GB transformer, H3's 66.7 GB text encoder and the VAE (≈ 125 GiB) stay on the GPU together,
 # so a B200 (180 GB); on a smaller card they would swap for every picture (≈ 80 s and $0.12 each on an H200). No
@@ -183,9 +184,10 @@ H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) 
 GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
 GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
 H3_IMAGE_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_IMAGE_FALLBACK.split(",")) if g and g != GPU_H3_IMAGE)
-# LTX-2.3 (22B DiT, bf16, model offload: the 49 GB text encoder and the 38 GB transformer take turns on the GPU).
-GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
-GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
+# LTX-2.3 (22B DiT, bf16): the 49 GB text encoder, the 38 GB transformer and the VAEs (≈ 84 GiB) all stay on an H200.
+# No fallback by default (an H100 would swap them every clip); AISTUDIO_GPU_LTX_FALLBACK=H100 accepts that.
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H200")
+GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "")
 LTX_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_LTX_FALLBACK.split(",")) if g and g != GPU_LTX)
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")

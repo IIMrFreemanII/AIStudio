@@ -30,7 +30,7 @@ Layout:
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
-default H200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default B200; empty for none), ``AISTUDIO_GPU_LTX`` (LTX-2.3, default H100) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default H200; empty for none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+default B200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default none: a smaller card swaps the models), ``AISTUDIO_GPU_H3_IMAGE`` (MiniMax H3 Image, default B200, fallback ``AISTUDIO_GPU_H3_IMAGE_FALLBACK``), ``AISTUDIO_GPU_LTX`` (LTX-2.3, default H200) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
 L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
@@ -54,12 +54,12 @@ GPU_CONTAINERS = int(os.environ.get("AISTUDIO_GPU_CONTAINERS", "4"))
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
-GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")
-# Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
-GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
+GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "B200")
+# Every part resident: a B200 for H3, an H200 for LTX (fallbacks only when set, and then they swap).
+GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "")
 H3_GPUS = [GPU_H3, *H3_FALLBACKS]
-GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
-GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H200")
+GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "")
 LTX_GPUS = [GPU_LTX, *LTX_FALLBACKS]
 # MiniMax H3 Image keeps all its weights on one GPU: a B200 (fallbacks only when set, and then it swaps).
 GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
@@ -563,7 +563,7 @@ class QwenImageEdit:
 # 62 GB conditioner and the VAEs (≈ 140 GB in host RAM; the components manager moves each onto the GPU as it runs). On
 # the edit image for torchvision, which transformers' Qwen-VL processors need. ``H3_GPUS`` falls back to a B200 when no
 # H200 is free.
-@_gpu_class(image=edit_image, gpu=H3_GPUS, **_container("h3-video"))
+@_gpu_class(image=edit_image, gpu=H3_GPUS if len(H3_GPUS) > 1 else GPU_H3, **_container("h3-video"))
 class H3Video:
     @modal.enter(snap=True)
     def imports(self):
@@ -583,7 +583,7 @@ class H3Video:
                        models=(volume, MODELS))
 
 
-@_gpu_class(image=edit_image, gpu=H3_GPUS, **_container("h3-references"))
+@_gpu_class(image=edit_image, gpu=H3_GPUS if len(H3_GPUS) > 1 else GPU_H3, **_container("h3-references"))
 class H3References:
     @modal.enter(snap=True)
     def imports(self):
@@ -638,7 +638,7 @@ ltx_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERV
              .env(env).add_local_python_source("aistudio_gpu"))
 
 
-@_gpu_class(image=ltx_image, gpu=LTX_GPUS, **_container("ltx23"))
+@_gpu_class(image=ltx_image, gpu=LTX_GPUS if len(LTX_GPUS) > 1 else GPU_LTX, **_container("ltx23"))
 class LTX23:
     @modal.enter(snap=True)
     def imports(self):
