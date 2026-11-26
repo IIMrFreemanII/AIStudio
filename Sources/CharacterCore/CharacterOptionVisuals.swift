@@ -151,11 +151,27 @@ extension CharacterOptions {
         /// The race with its look ("a kitsune with fox ears and several fluffy fox tails"); "" for a human. It
         /// belongs with who they are: callers add it to the subject.
         public var race = ""
+        /// The race alone ("an elf") and its look ("long pointed elf ears"), for `addRace`.
+        public var raceName = ""
+        public var raceLook: [String] = []
         public var details: [PromptDetail] = []
         public var body: [PromptDetail] = []
         public var outfit: [PromptDetail] = []
         public var avoid: [String] = []
         public var without: [String] = []
+
+        /// Adds the race to the subject. A tag list that reads weights (SDXL) keeps only its name there and gets
+        /// the look weighted, first among the body tags right after the action, where a list reads it hardest. (Plain
+        /// SDXL still drew no elf ears in a photo, even so: docs/prompting.md.)
+        public func addRace(to s: inout PromptSpec, weighted: Bool) {
+            guard !race.isEmpty else { return }
+            guard weighted, !raceLook.isEmpty else {
+                s.subject += ", " + race
+                return
+            }
+            s.subject += ", " + raceName
+            s.body.insert(contentsOf: raceLook.map { PromptDetail($0, weight: 1.4) }, at: 0)
+        }
     }
 
     public static let identityCategories = ["race", "ears", "horns", "tail", "wings", "fantasySkin", "fantasyEyes",
@@ -183,10 +199,14 @@ extension CharacterOptions {
                 if let race = picked(id).first {
                     let look = raceLook(race.id, picked: { !picked($0).isEmpty })
                     parts.race = look.isEmpty ? race.phrase : "\(race.phrase) with \(list(look))"
+                    parts.raceName = race.phrase
+                    parts.raceLook = look
                 }
                 continue
             }
-            parts.details += picked(id).map { PromptDetail($0.phrase) }
+            // The race's feature chips (ears, horns, tail…) are weighted like the body: a plain tag hardly shows.
+            let weight = section(of: id) == .race ? 1.2 : 1
+            parts.details += picked(id).map { PromptDetail($0.phrase, weight: weight) }
         }
         var avoid: [(term: String, from: Int)] = []  // `from`: the body detail it came from
         for id in bodyCategories {
@@ -302,7 +322,8 @@ extension CharacterOptions {
 
     private static let withouts: [String: String] = [
         "body/slim": "no visible muscle definition",
-        "body/average": "no visible abs and no muscle definition",
+        "body/average": "no visible abs",
+        "body/average/man": "no visible abs and no muscle definition",
         "body/curvy/man": "no visible abs",
         "body/plus-size": "no visible abs",
         "body/soft": "no visible abs",
@@ -348,7 +369,8 @@ extension CharacterOptions {
                           + "no abs at all and no muscle definition, visible ribs and collarbones, a long thin neck",
                           "muscular, abs, six-pack, bodybuilder, broad shoulders"),
         "body/athletic": ("an athletic, toned, fit body", "fat, skinny"),
-        "body/average": ("an ordinary everyday body, soft untoned stomach", "abs, six-pack, muscular, fitness model, skinny"),
+        // Not "soft untoned stomach": with "no visible abs" MiniMax drew a big bare belly.
+        "body/average": ("an average, healthy everyday body, neither skinny nor athletic", "abs, six-pack, muscular, fitness model, skinny"),
         "body/average/man": ("a dad bod: an ordinary out-of-shape body with a soft round belly that hangs a little over "
                              + "the waistband, a soft chest, no visible abs at all and no muscle definition", "abs, six-pack, muscular, fitness model, skinny"),
         "body/curvy": ("a curvy body with a full bust and full rounded hips", "skinny, abs, muscular"),

@@ -1,6 +1,7 @@
 import CharacterCore
 import Foundation
 import LLMClient
+import MovieCore
 
 extension SmokeTest {
     /// `--smoke-characters-real <model id>` (+ `--smoke-real-out <folder>`, `--smoke-real-portraits <n>`, default 4):
@@ -43,6 +44,9 @@ extension SmokeTest {
         }
         if CommandLine.arguments.contains("--smoke-real-option-images") {
             return await realOptionImages(model, server: conn.id, out: out, say: say)
+        }
+        if CommandLine.arguments.contains("--smoke-real-builder") {
+            return await realBuilderPreviews(model, out: out, say: say)
         }
         if CommandLine.arguments.contains("--smoke-real-creator") {
             return await realCreator(model, count: portraitCount, keep: keep, say: say)
@@ -323,6 +327,55 @@ extension SmokeTest {
         say("made \(made.count), spent $\(String(format: "%.3f", cost)); \(missing.count) of \(wanted.count) missing")
         say(missing.isEmpty ? "ok all passed" : "FAIL some examples are missing")
         return missing.isEmpty
+    }
+
+    /// `--smoke-characters-real <any> --smoke-real-builder` (+ `--smoke-real-out`, `--smoke-real-models
+    /// sdxl,chroma,minimaxImage`, `--smoke-real-steps plain,face-body,elf`): no chat. The Prompt Builder's preview, SFW, with one seed per model: a plain woman,
+    /// then the same with face and body options changed, then as an elf, to see that the options show. The pictures
+    /// go to the out folder as `<model>-<n>-<step>.png`, with each prompt printed.
+    static func realBuilderPreviews(_ model: AppModel, out: URL?, say: @escaping (String) -> Void) async -> Bool {
+        let models = (argument("--smoke-real-models") ?? "sdxl,chroma,minimaxImage").split(separator: ",")
+            .compactMap { PromptModel(rawValue: String($0)) }
+        var base = PromptBuilderDraft()
+        base.gender = "woman"
+        base.age = 28
+        base.traits = ["hairColor": ["brown"], "hairStyle": ["long-wavy"], "eyes": ["green"], "body": ["average"],
+                       "clothes": ["casual"]]
+        base.action = "standing in a park, smiling at the camera"
+        base.picks = ["medium": ["candid-phone"], "shot": ["cowboy"], "lighting": ["natural"]]
+        base.seed = 424_242
+        var changed = base
+        changed.traits.merge(["faceShape": ["heart"], "lips": ["full"], "makeup": ["soft-glam"], "body": ["athletic"],
+                              "muscle": ["defined"]]) { $1 }
+        var elf = base
+        elf.traits["race"] = ["elf"]
+        // `--smoke-real-steps plain,elf`: only those (default all three).
+        let steps = Set((argument("--smoke-real-steps") ?? "").split(separator: ",").map(String.init))
+        var ok = true, total = 0.0
+        for m in models {
+            for (i, (step, d)) in [("plain", base), ("face-body", changed), ("elf", elf)].enumerated()
+            where steps.isEmpty || steps.contains(step) {
+                var draft = d
+                draft.model = m
+                do {
+                    let shot = try await model.previewPrompt(draft) { _ in }
+                    total += shot.costUSD ?? 0
+                    say("ok \(m.rawValue) \(step) $\(String(format: "%.4f", shot.costUSD ?? 0)): \(shot.prompt)")
+                    if let out {
+                        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+                        let dest = out.appendingPathComponent("\(m.rawValue)-\(i + 1)-\(step).png")
+                        try? FileManager.default.removeItem(at: dest)
+                        try? FileManager.default.copyItem(at: model.promptPreviewURL(shot), to: dest)
+                    }
+                } catch {
+                    say("FAIL \(m.rawValue) \(step): \(error)")
+                    ok = false
+                }
+            }
+        }
+        say("spent $\(String(format: "%.3f", total))")
+        say(ok ? "ok all passed" : "FAIL some previews failed")
+        return ok
     }
 
     /// `--smoke-characters-real <any> --smoke-real-outfit` (+ `--smoke-real-out`): no chat. One portrait of Mia, then

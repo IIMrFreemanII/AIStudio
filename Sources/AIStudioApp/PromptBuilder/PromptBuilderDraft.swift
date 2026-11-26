@@ -142,9 +142,10 @@ struct PromptBuilderDraft: Codable, Equatable {
             s.coverage = PromptCatalog.coverage(picks, adult: adult)
             let parts = CharacterOptions.lookParts(traits, gender: g, coverage: s.coverage, adult: adult)
             // Who they are: the race ("a kitsune with fox ears…"), then what they are ("a jazz singer").
-            for part in [parts.race, who] where !part.isEmpty { s.subject += ", " + part }
             s.details = parts.details
             s.body = parts.body
+            parts.addRace(to: &s, weighted: model.takesWeights)
+            if !who.isEmpty { s.subject += ", " + who }
             s.outfit = parts.outfit
             s.avoid = AgeGuard.negative.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } + parts.avoid
             s.without = parts.without

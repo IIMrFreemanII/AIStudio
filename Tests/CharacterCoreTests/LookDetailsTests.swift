@@ -107,6 +107,14 @@ private typealias CO = CharacterOptions
         let prompt = CharacterArt.photoPrompt(c, request: "a selfie in the garden", scene: nil)
         #expect(prompt.contains("of a 28-year-old adult woman, a kitsune with fox ears and several fluffy fox tails")
                 && prompt.contains("She has red hair"), "\(prompt)")
+        // SDXL: the name in the subject, the look weighted first among the body tags (in the subject the ears were
+        // lost); the feature chips are weighted too.
+        c.traits = ["race": ["elf"], "hairColor": ["red"], "horns": ["antlers"]]
+        c.artModel = ArtModel(family: .sdxl)
+        let tags = CharacterArt.photoPrompt(c, request: "a selfie in the garden", scene: nil)
+        #expect(tags.contains("a 28-year-old adult woman, an elf, ") && tags.contains("garden, (long pointed elf ears:1.4)")
+                && tags.contains("(antlers:1.2)") && !tags.contains("elf with"), "\(tags)")
+        c.traits = ["race": ["kitsune"], "hairColor": ["red"]]
         // The chat model knows the race (it's part of their looks).
         #expect(c.fullLook.hasPrefix("a kitsune"))
         // Every race of every gender has a look entry or a phrase, and the finer heritages exist.

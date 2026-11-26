@@ -113,13 +113,15 @@ import Testing
         let traits = ["hairColor": ["red"], "body": ["average"], "figure": ["toned-abs"], "clothes": ["boho"]]
         let parts = CO.lookParts(traits, gender: "woman")
         #expect(parts.details.map(\.tag) == ["red hair"])
-        #expect(parts.body.first?.text.contains("soft untoned stomach") == true && parts.body.first?.weight == 1.2)
+        #expect(parts.body.first?.text.contains("neither skinny nor athletic") == true && parts.body.first?.weight == 1.2)
         #expect(parts.outfit.first?.tag == "boho style clothes" && parts.outfit.first?.text.contains("maxi dress") == true)
         // Toned abs asks for abs: the average body's "abs" and "six-pack" opposites are dropped, the rest stay.
         #expect(!parts.avoid.contains("abs") && !parts.avoid.contains("six-pack") && parts.avoid.contains("fitness model"))
         // An average body alone keeps "abs" out, even though its own words say "no visible abs".
         let man = CO.lookParts(["body": ["average"]], gender: "man")
         #expect(man.avoid.contains("abs") && man.without == ["no visible abs and no muscle definition"])
+        // The woman's is milder: with "no muscle definition" too MiniMax drew a big bare belly.
+        #expect(CO.lookParts(["body": ["average"]], gender: "woman").without == ["no visible abs"])
         // Two clothing styles: each by its tag (two full outfits would fight); none when the photo names an outfit.
         let two = CO.lookParts(["clothes": ["casual", "streetwear"]], gender: "man")
         #expect(two.outfit.map(\.text) == ["casual clothes", "streetwear"])

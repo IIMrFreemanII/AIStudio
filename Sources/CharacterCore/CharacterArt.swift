@@ -111,11 +111,11 @@ public enum CharacterArt {
         default: s.pronoun = .they
         }
         s.action = caption(clean(request))
-        if !parts.race.isEmpty { s.subject += ", " + parts.race }
         s.details = parts.details
+        s.body = parts.body
+        parts.addRace(to: &s, weighted: model.takesWeights)
         let free = clean(c.look)
         if !free.isEmpty { s.details.append(PromptDetail(free)) }
-        s.body = parts.body
         s.outfit = outfit.isEmpty ? parts.outfit : [PromptDetail(outfit)]
         s.place = place
         if !time.isEmpty { s.time = [time] }

@@ -30,7 +30,7 @@ struct PromptBuilderView: View {
                     if draft.isPerson { lookSection }
                     sceneSection
                     ForEach(PromptCatalog.groups(for: draft.model, adult: adult && draft.isPerson).filter { $0.field != .place }) { g in
-                        ChoiceChips(group: g, picks: $draft.picks)
+                        ChoiceChips(group: g, picks: $draft.picks, model: draft.model)
                     }
                     extrasSection
                 }
@@ -241,6 +241,8 @@ struct PromptBuilderView: View {
 struct ChoiceChips: View {
     let group: PromptCatalog.Group
     @Binding var picks: [String: [String]]
+    /// The words a chip adds differ by model (`Choice.words(for:)`).
+    var model: PromptModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -253,7 +255,7 @@ struct ChoiceChips: View {
                     ChoiceChip(label: c.label, on: (picks[group.id] ?? []).contains(c.id)) {
                         picks = PromptCatalog.toggle(picks, group: group.id, choice: c.id)
                     }
-                    .mgHelp(c.words)
+                    .mgHelp(c.words(for: model))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

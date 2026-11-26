@@ -44,6 +44,17 @@ import Testing
         #expect(typed.place == "my grandmother's garden")
     }
 
+    @Test func booruWordsOnlyForTagTrainedModels() {
+        // Photo SDXL drew "cowboy shot" as a cowboy hat: it gets the framing in words; Pony and Illustrious the tag.
+        for (model, shot) in [(PromptModel.sdxl, "medium full shot, framed from mid-thigh up"),
+                              (.chroma, "medium full shot, framed from mid-thigh up"),
+                              (.sdxlPony, "cowboy shot"), (.sdxlIllustrious, "cowboy shot"), (.anima, "cowboy shot")] {
+            var s = PromptSpec()
+            PromptCatalog.apply(["shot": ["cowboy"]], to: &s, model: model)
+            #expect(s.shot == shot, "\(model)")
+        }
+    }
+
     @Test func toggleFollowsEachGroupsLimit() {
         var p: [String: [String]] = [:]
         p = PromptCatalog.toggle(p, group: "shot", choice: "wide")
