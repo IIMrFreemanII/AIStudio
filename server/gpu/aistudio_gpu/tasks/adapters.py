@@ -223,6 +223,8 @@ def _room_for(params: dict) -> bool:
         return False
     size = sum(p.numel() * p.element_size() for p in params.values())
     free, _ = torch.cuda.mem_get_info(first.device)
+    # PyTorch keeps freed activation memory reserved for reuse: the driver counts it as used, but it is free for this
+    free += torch.cuda.memory_reserved(first.device) - torch.cuda.memory_allocated(first.device)
     return free - size >= PARK_MARGIN_GIB * 2**30
 
 

@@ -61,3 +61,24 @@ def test_a_file_that_does_not_fit_is_refused(tmp_path, monkeypatch):
     folder = _save({"weight": torch.zeros(2, 2), "bias": torch.zeros(2), "extra": torch.zeros(1)}, tmp_path / "y")
     with pytest.raises(ValueError, match="unexpected"):
         adapters.WeightPark().switch(model, "base", "@fast", folder, Sink())
+
+
+def test_room_counts_memory_pytorch_keeps_reserved_as_free(monkeypatch):
+    """After a job, PyTorch keeps its activation memory reserved; the driver calls it used, but parking can reuse it."""
+    gib = 2**30
+
+    class P:
+        device = torch.device("cuda")
+
+        def numel(self):
+            return 20 * gib
+
+        def element_size(self):
+            return 1
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d=None: (10 * gib, 80 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d=None: 70 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d=None: 40 * gib)
+    assert adapters._room_for({"w": P()})  # 10 free + 30 reserved-but-unused = 40 ≥ 20 + 16
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d=None: 50 * gib)
+    assert not adapters._room_for({"w": P()})  # 10 + 10 = 20 < 36
