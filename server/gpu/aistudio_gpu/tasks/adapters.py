@@ -117,6 +117,11 @@ class AdapterSlots:
             del self.loras[name]
         return len(weights)
 
+    def _prepare_lora(self, state: dict) -> dict:
+        """A worker's chance to rename or rescale a LoRA file's tensors before diffusers reads them (Anima's kohya
+        files); raise ``ValueError`` for a file that can't fit."""
+        return state
+
     def _load_lora(self, name: str, parts: list[tuple[Path, str]], slot: int) -> None:
         """Loads each (file, transformer) part under one adapter name."""
         from safetensors.torch import load_file
@@ -127,6 +132,7 @@ class AdapterSlots:
                     state = load_file(str(path))
                 except Exception as e:  # noqa: BLE001
                     raise NotSafetensors(f"LoRA {slot} isn't a .safetensors file ({e})") from e
+                state = self._prepare_lora(state)
                 extra = {"load_into_transformer_2": True} if component == "transformer_2" else {}
                 self.pipe.load_lora_weights(state, adapter_name=name, **extra)
                 _lora_to_compute_dtype(getattr(self.pipe, component), getattr(self, "dtype", None))

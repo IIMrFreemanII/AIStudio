@@ -259,6 +259,20 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(names.contains("loras") && names.contains("model") && !names.contains("face"))
     }
 
+    @Test func animaFamily() throws {
+        for b in ["Anima", "anima"] {
+            #expect(LoRASources.family(forBaseModel: b) == "anima", "\(b)")
+        }
+        #expect(LoRASources.family(forBaseModel: "AnimateDiff") != "anima")
+        #expect(LoRASources.familyName("anima") == "Anima")
+        #expect(LoRASources.families.contains("anima"))
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteAnima") == "anima")
+        #expect(RemoteNodes.libraryFamilies["RemoteAnima"] == "anima")
+        #expect(RemoteNodes.baseTitle(family: "anima") == "Anima (base)")
+        let names = RemoteAnimaNode.schema.inputs.map(\.name)
+        #expect(names.contains("loras") && names.contains("model") && !names.contains("sampler") && !names.contains("face"))
+    }
+
     @Test func miniMaxH3LoRAFamilies() throws {
         #expect(LoRASources.family(forBaseModel: "MiniMax H3") == "minimax-h3")
         #expect(LoRASources.familyName("minimax-h3") == "MiniMax H3")

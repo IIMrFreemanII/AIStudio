@@ -30,7 +30,7 @@ CONTAINERS: dict[str, tuple[int, int, float]] = {
     "qwen-image": (16384, 98304, MIN_CPU), "qwen-image-edit": (16384, 98304, MIN_CPU),
     # MiniMax H3 keeps ≈ 140 GB of weights in host RAM (its two 61.7 GB models take turns on the GPU).
     "h3-video": (163840, 262144, 8), "h3-references": (163840, 262144, 8),
-    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sd15": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
+    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sd15": (8192, 32768, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
     "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
 }
 
@@ -177,6 +177,7 @@ H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) 
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
 GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")  # Stable Diffusion 1.5
+GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")  # Anima (2B)
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "L40S")  # Chroma1-HD: ≈ 28 GB of bf16 weights
 # The lip-sync models (LongCat-Video-Avatar's 15.8B DiT, InfiniteTalk on Wan 2.1's 14B), bf16 on an 80 GB card.
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
@@ -340,6 +341,19 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "model": Param("string", "base"),
         **_lora_params(),
     }, optional_inputs=LORA_INPUTS, models=("sd15",)),
+    TaskSpec("anima", "Anima", "image", "anima", GPU_ANIMA, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, "
+                                    "jpeg artifacts, chromatic aberration"),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "width": Param("int", 1024, min=512, max=1536, multiple=16),
+        "height": Param("int", 1024, min=512, max=1536, multiple=16),
+        "steps": Param("int", 30, min=1, max=80),
+        "guidance": Param("float", 4.0, min=1.0, max=10.0),
+        # A fine-tune installed from a link (variants.py), by its id; "base" is Anima itself.
+        "model": Param("string", "base"),
+        **_lora_params(),
+    }, optional_inputs=LORA_INPUTS, models=("anima",)),
     # Chroma1-HD (Apache-2.0, Flux-based, uncensored). `fast` swaps in Chroma1-Flash's transformer (CFG baked in) when
     # it is installed; fine-tunes from links always run as full Chroma.
     TaskSpec("chroma", "Chroma1-HD", "image", "chroma", GPU_CHROMA, {
@@ -500,6 +514,9 @@ def make_worker(family: str) -> Worker:
     if family == "sd15":
         from .sd15 import SD15Worker
         return SD15Worker()
+    if family == "anima":
+        from .anima import AnimaWorker
+        return AnimaWorker()
     if family == "chroma":
         from .chroma import ChromaWorker
         return ChromaWorker()

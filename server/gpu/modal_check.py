@@ -11,6 +11,7 @@ measured times and the cost. For checking a deployment and measuring cold and wa
     python server/gpu/modal_check.py sd35-large --prompt "a lighthouse at dusk" [--full]
     python server/gpu/modal_check.py sdxl --set sampler=euler-a --set negative="blurry" [--set model=<fine-tune id>]
     python server/gpu/modal_check.py sd15 --prompt "a lighthouse at dusk" [--set model=<fine-tune id>]
+    python server/gpu/modal_check.py anima --prompt "1girl, lighthouse, dusk" [--set model=<fine-tune id>]
     python server/gpu/modal_check.py chroma --prompt "a portrait" [--full] [--input face=portrait.png]
     python server/gpu/modal_check.py stable-audio-3 --prompt "rain on a tin roof" --set seconds=20
     python server/gpu/modal_check.py ace-step-xl --prompt "indie pop, female vocals" --set lyrics=@lyrics.txt
@@ -42,7 +43,7 @@ from aistudio_gpu.tasks import GPU_PRICES, TASKS  # noqa: E402
 
 CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", "longcat-avatar": "LongCatAvatar",
            "infinitetalk": "InfiniteTalk", "flux1-dev": "Flux", "qwen-image": "QwenImage",
-           "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL", "sd15": "SD15",
+           "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL", "sd15": "SD15", "anima": "Anima",
            "chroma": "Chroma", "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech",
            "breeze-tts": "Breeze", "h3-video": "H3Video", "h3-references": "H3References"}

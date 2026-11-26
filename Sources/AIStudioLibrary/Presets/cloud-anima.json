@@ -1,0 +1,46 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "negative" : "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration",
+          "prompt" : "masterpiece, best quality, score_7, safe, 1girl, solo, silver hair, red eyes, school uniform, cherry blossoms, park, smile, looking at viewer, upper body"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteAnima"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-anima",
+  "modelName" : "Anima on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Anima · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 360,
+  "summary" : "Anima: a 2B anime text-to-image model (Danbooru-style tags or natural language) on the cloud GPU. Anima fine-tunes and LoRAs from the library work too.",
+  "symbol" : "cloud"
+}

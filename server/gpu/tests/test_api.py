@@ -321,6 +321,27 @@ def test_sd15_task_wiring(tmp_path, monkeypatch):
     assert Image.open(out.path).size == (256, 256)
 
 
+def test_anima_task_wiring(tmp_path, monkeypatch):
+    from aistudio_gpu import download, variants
+    from aistudio_gpu.tasks import CONTAINERS, TASKS, make_worker
+
+    spec = TASKS["anima"]
+    assert spec.family == "anima" and spec.models == ("anima",) and spec.gpu == "L40S" and "anima" in CONTAINERS
+    p = spec.normalize({})
+    assert (p["width"], p["height"], p["steps"], p["guidance"], p["model"]) == (1024, 1024, 30, 4.0, "base")
+    assert p["negative"].startswith("worst quality, low quality") and "lora4" in spec.optional_inputs
+    assert variants.FAMILIES["anima"] == "anima" and variants.TASK_FAMILIES["anima"] == "anima"
+    assert variants.components("anima") == ("transformer", "text_conditioner")
+    assert variants.SINGLE_FILE["anima"] == "Anima" and variants.SINGLE_FILE_CONVERTERS["anima"].__name__ == "convert_anima"
+    assert download.MODELS["anima"]["revision"] == "073c3a9db359c31ad0e8aa268d15775473c2176c"
+    assert download.expand(["anima"]) == ["anima"] and "anima" not in download.expand(["sd"])
+    assert make_worker.__name__ == "make_worker"
+    monkeypatch.setattr("aistudio_gpu.tasks.fake_models", lambda: False)
+    worker = make_worker("anima")
+    assert (worker.family, worker.title, worker.components) == ("anima", "Anima", ("transformer",))
+    assert worker.variant_components == ("transformer", "text_conditioner")
+
+
 def test_fake_models_chroma_accepts_a_face_picture(tmp_path, monkeypatch):
     """Character photos on Chroma against the fake server: a face picture is accepted and the size kept."""
     from PIL import Image
