@@ -157,6 +157,29 @@ extension SmokeTest {
               "the Chroma photo is done by the chroma task (\(chromaPhoto?.status.rawValue ?? "none") \(chromaPhoto?.error ?? ""))")
         check(model.characterStore.memory(c.id).album.count == 2, "the album lists both photos")
 
+        // g2b. And by MiniMax H3 Image: the selfie runs `h3-image` with the face crop as picture 1. Back to Chroma after.
+        if var minimax = model.character(c.id) {
+            minimax.artModel.family = .minimax
+            check(model.saveCharacter(minimax).isEmpty, "\(c.name) now draws with MiniMax")
+        }
+        let h3JobsBefore = GPUTimings.load(model.gpuTimingsURL).lastJob["h3-image"]
+        let h3Selfie = await send(doc, "send a selfie")
+        var h3Turn = h3Selfie
+        let h3Deadline = Date().addingTimeInterval(30)
+        while Date() < h3Deadline {
+            h3Turn = h3Selfie.flatMap { doc.transcript.turn($0.id) }
+            if let st = h3Turn?.media?.first?.status, st == .done || st == .failed { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let h3Photo = h3Turn?.media?.first
+        let h3Job = GPUTimings.load(model.gpuTimingsURL).lastJob["h3-image"]
+        check(h3Photo?.status == .done && h3Job != nil && h3Job != h3JobsBefore,
+              "the MiniMax photo is done by the h3-image task (\(h3Photo?.status.rawValue ?? "none") \(h3Photo?.error ?? ""))")
+        if var back = model.character(c.id) {
+            back.artModel.family = .chroma
+            _ = model.saveCharacter(back)
+        }
+
         // g3. Voice, video and video messages.
         func settled(_ turn: ChatTurn?, _ waitFor: Set<ChatMedia.Status> = [.done, .failed, .skipped, .waiting])
             async -> ChatMedia?
@@ -201,7 +224,7 @@ extension SmokeTest {
         if let t = skippedTurn, let m = await settled(skippedTurn) { model.skipMedia(doc, turnID: t.id, mediaID: m.id) }
         check(skippedTurn.flatMap { doc.transcript.turn($0.id) }?.media?.first?.status == .skipped, "a skipped video stays skipped")
         let kinds = model.characterStore.memory(c.id).album.map(\.kind)
-        check(kinds == [.photo, .photo, .voice, .video, .talk], "the album lists the voice message and both videos (\(kinds))")
+        check(kinds == [.photo, .photo, .photo, .voice, .video, .talk], "the album lists the voice message and both videos (\(kinds))")
         check(model.characterStore.memory(c.id).ownMedia.isEmpty, "asked-for media uses none of her initiative")
 
         // g4. She texts first after time away (her chat's last message 9 hours ago), once.

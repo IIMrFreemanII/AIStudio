@@ -15,6 +15,7 @@ public enum RemoteNodes {
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteSD15Node.self, RemoteAnimaNode.self, RemoteChromaNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self, RemoteLTX23Node.self,
+        RemoteH3ImageNode.self,
     ]
 
     /// Nodes that only prepare inputs for the job nodes above (no server, no job of their own).
@@ -35,6 +36,7 @@ public enum RemoteNodes {
         "RemoteSD15": "sd15", "RemoteAnima": "anima", "RemoteChroma": "chroma",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
         "RemoteLTX23": "ltx23-video",
+        "RemoteH3Image": "h3-image",
     ]
 
     public static func taskID(forNodeType type: String) -> String? { taskIDs[type] }
@@ -1209,6 +1211,46 @@ public struct RemoteH3VideoNode: NodeImplementation {
         let (url, _) = try await runRemoteJob(task: "h3-video", params: params, images: images, files: files,
                                               links: links, inputs: inputs, context: context)
         return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// MiniMax H3 Image: a picture from text, or a new picture from an instruction and up to four reference pictures the
+/// prompt names as <Picture 1>…<Picture 4>. Six fixed steps with guidance baked in, so there is no negative prompt,
+/// steps or guidance; it draws on a canvas of at least `canvas_mp` megapixels (best at 4–16) and returns `width` ×
+/// `height`. An H200 by default; the same licence territories as MiniMax H3.
+public struct RemoteH3ImageNode: NodeImplementation {
+    public static let pictures = ["image1", "image2", "image3", "image4"]
+
+    public static let schema = NodeSchema(
+        type: "RemoteH3Image", displayName: "MiniMax H3 Image (Cloud GPU)", category: "remote",
+        inputs: pictures.map { InputSpec($0, .image, optional: true) } + [
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("width", .int, default: .int(1024), widget: .number(min: 256, max: 6272, step: 32)),
+            InputSpec("height", .int, default: .int(1024), widget: .number(min: 256, max: 6272, step: 32)),
+            // The least area it draws at, in megapixels; a smaller picture is drawn larger and scaled down.
+            InputSpec("canvas_mp", .float, default: .double(4), widget: .number(min: 1, max: 16, step: 1)),
+        ],
+        outputs: [OutputSpec("image", .image)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var images: [String: MLXArray] = [:]
+        for name in Self.pictures {
+            if let image = inputs.optionalObject(name, as: MLXArray.self) { images[name] = image }
+        }
+        // The server numbers pictures in order (image1, image2…): close any gaps.
+        var ordered: [String: MLXArray] = [:]
+        for (i, name) in Self.pictures.filter({ images[$0] != nil }).enumerated() { ordered["image\(i + 1)"] = images[name] }
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"),
+            "width": try inputs.int("width"), "height": try inputs.int("height"),
+            "canvas_mp": try inputs.float("canvas_mp"),
+        ]
+        let (url, _) = try await runRemoteJob(task: "h3-image", params: params, images: ordered, inputs: inputs,
+                                              context: context)
+        return ["image": .object(try loadImage(url))]
     }
 }
 

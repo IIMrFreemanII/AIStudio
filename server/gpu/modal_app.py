@@ -598,6 +598,33 @@ class H3References:
                        models=(volume, MODELS))
 
 
+# MiniMax H3 Image: diffusers 0.43.0 (the first with its blocks) on its own image, so the other workers stay on 0.42.1.
+h3_image_image = (modal.Image.debian_slim(python_version="3.12")
+                  .uv_pip_install(*SERVER_DEPS, *[d for d in TORCH_DEPS if not d.startswith("diffusers")],
+                                  "diffusers==0.43.0", TORCHVISION)
+                  .env(env).add_local_python_source("aistudio_gpu"))
+
+
+@_gpu_class(image=h3_image_image, gpu=H3_GPUS, **_container("h3-image"))
+class H3Image:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("h3-image", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
 # LTX-2.3: the 49 GB text encoder and the 38 GB transformer wait in host RAM and take turns on the GPU (model offload);
 # a text-to-video and an image-to-video pipeline share them. No torchvision needed. PyAV re-encodes an image-to-video start picture through H.264 the way LTX was
 # trained (diffusers' `image_crf`), so its image adds `av`.
@@ -1585,7 +1612,8 @@ def api():
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sd15": SD15, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
-                          "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23,
+                          "h3-image": H3Image}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

@@ -4,30 +4,39 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// The example photos on the creator's look chips: made once on a GPU server (SDXL, photoreal) and bundled with the
-/// app in `Resources/OptionImages`.
+/// The example photos on the creator's look chips: made once on a GPU server (photoreal; SDXL unless another family is
+/// asked for) and bundled with the app in `Resources/OptionImages`.
 enum OptionImageMaker {
     static let maxPixelSize = 352
     static let quality = 0.8
 
-    /// Draws every example (or only those of `categories`) into `out`, skipping files already there. Returns the files
-    /// it made and their summed cost; a failed example is reported through `say` and skipped.
+    /// Draws every example (or only those of `categories`, and of them only the files matching one of `files`, `*`
+    /// wildcards allowed, e.g. "body-*-woman.jpg") into `out` with `family`, skipping files already there. Returns the
+    /// files it made and their summed cost; a failed example is reported through `say` and skipped.
     @MainActor
     static func make(_ model: AppModel, server: String, out: URL, categories: Set<String>? = nil,
+                     files: [String]? = nil, family: ArtModel.Family = .sdxl,
                      limit: Int? = nil, say: (String) -> Void) async -> (made: [URL], cost: Double) {
         let fm = FileManager.default
         try? fm.createDirectory(at: out, withIntermediateDirectories: true)
         var made: [URL] = []
         var cost = 0.0
         var todo = CharacterOptions.examples.filter { categories?.contains($0.category) ?? true }
+        if let files {
+            todo = todo.filter { ex in
+                let name = CharacterOptions.exampleFile(category: ex.category, option: ex.option, gender: ex.gender)
+                return files.contains { NSPredicate(format: "SELF LIKE %@", $0).evaluate(with: name) }
+            }
+        }
         if let limit { todo = Array(todo.prefix(limit)) }
         for (i, ex) in todo.enumerated() {
             let file = out.appendingPathComponent(CharacterOptions.exampleFile(category: ex.category, option: ex.option,
                                                                               gender: ex.gender))
             if fm.fileExists(atPath: file.path) { continue }
-            // A throwaway character: photoreal SDXL, no portraits (so no face reference).
-            var c = AppModel.Companion(name: "Example", age: 30, gender: ex.gender)
-            c.artModel = ArtModel()
+            // A throwaway character: photoreal, no portraits (so no face reference).
+            var c = AppModel.Companion(name: "Example", age: CharacterOptions.exampleAge(gender: ex.gender),
+                                       gender: ex.gender)
+            c.artModel = ArtModel(family: family)
             let prompt = CharacterOptions.examplePrompt(category: ex.category, option: ex.option, gender: ex.gender)
             let full = fm.temporaryDirectory.appendingPathComponent("option-example-\(UUID().uuidString).png")
             defer { try? fm.removeItem(at: full) }

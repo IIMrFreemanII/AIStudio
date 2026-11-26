@@ -150,6 +150,9 @@ class FakeModelWorker:
             return _audio(seconds, rate, channels, params["seed"], inputs, out_dir)
         if task.family in ("h3-video", "h3-references"):
             return _h3(task, params, inputs, out_dir)
+        if task.family == "h3-image":  # the real worker's checks (a prompt, pictures in order)
+            from .minimax_h3_image import check
+            check(task, params, inputs)
         if task.id == "infinitetalk":  # a dub: the uploaded clip's frames at 25 fps, as long as the speech
             return _dub(inputs, speech_seconds, out_dir)
         w, h = params.get("width", 832), params.get("height", 480)  # tasks without a size: Wan's
@@ -177,7 +180,7 @@ class FakeModelWorker:
             w, h = w or first.width, h or first.height
             image = np.asarray(first.resize((w, h)), dtype=np.float32) / 255.0
             image = image * np.array([0.5, 0.25, 0.25], dtype=np.float32) + np.array([0.5, 0, 0], dtype=np.float32)
-            image[-1:] = sum(1 for k in ("image1", "image2", "image3") if k in inputs) / 4
+            image[-1:] = sum(1 for k in ("image1", "image2", "image3", "image4") if k in inputs) / 4
             image = mark(image)
             path = out_dir / "result.png"
             write_png(image, path)

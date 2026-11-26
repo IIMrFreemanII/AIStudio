@@ -192,9 +192,9 @@ struct CharacterCreator: View {
                 }
                 MGFormRow("Image model") {
                     MGSegmentedPicker(selection: family,
-                                      options: ArtModel.Family.allCases.map { ($0, $0 == .chroma ? "Chroma" : "SDXL") })
-                        .frame(width: 200)
-                        .mgHelp("SDXL is quick and keeps the face closely; Chroma follows descriptions more closely and costs about 10× more")
+                                      options: ArtModel.Family.allCases.map { ($0, $0.title) })
+                        .frame(width: 270)
+                        .mgHelp("SDXL is quick and keeps the face closely; Chroma follows descriptions more closely and costs about 10× more; MiniMax is the most detailed and realistic, on an H200")
                 }
                 if !c.fullLook.isEmpty {
                     Text("From their look: \(c.fullLook)").font(.mgFootnote).foregroundStyle(MG.secondaryLabel)

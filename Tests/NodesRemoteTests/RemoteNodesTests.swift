@@ -435,6 +435,33 @@ struct RemoteNodesTests {
         #expect(r.task == "qwen-image-edit" && r.width == 96 && r.height == 64 && (r.costUSD ?? 0) > 0)
     }
 
+    @Test(.enabled(if: hasServer)) func h3ImageRenumbersItsPicturesAndReturnsTheAskedSize() async throws {
+        // Only image3 wired: the node sends it as image1 (the server wants them in order), so the fake edit returns it
+        // tinted red with one picture counted in its bottom row.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let png = out.appendingPathComponent("ref.png")
+        try ImageArray.savePNG(MLXArray.ones([40, 60, 4]) * MLXArray([Float(0.1), 0.1, 0.9, 1]), to: png)
+        let records = RecordBox()
+        let token = RemoteJobLog.observe { records.add($0) }
+        defer { RemoteJobLog.remove(token) }
+        let (result, _) = try await run([
+            GraphNode(id: "p", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "h3", type: "RemoteH3Image", inputs: [
+                "image3": .link(node: "p", output: "image"), "prompt": .value(.string("<Picture 1> at the beach")),
+                "width": .value(.int(320)), "height": .value(.int(256))]),
+            GraphNode(id: "show", type: "PreviewImage", inputs: ["image": .link(node: "h3", output: "image")]),
+        ])
+        guard case .object(let o)? = result.outputs["show"]?["image"], let image = o as? MLXArray else {
+            Issue.record("no image")
+            return
+        }
+        #expect(image.shape[0] == 256 && image.shape[1] == 320)
+        #expect(abs(image[255, 10][0].item(Float.self) - 0.25) < 0.03)  // one picture
+        #expect(abs(image[128, 160][2].item(Float.self) - 0.225) < 0.05)  // picture 1, tinted
+        let r = try #require(records.all.last)
+        #expect(r.task == "h3-image" && r.width == 320 && r.height == 256)
+    }
+
     @Test(.enabled(if: hasServer)) func fluxUploadsChainedCloudLoRAs() async throws {
         // Two LoRA files and a third LoRA node at strength 0 (skipped): the fake server brightens the image's top
         // row to (LoRAs it got) / 4.

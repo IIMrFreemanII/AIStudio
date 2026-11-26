@@ -293,13 +293,21 @@ extension SmokeTest {
     }
 
     /// `--smoke-characters-real <any> --smoke-real-option-images --smoke-real-out <folder>` (+ `--smoke-real-only
-    /// <category,…>`): no chat. Draws the creator's option example photos (SDXL) into the folder, skipping files already
+    /// <category,…>`, `--smoke-real-files <file pattern,…>` such as `body-*-woman.jpg`, `--smoke-real-art chroma`): no chat. Draws the creator's option example photos (SDXL) into the folder, skipping files already
     /// there, so a run can be resumed or a bad file deleted and remade. Copy the result into Resources/OptionImages.
     static func realOptionImages(_ model: AppModel, server: String, out: URL?, say: @escaping (String) -> Void) async -> Bool {
         guard let out else { say("FAIL --smoke-real-out <folder> is needed"); return false }
         let only = argument("--smoke-real-only").map { Set($0.split(separator: ",").map(String.init)) }
-        let (made, cost) = await OptionImageMaker.make(model, server: server, out: out, categories: only, say: say)
-        let wanted = CharacterOptions.examples.filter { only?.contains($0.category) ?? true }
+        let files = argument("--smoke-real-files").map { $0.split(separator: ",").map(String.init) }
+        let family = argument("--smoke-real-art").flatMap(ArtModel.Family.init(rawValue:)) ?? .sdxl
+        let (made, cost) = await OptionImageMaker.make(model, server: server, out: out, categories: only, files: files,
+                                                       family: family, say: say)
+        let wanted = CharacterOptions.examples.filter { ex in
+            (only?.contains(ex.category) ?? true) && (files.map { patterns in
+                let name = CharacterOptions.exampleFile(category: ex.category, option: ex.option, gender: ex.gender)
+                return patterns.contains { NSPredicate(format: "SELF LIKE %@", $0).evaluate(with: name) }
+            } ?? true)
+        }
         let missing = wanted.filter {
             !FileManager.default.fileExists(atPath: out.appendingPathComponent(
                 CharacterOptions.exampleFile(category: $0.category, option: $0.option, gender: $0.gender)).path)

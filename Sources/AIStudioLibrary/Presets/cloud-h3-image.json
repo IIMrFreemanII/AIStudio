@@ -1,0 +1,45 @@
+{
+  "category" : "image",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "prompt" : "A portrait photo of an old fisherman on a wooden pier at golden hour: deep wrinkles, a gray beard, a knitted navy cap, warm low sun from the left, the sea softly out of focus behind him, shallow depth of field"
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteH3Image"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "image",
+          "image" : {
+            "node" : "cloud",
+            "output" : "image"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveImage"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-h3-image",
+  "modelName" : "MiniMax H3 Image on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "MiniMax H3 Image · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 340,
+  "summary" : "MiniMax H3 Image on an NVIDIA H200: detailed, realistic pictures from long descriptions, in six steps. Wire Load Image into image1…image4 and name them in the prompt as <Picture 1>… to edit or combine pictures. Its licence excludes the US, EU, UK and Korea.",
+  "symbol" : "cloud"
+}

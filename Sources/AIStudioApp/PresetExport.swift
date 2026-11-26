@@ -404,6 +404,14 @@ enum PresetExport {
                             "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
                      ])
                  }),
+            Spec(id: "cloud-h3-image", name: "MiniMax H3 Image · Cloud GPU", category: .image, models: [],
+                 modelName: "MiniMax H3 Image on a GPU server",
+                 summary: "MiniMax H3 Image on an NVIDIA H200: detailed, realistic pictures from long descriptions, in six steps. Wire Load Image into image1…image4 and name them in the prompt as <Picture 1>… to edit or combine pictures. Its licence excludes the US, EU, UK and Korea.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteH3Image", literals: [
+                        "prompt": .string("A portrait photo of an old fisherman on a wooden pier at golden hour: deep wrinkles, a gray beard, a knitted navy cap, warm low sun from the left, the sea softly out of focus behind him, shallow depth of field"),
+                     ], output: "image", outputDirectory: out)
+                 }),
             Spec(id: "cloud-chroma", name: "Chroma · Cloud GPU", category: .image, models: [],
                  modelName: "Chroma1-HD on a GPU server",
                  summary: "Chroma1-HD, a Flux-based open model, on an NVIDIA GPU. Fast mode runs Chroma1-Flash (16 steps); Chroma fine-tunes and LoRAs from the library work too.",
