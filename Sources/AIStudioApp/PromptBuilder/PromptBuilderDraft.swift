@@ -24,7 +24,108 @@ struct PromptBuilderDraft: Codable, Equatable {
     /// Catalog picks (group id → choice ids).
     var picks: [String: [String]] = [:]
 
+    // The preview (PromptBuilderPreview).
+    /// The saved character the look came from ("Start from Character"): the preview uses their face, LoRAs and
+    /// fine-tune. Changing the draft never changes the character.
+    var characterID: UUID?
+    var characterName = ""
+    /// The library fine-tune the preview draws with ("" = the base model).
+    var variant = ""
+    var aspect: PromptPreview.Aspect = .portrait
+    var seed = Int.random(in: 0..<Int(Int32.max))
+    /// The same seed for every preview, so a changed option shows only its own effect.
+    var keepSeed = true
+
     static let storageKey = "promptBuilder.draft"
+
+    init() {}
+
+    /// Missing keys (a draft saved by an older build) keep their defaults.
+    init(from decoder: Decoder) throws {
+        let k = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T { (try? k.decodeIfPresent(T.self, forKey: key)) ?? fallback }
+        model = v(.model, model)
+        subject = v(.subject, subject)
+        isPerson = v(.isPerson, isPerson)
+        gender = v(.gender, gender)
+        age = v(.age, age)
+        traits = v(.traits, traits)
+        action = v(.action, action)
+        place = v(.place, place)
+        text = v(.text, text)
+        avoid = v(.avoid, avoid)
+        faceReference = v(.faceReference, faceReference)
+        triggerWords = v(.triggerWords, triggerWords)
+        picks = v(.picks, picks)
+        characterID = try? k.decodeIfPresent(UUID.self, forKey: .characterID)
+        characterName = v(.characterName, characterName)
+        variant = v(.variant, variant)
+        aspect = v(.aspect, aspect)
+        seed = v(.seed, seed)
+        keepSeed = v(.keepSeed, keepSeed)
+    }
+
+    /// Takes a saved character's look, age, gender, image model and trigger words (`model`/`triggerWords` from
+    /// `CharacterArt.promptModel` and `AppModel.artContext`). The scene, picks and Keep-out text stay.
+    mutating func apply(character c: CharacterCore.Character, model: PromptModel, triggerWords words: [String]) {
+        characterID = c.id
+        characterName = c.name
+        isPerson = true
+        gender = c.gender.isEmpty ? "person" : c.gender
+        age = max(c.age, AgeGuard.minimumAge)
+        traits = c.traits
+        subject = Self.clean(c.look)
+        self.model = model
+        variant = c.artModel.variant ?? ""
+        triggerWords = words.joined(separator: ", ")
+        // MiniMax keeps the face from <Picture 1>, which the preview fills with the character's face.
+        faceReference = model == .minimaxImage
+        if picks["medium"] == nil {
+            picks["medium"] = [c.artModel.style == .anime ? "anime" : "candid-phone"]
+        }
+    }
+
+    /// What differs from `old`, in words ("+ Freckles", "− Golden hour", "Seed 12 → 40"): under two previews compared.
+    func changes(from old: PromptBuilderDraft) -> [String] {
+        var out: [String] = []
+        func field(_ name: String, _ a: String, _ b: String) {
+            if a != b { out.append(b.isEmpty ? "− \(name)" : "\(name): \(b)") }
+        }
+        if model != old.model { out.append("Model: \(model.title)") }
+        field("Subject", old.subject, subject)
+        if gender != old.gender { out.append("Gender: \(gender)") }
+        if age != old.age { out.append("Age \(old.age) → \(age)") }
+        func labels(_ ids: Set<String>, _ label: (String) -> String?) -> [String] { ids.compactMap(label).sorted() }
+        for id in Set(traits.keys).union(old.traits.keys).sorted() {
+            let a = Set(old.traits[id] ?? []), b = Set(traits[id] ?? [])
+            let cat = CharacterOptions.category(id)
+            let label: (String) -> String? = { o in cat?.options.first { $0.id == o }?.label ?? o }
+            out += labels(b.subtracting(a), label).map { "+ \($0)" }
+            out += labels(a.subtracting(b), label).map { "− \($0)" }
+        }
+        for id in Set(picks.keys).union(old.picks.keys).sorted() {
+            let a = Set(old.picks[id] ?? []), b = Set(picks[id] ?? [])
+            let group = PromptCatalog.group(id)
+            let label: (String) -> String? = { c in group?.choices.first { $0.id == c }?.label ?? c }
+            out += labels(b.subtracting(a), label).map { "+ \($0)" }
+            out += labels(a.subtracting(b), label).map { "− \($0)" }
+        }
+        field("Action", old.action, action)
+        field("Place", old.place, place)
+        field("Text", old.text, text)
+        field("Keep out", old.avoid, avoid)
+        field("Trigger words", old.triggerWords, triggerWords)
+        if variant != old.variant { out.append(variant.isEmpty ? "Base model" : "Fine-tune changed") }
+        if aspect != old.aspect { out.append(aspect.title) }
+        if seed != old.seed { out.append("Seed \(old.seed) → \(seed)") }
+        return out
+    }
+
+    /// Unlinks the character (the look picks stay).
+    mutating func detachCharacter() {
+        characterID = nil
+        characterName = ""
+    }
 
     /// The description the writers read.
     var spec: PromptSpec {

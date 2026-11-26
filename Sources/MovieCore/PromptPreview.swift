@@ -1,0 +1,111 @@
+import Foundation
+import GraphRuntime
+
+/// The Prompt Builder's preview: one picture of a written prompt on the model it was written for. The graph is that
+/// model's Cloud GPU node and a Preview Image; inputs not bound here keep the node's defaults.
+public enum PromptPreview {
+    /// The picture's shape.
+    public enum Aspect: String, CaseIterable, Codable, Sendable, Identifiable {
+        case portrait, square, landscape
+        public var id: String { rawValue }
+        public var title: String {
+            switch self {
+            case .portrait: "Portrait"
+            case .square: "Square"
+            case .landscape: "Landscape"
+            }
+        }
+    }
+
+    /// The node type that draws `model`'s pictures; nil for the video models (the preview draws stills).
+    public static func nodeType(_ model: PromptModel) -> String? {
+        switch model {
+        case .sd15: "RemoteSD15"
+        case .sdxl, .sdxlPony, .sdxlIllustrious: "RemoteSDXL"
+        case .sd35: "RemoteSD35"
+        case .flux: "RemoteFlux"
+        case .chroma: "RemoteChroma"
+        case .anima: "RemoteAnima"
+        case .qwenImage: "RemoteQwenImage"
+        case .minimaxImage: "RemoteH3Image"
+        case .wan, .ltx23, .minimaxVideo: nil
+        }
+    }
+
+    /// The server task of `model`'s node (for prices and timings).
+    public static func task(_ model: PromptModel) -> String? {
+        switch model {
+        case .sd15: "sd15"
+        case .sdxl, .sdxlPony, .sdxlIllustrious: "sdxl"
+        case .sd35: "sd35-large"
+        case .flux: "flux1-dev"
+        case .chroma: "chroma"
+        case .anima: "anima"
+        case .qwenImage: "qwen-image"
+        case .minimaxImage: "h3-image"
+        case .wan, .ltx23, .minimaxVideo: nil
+        }
+    }
+
+    /// The picture size: SD 1.5 draws at its own 512 scale, the rest around one megapixel.
+    public static func size(_ model: PromptModel, aspect: Aspect) -> (width: Int, height: Int) {
+        let small = model == .sd15
+        switch aspect {
+        case .portrait: return small ? (512, 768) : (832, 1216)
+        case .square: return small ? (512, 512) : (1024, 1024)
+        case .landscape: return small ? (768, 512) : (1216, 832)
+        }
+    }
+
+    /// The node takes a library fine-tune in its `model` input.
+    public static func takesFineTune(_ model: PromptModel) -> Bool {
+        switch model {
+        case .sd15, .sdxl, .sdxlPony, .sdxlIllustrious, .flux, .chroma, .anima, .qwenImage: true
+        default: false
+        }
+    }
+
+    /// Slots: prompt, seed, width, height, server; negative where the model reads one; model (a fine-tune) where the
+    /// node takes one. nil for the video models.
+    ///
+    /// Chroma, SD 3.5 and Qwen-Image default to their fast modes, which skip guidance and so ignore the negative
+    /// prompt: with a negative they run in full, as the written prompt expects (docs/prompting.md).
+    public static func template(_ model: PromptModel, negative: Bool) -> MovieTemplate? {
+        guard let type = nodeType(model) else { return nil }
+        var inputs: [String: NodeInput] = [
+            "prompt": .value(.string("")), "seed": .value(.int(0)), "width": .value(.int(1024)),
+            "height": .value(.int(1024)), "server": .value(.string("")),
+        ]
+        var slots: [String: MovieTemplate.Slot] = [:]
+        var names = ["prompt", "seed", "width", "height", "server"]
+        if model.takesNegative {
+            inputs["negative"] = .value(.string(""))
+            names.append("negative")
+            if negative, [.chroma, .sd35, .qwenImage].contains(model) { inputs["fast"] = .value(.bool(false)) }
+        }
+        if takesFineTune(model) {
+            inputs["model"] = .value(.string(""))
+            names.append("model")
+        }
+        for n in names { slots[n] = .init(node: "image", input: n) }
+        let nodes = [
+            GraphNode(id: "image", type: type, inputs: inputs, position: GraphPoint(x: 40, y: 40)),
+            GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
+                      position: GraphPoint(x: 420, y: 60)),
+        ]
+        return MovieTemplate(name: "Prompt preview", graph: Graph(nodes: nodes), slots: slots)
+    }
+
+    /// The values for one preview of `written` (the negative is left out where the model reads none).
+    public static func values(_ written: WrittenPrompt, model: PromptModel, seed: Int, aspect: Aspect, server: String,
+                              fineTune: String?) -> [String: JSONValue] {
+        let (w, h) = size(model, aspect: aspect)
+        var v: [String: JSONValue] = [
+            "prompt": .string(written.prompt), "seed": .int(seed), "width": .int(w), "height": .int(h),
+            "server": .string(server),
+        ]
+        if model.takesNegative { v["negative"] = .string(written.negative) }
+        if takesFineTune(model) { v["model"] = .string(fineTune ?? "") }
+        return v
+    }
+}

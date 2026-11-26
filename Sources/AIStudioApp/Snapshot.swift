@@ -249,7 +249,8 @@ enum Snapshot {
         await renderPromptBuilder(to: dir)
     }
 
-    /// 70–71: the Prompt Builder on a person (MiniMax, then a Pony SDXL fine-tune) and 72 on a video with sound.
+    /// 70–71: the Prompt Builder on a person (MiniMax, then a Pony SDXL fine-tune), 72 on a video with sound, 74 with
+    /// two previews.
     static func renderPromptBuilder(to dir: URL) async {
         let m = makeModel(dir)
         var d = PromptBuilderDraft()
@@ -275,6 +276,33 @@ enum Snapshot {
         v.picks = ["shot": ["wide"], "movement": ["tracking"], "time": ["sunrise"], "sound": ["wind-sound", "footsteps"]]
         await render(PromptBuilderView(draft: .constant(v)).mgWindow("Prompt Builder").environment(m),
                      to: dir.appendingPathComponent("72-prompt-builder-video.png"), size: CGSize(width: 1000, height: 900))
+        // 74: the preview panel with two earlier previews (flat dummy pictures) and a new seed's price line.
+        var shots: [PromptPreviewShot] = []
+        for (i, hue) in [0.08, 0.55].enumerated() {
+            var older = d
+            older.model = .sdxl
+            if i == 0 { older.traits["extras"] = ["freckles"] }
+            let shot = PromptPreviewShot(file: "preview-dummy\(i).png", prompt: older.written?.prompt ?? "",
+                                         negative: older.written?.negative ?? "", model: .sdxl, seed: older.seed,
+                                         costUSD: 0.0031, draft: older)
+            let img = NSImage(size: NSSize(width: 208, height: 304))
+            img.lockFocus()
+            NSColor(hue: hue, saturation: 0.4, brightness: 0.85, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: 208, height: 304).fill()
+            NSColor(hue: hue, saturation: 0.6, brightness: 0.55, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 64, y: 120, width: 80, height: 110)).fill()
+            img.unlockFocus()
+            try? FileManager.default.createDirectory(at: m.promptPreviewFolder, withIntermediateDirectories: true)
+            if let tiff = img.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: m.promptPreviewURL(shot))
+            }
+            shots.insert(shot, at: 0)
+        }
+        try? m.savePromptPreviews(shots)
+        var p = d
+        p.model = .sdxl
+        await render(PromptBuilderView(draft: .constant(p)).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("74-prompt-builder-preview.png"), size: CGSize(width: 1000, height: 1300))
         // 73: the sheet a Cloud SDXL node opens (Use in Node writes the prompt and negative).
         await render(sheet(PromptBuilderSheet(target: PromptBuilderTarget(id: "sdxl", model: .sdxl, takesNegative: true))
                         .environment(m)),
