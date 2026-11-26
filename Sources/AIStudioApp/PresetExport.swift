@@ -395,6 +395,15 @@ enum PresetExport {
                         "negative": .string("low quality, blurry, deformed, watermark"),
                      ], output: "image", outputDirectory: out)
                  }),
+            Spec(id: "cloud-sd15", name: "Stable Diffusion 1.5 · Cloud GPU", category: .image, models: [],
+                 modelName: "Stable Diffusion 1.5 on a GPU server",
+                 summary: "Stable Diffusion 1.5 on an NVIDIA GPU. SD 1.5 fine-tunes (Realistic Vision, DreamShaper…) and LoRAs from the library work too.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     cloudGraph(node: "RemoteSD15", literals: [
+                        "prompt": .string("A cozy cabin in a snowy pine forest at dusk, warm light in the windows, smoke from the chimney, detailed illustration"),
+                        "negative": .string("blurry, low quality, watermark, deformed"),
+                     ], output: "image", outputDirectory: out)
+                 }),
         ]
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -31,7 +31,7 @@ Layout:
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
 default H200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default B200; empty for none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
-L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_CHROMA`` (default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
+L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_CHROMA`` (default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
@@ -60,6 +60,7 @@ GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
 H3_GPUS = [GPU_H3, *H3_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
+GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "L40S")
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 MODELS = Path("/models")
@@ -124,7 +125,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -618,6 +619,26 @@ class SDXL:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("sdxl", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(gpu=GPU_SD15, **_container("sd15"))
+class SD15:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("sd15", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1505,7 +1526,7 @@ def api():
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
-                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "chroma": Chroma, "music": Music,
+                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sd15": SD15, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
                           "h3-video": H3Video, "h3-references": H3References}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)

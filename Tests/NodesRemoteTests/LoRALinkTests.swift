@@ -241,6 +241,24 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))
     }
 
+    @Test func sd15Family() throws {
+        for b in ["SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper"] {
+            #expect(LoRASources.family(forBaseModel: b) == "sd1.5", "\(b)")
+        }
+        #expect(LoRASources.familyName("sd1.5") == "SD 1.5")
+        #expect(LoRASources.families.contains("sd1.5"))
+        func lora(_ base: String?) -> CloudLoRA {
+            CloudLoRA(source: .file(URL(fileURLWithPath: "/x.safetensors")), strength: 1, baseModel: base)
+        }
+        try lora("SD 1.5").checkFits("sd1.5")
+        #expect(throws: LoRASourceError.wrongBaseModel("SD 1.5", expected: "SDXL")) { try lora("SD 1.5").checkFits("sdxl") }
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteSD15") == "sd15")
+        #expect(RemoteNodes.libraryFamilies["RemoteSD15"] == "sd1.5")
+        #expect(RemoteNodes.baseTitle(family: "sd1.5") == "Stable Diffusion 1.5 (base)")
+        let names = RemoteSD15Node.schema.inputs.map(\.name)
+        #expect(names.contains("loras") && names.contains("model") && !names.contains("face"))
+    }
+
     @Test func miniMaxH3LoRAFamilies() throws {
         #expect(LoRASources.family(forBaseModel: "MiniMax H3") == "minimax-h3")
         #expect(LoRASources.familyName("minimax-h3") == "MiniMax H3")

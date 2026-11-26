@@ -30,14 +30,16 @@ from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safe
 
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
 FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
-            "sdxl": "sdxl", "chroma": "chroma"}
+            "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
-                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma"}
+                 "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
 COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
-              "sdxl": ("unet", "text_encoder", "text_encoder_2")}
+              "sdxl": ("unet", "text_encoder", "text_encoder_2"), "sd1.5": ("unet", "text_encoder")}
+# Families whose fine-tune is one checkpoint file (UNet + text encoders), and how their name reads in errors.
+SINGLE_FILE = {"sdxl": "SDXL", "sd1.5": "SD 1.5"}
 ROLES = {"high": "transformer", "low": "transformer_2"}
 
 
@@ -136,9 +138,9 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
             if not files:
                 raise ValueError("nothing to import: give a file link or a Hugging Face repo")
             jobs = []
-            if family == "sdxl":  # one checkpoint file holds the UNet and both text encoders
+            if family in SINGLE_FILE:  # one checkpoint file holds the UNet and the text encoder(s)
                 if len(files) != 1:
-                    raise ValueError("an SDXL fine-tune is one checkpoint file")
+                    raise ValueError(f"an {SINGLE_FILE[family]} fine-tune is one checkpoint file")
                 ckpt = work / "checkpoint.safetensors"
                 download_file(files[0]["url"], ckpt, files[0].get("sha256"), tokens,
                               (lambda p: progress({**p, "file": 1, "files": 1})), extra_hosts, cancelled)
@@ -147,10 +149,10 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
                     (work / "unet").mkdir()
                     os.replace(ckpt, work / "unet" / "diffusion_pytorch_model.safetensors")
                 else:
-                    convert_sdxl(ckpt, base, work)
+                    (convert_sdxl if family == "sdxl" else convert_sd15)(ckpt, base, work)
                     ckpt.unlink(missing_ok=True)
                 done = [c for c in parts if (work / c).exists()]
-            for f in [] if family == "sdxl" else files:
+            for f in [] if family in SINGLE_FILE else files:
                 role = (f.get("role") or "").lower()
                 if len(parts) > 1 and role not in ROLES:
                     raise ValueError("a Wan 2.2 fine-tune file must say which expert it is (high or low noise)")
@@ -316,6 +318,23 @@ def convert_sdxl(ckpt: Path, base: Path, out: Path) -> None:
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"this file isn't a full SDXL checkpoint (UNet and both text encoders): {e}") from e
     for component in ("unet", "text_encoder", "text_encoder_2"):
+        getattr(pipe, component).to(torch.bfloat16).save_pretrained(str(out / component), max_shard_size="5GB")
+
+
+def convert_sd15(ckpt: Path, base: Path, out: Path) -> None:
+    """A Stable Diffusion 1.5 single-file checkpoint (the original layout Civitai serves: ``model.diffusion_model.*``,
+    ``cond_stage_model.*``) → diffusers folders ``out/unet`` and ``out/text_encoder`` (bf16), with the base's configs.
+    The checkpoint's VAE is ignored: the base's stays."""
+    import torch
+    from diffusers import AutoencoderKL, StableDiffusionPipeline
+
+    try:
+        pipe = StableDiffusionPipeline.from_single_file(
+            str(ckpt), config=str(base), vae=AutoencoderKL.from_pretrained(base / "vae", variant="fp16"),
+            safety_checker=None, requires_safety_checker=False, torch_dtype=torch.bfloat16, local_files_only=True)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"this file isn't a full SD 1.5 checkpoint (UNet and text encoder): {e}") from e
+    for component in ("unet", "text_encoder"):
         getattr(pipe, component).to(torch.bfloat16).save_pretrained(str(out / component), max_shard_size="5GB")
 
 

@@ -183,6 +183,33 @@ def tiny_sdxl(root: Path) -> None:
     (root / "sdxl" / ".complete").write_text("{}")
 
 
+def tiny_sd15_pipeline(seed: int):
+    from diffusers import AutoencoderKL, EulerDiscreteScheduler, StableDiffusionPipeline, UNet2DConditionModel
+    from transformers import CLIPTextModel, CLIPTokenizer
+
+    torch.manual_seed(seed)
+    return StableDiffusionPipeline(
+        unet=UNet2DConditionModel(
+            block_out_channels=(4, 8), layers_per_block=1, sample_size=32, in_channels=4, out_channels=4,
+            down_block_types=("DownBlock2D", "CrossAttnDownBlock2D"),
+            up_block_types=("CrossAttnUpBlock2D", "UpBlock2D"), attention_head_dim=(2, 4),
+            cross_attention_dim=32, norm_num_groups=1),
+        scheduler=EulerDiscreteScheduler(beta_start=0.00085, beta_end=0.012, steps_offset=1,
+                                         beta_schedule="scaled_linear", timestep_spacing="leading"),
+        vae=AutoencoderKL(block_out_channels=[4, 8], in_channels=3, out_channels=3,
+                          down_block_types=["DownEncoderBlock2D"] * 2, up_block_types=["UpDecoderBlock2D"] * 2,
+                          latent_channels=4, sample_size=128, norm_num_groups=1),
+        text_encoder=CLIPTextModel(tiny_clip_config()),
+        tokenizer=CLIPTokenizer.from_pretrained("hf-internal-testing/tiny-random-clip"),
+        safety_checker=None, feature_extractor=None, requires_safety_checker=False)
+
+
+def tiny_sd15(root: Path) -> None:
+    """Saved with the fp16 variant names, like the real download's folder."""
+    tiny_sd15_pipeline(0).save_pretrained(root / "sd15", variant="fp16")
+    (root / "sd15" / ".complete").write_text("{}")
+
+
 QWEN_IMAGE = ("Qwen/Qwen-Image", "75e0b4be04f60ec59a75f475837eced720f823b6")
 
 
@@ -271,6 +298,7 @@ def models(tmp_path_factory):
     tiny_qwen(root)
     tiny_sd35(root)
     tiny_sdxl(root)
+    tiny_sd15(root)
     tiny_chroma(root)
     return root
 
@@ -1175,6 +1203,73 @@ def test_sdxl_fine_tune_from_a_single_file_and_swapping_back(models, tmp_path, m
         jobs(model="base")
     back, sink, _ = jobs(model="base")
     assert "Loading the base model" in sink.statuses and np.array_equal(back, base)
+
+
+def test_sd15_samplers_and_loras(models, tmp_path):
+    from diffusers import DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler, EulerDiscreteScheduler
+
+    jobs = ImageJobs("sd15", models, tmp_path, width=64, height=64)
+    assert jobs.worker.pipe.safety_checker is None
+    kinds = {"dpmpp-2m-karras": DPMSolverMultistepScheduler, "euler-a": EulerAncestralDiscreteScheduler,
+             "euler": EulerDiscreteScheduler}
+    images = {}
+    for sampler, kind in kinds.items():
+        images[sampler], sink, out = jobs(sampler=sampler, steps=11, negative="blurry")
+        assert isinstance(jobs.worker.pipe.scheduler, kind) and out.extra["sampler"] == sampler
+        assert images[sampler].shape == (64, 64, 3) and out.extra["guidance"] == 7.0
+        assert sink.steps[-1] == (11, 11) and [s for _, s in sink.previews] == [5, 10]
+    assert np.abs(images["euler"] - images["dpmpp-2m-karras"]).max() > 0
+
+    a = lora_on_attention(jobs.worker.pipe.unet, tmp_path / ("a" * 64 + ".safetensors"), "unet", 1)
+    plain, _, out = jobs(steps=2)
+    assert out.extra["loras"] == 0
+    with_a, sink, out = jobs({"lora1": a}, steps=2)
+    assert out.extra["loras"] == 1 and "Loading LoRA 1" in sink.statuses and np.abs(with_a - plain).max() > 0
+    again, sink, _ = jobs({"lora1": a}, steps=2)
+    assert np.array_equal(again, with_a) and "Loading LoRA 1" not in sink.statuses
+    off, _, out = jobs({"lora1": a}, steps=2, lora1_strength=0.0)
+    assert np.array_equal(off, plain) and out.extra["loras"] == 0
+
+
+def test_sd15_fine_tune_from_a_single_file_and_swapping_back(models, tmp_path, monkeypatch):
+    """Like SDXL: one checkpoint file; the single-file loader is stubbed with a perturbed tiny pipeline, and the
+    two folders written, the variant listed, the in-place swap and the exact restore are checked."""
+    from diffusers import StableDiffusionPipeline
+
+    from aistudio_gpu import variants
+
+    tuned_pipe = StableDiffusionPipeline.from_pretrained(models / "sd15", variant="fp16", safety_checker=None)
+    torch.manual_seed(5)
+    with torch.no_grad():
+        for module in (tuned_pipe.unet, tuned_pipe.text_encoder):
+            for p in module.parameters():
+                p.add_(torch.randn_like(p) * 0.05)
+    loaded = {}
+
+    def single_file(ckpt, **kwargs):
+        loaded.update(kwargs, ckpt=ckpt)
+        return tuned_pipe
+
+    def fake_download(url, dest, sha256, tokens, progress, extra_hosts=(), cancelled=lambda: False):
+        dest.write_bytes(b"checkpoint")
+
+    monkeypatch.setattr(StableDiffusionPipeline, "from_single_file", staticmethod(single_file))
+    monkeypatch.setattr(variants, "download_file", fake_download)
+    dest = variants.import_variant(models, "sd1.5", "tiny-15-ft", "Tiny", files=[{"url": "https://civitai.com/x"}])
+    assert loaded["config"] == str(models / "sd15") and loaded["local_files_only"] and loaded["safety_checker"] is None
+    assert all((dest / c).is_dir() for c in ("unet", "text_encoder")) and not (dest / "text_encoder_2").exists()
+    assert not (dest / ".work").exists()
+    assert variants.list_variants(models)["sd1.5"][0]["id"] == "tiny-15-ft"
+
+    jobs = ImageJobs("sd15", models, tmp_path, steps=2)
+    base, _, _ = jobs()
+    tuned, sink, _ = jobs(model="tiny-15-ft")
+    assert "Loading tiny-15-ft" in sink.statuses and np.abs(tuned - base).max() > 0
+    back, sink, _ = jobs(model="base")
+    assert "Loading the base model" in sink.statuses and np.array_equal(back, base)
+    with pytest.raises(ValueError, match="an SD 1.5 fine-tune is one checkpoint file"):
+        variants.import_variant(models, "sd1.5", "two", "Two", files=[{"url": "https://civitai.com/a"},
+                                                                     {"url": "https://civitai.com/b"}])
 
 
 def test_copy_weights_matches_every_key_first(models, tmp_path):
