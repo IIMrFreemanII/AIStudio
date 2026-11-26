@@ -10,6 +10,9 @@ An optional ``face`` picture steers the result towards that face (diffusers IP-A
 encoder, ``sdxl-face``, loaded on the first job that has a face and unloaded again for jobs without one or when the
 fine-tune changes). Jobs without a face run exactly as before.
 
+Prompts may be longer than CLIP's 77 tokens and carry A1111 weights, ``(red jacket:1.3)``: the worker encodes
+them itself (``prompt_weights.py``) and passes the embeddings.
+
 The sampler is chosen per job from three schedulers built once: DPM++ 2M Karras (the default), Euler a, Euler.
 """
 
@@ -25,6 +28,7 @@ from . import Output, TaskSpec
 from .adapters import AdapterSlots
 from .device import generator, pick_device
 from .previews import remember_x0
+from .prompt_weights import encode_sdxl
 
 FACE_DIR = "sdxl-face"
 FACE_WEIGHTS = "ip-adapter-plus-face_sdxl_vit-h.safetensors"
@@ -105,8 +109,9 @@ class SDXLWorker(AdapterSlots):
         sink.status("Sampling")
         start = time.monotonic()
         with torch.inference_mode():
-            image = self.pipe(prompt=params["prompt"], negative_prompt=params["negative"].strip() or None,
-                              width=width, height=height, num_inference_steps=steps, guidance_scale=guidance,
+            # After the LoRAs: the ones with text-encoder parts change the embeddings.
+            embeds = encode_sdxl(self.pipe, params["prompt"], params["negative"])
+            image = self.pipe(**embeds, width=width, height=height, num_inference_steps=steps, guidance_scale=guidance,
                               generator=generator(params["seed"]), callback_on_step_end=on_step,
                               callback_on_step_end_tensor_inputs=["latents"], **extra_args).images[0]
         path = out_dir / "result.png"
