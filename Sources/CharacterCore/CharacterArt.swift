@@ -113,7 +113,6 @@ public enum CharacterArt {
         s.action = caption(clean(request))
         s.details = parts.details
         s.body = parts.body
-        parts.addRace(to: &s, weighted: model.takesWeights)
         let free = clean(c.look)
         if !free.isEmpty { s.details.append(PromptDetail(free)) }
         s.outfit = outfit.isEmpty ? parts.outfit : [PromptDetail(outfit)]

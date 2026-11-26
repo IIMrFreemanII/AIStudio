@@ -90,8 +90,7 @@ private func person(gender: String = "woman") -> Character {
     @Test func portraitPromptStaysShortWithManyLookPicks() {
         var c = person()
         // Every core look category (the detailed face and body ones are extra).
-        for cat in CharacterOptions.categories(.look)
-            where !CharacterOptions.detailCategories.contains(cat.id) && !CharacterOptions.raceCategories.contains(cat.id) {
+        for cat in CharacterOptions.categories(.look) where !CharacterOptions.detailCategories.contains(cat.id) {
             c.traits[cat.id] = [cat.options[0].id]
         }
         let words = CharacterArt.portraitPrompt(c).split(whereSeparator: \.isWhitespace).count

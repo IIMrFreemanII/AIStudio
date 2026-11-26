@@ -9,10 +9,9 @@ public enum CharacterOptions {
 
     /// How the look group is laid out in the creator, the editor and the Prompt Builder.
     public enum Section: String, CaseIterable, Sendable {
-        case race, hair, face, body, style
+        case hair, face, body, style
         public var title: String {
             switch self {
-            case .race: "Race and features"
             case .hair: "Hair"
             case .face: "Face"
             case .body: "Body"
@@ -25,8 +24,6 @@ public enum CharacterOptions {
     public static func section(of category: String) -> Section? { sections[category] }
 
     private static let sections: [String: Section] = [
-        "race": .race, "ears": .race, "horns": .race, "tail": .race, "wings": .race, "fantasySkin": .race,
-        "fantasyEyes": .race, "fangsClaws": .race, "scifi": .race,
         "hairColor": .hair, "hairStyle": .hair,
         "eyes": .face, "skin": .face, "faceShape": .face, "eyeShape": .face, "eyebrows": .face, "nose": .face,
         "lips": .face, "jaw": .face, "heritage": .face, "makeup": .face, "facialHair": .face, "extras": .face,
@@ -40,11 +37,6 @@ public enum CharacterOptions {
     public static let detailCategories: Set<String> = [
         "faceShape", "eyeShape", "eyebrows", "nose", "lips", "jaw", "makeup", "facialHair", "muscle", "shoulders",
         "bustShape", "bodyHair", "bodyMarks",
-    ]
-
-    /// The race and its feature chips: Surprise Me leaves them out (characters are human unless picked).
-    public static let raceCategories: Set<String> = [
-        "race", "ears", "horns", "tail", "wings", "fantasySkin", "fantasyEyes", "fangsClaws", "scifi",
     ]
 
     /// The 18+ categories, by what a picture must show for them to be written.
@@ -100,64 +92,6 @@ public enum CharacterOptions {
             O("at-a-bar", "At a bar", "you met at a bar"), O("at-the-gym", "At the gym", "you met at the gym"),
             O("blind-date", "Blind date", "you met on a blind date"),
             O("online-gaming", "Online gaming", "you met while gaming online"),
-        ]),
-        // Fantasy and sci-fi races (always adults, like everyone): the race chip writes its typical look
-        // (`raceLooks`), which the feature chips below add to or replace.
-        Category("race", "Race", .look, max: 1, [
-            O("elf", "Elf", "an elf"), O("dark-elf", "Dark elf", "a dark elf"), O("vampire", "Vampire", "a vampire"),
-            O("demon", "Demon", "a demon"), O("angel", "Angel", "an angel"), O("fallen-angel", "Fallen angel", "a fallen angel"),
-            O("succubus", "Succubus", "a succubus", onlyFor: "woman"), O("incubus", "Incubus", "an incubus", onlyFor: "man"),
-            O("witch", "Witch", "a witch", onlyFor: "woman"), O("warlock", "Warlock", "a warlock", onlyFor: "man"),
-            O("cat-folk", "Cat-folk", "a cat-folk"), O("fox-folk", "Fox-folk", "a fox-folk"),
-            O("wolf-folk", "Wolf-folk", "a wolf-folk"), O("bunny-folk", "Bunny-folk", "a bunny-folk"),
-            O("cow-folk", "Cow-folk", "a cow-folk"),
-            O("mermaid", "Mermaid", "a mermaid", onlyFor: "woman"), O("merman", "Merman", "a merman", onlyFor: "man"),
-            O("dryad", "Dryad", "a dryad"), O("dragonkin", "Dragonkin", "a dragonkin"), O("oni", "Oni", "an oni"),
-            O("kitsune", "Kitsune", "a kitsune"), O("nymph", "Water nymph", "a water nymph"),
-            O("android", "Android", "an android"), O("cyborg", "Cyborg", "a cyborg"), O("alien", "Alien", "a humanoid alien"),
-        ]),
-        Category("ears", "Ears", .look, max: 1, [
-            O("pointed", "Long pointed", "long pointed ears"), O("short-pointed", "Short pointed", "short pointed ears"),
-            O("cat", "Cat", "cat ears"), O("fox", "Fox", "fox ears"), O("wolf", "Wolf", "wolf ears"),
-            O("bunny", "Rabbit", "long rabbit ears"), O("fins", "Fins", "fin-like ears"),
-        ]),
-        Category("horns", "Horns", .look, max: 1, [
-            O("small", "Small", "small horns"), O("curved", "Curved", "curved ram horns"),
-            O("long", "Long", "long straight horns"), O("antlers", "Antlers", "antlers"),
-            O("single", "Single horn", "a single horn on the forehead"),
-        ]),
-        Category("tail", "Tail", .look, max: 1, [
-            O("cat", "Cat", "a cat tail"), O("fox", "Fox", "a fluffy fox tail"), O("nine-fox", "Nine fox tails", "nine fluffy fox tails"),
-            O("wolf", "Wolf", "a fluffy wolf tail"), O("demon", "Demon", "a thin spade-tipped demon tail"),
-            O("dragon", "Dragon", "a scaly dragon tail"), O("fish", "Fish tail", "a shimmering fish tail instead of legs"),
-        ]),
-        Category("wings", "Wings", .look, max: 1, [
-            O("white", "White feathered", "large white feathered wings"),
-            O("black", "Black feathered", "large black feathered wings"), O("bat", "Bat", "bat wings"),
-            O("dragon", "Dragon", "dragon wings"), O("butterfly", "Butterfly", "large butterfly wings"),
-        ]),
-        Category("fantasySkin", "Fantasy skin", .look, max: 1, [
-            O("blue", "Blue", "blue skin"), O("green", "Green", "green skin"), O("red", "Red", "red skin"),
-            O("gray", "Gray", "ash-gray skin"), O("purple", "Purple", "purple skin"),
-            O("porcelain", "Porcelain", "porcelain-white skin"), O("golden", "Golden", "golden skin"),
-            O("metallic", "Metallic", "metallic silver skin"), O("scales", "Scales", "patches of scales on the skin"),
-        ]),
-        Category("fantasyEyes", "Eye effects", .look, max: 2, [
-            O("glowing", "Glowing", "glowing eyes"), O("slit", "Slit pupils", "slit cat-like pupils"),
-            O("black-sclera", "Black sclera", "black sclera"),
-            O("heterochromia", "Two colors", "heterochromia, one eye a different color"),
-            O("red", "Red", "red eyes"), O("violet", "Violet", "violet eyes"),
-        ]),
-        Category("fangsClaws", "Fangs and markings", .look, max: 3, [
-            O("fangs", "Fangs", "small fangs"), O("claws", "Claws", "sharp claws"),
-            O("glow-lines", "Glowing markings", "glowing markings on the skin"),
-            O("tribal", "Tribal markings", "tribal markings on the face and arms"),
-        ]),
-        Category("scifi", "Sci-fi parts", .look, max: 3, [
-            O("cyber-arm", "Cybernetic arm", "a cybernetic arm"),
-            O("circuitry", "Circuitry", "faint glowing circuitry lines under the skin"),
-            O("seams", "Panel seams", "synthetic skin with faint panel seams"), O("led-eyes", "LED eyes", "glowing LED eyes"),
-            O("eye-implant", "Eye implant", "a cybernetic eye implant"), O("chrome", "Chrome plating", "chrome plating on parts of the body"),
         ]),
         Category("hairColor", "Hair color", .look, max: 1, [
             O("black", "Black", "black hair"), O("dark-brown", "Dark brown", "dark brown hair"),

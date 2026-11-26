@@ -148,35 +148,14 @@ extension CharacterOptions {
     /// `withClothes` is false (the photo names its own outfit). With two clothing picks each is named by its tag,
     /// because two full outfits would fight.
     public struct LookParts: Equatable, Sendable {
-        /// The race with its look ("a kitsune with fox ears and several fluffy fox tails"); "" for a human. It
-        /// belongs with who they are: callers add it to the subject.
-        public var race = ""
-        /// The race alone ("an elf") and its look ("long pointed elf ears"), for `addRace`.
-        public var raceName = ""
-        public var raceLook: [String] = []
         public var details: [PromptDetail] = []
         public var body: [PromptDetail] = []
         public var outfit: [PromptDetail] = []
         public var avoid: [String] = []
         public var without: [String] = []
-
-        /// Adds the race to the subject. A tag list that reads weights (SDXL) keeps only its name there and gets
-        /// the look weighted, first among the body tags right after the action, where a list reads it hardest. (Plain
-        /// SDXL still drew no elf ears in a photo, even so: docs/prompting.md.)
-        public func addRace(to s: inout PromptSpec, weighted: Bool) {
-            guard !race.isEmpty else { return }
-            guard weighted, !raceLook.isEmpty else {
-                s.subject += ", " + race
-                return
-            }
-            s.subject += ", " + raceName
-            s.body.insert(contentsOf: raceLook.map { PromptDetail($0, weight: 1.4) }, at: 0)
-        }
     }
 
-    public static let identityCategories = ["race", "ears", "horns", "tail", "wings", "fantasySkin", "fantasyEyes",
-                                            "fangsClaws", "scifi",
-                                            "hairColor", "hairStyle", "eyes", "skin", "extras", "heritage", "faceShape",
+    public static let identityCategories = ["hairColor", "hairStyle", "eyes", "skin", "extras", "heritage", "faceShape",
                                             "eyeShape", "eyebrows", "nose", "lips", "jaw", "makeup", "facialHair"]
     public static let bodyCategories = ["body", "height", "muscle", "shoulders", "bust", "bustShape", "butt", "figure",
                                         "bodyHair", "bodyMarks"]
@@ -193,20 +172,7 @@ extension CharacterOptions {
         }
         let g = gender.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for id in identityCategories {
-            // A fantasy skin replaces the human skin tone.
-            if id == "skin", !picked("fantasySkin").isEmpty { continue }
-            if id == "race" {
-                if let race = picked(id).first {
-                    let look = raceLook(race.id, picked: { !picked($0).isEmpty })
-                    parts.race = look.isEmpty ? race.phrase : "\(race.phrase) with \(list(look))"
-                    parts.raceName = race.phrase
-                    parts.raceLook = look
-                }
-                continue
-            }
-            // The race's feature chips (ears, horns, tail…) are weighted like the body: a plain tag hardly shows.
-            let weight = section(of: id) == .race ? 1.2 : 1
-            parts.details += picked(id).map { PromptDetail($0.phrase, weight: weight) }
+            parts.details += picked(id).map { PromptDetail($0.phrase) }
         }
         var avoid: [(term: String, from: Int)] = []  // `from`: the body detail it came from
         for id in bodyCategories {
@@ -243,68 +209,6 @@ extension CharacterOptions {
             return !t.isEmpty && !asked.contains { $0.contains(t) } && seen.insert(t).inserted
         }.map(\.term)
         return parts
-    }
-
-    /// The race's typical look, without the parts a picked feature chip replaces (`picked(categoryID)`). A human skin
-    /// tone pick replaces the race's skin too.
-    static func raceLook(_ race: String, picked: (String) -> Bool) -> [String] {
-        (raceLooks[race] ?? []).filter { part in
-            guard let cat = part.replacedBy else { return true }
-            return !picked(cat) && !(cat == "fantasySkin" && picked("skin"))
-        }.map(\.text)
-    }
-
-    private struct RacePart {
-        /// The feature category whose pick replaces this part (nil: always written).
-        let replacedBy: String?
-        let text: String
-    }
-
-    private static func ears(_ t: String) -> RacePart { RacePart(replacedBy: "ears", text: t) }
-    private static func horns(_ t: String) -> RacePart { RacePart(replacedBy: "horns", text: t) }
-    private static func tail(_ t: String) -> RacePart { RacePart(replacedBy: "tail", text: t) }
-    private static func wings(_ t: String) -> RacePart { RacePart(replacedBy: "wings", text: t) }
-    private static func skin(_ t: String) -> RacePart { RacePart(replacedBy: "fantasySkin", text: t) }
-    private static func eyes(_ t: String) -> RacePart { RacePart(replacedBy: "fantasyEyes", text: t) }
-    private static func fangs(_ t: String) -> RacePart { RacePart(replacedBy: "fangsClaws", text: t) }
-    private static func scifi(_ t: String) -> RacePart { RacePart(replacedBy: "scifi", text: t) }
-    private static func always(_ t: String) -> RacePart { RacePart(replacedBy: nil, text: t) }
-
-    private static let raceLooks: [String: [RacePart]] = [
-        "elf": [ears("long pointed elf ears")],
-        "dark-elf": [skin("dark ash-gray skin"), ears("long pointed elf ears")],
-        "vampire": [skin("very pale skin"), eyes("red eyes"), fangs("small fangs")],
-        "demon": [horns("curved horns"), tail("a thin spade-tipped tail")],
-        "angel": [wings("large white feathered wings"), always("a soft golden halo")],
-        "fallen-angel": [wings("large black feathered wings")],
-        "succubus": [horns("small curved horns"), wings("bat wings"), tail("a thin spade-tipped tail")],
-        "incubus": [horns("curved horns"), wings("bat wings"), tail("a thin spade-tipped tail")],
-        "witch": [always("an air of magic")],
-        "warlock": [always("an air of dark magic")],
-        "cat-folk": [ears("cat ears"), tail("a cat tail")],
-        "fox-folk": [ears("fox ears"), tail("a fluffy fox tail")],
-        "wolf-folk": [ears("wolf ears"), tail("a fluffy wolf tail")],
-        "bunny-folk": [ears("long rabbit ears"), tail("a small fluffy rabbit tail")],
-        "cow-folk": [ears("cow ears"), horns("small cow horns"), tail("a cow tail")],
-        "mermaid": [tail("a shimmering fish tail instead of legs"), ears("fin-like ears")],
-        "merman": [tail("a shimmering fish tail instead of legs"), ears("fin-like ears")],
-        "dryad": [skin("skin with bark-like patterns"), always("leaves and small flowers growing in the hair")],
-        "dragonkin": [horns("dragon horns"), tail("a scaly dragon tail"), skin("patches of scales on the skin")],
-        "oni": [horns("oni horns"), skin("red skin"), fangs("small fangs")],
-        "kitsune": [ears("fox ears"), tail("several fluffy fox tails")],
-        "nymph": [skin("softly shimmering skin"), always("water droplets in the hair")],
-        "android": [scifi("synthetic skin with faint panel seams")],
-        "cyborg": [scifi("cybernetic implants and a mechanical arm")],
-        "alien": [skin("light blue skin"), eyes("large otherworldly eyes")],
-    ]
-
-    private static func list(_ items: [String]) -> String {
-        switch items.count {
-        case 0: ""
-        case 1: items[0]
-        case 2: "\(items[0]) and \(items[1])"
-        default: items.dropLast().joined(separator: ", ") + " and " + items.last!
-        }
     }
 
     /// The clothing styles' chip phrases are about the person ("dresses in boho style"). These are the short tags the
@@ -779,79 +683,5 @@ extension CharacterOptions {
         "heritage/british-irish": "Roots in Britain or Ireland",
         "heritage/indigenous-american": "Native roots in the Americas",
         "heritage/polynesian": "Hawaiian, Samoan or Maori roots, say",
-        "race/elf": "Graceful, with long pointed ears",
-        "race/dark-elf": "An elf with ash-gray skin",
-        "race/vampire": "Pale skin, red eyes and fangs",
-        "race/demon": "Horns and a spade-tipped tail",
-        "race/angel": "White feathered wings and a halo",
-        "race/fallen-angel": "Black feathered wings",
-        "race/succubus": "Small horns, bat wings and a tail",
-        "race/incubus": "Horns, bat wings and a tail",
-        "race/witch": "A human with magic",
-        "race/warlock": "A human with dark magic",
-        "race/cat-folk": "Cat ears and a cat tail",
-        "race/fox-folk": "Fox ears and a fluffy tail",
-        "race/wolf-folk": "Wolf ears and a fluffy tail",
-        "race/bunny-folk": "Long rabbit ears and a fluffy tail",
-        "race/cow-folk": "Cow ears, small horns and a tail",
-        "race/mermaid": "A fish tail instead of legs",
-        "race/merman": "A fish tail instead of legs",
-        "race/dryad": "A tree spirit with leaves in the hair",
-        "race/dragonkin": "Dragon horns, scales and a tail",
-        "race/oni": "Red skin, horns and fangs",
-        "race/kitsune": "A fox spirit with several tails",
-        "race/nymph": "A water spirit with shimmering skin",
-        "race/android": "A humanlike robot with synthetic skin",
-        "race/cyborg": "A human with machine parts",
-        "race/alien": "A humanlike being from another world",
-        "ears/pointed": "Long elf-like ears",
-        "ears/short-pointed": "Ears with a small point",
-        "ears/cat": "Furry cat ears on the head",
-        "ears/fox": "Big furry fox ears",
-        "ears/wolf": "Furry wolf ears",
-        "ears/bunny": "Long floppy or upright rabbit ears",
-        "ears/fins": "Ears shaped like fins",
-        "horns/small": "Small horns",
-        "horns/curved": "Curling ram horns",
-        "horns/long": "Long straight horns",
-        "horns/antlers": "Branching antlers like a deer",
-        "horns/single": "One horn on the forehead",
-        "tail/cat": "A long thin cat tail",
-        "tail/fox": "A big fluffy fox tail",
-        "tail/nine-fox": "Nine fluffy tails, like a kitsune",
-        "tail/wolf": "A bushy wolf tail",
-        "tail/demon": "A thin tail with a spade tip",
-        "tail/dragon": "A long scaly tail",
-        "tail/fish": "A fish tail instead of legs",
-        "wings/white": "Big white angel wings",
-        "wings/black": "Big black feathered wings",
-        "wings/bat": "Leathery bat wings",
-        "wings/dragon": "Big leathery dragon wings",
-        "wings/butterfly": "Large colorful butterfly wings",
-        "fantasySkin/blue": "Blue skin",
-        "fantasySkin/green": "Green skin",
-        "fantasySkin/red": "Red skin",
-        "fantasySkin/gray": "Ash-gray skin",
-        "fantasySkin/purple": "Purple skin",
-        "fantasySkin/porcelain": "Doll-like white skin",
-        "fantasySkin/golden": "Skin with a gold sheen",
-        "fantasySkin/metallic": "Shiny silver skin",
-        "fantasySkin/scales": "Patches of scales",
-        "fantasyEyes/glowing": "Eyes that glow",
-        "fantasyEyes/slit": "Narrow cat-like pupils",
-        "fantasyEyes/black-sclera": "The whites of the eyes are black",
-        "fantasyEyes/heterochromia": "Each eye a different color",
-        "fantasyEyes/red": "Red eyes",
-        "fantasyEyes/violet": "Violet eyes",
-        "fangsClaws/fangs": "Small pointed canine teeth",
-        "fangsClaws/claws": "Sharp claw-like nails",
-        "fangsClaws/glow-lines": "Lines on the skin that glow",
-        "fangsClaws/tribal": "Painted or inked tribal patterns",
-        "scifi/cyber-arm": "A mechanical arm",
-        "scifi/circuitry": "Glowing lines under the skin",
-        "scifi/seams": "Fine seams in synthetic skin",
-        "scifi/led-eyes": "Eyes that glow like lights",
-        "scifi/eye-implant": "A machine part around one eye",
-        "scifi/chrome": "Shiny metal on parts of the body",
     ]
 }

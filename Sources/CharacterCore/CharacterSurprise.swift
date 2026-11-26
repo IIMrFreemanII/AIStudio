@@ -17,7 +17,7 @@ public enum CharacterSurprise {
 
     /// A new random character in place of `c`: a name for its gender (the gender is kept when it's woman, man or
     /// non-binary, else one is picked), an age, and picks in every core option category (one where only one fits, else
-    /// one to three), the detailed face and body ones only sometimes, and never a race or the 18+ ones. The free-text fields are cleared so nothing left over contradicts the picks; its id, image model,
+    /// one to three), the detailed face and body ones only sometimes, and never the 18+ ones. The free-text fields are cleared so nothing left over contradicts the picks; its id, image model,
     /// portraits, voice samples and chat settings stay.
     public static func roll(_ c: Character, using rng: inout some RandomNumberGenerator) -> Character {
         var out = c
@@ -26,8 +26,7 @@ public enum CharacterSurprise {
         out.name = names[out.gender]!.randomElement(using: &rng)!
         out.age = Int.random(in: ages, using: &rng)
         var traits: [String: [String]] = [:]
-        for category in CharacterOptions.all
-            where category.group != .intimate && !CharacterOptions.raceCategories.contains(category.id) {
+        for category in CharacterOptions.all where category.group != .intimate {
             let options = CharacterOptions.options(category, gender: out.gender)
             guard !options.isEmpty else { continue }
             // The detailed face and body categories only sometimes (about 40% each).
