@@ -144,11 +144,12 @@ public enum MovieArt {
     }
 
     /// Three Load Images into Qwen-Image-Edit (Cloud GPU) into a Preview Image: keyframes from the cast's sheets.
+    /// It runs in full (the model card's 40 steps at true CFG 4), not Lightning, so the style's negative applies.
     public static func editTemplate(name: String = TemplateName.keyframeEdit) -> MovieTemplate {
         var nodes: [GraphNode] = []
         var inputs: [String: NodeInput] = [
             "prompt": .value(.string("")), "negative": .value(.string("")), "seed": .value(.int(0)),
-            "width": .value(.int(0)), "height": .value(.int(0)), "fast": .value(.bool(true)),
+            "width": .value(.int(0)), "height": .value(.int(0)), "fast": .value(.bool(false)),
             "server": .value(.string("")),
         ]
         var slots = Dictionary(uniqueKeysWithValues: imageSlots.map { ($0, MovieTemplate.Slot(node: "edit", input: $0)) })

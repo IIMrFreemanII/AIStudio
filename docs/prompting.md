@@ -327,7 +327,9 @@ the sheet's grey background and layout into keyframes. **(ours)**
 
 **In AIStudio:** node `RemoteQwenImageEdit` (task `qwen-image-edit`, H100). Movie Studio keyframes:
 `MovieArt.keyframePrompt(for:in:references:)` writes the "Picture n is …" lines, the shot, its framing and the
-style suffix, from at most three references (sheets, then the plate, then the previous keyframe).
+style suffix, from at most three references (sheets, then the plate, then the previous keyframe). The template
+(`MovieArt.editTemplate`) turns `fast` off (40 steps at CFG 4), so `MovieStyle.negative` applies. A movie whose template
+was saved before this change keeps its own copy, with `fast` on. **(code)**
 
 ### MiniMax H3 Image
 
