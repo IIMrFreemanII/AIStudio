@@ -30,6 +30,8 @@ CONTAINERS: dict[str, tuple[int, int, float]] = {
     "qwen-image": (16384, 98304, MIN_CPU), "qwen-image-edit": (16384, 98304, MIN_CPU),
     # MiniMax H3 keeps ≈ 140 GB of weights in host RAM (its two 61.7 GB models take turns on the GPU).
     "h3-video": (163840, 262144, 8), "h3-references": (163840, 262144, 8),
+    # LTX-2.3 keeps the offloaded 49 GB text encoder and 38 GB transformer in host RAM.
+    "ltx23": (131072, 196608, 8),
     "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sd15": (8192, 32768, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
     "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
 }
@@ -173,6 +175,10 @@ GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 
 # Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
 GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
 H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3)
+# LTX-2.3 (22B DiT, bf16, model offload: the 49 GB text encoder and the 38 GB transformer take turns on the GPU).
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
+GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
+LTX_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_LTX_FALLBACK.split(",")) if g and g != GPU_LTX)
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
@@ -408,6 +414,23 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
              optional_inputs=("image2", "image3", "image4", "audio1", "audio2", "audio3") + LORA_INPUTS,
              models=("minimax-h3",),
              fallback_gpus=H3_FALLBACKS),
+    # LTX-2.3 (LTX-2 open licence): video with its own sound, 24 fps. `fast` runs the distilled transformer (8 steps, no
+    # guidance); fine-tunes from links keep their own weights in either mode.
+    TaskSpec("ltx23-video", "LTX-2.3", "video", "ltx23", GPU_LTX, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", ""),  # blank: Lightricks' default negative prompt (full mode only)
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "seconds": Param("float", 5.0, min=1.0, max=10.0),
+        "width": Param("int", 768, min=256, max=1280, multiple=32),
+        "height": Param("int", 512, min=256, max=1280, multiple=32),
+        "fast": Param("bool", True),
+        # 0 = automatic: 8 steps (the distilled schedule; other values are ignored) when fast, else 30.
+        "steps": Param("int", 0, min=0, max=60),
+        "guidance": Param("float", 3.0, min=1.0, max=10.0),  # full mode only
+        # A fine-tune installed from a link (variants.py), by its id; "base" is LTX-2.3 itself.
+        "model": Param("string", "base"),
+        **_lora_params(),
+    }, optional_inputs=("image",) + LORA_INPUTS, models=("ltx23",), fallback_gpus=LTX_FALLBACKS),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
         "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]
@@ -535,6 +558,9 @@ def make_worker(family: str) -> Worker:
     if family == "h3-video":
         from .minimax_h3 import H3Worker
         return H3Worker("t2va")
+    if family == "ltx23":
+        from .ltx23 import LTX23Worker
+        return LTX23Worker()
     if family == "h3-references":
         from .minimax_h3 import H3Worker
         return H3Worker("ref2va")

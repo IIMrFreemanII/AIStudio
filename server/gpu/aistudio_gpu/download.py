@@ -170,6 +170,16 @@ MODELS: dict[str, dict] = {
     "anima": {"repo": "circlestone-labs/Anima-Base-v1.0-Diffusers", "revision": "073c3a9db359c31ad0e8aa268d15775473c2176c",
               "allow": ["modular_model_index.json", "scheduler/*", "t5_tokenizer/*", "text_conditioner/*",
                         "text_encoder/*", "tokenizer/*", "transformer/*", "vae/*"]},
+    # LTX-2.3 in diffusers' layout (LTX-2 open licence): ≈ 100 GB — the Gemma 3 text encoder ≈ 49 GB, the bf16
+    # transformer ≈ 38 GB. Not `connectors/diffusion_pytorch_model.safetensors`: a 6.3 GB duplicate of the shards.
+    "ltx23": {"repo": "diffusers/LTX-2.3-Diffusers", "revision": "8eee8edcf067e838b843f926ec4d4cc9b2be1aaf", "allow": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "processor/*", "text_encoder/*", "transformer/*", "vae/*",
+        "audio_vae/*", "vocoder/*", "connectors/config.json", "connectors/diffusion_pytorch_model-*.safetensors",
+        "connectors/diffusion_pytorch_model.safetensors.index.json"]},
+    # Its distilled transformer (≈ 38 GB; `fast` mode: 8 steps, no guidance), swapped into the loaded pipeline in place,
+    # like Chroma1-Flash.
+    "ltx23-distilled": {"repo": "diffusers/LTX-2.3-Distilled-Diffusers",
+                        "revision": "432e0d3c2d1769aaa4d295f9243f7062bf6b47ee", "allow": ["transformer/*"]},
     # IP-Adapter "plus face" for SDXL (Apache-2.0): the ViT-H image encoder (≈ 2.5 GB) and the face adapter (≈ 0.85 GB).
     "sdxl-face": {"repo": "h94/IP-Adapter", "revision": "018e402774aeeddd60609b4ecdb7e298259dc729",
                   "allow": ["models/image_encoder/config.json", "models/image_encoder/model.safetensors",
@@ -201,7 +211,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "sd15": ["sd15"], "anima": ["anima"],
           "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face", "sd15"],
-          "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"]}
+          "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"],
+          "ltx23": ["ltx23", "ltx23-distilled"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"
                  "convert_stable_audio_3_to_diffusers.py",
                  "ee782fa2dfacc637251d00add7cee93f6c3aafcbed6abf111ff209947d98267f")

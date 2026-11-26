@@ -14,7 +14,7 @@ public enum RemoteNodes {
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
         RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteSD15Node.self, RemoteAnimaNode.self, RemoteChromaNode.self,
-        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self,
+        RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self, RemoteLTX23Node.self,
     ]
 
     /// Nodes that only prepare inputs for the job nodes above (no server, no job of their own).
@@ -23,7 +23,7 @@ public enum RemoteNodes {
     /// The node types that need a GPU server (the app's server picker and presets look for these).
     public static var types: Set<String> { Set(all.map { $0.schema.type }) }
 
-    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2 and MiniMax H3 tasks (`lora1` … `lora4`).
+    /// LoRA slots on the server's FLUX, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2, MiniMax H3 and LTX-2.3 tasks (`lora1` … `lora4`).
     public static let maxFluxLoRAs = 4
 
     /// The server task each remote node runs (`/v1/info` describes it: GPU, price, installed).
@@ -34,6 +34,7 @@ public enum RemoteNodes {
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
         "RemoteSD15": "sd15", "RemoteAnima": "anima", "RemoteChroma": "chroma",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
+        "RemoteLTX23": "ltx23-video",
     ]
 
     public static func taskID(forNodeType type: String) -> String? { taskIDs[type] }
@@ -58,6 +59,7 @@ public enum RemoteNodes {
         "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
         "RemoteSD15": "sd1.5", "RemoteAnima": "anima", "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
         "RemoteH3Video": "minimax-h3", "RemoteH3References": "minimax-h3-ref",
+        "RemoteLTX23": "ltx-2.3",
     ]
 
     /// The base model's name in a cloud node's `model` menu.
@@ -72,6 +74,7 @@ public enum RemoteNodes {
         case "wan-2.2-t2v": return "Wan 2.2 T2V (base)"
         case "wan-2.2-i2v": return "Wan 2.2 I2V (base)"
         case "minimax-h3", "minimax-h3-ref": return "MiniMax H3 (base)"
+        case "ltx-2.3": return "LTX-2.3 (base)"
         default: return "FLUX.1 dev (base)"
         }
     }
@@ -1230,6 +1233,50 @@ public struct RemoteH3ReferencesNode: NodeImplementation {
         let (url, _) = try await runRemoteJob(task: "h3-references", params: params, images: images,
                                               audios: audios, files: files, links: links, inputs: inputs,
                                               context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// LTX-2.3: Lightricks' video model with synchronized sound, on the cloud GPU; a start picture makes it image-to-video.
+/// `fast` runs the official distilled model (8 steps); a fine-tune keeps its own weights.
+public struct RemoteLTX23Node: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteLTX23", displayName: "LTX-2.3 Video (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("loras", .cloudLoRAs, optional: true),
+            InputSpec("image", .image, optional: true),
+            RemoteNodes.serverInput,
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("negative", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("seconds", .float, default: .double(5), widget: .number(min: 1, max: 10, step: 0.5)),
+            InputSpec("width", .int, default: .int(768), widget: .number(min: 256, max: 1280, step: 32)),
+            InputSpec("height", .int, default: .int(512), widget: .number(min: 256, max: 1280, step: 32)),
+            InputSpec("fast", .bool, default: .bool(true)),
+            // Model evaluations; 0 = automatic (8 fast, 30 full).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 60, step: 1), zeroLabel: "auto"),
+            // Used only when `fast` is off.
+            InputSpec("guidance", .float, default: .double(3), widget: .number(min: 1, max: 10, step: 0.5)),
+            // An LTX-2.3 fine-tune from the library, installed on the server (empty: the base model).
+            InputSpec("model", .string, default: .string(""), widget: .library("model")),
+        ],
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "negative": try inputs.string("negative"),
+            "seed": try inputs.int("seed"), "seconds": try inputs.float("seconds"),
+            "width": try inputs.int("width"), "height": try inputs.int("height"), "fast": try inputs.bool("fast"),
+            "steps": try inputs.int("steps"), "guidance": try inputs.float("guidance"),
+        ]
+        let model = (try? inputs.string("model")) ?? ""
+        params["model"] = model.isEmpty ? "base" : model
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "ltx-2.3", to: &params)
+        let images: [String: MLXArray] = inputs.optionalObject("image", as: MLXArray.self).map { ["image": $0] } ?? [:]
+        let (url, _) = try await runRemoteJob(task: "ltx23-video", params: params, images: images, files: files,
+                                              links: links, inputs: inputs, context: context)
         return ["video": .object(try await loadVideo(url))]
     }
 }

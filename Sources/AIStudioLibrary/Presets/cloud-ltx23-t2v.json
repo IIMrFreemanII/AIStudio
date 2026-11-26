@@ -1,0 +1,46 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "prompt" : "A golden retriever runs along a beach at sunset, waves rolling in, its paws splashing; the sound of the surf and its happy barking",
+          "seed" : 1
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "RemoteLTX23"
+      },
+      {
+        "id" : "save",
+        "inputs" : {
+          "directory" : "{output}",
+          "filename_prefix" : "video",
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 400,
+          "y" : 120
+        },
+        "type" : "SaveVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-ltx23-t2v",
+  "modelName" : "LTX-2.3 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "LTX-2.3 · Text to Video · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 330,
+  "summary" : "A clip with its own sound from one prompt. Fast mode runs the distilled model in 8 steps; LTX-2.3 fine-tunes and LoRAs from the library work too.",
+  "symbol" : "cloud"
+}

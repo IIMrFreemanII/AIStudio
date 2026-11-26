@@ -179,7 +179,7 @@ struct SavePresetSheet: View {
         let types = Set(g.nodes.map(\.type))
         func has(_ t: String...) -> Bool { !types.isDisjoint(with: t) }
         if has("VideoSampler", "RemoteWanTextToVideo", "RemoteWanImageToVideo", "RemoteWanSpeechToVideo",
-               "RemoteLongCatAvatar", "RemoteInfiniteTalk", "RemoteH3Video", "RemoteH3References") { return .video }
+               "RemoteLongCatAvatar", "RemoteInfiniteTalk", "RemoteH3Video", "RemoteH3References", "RemoteLTX23") { return .video }
         if has("TextToAudio", "RemoteTextToSound") { return .sound }
         if has("TextToMusic", "RemoteTextToMusic") { return .music }
         if has("TextToSpeech", "RemoteTextToSpeech", "RemoteBreezeSpeech") { return .speech }

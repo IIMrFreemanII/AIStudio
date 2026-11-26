@@ -30,7 +30,7 @@ struct NodeExtras: View {
             case let t where RemoteNodes.types.contains(t): gpuServerSection
             case "RemoteLoRA":
                 loraLinkPreview
-                Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2, MiniMax H3), picked from the library (Models window). One "
+                Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2, MiniMax H3, LTX-2.3), picked from the library (Models window). One "
                      + "added from a link is downloaded by the server itself; a file is uploaded with the first job. "
                      + "Chain up to four; strength 0 skips one.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
@@ -121,6 +121,12 @@ struct NodeExtras: View {
                      + "Write dialogue as <d>[English] the line</d>. Fast: the Turbo LoRA, 8 steps; off: about six "
                      + "times the GPU time. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's "
                      + "own licence, and products made with it must show \"MiniMax H3\".")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
+            if node.type == "RemoteLTX23" {
+                Text("A clip with synchronized sound, 1\u{2013}10 s: from the prompt alone, or from a start picture "
+                     + "(connect Load Image to image). Fast runs the official distilled model, 8 steps; off: the full "
+                     + "model, 30 steps with guidance and a negative prompt, several times the GPU time. A fine-tune from the library keeps its own weights.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
             if node.type == "RemoteBreezeSpeech" {

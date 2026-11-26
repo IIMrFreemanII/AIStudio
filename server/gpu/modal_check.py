@@ -18,6 +18,7 @@ measured times and the cost. For checking a deployment and measuring cold and wa
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --set voice=designed --set description="…"
     python server/gpu/modal_check.py qwen3-tts --prompt "Hello!" --input reference=voice.wav
     python server/gpu/modal_check.py h3-video --input image=start.png --prompt "…" [--set seconds=5 --set fast=false]
+    python server/gpu/modal_check.py ltx23-video --prompt "…" [--input image=start.png] [--full] [--set seconds=5] [--set model=<fine-tune id>]
     python server/gpu/modal_check.py breeze-tts --set text="(sigh) Hello." --set instruction="a calm older man"
 
 ``--prompt`` fills the task's text (prompt, tags or text); ``--set name=value`` any other parameter (``@file`` reads
@@ -46,7 +47,8 @@ CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", 
            "qwen-image-edit": "QwenImageEdit", "sd35-large": "SD35", "sdxl": "SDXL", "sd15": "SD15", "anima": "Anima",
            "chroma": "Chroma", "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech",
-           "breeze-tts": "Breeze", "h3-video": "H3Video", "h3-references": "H3References"}
+           "breeze-tts": "Breeze", "h3-video": "H3Video", "h3-references": "H3References",
+           "ltx23-video": "LTX23"}
 
 
 def main() -> int:
