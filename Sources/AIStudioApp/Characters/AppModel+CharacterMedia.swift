@@ -185,7 +185,7 @@ extension AppModel {
             switch kind {
             case .photo:
                 file = folder.appendingPathComponent("\(base).png")
-                charge(try await drawPhoto(c, prompt: CharacterArt.photoPrompt(c, request: media.prompt, scene: scene),
+                charge(try await drawPhoto(c, prompt: CharacterArt.photoPrompt(c, request: media.prompt, scene: scene, context: artContext(c)),
                                            server: server, to: file, title: "\(c.name)'s photo", progress: phase("")))
             case .voice:
                 let (audio, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: base,
@@ -194,7 +194,7 @@ extension AppModel {
                 file = audio
             case .video:
                 let still = folder.appendingPathComponent("\(base)-start.png")
-                charge(try await drawPhoto(c, prompt: CharacterMedia.videoStillPrompt(c, request: media.prompt, scene: scene),
+                charge(try await drawPhoto(c, prompt: CharacterMedia.videoStillPrompt(c, request: media.prompt, scene: scene, context: artContext(c)),
                                            server: server, to: still, title: "\(c.name)'s video (picture)",
                                            progress: phase("picture")))
                 let render = CharacterMedia.videoRender(c, prompt: CharacterMedia.motionPrompt(c, request: media.prompt),
@@ -207,7 +207,7 @@ extension AppModel {
                 file = try copyOutput(outputs, .video, to: folder, base: base)
             case .talk:
                 let still = folder.appendingPathComponent("\(base)-start.png")
-                charge(try await drawPhoto(c, prompt: CharacterMedia.talkStillPrompt(c, scene: scene), server: server,
+                charge(try await drawPhoto(c, prompt: CharacterMedia.talkStillPrompt(c, scene: scene, context: artContext(c)), server: server,
                                            to: still, title: "\(c.name)'s video message (picture)", progress: phase("picture")))
                 let (voice, spent) = try await speak(c, text: media.prompt, server: server, to: folder, base: "\(base)-voice",
                                                      phase: phase)
@@ -249,7 +249,7 @@ extension AppModel {
         let face: URL?
         if let given { face = given } else { face = wholePortrait ? portraitURL(c) : await faceReference(c) }
         let render = CharacterArt.render(c, prompt: prompt, seed: seed ?? Self.mediaSeed(), server: server, face: face,
-                                         keepHair: keepHair, extraNegative: extraNegative)
+                                         keepHair: keepHair, extraNegative: extraNegative, context: artContext(c))
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
                                                          render: render, title: title, progress: progress)
         // The jobs cost money even if the picture then can't be saved.

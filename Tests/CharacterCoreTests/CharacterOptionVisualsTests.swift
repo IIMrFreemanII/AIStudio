@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MovieCore
 import Testing
 @testable import CharacterCore
 
@@ -62,36 +63,66 @@ import Testing
 
     @Test func examplePromptsAreSafe() {
         for e in CO.examples {
-            let p = CO.examplePrompt(category: e.category, option: e.option, gender: e.gender)
             let phrase = CO.category(e.category)!.options.first { $0.id == e.option }!.phrase
             let id = "\(e.category)/\(e.option)/\(e.gender)"
-            #expect(p.contains("adult") && p.contains(phrase) && p.hasSuffix("soft light."), "\(id)")
-            #expect(AgeGuard.youthTerm(in: p) == nil, "\(id)")
-            let neg = CO.exampleNegative(category: e.category, option: e.option, gender: e.gender)
-            if ["body", "bust", "butt", "figure"].contains(e.category) {
-                #expect(p.contains("wearing") && neg.contains("nude"), "\(id)")
+            for model in [PromptModel.minimaxImage, .sdxl, .chroma] {
+                let p = CO.examplePrompt(category: e.category, option: e.option, gender: e.gender, model: model)
+                // Tag prompts drop the phrase's leading article ("a sleek bob" → "sleek bob").
+                let bare = phrase.replacingOccurrences(of: #"^(a|an) "#, with: "", options: .regularExpression)
+                #expect(p.contains("adult") && p.lowercased().contains(bare.lowercased()), "\(id) \(model)")
+                #expect(AgeGuard.youthTerm(in: p) == nil, "\(id) \(model)")
+                #expect(!p.lowercased().contains("glamour"), "\(id) \(model)")
             }
+            let spec = CO.exampleSpec(category: e.category, option: e.option, gender: e.gender)!
+            #expect(!spec.outfit.isEmpty, "\(id)")
+            let neg = CO.exampleNegative(category: e.category, option: e.option, gender: e.gender)
+            if ["body", "bust", "butt", "figure"].contains(e.category) { #expect(neg.contains("nude"), "\(id)") }
             if e.category == "clothes" { #expect(!neg.contains("nude") && neg.contains("monochrome"), "\(id)") }
+            // MiniMax takes no negative: it is told in words to draw no text.
+            #expect(CO.examplePrompt(category: e.category, option: e.option, gender: e.gender)
+                .hasSuffix("The image contains no text, letters or numbers.") || !spec.without.isEmpty, "\(id)")
         }
-        // The weak options get a stronger description up front and their opposite in the negative.
+        // The weak options get a stronger description, and their opposite in the negative.
         let small = CO.examplePrompt(category: "bust", option: "small", gender: "woman")
-        #expect(small.hasPrefix("Glamour photo of a 21-year-old adult woman with small breasts, a flat chest"))
-        #expect(small.contains("fair skin") && small.contains("platinum blonde hair in a sleek bob") && small.contains("light makeup"))
-        #expect(CO.examplePrompt(category: "extras", option: "bold-makeup", gender: "woman").contains("light makeup") == false)
-        #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").hasPrefix("Glamour photo of a 30-year-old adult man"))
-        #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("shirtless"))
+        #expect(small.hasPrefix("A studio photo, full body, of a 21-year-old adult woman"))
+        #expect(small.contains("She has small breasts, a flat chest") && small.contains("platinum blonde hair in a sleek bob"))
+        #expect(small.contains("natural light makeup"))
+        #expect(!CO.examplePrompt(category: "extras", option: "bold-makeup", gender: "woman").contains("light makeup"))
+        #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("He wears only fitted black boxer briefs, shirtless."))
         #expect(CO.exampleNegative(category: "bust", option: "small", gender: "woman").contains("large breasts"))
         #expect(CO.examplePrompt(category: "body", option: "curvy", gender: "man").contains("stocky"))
         #expect(CO.examplePrompt(category: "body", option: "curvy", gender: "woman").contains("full rounded hips"))
         #expect(CO.examplePrompt(category: "extras", option: "tattoos", gender: "man").contains("waist-up"))
-        // The man's own wording wins for options that came out alike (MiniMax has no negative prompt)
+        // The man's own wording wins for options that came out alike (MiniMax has no negative prompt).
         #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("no visible abs at all"))
+        #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").hasSuffix("No visible abs and no muscle definition."))
         #expect(CO.examplePrompt(category: "body", option: "slim", gender: "man").contains("skinny"))
         #expect(CO.examplePrompt(category: "clothes", option: "streetwear", gender: "man").contains("hoodie"))
         #expect(CO.examplePrompt(category: "clothes", option: "boho", gender: "man").contains("linen shirt"))
         #expect(CO.examplePrompt(category: "clothes", option: "boho", gender: "woman").contains("linen") == false)
+        // SDXL reads tags: the option weighted, the subject first.
+        let sdxl = CO.examplePrompt(category: "body", option: "average", gender: "man", model: .sdxl)
+        #expect(sdxl.hasPrefix("studio photo, a 30-year-old adult man, full body") && sdxl.contains("(an average build:1.3)") == false)
+        #expect(sdxl.contains("(average build:1.3)"))
         #expect(CO.examplePrompt(category: "nope", option: "x", gender: "woman") == "")
         #expect(CO.examplePrompt(category: "bust", option: "nope", gender: "woman") == "")
+    }
+
+    @Test func lookPartsForCharacterPhotos() {
+        let traits = ["hairColor": ["red"], "body": ["average"], "figure": ["toned-abs"], "clothes": ["boho"]]
+        let parts = CO.lookParts(traits, gender: "woman")
+        #expect(parts.details.map(\.tag) == ["red hair"])
+        #expect(parts.body.first?.text.contains("soft untoned stomach") == true && parts.body.first?.weight == 1.2)
+        #expect(parts.outfit.first?.tag == "boho style clothes" && parts.outfit.first?.text.contains("maxi dress") == true)
+        // Toned abs asks for abs: the average body's "abs" and "six-pack" opposites are dropped, the rest stay.
+        #expect(!parts.avoid.contains("abs") && !parts.avoid.contains("six-pack") && parts.avoid.contains("fitness model"))
+        // An average body alone keeps "abs" out, even though its own words say "no visible abs".
+        let man = CO.lookParts(["body": ["average"]], gender: "man")
+        #expect(man.avoid.contains("abs") && man.without == ["no visible abs and no muscle definition"])
+        // Two clothing styles: each by its tag (two full outfits would fight); none when the photo names an outfit.
+        let two = CO.lookParts(["clothes": ["casual", "streetwear"]], gender: "man")
+        #expect(two.outfit.map(\.text) == ["casual clothes", "streetwear"])
+        #expect(CO.lookParts(traits, gender: "woman", withClothes: false).outfit.isEmpty)
     }
 
     @Test func seedsAndFilesAreStable() {

@@ -10,8 +10,6 @@ public enum CharacterArt {
     public static let templateName = "character-photo"
     public static let maxLoRAs = 4
 
-    static let portraitRequest = "head-and-shoulders portrait, facing the camera, soft light, plain background"
-
     private static func clean(_ s: String) -> String {
         s.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             .trimmingCharacters(in: CharacterSet(charactersIn: " ,.;"))
@@ -35,19 +33,90 @@ public enum CharacterArt {
         }
     }
 
-    /// Style negatives plus AgeGuard.negative.
-    public static func negative(_ c: Character) -> String {
-        styleNegative(c.artModel.style) + ", " + AgeGuard.negative
+    /// What the app knows about the character's image model beyond the character: the fine-tune's Civitai base model
+    /// ("Pony", "Illustrious", …, which sets the SDXL quality tags) and the LoRAs' trigger words.
+    public struct Context: Equatable, Sendable {
+        public var baseModel: String?
+        public var triggerWords: [String]
+        public init(baseModel: String? = nil, triggerWords: [String] = []) {
+            self.baseModel = baseModel
+            self.triggerWords = triggerWords
+        }
+    }
+
+    /// The prompt dialect of the character's model (docs/prompting.md).
+    public static func promptModel(_ c: Character, context: Context = .init()) -> PromptModel {
+        switch c.artModel.family {
+        case .sdxl: PromptModel.sdxl(baseModel: context.baseModel)
+        case .chroma: .chroma
+        case .minimax: .minimaxImage
+        }
+    }
+
+    /// Style negatives plus AgeGuard.negative, the body picks' opposites and the fine-tune's quality negatives.
+    public static func negative(_ c: Character, context: Context = .init()) -> String {
+        let model = promptModel(c, context: context)
+        var s = PromptSpec()
+        s.avoid = avoid(c, parts: CharacterOptions.lookParts(c.traits, gender: c.gender))
+        return PromptWriter.write(s, for: model.takesNegative ? model : .sdxl).negative
+    }
+
+    private static func avoid(_ c: Character, parts: CharacterOptions.LookParts) -> [String] {
+        (styleNegative(c.artModel.style) + ", " + AgeGuard.negative).split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) } + parts.avoid
     }
 
     /// A photo the character sends: what it shows (the tag's text) in the chat's scene.
-    public static func photoPrompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        prompt(c, request: request, scene: scene)
+    public static func photoPrompt(_ c: Character, request: String, scene: Scenario?, context: Context = .init()) -> String {
+        PromptWriter.write(spec(c, request: request, scene: scene, context: context), for: promptModel(c, context: context)).prompt
     }
 
     /// A portrait candidate for the character's face reference (no scene).
-    public static func portraitPrompt(_ c: Character) -> String {
-        prompt(c, request: portraitRequest, scene: nil)
+    public static func portraitPrompt(_ c: Character, context: Context = .init()) -> String {
+        var s = spec(c, request: "", scene: nil, context: context)
+        s.shot = "head-and-shoulders portrait"
+        s.action = "facing the camera"
+        s.place = "in front of a plain background"
+        s.lighting = ["soft light"]
+        return PromptWriter.write(s, for: promptModel(c, context: context)).prompt
+    }
+
+    /// The character's photo as a model-neutral description: who (age, gender, looks, body), the clothing picks unless
+    /// the request or scene names an outfit, what the photo shows, the scene's place, outfit and time.
+    public static func spec(_ c: Character, request: String, scene: Scenario?, context: Context = .init()) -> PromptSpec {
+        let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
+        let dressed = !outfit.isEmpty || setsOutfit(request)
+        let gender = clean(c.gender)
+        let parts = CharacterOptions.lookParts(c.traits, gender: gender, withClothes: !dressed)
+        let model = promptModel(c, context: context)
+        var s = PromptSpec()
+        switch c.artModel.style {
+        case .photoreal:
+            s.medium = "candid smartphone photo"
+            s.lighting = ["natural light", "sharp focus", "detailed skin"]
+        case .anime:
+            // Plain SDXL has no quality tags of its own; anime fine-tunes bring theirs (PromptModel.qualityTags).
+            s.medium = model.dialect == .tags && model.qualityTags.isEmpty ? "masterpiece, best quality, anime illustration"
+                : "anime illustration"
+        }
+        s.subject = "a \(c.age)-year-old adult " + (gender.isEmpty ? "person" : gender)
+        switch gender.lowercased() {
+        case "woman", "female", "girl": s.pronoun = .she
+        case "man", "male": s.pronoun = .he
+        default: s.pronoun = .they
+        }
+        s.action = caption(clean(request))
+        s.details = parts.details
+        let free = clean(c.look)
+        if !free.isEmpty { s.details.append(PromptDetail(free)) }
+        s.body = parts.body
+        s.outfit = outfit.isEmpty ? parts.outfit : [PromptDetail(outfit)]
+        s.place = place
+        if !time.isEmpty { s.time = [time] }
+        s.avoid = avoid(c, parts: parts)
+        s.without = parts.without
+        s.triggerWords = context.triggerWords
+        return s
     }
 
     private static let outfitWords: NSRegularExpression = try! NSRegularExpression(
@@ -58,32 +127,6 @@ public enum CharacterArt {
     /// The text names clothes (so the clothing style picks are left out of that photo's look).
     public static func setsOutfit(_ text: String) -> Bool {
         outfitWords.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
-    }
-
-    private static func prompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
-        let dressed = !outfit.isEmpty || setsOutfit(request)
-        let gender = clean(c.gender), look = clean(dressed ? c.lookWithoutClothes : c.fullLook), request = caption(clean(request))
-        switch c.artModel.style {
-        case .photoreal:
-            var out = "Photo of a \(c.age)-year-old adult" + (gender.isEmpty ? "" : " \(gender)")
-            out += look.isEmpty ? "." : ", \(look)."
-            if !request.isEmpty { out += " \(request)." }
-            var parts: [String] = []
-            if !place.isEmpty { parts.append("at \(place)") }
-            if !outfit.isEmpty { parts.append("wearing \(outfit)") }
-            if !time.isEmpty { parts.append(time) }
-            if !parts.isEmpty {
-                var sentence = parts.joined(separator: ", ")
-                sentence = sentence.prefix(1).uppercased() + sentence.dropFirst()
-                out += " \(sentence)."
-            }
-            return out + " Candid smartphone photo, natural light, sharp focus, detailed skin."
-        case .anime:
-            let tags = ["masterpiece", "best quality", "anime illustration",
-                        gender.isEmpty ? "adult" : "adult \(gender)", "\(c.age) years old", look, request, place, outfit, time]
-            return tags.filter { !$0.isEmpty }.joined(separator: ", ")
-        }
     }
 
     /// How much of the head around a detected face goes into the face reference (side of the square, in face widths).
@@ -120,10 +163,13 @@ public enum CharacterArt {
         }
     }
 
-    /// MiniMax H3 Image keeps the face by editing: the face reference goes in as <Picture 1> and the prompt says so.
-    public static let minimaxFaceLead = "The same person as in <Picture 1>, with exactly that face and hair: "
+    /// MiniMax H3 Image keeps the face by editing: the face reference goes in as <Picture 1>, and the prompt says what
+    /// it is and what is kept and what changes (its official prompt guide: give each reference a role).
+    public static let minimaxFaceLead = "<Picture 1> shows the face of the person in this photo: the face and hair are "
+        + "exactly as in <Picture 1>, while the body, clothes, pose and background are as described here. "
     /// The same, when the picture is about a different hairstyle (the creator's hairstyle examples).
-    public static let minimaxFaceOnlyLead = "The same person as in <Picture 1>, with exactly that face (only the hair differs): "
+    public static let minimaxFaceOnlyLead = "<Picture 1> shows the face of the person in this photo: the face is exactly "
+        + "as in <Picture 1>, while the hair, body, clothes, pose and background are as described here. "
 
     /// The graph: Load Image (face) → SDXL or Chroma (Cloud GPU) ← a chain of `loras` LoRA nodes → Preview Image.
     /// Chroma runs in full (40 steps with guidance), not Flash: only guidance uses the negative prompt, which holds
@@ -196,8 +242,9 @@ public enum CharacterArt {
     /// `extraNegative` is added to the character's negative prompt (the option example photos use it). `keepHair`
     /// false: on MiniMax the face reference keeps only the face (a hairstyle example).
     public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?, keepHair: Bool = true,
-                              extraNegative: String = "") -> MovieArt.Render {
-        let negative = extraNegative.isEmpty ? negative(c) : negative(c) + ", " + extraNegative
+                              extraNegative: String = "", context: Context = .init()) -> MovieArt.Render {
+        let base = negative(c, context: context)
+        let negative = extraNegative.isEmpty ? base : base + ", " + extraNegative
         let lead = c.artModel.family == .minimax && face != nil ? (keepHair ? minimaxFaceLead : minimaxFaceOnlyLead) : ""
         var values: [String: JSONValue] = [
             "prompt": .string(lead + prompt), "negative": .string(negative), "seed": .int(seed),

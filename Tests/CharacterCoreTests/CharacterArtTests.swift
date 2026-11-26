@@ -15,16 +15,16 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
 @Suite struct CharacterArtTests {
     @Test func photorealPrompt() {
         let p = CharacterArt.photoPrompt(hero(), request: "holding a latte", scene: cafe)
-        for s in ["adult", "28", "red hair, green eyes", "holding a latte", "a small cafe", "a blue dress", "sunny morning"] {
+        for s in ["adult", "28", "red hair, green eyes", "holding a latte", "a small cafe", "blue dress", "sunny morning"] {
             #expect(p.contains(s), "\(s) in \(p)")
         }
         #expect(!p.contains("Ava") && !p.contains("  "))
-        #expect(p.hasPrefix("Photo of a 28-year-old adult woman"))
+        #expect(p.hasPrefix("candid smartphone photo, a 28-year-old adult woman, holding a latte"))
     }
 
     @Test func photorealWithoutScene() {
         let p = CharacterArt.photoPrompt(hero(), request: "smiling", scene: nil)
-        #expect(p == "Photo of a 28-year-old adult woman, red hair, green eyes. smiling. Candid smartphone photo, natural light, sharp focus, detailed skin.")
+        #expect(p == "candid smartphone photo, a 28-year-old adult woman, smiling, red hair, green eyes, natural light, sharp focus, detailed skin")
     }
 
     @Test func captionDropsALeadingPronoun() {
@@ -33,13 +33,13 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(CharacterArt.caption("your favourite cafe at noon") == "your favourite cafe at noon")
         #expect(CharacterArt.caption("smiling") == "smiling")
         let p = CharacterArt.photoPrompt(hero(), request: "You holding a latte", scene: nil)
-        #expect(p.contains(" Holding a latte.") && !p.contains("You"))
+        #expect(p.contains(", holding a latte,") && !p.contains("You"))
     }
 
     @Test func animePromptIsTags() {
         let p = CharacterArt.photoPrompt(hero(style: .anime), request: "waving", scene: cafe)
-        #expect(p.hasPrefix("masterpiece, best quality, anime illustration, adult woman, 28 years old"))
-        for s in ["red hair, green eyes", "waving", "a small cafe", "a blue dress", "sunny morning"] { #expect(p.contains(s)) }
+        #expect(p.hasPrefix("masterpiece, best quality, anime illustration, a 28-year-old adult woman, waving"))
+        for s in ["red hair, green eyes", "waving", "a small cafe", "blue dress", "sunny morning"] { #expect(p.contains(s)) }
         #expect(!p.contains("Ava") && !p.contains(",,") && !p.contains("  "))
     }
 
@@ -134,6 +134,41 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(ArtModel.Family.allCases.map(\.title) == ["SDXL", "Chroma", "MiniMax"])
     }
 
+    @Test func eachModelGetsItsOwnDialect() {
+        var c = hero()
+        c.look = ""
+        c.traits = ["hairColor": ["red"], "body": ["average"], "clothes": ["boho"]]
+        let scene = Scenario(id: "x", title: "X", place: "a small cafe", outfit: "", time: "")
+        // SDXL: a short tag list, subject and request first, the picks weighted.
+        let tags = CharacterArt.photoPrompt(c, request: "Sitting by the window", scene: scene)
+        #expect(tags.hasPrefix("candid smartphone photo, a 28-year-old adult woman, sitting by the window, (average build:1.2), (boho style clothes:1.2)"))
+        #expect(CharacterArt.negative(c).contains("six-pack") && CharacterArt.negative(c).contains(AgeGuard.negative))
+        // Chroma: sentences with the fuller descriptions; the negative still applies.
+        c.artModel = ArtModel(family: .chroma)
+        let chroma = CharacterArt.photoPrompt(c, request: "Sitting by the window", scene: scene)
+        #expect(chroma.hasPrefix("A candid smartphone photo of a 28-year-old adult woman sitting by the window."))
+        #expect(chroma.contains("She wears boho style: a flowy floral maxi dress") && chroma.contains("At a small cafe."))
+        // MiniMax: no negative, so exclusions are sentences, and no stray text.
+        c.artModel = ArtModel(family: .minimax)
+        let mm = CharacterArt.photoPrompt(c, request: "Sitting by the window", scene: scene)
+        #expect(mm.contains("The image contains no text, letters or numbers.") && mm.contains("No visible abs"))
+        #expect(!mm.lowercased().contains("glamour") && !mm.contains("(") && AgeGuard.youthTerm(in: mm) == nil)
+        // A request that names an outfit drops the clothing picks.
+        #expect(!CharacterArt.photoPrompt(c, request: "in a red bikini on the beach", scene: nil).contains("boho"))
+    }
+
+    @Test func fineTuneBaseModelAndTriggerWords() {
+        var c = hero(style: .anime)
+        let ctx = CharacterArt.Context(baseModel: "Pony", triggerWords: ["jinx_style"])
+        #expect(CharacterArt.promptModel(c, context: ctx) == .sdxlPony)
+        let p = CharacterArt.photoPrompt(c, request: "waving", scene: nil, context: ctx)
+        #expect(p.hasPrefix("score_9, score_8_up, score_7_up, jinx_style, anime illustration, a 28-year-old adult woman"))
+        #expect(CharacterArt.negative(c, context: ctx).hasPrefix("score_6, score_5, score_4"))
+        c.artModel.family = .chroma
+        #expect(CharacterArt.promptModel(c, context: ctx) == .chroma)
+        #expect(CharacterArt.photoPrompt(c, request: "waving", scene: nil, context: ctx).hasPrefix("jinx_style. An anime illustration"))
+    }
+
     @Test func loraDecodesOldLinkKey() throws {
         let old = try JSONDecoder().decode(CharacterLoRA.self, from: Data(#"{"link": "x", "strength": 0.5}"#.utf8))
         #expect(old == CharacterLoRA(lora: "x", strength: 0.5))
@@ -161,7 +196,7 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         var c = hero()
         c.traits = CharacterOptions.toggle(c.traits, category: "clothes", option: "casual")
         c.traits = CharacterOptions.toggle(c.traits, category: "hairColor", option: "auburn")
-        let style = CharacterOptions.phrases(c.traits, categories: ["clothes"]).first!
+        let style = "casual clothes"  // the clothing pick's tag
         #expect(CharacterArt.portraitPrompt(c).contains(style))
         #expect(CharacterArt.photoPrompt(c, request: "a selfie on the beach", scene: nil).contains(style))
         let dressed = CharacterArt.photoPrompt(c, request: "wearing a red evening dress", scene: nil)
