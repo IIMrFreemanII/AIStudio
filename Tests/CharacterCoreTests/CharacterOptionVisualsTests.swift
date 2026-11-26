@@ -84,6 +84,12 @@ import Testing
         #expect(CO.examplePrompt(category: "body", option: "curvy", gender: "man").contains("stocky"))
         #expect(CO.examplePrompt(category: "body", option: "curvy", gender: "woman").contains("full rounded hips"))
         #expect(CO.examplePrompt(category: "extras", option: "tattoos", gender: "man").contains("waist-up"))
+        // The man's own wording wins for options that came out alike (MiniMax has no negative prompt)
+        #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("no visible abs at all"))
+        #expect(CO.examplePrompt(category: "body", option: "slim", gender: "man").contains("skinny"))
+        #expect(CO.examplePrompt(category: "clothes", option: "streetwear", gender: "man").contains("hoodie"))
+        #expect(CO.examplePrompt(category: "clothes", option: "boho", gender: "man").contains("linen shirt"))
+        #expect(CO.examplePrompt(category: "clothes", option: "boho", gender: "woman").contains("linen") == false)
         #expect(CO.examplePrompt(category: "nope", option: "x", gender: "woman") == "")
         #expect(CO.examplePrompt(category: "bust", option: "nope", gender: "woman") == "")
     }
