@@ -298,7 +298,9 @@ ends prompts with a "positive magic" suffix, `, Ultra HD, 4K, cinematic composit
 
 **In AIStudio:** node `RemoteQwenImage` (task `qwen-image`, H100). Movie Studio draws character sheets and location
 plates with it: `MovieArt.sheetPrompt` and `platePrompt`, with `MovieStyle.keyframeSuffix` at the end. The
-template (`MovieArt.textToImageTemplate`) keeps `fast` on, so the `MovieStyle.negative` it sends is ignored. **(code)**
+template (`MovieArt.textToImageTemplate`) turns `fast` off (50 steps at CFG 4), so the negatives apply: text and extra
+people stay off the sheets, and people stay off the plates. A movie whose template was saved before this change keeps
+its own copy, with `fast` on. **(code)**
 
 ### Qwen-Image-Edit 2511
 

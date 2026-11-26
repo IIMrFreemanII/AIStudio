@@ -169,11 +169,11 @@ public struct GPUTimings: Codable, Sendable, Equatable {
     /// The newest jobs count most: the average covers about the last 10.
     static let window = 10
 
-    /// Defaults per task (fast mode on an H100 for the Qwen models): GPU seconds per job at a size, and loading.
-    /// The Qwen ones as measured on Modal on 2026-11-15 (4.2 s and 6.9 s per job, 52 s and 45 s cold loads), with
-    /// some room.
+    /// Defaults per task: GPU seconds per job at a size, and loading. The Qwen ones on an H100, from Modal on 2026-11-15
+    /// (fast: 4.2 s and 6.9 s per job, 52 s and 45 s cold loads), with some room. Qwen-Image is for its full mode, as
+    /// Movie Studio's sheets and plates run it (50 steps with CFG, ≈ 6× fast's GPU seconds: a guess until learned).
     public static let defaults: [String: (seconds: Double, megapixels: Double, load: Double)] = [
-        "qwen-image": (5, 1.5, 60),
+        "qwen-image": (30, 1.5, 60),
         "qwen-image-edit": (8, 1.0, 60),
         "sdxl": (5, 1.0, 15),
         "sd35-large": (3, 1.0, 40),

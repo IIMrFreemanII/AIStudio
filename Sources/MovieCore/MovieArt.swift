@@ -128,11 +128,13 @@ public enum MovieArt {
     public static let imageSlots = ["prompt", "negative", "seed", "width", "height", "server"]
     public static let pictureSlots = ["image1", "image2", "image3"]
 
-    /// Qwen-Image (Cloud GPU) into a Preview Image: character sheets and shots with no one in them.
+    /// Qwen-Image (Cloud GPU) into a Preview Image: character sheets, location plates and shots with no one in them.
+    /// It runs in full (the model card's 50 steps at true CFG 4), not Lightning: only guidance uses the negative
+    /// prompt, which keeps text and extra people off the sheets and people off the plates.
     public static func textToImageTemplate(name: String) -> MovieTemplate {
         let gen = GraphNode(id: "image", type: "RemoteQwenImage", inputs: [
             "prompt": .value(.string("")), "negative": .value(.string("")), "seed": .value(.int(0)),
-            "width": .value(.int(1328)), "height": .value(.int(1328)), "fast": .value(.bool(true)),
+            "width": .value(.int(1328)), "height": .value(.int(1328)), "fast": .value(.bool(false)),
             "server": .value(.string("")),
         ], position: GraphPoint(x: 40, y: 60))
         let out = GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],

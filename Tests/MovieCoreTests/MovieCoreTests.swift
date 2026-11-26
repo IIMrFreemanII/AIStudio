@@ -262,6 +262,9 @@ private func castMovie() -> MovieProject {
     let sheet = MovieArt.sheetRender(m.characters[0], movie: m, seed: 1, server: "")
     let g = try MovieArt.textToImageTemplate(name: "character-sheet").bind(sheet.values)
     #expect(g["image"]?.type == "RemoteQwenImage" && g["image"]?.inputs["width"] == .value(.int(1664)))
+    // In full, not Lightning: only guidance applies the negative.
+    #expect(g["image"]?.inputs["fast"] == .value(.bool(false)))
+    #expect(g["image"]?.inputs["negative"] == .value(.string(MovieArt.sheetNegative(style: .named(m.style)))))
     #expect(MovieArt.sheetPrompt(m.characters[0], style: .anime).contains("Mara, girl of 12, red raincoat"))
 }
 
