@@ -158,6 +158,13 @@ MODELS: dict[str, dict] = {
         "text_encoder_2/config.json", "text_encoder_2/model.fp16.safetensors",
         "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
+    # Stable Diffusion 1.5 (not gated): the fp16 files only (no safety checker), run in bf16.
+    "sd15": {"repo": "stable-diffusion-v1-5/stable-diffusion-v1-5", "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
+             "allow": [
+        "model_index.json", "scheduler/*", "tokenizer/*", "feature_extractor/*",
+        "text_encoder/config.json", "text_encoder/model.fp16.safetensors",
+        "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
+        "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
     # IP-Adapter "plus face" for SDXL (Apache-2.0): the ViT-H image encoder (≈ 2.5 GB) and the face adapter (≈ 0.85 GB).
     "sdxl-face": {"repo": "h94/IP-Adapter", "revision": "018e402774aeeddd60609b4ecdb7e298259dc729",
                   "allow": ["models/image_encoder/config.json", "models/image_encoder/model.safetensors",
@@ -187,8 +194,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
           "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
-          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"],
-          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face"],
+          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "sd15": ["sd15"],
+          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face", "sd15"],
           "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"
                  "convert_stable_audio_3_to_diffusers.py",

@@ -30,7 +30,7 @@ CONTAINERS: dict[str, tuple[int, int, float]] = {
     "qwen-image": (16384, 98304, MIN_CPU), "qwen-image-edit": (16384, 98304, MIN_CPU),
     # MiniMax H3 keeps ≈ 140 GB of weights in host RAM (its two 61.7 GB models take turns on the GPU).
     "h3-video": (163840, 262144, 8), "h3-references": (163840, 262144, 8),
-    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
+    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sd15": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
     "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
 }
 
@@ -176,6 +176,7 @@ H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) 
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
+GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")  # Stable Diffusion 1.5
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "L40S")  # Chroma1-HD: ≈ 28 GB of bf16 weights
 # The lip-sync models (LongCat-Video-Avatar's 15.8B DiT, InfiniteTalk on Wan 2.1's 14B), bf16 on an 80 GB card.
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
@@ -326,6 +327,19 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "face_strength": Param("float", 0.6, min=0.0, max=1.0),
         **_lora_params(),
     }, optional_inputs=("face",) + LORA_INPUTS, models=("sdxl",)),
+    TaskSpec("sd15", "Stable Diffusion 1.5", "image", "sd15", GPU_SD15, {
+        "prompt": Param("string", ""),
+        "negative": Param("string", ""),
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "width": Param("int", 512, min=256, max=1024, multiple=8),
+        "height": Param("int", 768, min=256, max=1024, multiple=8),
+        "steps": Param("int", 25, min=1, max=100),
+        "guidance": Param("float", 7.0, min=0.0, max=20.0),
+        "sampler": Param("string", "dpmpp-2m-karras", choices=("dpmpp-2m-karras", "euler-a", "euler")),
+        # A fine-tune installed from a link (variants.py), by its id; "base" is SD 1.5 itself.
+        "model": Param("string", "base"),
+        **_lora_params(),
+    }, optional_inputs=LORA_INPUTS, models=("sd15",)),
     # Chroma1-HD (Apache-2.0, Flux-based, uncensored). `fast` swaps in Chroma1-Flash's transformer (CFG baked in) when
     # it is installed; fine-tunes from links always run as full Chroma.
     TaskSpec("chroma", "Chroma1-HD", "image", "chroma", GPU_CHROMA, {
@@ -483,6 +497,9 @@ def make_worker(family: str) -> Worker:
     if family == "sdxl":
         from .sdxl import SDXLWorker
         return SDXLWorker()
+    if family == "sd15":
+        from .sd15 import SD15Worker
+        return SD15Worker()
     if family == "chroma":
         from .chroma import ChromaWorker
         return ChromaWorker()

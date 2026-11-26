@@ -1367,7 +1367,7 @@ extension SmokeTest {
             var modelRemote = remote
             modelRemote.kind = .model
             for (family, presetID) in [("flux.1", "cloud-flux"), ("qwen-image", "cloud-qwen-image"),
-                                       ("sdxl", "cloud-sdxl"), ("chroma", "cloud-chroma"), ("wan-2.2-t2v", "cloud-wan-t2v")] {
+                                       ("sdxl", "cloud-sdxl"), ("sd1.5", "cloud-sd15"), ("chroma", "cloud-chroma"), ("wan-2.2-t2v", "cloud-wan-t2v")] {
                 guard let preset = model.preset(id: presetID) else { ok = false; continue }
                 var fineTune = modelRemote
                 if family.hasPrefix("wan") { fineTune.expert = "low" }  // one expert's file; the other stays the base's
