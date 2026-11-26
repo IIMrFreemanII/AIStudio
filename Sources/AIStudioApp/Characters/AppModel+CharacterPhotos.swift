@@ -15,8 +15,12 @@ extension AppModel {
         let library = store?.library
         let base = c.artModel.variant.flatMap { library?.item($0)?.baseModel }
         let words = c.loras.prefix(CharacterArt.maxLoRAs).flatMap { library?.item($0.lora)?.triggerWords ?? [] }
-        return CharacterArt.Context(baseModel: base, triggerWords: words)
+        return CharacterArt.Context(baseModel: base, triggerWords: words, adult: Self.adultOptions)
     }
+
+    /// The user's "Show 18+ options" switch (creator, editor, Prompt Builder).
+    nonisolated static let adultOptionsKey = "showAdultOptions"
+    nonisolated static var adultOptions: Bool { PromptBuilderDraft.adultOverride ?? UserDefaults.standard.bool(forKey: adultOptionsKey) }
 
     // MARK: portraits
 

@@ -3,7 +3,45 @@ import Foundation
 /// Predefined options for creating a character: the user taps chips instead of typing.
 /// Picks are stored on `Character.traits` (category id → option ids) and turned into prompt text here.
 public enum CharacterOptions {
-    public enum Group: String, CaseIterable, Sendable { case basics, look, personality, habits, voice }
+    /// `intimate`: 18+ body details, shown only with the adult options on and written only into pictures that show
+    /// that part (`lookParts`); never in `fullLook`, voices or the chat model's looks.
+    public enum Group: String, CaseIterable, Sendable { case basics, look, personality, habits, voice, intimate }
+
+    /// How the look group is laid out in the creator, the editor and the Prompt Builder.
+    public enum Section: String, CaseIterable, Sendable {
+        case hair, face, body, style
+        public var title: String {
+            switch self {
+            case .hair: "Hair"
+            case .face: "Face"
+            case .body: "Body"
+            case .style: "Style"
+            }
+        }
+    }
+
+    /// The look section of a look category (nil for the other groups).
+    public static func section(of category: String) -> Section? { sections[category] }
+
+    private static let sections: [String: Section] = [
+        "hairColor": .hair, "hairStyle": .hair,
+        "eyes": .face, "skin": .face, "faceShape": .face, "eyeShape": .face, "eyebrows": .face, "nose": .face,
+        "lips": .face, "jaw": .face, "heritage": .face, "makeup": .face, "facialHair": .face, "extras": .face,
+        "body": .body, "height": .body, "muscle": .body, "shoulders": .body, "bust": .body, "bustShape": .body,
+        "butt": .body, "figure": .body, "bodyHair": .body, "bodyMarks": .body,
+        "clothes": .style,
+    ]
+
+    /// The detailed face and body categories: Surprise Me fills each only sometimes, so a random character doesn't
+    /// get twenty details.
+    public static let detailCategories: Set<String> = [
+        "faceShape", "eyeShape", "eyebrows", "nose", "lips", "jaw", "makeup", "facialHair", "muscle", "shoulders",
+        "bustShape", "bodyHair", "bodyMarks",
+    ]
+
+    /// The 18+ categories, by what a picture must show for them to be written.
+    public static let chestCategories = ["nipples"]
+    public static let intimateCategories = ["nipples", "pubicHair", "penisSize", "circumcision"]
 
     public struct Option: Identifiable, Equatable, Sendable, Hashable {
         public let id: String
@@ -77,15 +115,80 @@ public enum CharacterOptions {
             O("fair", "Fair", "fair skin"), O("light", "Light", "light skin"), O("olive", "Olive", "olive skin"),
             O("tan", "Tan", "tan skin"), O("brown", "Brown", "brown skin"), O("dark", "Dark", "dark skin"),
         ]),
+        Category("heritage", "Heritage", .look, max: 2, [
+            O("east-asian", "East Asian", "of East Asian descent"),
+            O("southeast-asian", "Southeast Asian", "of Southeast Asian descent"),
+            O("south-asian", "South Asian", "of South Asian descent"), O("black", "Black", "Black, of African descent"),
+            O("latin", "Latina / Latino", "of Latin American descent"),
+            O("middle-eastern", "Middle Eastern", "of Middle Eastern descent"),
+            O("white", "White European", "of European descent"), O("mixed", "Mixed", "of mixed heritage"),
+        ]),
+        Category("faceShape", "Face shape", .look, max: 1, [
+            O("oval", "Oval", "an oval face"), O("round", "Round", "a round face"),
+            O("heart", "Heart", "a heart-shaped face"), O("square", "Square", "a square face"),
+            O("long", "Long", "a long face"), O("diamond", "Diamond", "a diamond-shaped face"),
+        ]),
+        Category("eyeShape", "Eye shape", .look, max: 1, [
+            O("almond", "Almond", "almond-shaped eyes"), O("round", "Round", "round eyes"),
+            O("hooded", "Hooded", "hooded eyes"), O("upturned", "Upturned", "upturned cat-like eyes"),
+            O("downturned", "Downturned", "downturned eyes"), O("monolid", "Monolid", "monolid eyes"),
+            O("deep-set", "Deep-set", "deep-set eyes"),
+        ]),
+        Category("eyebrows", "Eyebrows", .look, max: 1, [
+            O("thick", "Thick", "thick full eyebrows"), O("thin", "Thin", "thin eyebrows"),
+            O("arched", "Arched", "high arched eyebrows"), O("straight", "Straight", "straight eyebrows"),
+            O("bushy", "Bushy", "bushy eyebrows", onlyFor: "man"),
+        ]),
+        Category("nose", "Nose", .look, max: 1, [
+            O("straight", "Straight", "a straight nose"), O("narrow", "Small, narrow", "a small narrow nose"),
+            O("roman", "Roman", "a Roman nose with a high bridge"), O("wide", "Wide", "a wide nose"),
+            O("upturned", "Upturned", "a slightly upturned nose"), O("long", "Long", "a long nose"),
+        ]),
+        Category("lips", "Lips", .look, max: 1, [
+            O("full", "Full", "full lips"), O("thin", "Thin", "thin lips"),
+            O("cupids-bow", "Cupid's bow", "lips with a defined cupid's bow"), O("wide", "Wide", "a wide mouth"),
+            O("pouty", "Pouty", "pouty lips"),
+        ]),
+        Category("jaw", "Cheeks and jaw", .look, max: 2, [
+            O("high-cheekbones", "High cheekbones", "high cheekbones"), O("hollow-cheeks", "Hollow cheeks", "hollow cheeks"),
+            O("soft-cheeks", "Soft cheeks", "soft rounded cheeks"), O("sharp-jaw", "Sharp jawline", "a sharp jawline"),
+            O("square-jaw", "Square jaw", "a square jaw"), O("soft-jaw", "Soft jaw", "a soft jawline"),
+            O("strong-chin", "Strong chin", "a strong chin"), O("cleft-chin", "Cleft chin", "a cleft chin"),
+        ]),
+        Category("makeup", "Makeup", .look, max: 2, [
+            O("none", "No makeup", "no makeup, bare skin"), O("natural", "Natural", "natural light makeup"),
+            O("soft-glam", "Soft glam", "soft glam makeup"), O("smoky", "Smoky eyes", "smoky eye makeup"),
+            O("winged", "Winged liner", "winged eyeliner"), O("red-lips", "Red lipstick", "red lipstick"),
+            O("glossy", "Glossy lips", "glossy lips"),
+        ]),
+        Category("facialHair", "Facial hair", .look, max: 1, [
+            O("clean-shaven", "Clean-shaven", "clean-shaven", onlyFor: "man"),
+            O("short-boxed", "Short boxed beard", "a short boxed beard", onlyFor: "man"),
+            O("long-beard", "Long beard", "a long full beard", onlyFor: "man"),
+            O("goatee", "Goatee", "a goatee", onlyFor: "man"), O("mustache", "Mustache", "a mustache", onlyFor: "man"),
+        ]),
         Category("body", "Body", .look, max: 1, [
             O("slim", "Slim", "a slim build"), O("athletic", "Athletic", "an athletic build"),
             O("average", "Average", "an average build"), O("curvy", "Curvy", "a curvy figure"),
             O("muscular", "Muscular", "a muscular build"), O("plus-size", "Plus-size", "a plus-size figure"),
             O("broad-shouldered", "Broad-shouldered", "broad shoulders"),
             O("hourglass", "Hourglass", "an hourglass figure", onlyFor: "woman"),
+            O("lean", "Lean", "a lean build"), O("toned", "Toned", "a toned build"), O("soft", "Soft", "a soft build"),
+            O("chubby", "Chubby", "a chubby build"), O("stocky", "Stocky", "a stocky build", onlyFor: "man"),
+            O("dad-bod", "Dad bod", "a dad bod", onlyFor: "man"),
+            O("voluptuous", "Voluptuous", "a voluptuous figure", onlyFor: "woman"),
         ]),
         Category("height", "Height", .look, max: 1, [
             O("short", "Short", "short height"), O("average", "Average", "average height"), O("tall", "Tall", "tall"),
+            O("very-tall", "Very tall", "very tall"),
+        ]),
+        Category("muscle", "Muscle tone", .look, max: 1, [
+            O("soft", "Soft", "no muscle definition"), O("toned", "Toned", "lightly toned muscles"),
+            O("defined", "Defined", "clearly defined muscles"), O("very-muscular", "Very muscular", "big, heavily built muscles"),
+        ]),
+        Category("shoulders", "Shoulders", .look, max: 1, [
+            O("narrow", "Narrow", "narrow shoulders"), O("rounded", "Rounded", "soft rounded shoulders"),
+            O("square", "Square", "square shoulders"), O("broad", "Broad", "very broad shoulders"),
         ]),
         Category("clothes", "Style", .look, max: 2, [
             O("casual", "Casual", "dresses in casual clothes"), O("elegant", "Elegant", "dresses elegantly"),
@@ -100,6 +203,8 @@ public enum CharacterOptions {
             O("stubble", "Stubble", "stubble", onlyFor: "man"),
             O("bold-makeup", "Bold makeup", "bold makeup", onlyFor: "woman"),
             O("scar", "Scar", "a small scar"), O("warm-smile", "Warm smile", "a warm smile"),
+            O("beauty-mark", "Beauty mark", "a beauty mark above the lip"), O("rosy-cheeks", "Rosy cheeks", "rosy cheeks"),
+            O("gap-teeth", "Gap teeth", "a small gap between the front teeth"),
         ]),
         Category("bust", "Breasts", .look, max: 1, [
             O("small", "Small", "small breasts", onlyFor: "woman"),
@@ -107,17 +212,60 @@ public enum CharacterOptions {
             O("large", "Large", "large breasts", onlyFor: "woman"),
             O("very-large", "Very large", "very large breasts", onlyFor: "woman"),
         ]),
+        Category("bustShape", "Breast shape", .look, max: 1, [
+            O("round", "Round", "round breasts", onlyFor: "woman"),
+            O("teardrop", "Teardrop", "teardrop-shaped breasts", onlyFor: "woman"),
+            O("perky", "Perky", "perky breasts", onlyFor: "woman"),
+            O("natural", "Soft, natural", "soft natural breasts", onlyFor: "woman"),
+            O("wide-set", "Wide-set", "wide-set breasts", onlyFor: "woman"),
+        ]),
         Category("butt", "Butt", .look, max: 1, [
             O("small", "Small", "a small butt"), O("perky", "Perky", "a perky butt"),
             O("round", "Round", "a round butt"), O("big", "Big", "a big butt"),
+            O("heart", "Heart-shaped", "a heart-shaped butt"), O("athletic", "Athletic", "an athletic, muscular butt"),
         ]),
-        Category("figure", "Figure details", .look, max: 3, [
+        Category("figure", "Figure details", .look, max: 4, [
             O("narrow-waist", "Narrow waist", "a narrow waist", onlyFor: "woman"),
             O("wide-hips", "Wide hips", "wide hips", onlyFor: "woman"),
             O("long-legs", "Long legs", "long legs"), O("thick-thighs", "Thick thighs", "thick thighs"),
             O("toned-abs", "Toned abs", "toned abs"), O("toned-arms", "Toned arms", "toned arms"),
             O("broad-chest", "Broad chest", "a broad chest", onlyFor: "man"),
             O("hairy-chest", "Hairy chest", "a hairy chest", onlyFor: "man"),
+            O("flat-stomach", "Flat stomach", "a flat stomach"), O("soft-belly", "Soft belly", "a soft belly"),
+            O("love-handles", "Love handles", "love handles"), O("slender-arms", "Slender arms", "slender arms"),
+            O("muscular-legs", "Muscular legs", "muscular legs"), O("long-neck", "Long neck", "a long neck"),
+            O("toned-back", "Toned back", "a toned back"),
+        ]),
+        Category("bodyHair", "Body hair", .look, max: 1, [
+            O("smooth", "Smooth", "smooth hairless skin"), O("light", "Light", "light body hair"),
+            O("natural", "Natural", "natural body hair"), O("hairy", "Hairy", "a hairy body", onlyFor: "man"),
+        ]),
+        Category("bodyMarks", "Body marks", .look, max: 3, [
+            O("sleeve-tattoo", "Sleeve tattoo", "a full sleeve tattoo"), O("back-tattoo", "Back tattoo", "a large back tattoo"),
+            O("small-tattoos", "Small tattoos", "a few small tattoos"),
+            O("belly-piercing", "Belly piercing", "a belly button piercing"), O("tan-lines", "Tan lines", "tan lines"),
+            O("freckled-shoulders", "Freckled shoulders", "freckled shoulders"),
+            O("stretch-marks", "Stretch marks", "faint stretch marks"), O("birthmark", "Birthmark", "a birthmark"),
+        ]),
+        // 18+ (`Group.intimate`): only with the adult options on, and only in pictures that show that part.
+        Category("nipples", "Nipples", .intimate, max: 2, [
+            O("small", "Small", "small nipples"), O("puffy", "Puffy", "puffy nipples", onlyFor: "woman"),
+            O("large-areolae", "Large areolae", "large areolae", onlyFor: "woman"),
+            O("pink", "Light pink", "light pink nipples"), O("dark", "Dark", "dark nipples"),
+            O("pierced", "Pierced", "pierced nipples"),
+        ]),
+        Category("pubicHair", "Pubic hair", .intimate, max: 1, [
+            O("shaved", "Shaved", "a shaved pubic area"), O("trimmed", "Trimmed", "neatly trimmed pubic hair"),
+            O("landing-strip", "Landing strip", "a landing strip of pubic hair", onlyFor: "woman"),
+            O("natural", "Natural", "natural pubic hair"),
+        ]),
+        Category("penisSize", "Size", .intimate, max: 1, [
+            O("average", "Average", "an average-size penis", onlyFor: "man"),
+            O("large", "Large", "a large penis", onlyFor: "man"),
+        ]),
+        Category("circumcision", "Circumcision", .intimate, max: 1, [
+            O("circumcised", "Circumcised", "a circumcised penis", onlyFor: "man"),
+            O("uncut", "Uncut", "an uncircumcised penis", onlyFor: "man"),
         ]),
         Category("traits", "Traits", .personality, max: 4, [
             O("playful", "Playful", "playful"), O("shy", "Shy", "shy"), O("confident", "Confident", "confident"),
@@ -181,6 +329,9 @@ public enum CharacterOptions {
     ]
 
     public static func categories(_ group: Group) -> [Category] { all.filter { $0.group == group } }
+
+    /// The look categories of one section, in catalog order.
+    public static func categories(_ section: Section) -> [Category] { all.filter { sections[$0.id] == section } }
 
     public static func category(_ id: String) -> Category? { all.first { $0.id == id } }
 

@@ -16,8 +16,8 @@ public enum CharacterSurprise {
     public static let ages = 21...45
 
     /// A new random character in place of `c`: a name for its gender (the gender is kept when it's woman, man or
-    /// non-binary, else one is picked), an age, and picks in every option category (one where only one fits, else one
-    /// to three). The free-text fields are cleared so nothing left over contradicts the picks; its id, image model,
+    /// non-binary, else one is picked), an age, and picks in every core option category (one where only one fits, else
+    /// one to three), the detailed face and body ones only sometimes, and never the 18+ ones. The free-text fields are cleared so nothing left over contradicts the picks; its id, image model,
     /// portraits, voice samples and chat settings stay.
     public static func roll(_ c: Character, using rng: inout some RandomNumberGenerator) -> Character {
         var out = c
@@ -26,9 +26,11 @@ public enum CharacterSurprise {
         out.name = names[out.gender]!.randomElement(using: &rng)!
         out.age = Int.random(in: ages, using: &rng)
         var traits: [String: [String]] = [:]
-        for category in CharacterOptions.all {
+        for category in CharacterOptions.all where category.group != .intimate {
             let options = CharacterOptions.options(category, gender: out.gender)
             guard !options.isEmpty else { continue }
+            // The detailed face and body categories only sometimes (about 40% each).
+            if CharacterOptions.detailCategories.contains(category.id), Int.random(in: 0..<10, using: &rng) >= 4 { continue }
             let count = category.max == 1 ? 1 : Int.random(in: 1...min(category.max, 3), using: &rng)
             // Catalog order, so the picks read the same way the chips show them.
             let picked = Set(options.shuffled(using: &rng).prefix(count).map(\.id))

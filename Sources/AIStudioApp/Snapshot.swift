@@ -303,6 +303,23 @@ enum Snapshot {
         p.model = .sdxl
         await render(PromptBuilderView(draft: .constant(p)).mgWindow("Prompt Builder").environment(m),
                      to: dir.appendingPathComponent("74-prompt-builder-preview.png"), size: CGSize(width: 1000, height: 1300))
+        // 75: the look in sections (face and body details picked) with the 18+ options on: their switch, and the
+        // Nudity row (left unpicked: these snapshots stay SFW).
+        let defaults = UserDefaults.standard
+        let savedAdult = defaults.object(forKey: AppModel.adultOptionsKey)
+        defaults.set(true, forKey: AppModel.adultOptionsKey)
+        var f = d
+        f.model = .chroma
+        f.traits.merge(["faceShape": ["heart"], "eyeShape": ["almond"], "lips": ["full"], "makeup": ["soft-glam"],
+                        "muscle": ["toned"], "bodyMarks": ["small-tattoos"]]) { $1 }
+        await render(PromptBuilderView(draft: .constant(f)).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("75-prompt-builder-details.png"), size: CGSize(width: 1000, height: 2600))
+        // 76: the look folded, so the chip rows below show the Nudity row.
+        var n = f
+        n.traits = [:]
+        await render(PromptBuilderView(draft: .constant(n)).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("76-prompt-builder-nudity-row.png"), size: CGSize(width: 1000, height: 2000))
+        if let savedAdult { defaults.set(savedAdult, forKey: AppModel.adultOptionsKey) } else { defaults.removeObject(forKey: AppModel.adultOptionsKey) }
         // 73: the sheet a Cloud SDXL node opens (Use in Node writes the prompt and negative).
         await render(sheet(PromptBuilderSheet(target: PromptBuilderTarget(id: "sdxl", model: .sdxl, takesNegative: true))
                         .environment(m)),

@@ -8,7 +8,7 @@ import Testing
         for g in groups {
             #expect(Set(g.choices.map(\.id)).count == g.choices.count, "\(g.id)")
             #expect(g.choices.allSatisfy { !$0.words.isEmpty && !$0.label.isEmpty }, "\(g.id)")
-            #expect(g.max >= 1 && g.choices.count >= 8, "\(g.id) is rich enough")
+            #expect(g.max >= 1 && g.choices.count >= (g.adult ? 5 : 8), "\(g.id) is rich enough")
         }
         #expect(groups.reduce(0) { $0 + $1.choices.count } >= 200)
     }
@@ -56,5 +56,22 @@ import Testing
         p = PromptCatalog.toggle(p, group: "shot", choice: "close-up")
         #expect(p["shot"] == nil)
         #expect(PromptCatalog.toggle(p, group: "nope", choice: "x") == p)
+    }
+}
+
+@Suite struct PromptCatalogAdultTests {
+    @Test func nudityOnlyWithTheAdultOptions() {
+        #expect(!PromptCatalog.groups(for: .sdxl).contains { $0.id == "nudity" })
+        #expect(PromptCatalog.groups(for: .sdxl, adult: true).contains { $0.id == "nudity" })
+        let picks = ["nudity": ["topless"]]
+        #expect(PromptCatalog.coverage(picks, adult: false) == .dressed)
+        #expect(PromptCatalog.coverage(picks, adult: true) == .topless)
+        var s = PromptSpec()
+        PromptCatalog.apply(picks, to: &s, model: .sdxl)
+        #expect(s.coverage == .dressed)
+        PromptCatalog.apply(picks, to: &s, model: .sdxl, adult: true)
+        #expect(s.coverage == .topless)
+        // Every choice is a coverage.
+        for c in PromptCatalog.group("nudity")!.choices { #expect(PromptSpec.Coverage(rawValue: c.id) != nil, "\(c.id)") }
     }
 }

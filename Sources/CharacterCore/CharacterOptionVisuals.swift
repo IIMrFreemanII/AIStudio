@@ -27,11 +27,19 @@ extension CharacterOptions {
     /// The example photos to make: every option of every photo category, for each of its exampleGenders, in catalog order.
     public static var examples: [(category: String, option: String, gender: String)] {
         all.filter { photoCategories.contains($0.id) }.flatMap { cat in
-            cat.options.flatMap { opt in
+            cat.options.filter { !unpictured.contains("\(cat.id)/\($0.id)") }.flatMap { opt in
                 exampleGenders(category: cat.id, option: opt.id).map { (category: cat.id, option: opt.id, gender: $0) }
             }
         }
     }
+
+    /// Options of photo categories with no example photo drawn yet (shown as text chips; drawn when asked for).
+    public static let unpictured: Set<String> = [
+        "body/lean", "body/toned", "body/soft", "body/chubby", "body/stocky", "body/dad-bod", "body/voluptuous",
+        "butt/heart", "butt/athletic", "figure/flat-stomach", "figure/soft-belly", "figure/love-handles",
+        "figure/slender-arms", "figure/muscular-legs", "figure/long-neck", "figure/toned-back",
+        "extras/beauty-mark", "extras/rosy-cheeks", "extras/gap-teeth",
+    ]
 
     /// ["woman", "man"], or just [onlyFor] when the option has one.
     public static func exampleGenders(category: String, option: String) -> [String] {
@@ -147,10 +155,15 @@ extension CharacterOptions {
         public var without: [String] = []
     }
 
-    public static let identityCategories = ["hairColor", "hairStyle", "eyes", "skin", "extras"]
-    public static let bodyCategories = ["body", "height", "bust", "butt", "figure"]
+    public static let identityCategories = ["hairColor", "hairStyle", "eyes", "skin", "extras", "heritage", "faceShape",
+                                            "eyeShape", "eyebrows", "nose", "lips", "jaw", "makeup", "facialHair"]
+    public static let bodyCategories = ["body", "height", "muscle", "shoulders", "bust", "bustShape", "butt", "figure",
+                                        "bodyHair", "bodyMarks"]
 
-    public static func lookParts(_ traits: [String: [String]], gender: String, withClothes: Bool = true) -> LookParts {
+    /// `coverage` and `adult`: with the 18+ options on, a picture that shows the chest (topless, nude) adds the
+    /// nipple picks, and a nude one every intimate pick; they go with the body.
+    public static func lookParts(_ traits: [String: [String]], gender: String, withClothes: Bool = true,
+                                 coverage: PromptSpec.Coverage = .dressed, adult: Bool = false) -> LookParts {
         var parts = LookParts()
         func picked(_ id: String) -> [Option] {
             guard let cat = category(id) else { return [] }
@@ -172,7 +185,11 @@ extension CharacterOptions {
                 if let w = without(category: id, option: o.id, gender: g) { parts.without.append(w) }
             }
         }
-        if withClothes {
+        if adult {
+            let shown = coverage.showsAll ? intimateCategories : coverage.showsChest ? chestCategories : []
+            for id in shown { parts.body += picked(id).map { PromptDetail(tag: $0.phrase, text: $0.phrase, weight: 1.1) } }
+        }
+        if withClothes && coverage == .dressed {
             let clothes = picked("clothes")
             for o in clothes {
                 let tag = clothesTags[o.id] ?? o.phrase
@@ -212,6 +229,12 @@ extension CharacterOptions {
         "body/average": "no visible abs and no muscle definition",
         "body/curvy/man": "no visible abs",
         "body/plus-size": "no visible abs",
+        "body/soft": "no visible abs",
+        "body/chubby": "no visible abs",
+        "body/dad-bod": "no visible abs",
+        "muscle/soft": "no muscle definition",
+        "figure/soft-belly": "no visible abs",
+        "bodyHair/smooth": "no body hair",
         "clothes/streetwear/man": "no denim",
         "clothes/boho/man": "no denim",
     ]
@@ -258,7 +281,7 @@ extension CharacterOptions {
         "body/plus-size": ("a plus-size, heavy body and a big belly", "skinny, abs, muscular"),
         "body/broad-shouldered": ("very broad shoulders and a wide V-shaped upper body", "narrow shoulders"),
         "body/hourglass": ("an hourglass figure: large bust, wide hips and a very narrow waist", "skinny, flat chest, abs"),
-        "bust/small": ("small breasts, a flat chest, A cup", "large breasts, big breasts, cleavage"),
+        "bust/small": ("small breasts, a small chest, A cup", "large breasts, big breasts, cleavage"),
         "bust/medium": ("medium breasts, B cup", "huge breasts, flat chest"),
         "bust/large": ("large breasts, D cup, cleavage", "small breasts, flat chest"),
         "bust/very-large": ("huge breasts, an extremely large bust, G cup, deep cleavage", "small breasts, medium breasts, flat chest"),
@@ -266,7 +289,7 @@ extension CharacterOptions {
         "butt/perky": ("a perky, lifted, firm butt", "flat butt, saggy butt"),
         "butt/round": ("a round, full bubble butt", "flat butt"),
         "butt/big": ("a very big, wide, thick butt and wide hips", "small butt, flat butt, skinny"),
-        "figure/narrow-waist": ("a tiny, very narrow waist", "thick waist, belly"),
+        "figure/narrow-waist": ("a very narrow, cinched waist", "thick waist, belly"),
         "figure/wide-hips": ("very wide hips", "narrow hips"),
         "figure/long-legs": ("very long legs", "short legs, bodybuilder"),
         "figure/thick-thighs": ("very thick, full thighs", "skinny legs, thin thighs, bodybuilder"),
@@ -274,6 +297,21 @@ extension CharacterOptions {
         "figure/toned-arms": ("toned, muscular arms", "thin arms"),
         "figure/broad-chest": ("a very broad, big, muscular chest", "narrow chest, skinny"),
         "figure/hairy-chest": ("a very hairy chest, thick chest hair", "hairless chest, smooth chest, bodybuilder"),
+        "body/lean": ("a lean, slim body with a little visible muscle", "fat, bodybuilder"),
+        "body/toned": ("a toned, fit, firm body without bulk", "fat, bodybuilder"),
+        "body/soft": ("a soft, gently curved body with no visible muscle", "abs, six-pack, muscular"),
+        "body/chubby": ("a chubby, soft, round body with some extra weight", "skinny, abs, muscular"),
+        "body/stocky": ("a stocky, solid, thick-set body", "skinny, lanky"),
+        "body/dad-bod": ("a dad bod: an ordinary body with a soft round belly and no visible abs", "abs, six-pack, muscular, fitness model"),
+        "body/voluptuous": ("a voluptuous body with a full bust, wide hips and soft curves", "skinny, flat chest, abs"),
+        "muscle/soft": ("no visible muscle definition", "abs, six-pack, muscular"),
+        "muscle/defined": ("clearly defined, visible muscles", "fat, soft body"),
+        "muscle/very-muscular": ("big, heavily built bodybuilder muscles", "skinny"),
+        "figure/flat-stomach": ("a flat, firm stomach", "belly"),
+        "figure/soft-belly": ("a soft, slightly rounded belly", "six-pack abs, flat stomach"),
+        "figure/love-handles": ("a little softness at the waist, love handles", "six-pack abs"),
+        "bodyHair/smooth": ("smooth, completely hairless skin", "body hair, chest hair"),
+        "bodyHair/hairy": ("a lot of body hair on the chest, belly and arms", "smooth hairless chest"),
         "clothes/casual": ("casual clothes: a soft t-shirt, relaxed jeans and white sneakers", ""),
         "clothes/elegant": ("an elegant outfit: a fitted satin cocktail dress and heels", ""),
         "clothes/elegant/man": ("an elegant outfit: a tailored dark suit, a crisp white shirt and polished shoes", ""),
@@ -503,5 +541,121 @@ extension CharacterOptions {
         "accent/spanish": "English with a Spanish sound",
         "accent/german": "English with a German sound",
         "accent/russian": "English with a Russian sound",
+        "heritage/east-asian": "Chinese, Japanese or Korean roots",
+        "heritage/southeast-asian": "Thai, Vietnamese or Filipino roots, say",
+        "heritage/south-asian": "Indian, Pakistani or Bangladeshi roots",
+        "heritage/black": "African or Caribbean roots",
+        "heritage/latin": "Latin American roots",
+        "heritage/middle-eastern": "Arab, Persian or Turkish roots, say",
+        "heritage/white": "European roots",
+        "heritage/mixed": "Roots in more than one place",
+        "faceShape/oval": "Balanced, a little longer than wide",
+        "faceShape/round": "Soft and about as wide as long",
+        "faceShape/heart": "Wide forehead, narrow pointed chin",
+        "faceShape/square": "Strong, angular jaw and forehead",
+        "faceShape/long": "Clearly longer than wide",
+        "faceShape/diamond": "Wide cheekbones, narrow forehead and chin",
+        "eyeShape/almond": "Oval eyes with slightly pointed corners",
+        "eyeShape/round": "Big, open round eyes",
+        "eyeShape/hooded": "A fold of skin over the eyelid",
+        "eyeShape/upturned": "Outer corners lift up, cat-like",
+        "eyeShape/downturned": "Outer corners tilt down, soft look",
+        "eyeShape/monolid": "No visible crease on the eyelid",
+        "eyeShape/deep-set": "Eyes sit deeper under the brow",
+        "eyebrows/thick": "Full, dense brows",
+        "eyebrows/thin": "Fine, slim brows",
+        "eyebrows/arched": "Brows with a high curve",
+        "eyebrows/straight": "Flat brows with little arch",
+        "eyebrows/bushy": "Big, untamed brows",
+        "nose/straight": "A straight bridge",
+        "nose/narrow": "A small, slim nose",
+        "nose/roman": "A high, slightly curved bridge",
+        "nose/wide": "A broad nose",
+        "nose/upturned": "The tip points up a little",
+        "nose/long": "A long, elegant nose",
+        "lips/full": "Plump lips",
+        "lips/thin": "Slim lips",
+        "lips/cupids-bow": "A clear double curve on the upper lip",
+        "lips/wide": "A broad smile",
+        "lips/pouty": "Lips that push forward a little",
+        "jaw/high-cheekbones": "Cheekbones sit high and stand out",
+        "jaw/hollow-cheeks": "Cheeks dip in under the cheekbones",
+        "jaw/soft-cheeks": "Full, soft cheeks",
+        "jaw/sharp-jaw": "A crisp, defined jawline",
+        "jaw/square-jaw": "A wide, angular jaw",
+        "jaw/soft-jaw": "A gentle, rounded jawline",
+        "jaw/strong-chin": "A chin that stands out",
+        "jaw/cleft-chin": "A small dimple in the chin",
+        "makeup/none": "Bare face, no makeup",
+        "makeup/natural": "Light makeup that looks barely there",
+        "makeup/soft-glam": "Polished, warm and glowing",
+        "makeup/smoky": "Dark, blended eye shadow",
+        "makeup/winged": "Eyeliner that flicks out at the corners",
+        "makeup/red-lips": "Classic red lips",
+        "makeup/glossy": "Shiny lip gloss",
+        "facialHair/clean-shaven": "No facial hair",
+        "facialHair/short-boxed": "A short, neatly shaped beard",
+        "facialHair/long-beard": "A long, full beard",
+        "facialHair/goatee": "Hair on the chin only",
+        "facialHair/mustache": "Hair above the upper lip only",
+        "body/lean": "Slim with a little muscle",
+        "body/toned": "Fit and firm, not bulky",
+        "body/soft": "Gentle curves, no muscle showing",
+        "body/chubby": "Round and soft, carries some weight",
+        "body/stocky": "Short, solid and thick-set",
+        "body/dad-bod": "Ordinary build with a bit of a belly",
+        "body/voluptuous": "Full, generous curves",
+        "height/very-tall": "Much taller than most people",
+        "muscle/soft": "No muscle definition showing",
+        "muscle/toned": "Muscles show a little",
+        "muscle/defined": "Muscles clearly visible",
+        "muscle/very-muscular": "Big, bulky muscles",
+        "shoulders/narrow": "Slim, narrow shoulders",
+        "shoulders/rounded": "Soft, sloping shoulders",
+        "shoulders/square": "Straight, squared-off shoulders",
+        "shoulders/broad": "Very wide shoulders",
+        "bustShape/round": "Full and round",
+        "bustShape/teardrop": "Fuller at the bottom",
+        "bustShape/perky": "Lifted and firm",
+        "bustShape/natural": "Soft with a natural shape",
+        "bustShape/wide-set": "More space between the breasts",
+        "butt/heart": "Full at the bottom, like an upside-down heart",
+        "butt/athletic": "Firm and muscular",
+        "figure/flat-stomach": "A flat, firm belly",
+        "figure/soft-belly": "A soft, slightly round belly",
+        "figure/love-handles": "A little softness at the sides",
+        "figure/slender-arms": "Slim arms",
+        "figure/muscular-legs": "Strong, muscular legs",
+        "figure/long-neck": "A long, graceful neck",
+        "figure/toned-back": "Defined back muscles",
+        "bodyHair/smooth": "No body hair",
+        "bodyHair/light": "A little body hair",
+        "bodyHair/natural": "Body hair left as it grows",
+        "bodyHair/hairy": "Lots of body hair",
+        "bodyMarks/sleeve-tattoo": "Tattoos cover a whole arm",
+        "bodyMarks/back-tattoo": "A big tattoo across the back",
+        "bodyMarks/small-tattoos": "A few small tattoos here and there",
+        "bodyMarks/belly-piercing": "A ring or stud in the belly button",
+        "bodyMarks/tan-lines": "Paler skin where swimwear was",
+        "bodyMarks/freckled-shoulders": "Freckles across the shoulders",
+        "bodyMarks/stretch-marks": "Faint lines on hips or thighs",
+        "bodyMarks/birthmark": "A small mark on the skin since birth",
+        "extras/beauty-mark": "A small dark mole above the lip",
+        "extras/rosy-cheeks": "Naturally pink cheeks",
+        "extras/gap-teeth": "A small gap between the front teeth",
+        "nipples/small": "Small nipples",
+        "nipples/puffy": "Nipples and areolae that stand out",
+        "nipples/large-areolae": "Wide areolae",
+        "nipples/pink": "Light pink nipples",
+        "nipples/dark": "Darker nipples",
+        "nipples/pierced": "Nipple piercings",
+        "pubicHair/shaved": "No pubic hair",
+        "pubicHair/trimmed": "Short, neat pubic hair",
+        "pubicHair/landing-strip": "A narrow strip of pubic hair",
+        "pubicHair/natural": "Pubic hair left as it grows",
+        "penisSize/average": "Average size",
+        "penisSize/large": "Larger than average",
+        "circumcision/circumcised": "No foreskin",
+        "circumcision/uncut": "With foreskin",
     ]
 }

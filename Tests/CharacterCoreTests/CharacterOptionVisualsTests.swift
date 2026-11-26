@@ -47,7 +47,7 @@ import Testing
         let ex = CO.examples
         var expected: [String] = []
         for cat in CO.all where CO.photoCategories.contains(cat.id) {
-            for opt in cat.options {
+            for opt in cat.options where !CO.unpictured.contains("\(cat.id)/\(opt.id)") {
                 for g in CO.exampleGenders(category: cat.id, option: opt.id) { expected.append("\(cat.id)/\(opt.id)/\(g)") }
             }
         }
@@ -55,7 +55,8 @@ import Testing
         #expect(got == expected)
         #expect(Set(got).count == got.count)
         let sum = CO.all.filter { CO.photoCategories.contains($0.id) }
-            .reduce(0) { n, cat in n + cat.options.reduce(0) { $0 + CO.exampleGenders(category: cat.id, option: $1.id).count } }
+            .reduce(0) { n, cat in n + cat.options.filter { !CO.unpictured.contains("\(cat.id)/\($0.id)") }
+                .reduce(0) { $0 + CO.exampleGenders(category: cat.id, option: $1.id).count } }
         #expect(ex.count == sum)
         #expect(CO.exampleGenders(category: "bust", option: "small") == ["woman"])
         #expect(CO.exampleGenders(category: "butt", option: "round") == ["woman", "man"])
@@ -85,7 +86,7 @@ import Testing
         // The weak options get a stronger description, and their opposite in the negative.
         let small = CO.examplePrompt(category: "bust", option: "small", gender: "woman")
         #expect(small.hasPrefix("A studio photo, full body, of a 21-year-old adult woman"))
-        #expect(small.contains("She has small breasts, a flat chest") && small.contains("platinum blonde hair in a sleek bob"))
+        #expect(small.contains("She has small breasts, a small chest") && small.contains("platinum blonde hair in a sleek bob"))
         #expect(small.contains("natural light makeup"))
         #expect(!CO.examplePrompt(category: "extras", option: "bold-makeup", gender: "woman").contains("light makeup"))
         #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("He wears only fitted black boxer briefs, shirtless."))

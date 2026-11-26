@@ -28,7 +28,12 @@ private struct Seeded: RandomNumberGenerator {
             #expect(CharacterSurprise.ages.contains(c.age))
             for category in CharacterOptions.all {
                 let picks = c.traits[category.id] ?? []
-                #expect(!picks.isEmpty && picks.count <= category.max, "\(category.id)")
+                if category.group == .intimate {
+                    #expect(picks.isEmpty, "never rolls 18+ \(category.id)")
+                    continue
+                }
+                let optional = CharacterOptions.detailCategories.contains(category.id)
+                #expect((optional || !picks.isEmpty) && picks.count <= category.max, "\(category.id)")
                 let allowed = Set(CharacterOptions.options(category, gender: "woman").map(\.id))
                 #expect(picks.allSatisfy(allowed.contains), "\(category.id) \(picks)")
             }
@@ -36,6 +41,17 @@ private struct Seeded: RandomNumberGenerator {
                     && c.likes.isEmpty && c.voice.isEmpty && c.greeting.isEmpty)
             #expect(AgeGuard.problems(c).isEmpty)
         }
+        // The detailed categories are rolled only sometimes.
+        var filled = 0, total = 0
+        for seed in 0..<50 {
+            var rng = Seeded(state: UInt64(seed))
+            let c = CharacterSurprise.roll(base, using: &rng)
+            for id in CharacterOptions.detailCategories where !CharacterOptions.options(CharacterOptions.category(id)!, gender: "woman").isEmpty {
+                total += 1
+                if c.traits[id] != nil { filled += 1 }
+            }
+        }
+        #expect(filled > total / 5 && filled < total * 3 / 5, "\(filled) of \(total)")
     }
 
     @Test func anUnknownGenderGetsWomanOrMan() {
