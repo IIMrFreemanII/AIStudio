@@ -85,6 +85,31 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         }
     }
 
+    @Test func wanCheckpointsPublishedOnlyAsGGUFPickTheHighestQuant() throws {
+        func version(_ base: String, _ type: String, _ files: String) -> Data {
+            Data("""
+            {"id": 9, "name": "Q8 High", "baseModel": "\(base)", "model": {"name": "TastySin", "type": "\(type)"}, "files": [\(files)]}
+            """.utf8)
+        }
+        let files = """
+            {"name": "TastySin-High-q5_k_m.gguf", "type": "Model", "primary": true, "metadata": {"format": "GGUF"}, "downloadUrl": "https://civitai.com/q5"},
+            {"name": "TastySin-High-q8.gguf", "type": "Model", "metadata": {"format": "GGUF"}, "sizeKB": 3, "downloadUrl": "https://civitai.com/q8"},
+            {"name": "TastySin-High-q6_k.gguf", "type": "Model", "metadata": {"format": "GGUF"}, "downloadUrl": "https://civitai.com/q6"}
+            """
+        let r = try LoRASources.civitaiRemote(version("Wan Video 2.2 I2V-A14B", "Checkpoint", files))
+        #expect(r.kind == .model && r.fileName == "TastySin-High-q8.gguf" && r.expert == "high")
+        // Not for a LoRA, nor for a family other than Wan 2.2.
+        #expect(throws: LoRASourceError.self) { try LoRASources.civitaiRemote(version("Wan Video 2.2 I2V-A14B", "LORA", files)) }
+        #expect(throws: LoRASourceError.self) { try LoRASources.civitaiRemote(version("Flux.1 D", "Checkpoint", files)) }
+        // A safetensors file still wins; ComfyUI-only int8 ranks after fp8.
+        let mixed = try LoRASources.civitaiRemote(version("Wan Video 2.2 I2V-A14B", "Checkpoint", """
+            {"name": "x-high-int8.safetensors", "type": "Model", "primary": true, "metadata": {"format": "SafeTensor", "fp": "int8"}, "downloadUrl": "https://civitai.com/i8"},
+            {"name": "x-high-fp8.safetensors", "type": "Model", "metadata": {"format": "SafeTensor", "fp": "fp8"}, "downloadUrl": "https://civitai.com/f8"},
+            {"name": "x-high-q8.gguf", "type": "Model", "metadata": {"format": "GGUF"}, "downloadUrl": "https://civitai.com/g"}
+            """))
+        #expect(mixed.fileName == "x-high-fp8.safetensors")
+    }
+
     @Test func civitaiPreviewImageIsTheFirstSafeOneAtThumbnailSize() throws {
         let json = """
         {"id": 1, "files": [{"name": "a.safetensors", "type": "Model", "downloadUrl": "https://civitai.com/api/download/models/1"}],

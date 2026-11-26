@@ -136,7 +136,8 @@ class Fetcher:
                             head += chunk
                             if len(head) >= 16:
                                 break
-                        if not looks_like_safetensors(head):
+                        # A GGUF file is a Wan 2.2 fine-tune the app picked (ComfyUI-GGUF): its import dequantizes it.
+                        if not (looks_like_safetensors(head) or head[:4] == b"GGUF"):
                             return {"stored": False, "ok": False, "error": "the link isn't a .safetensors file"}
                         return {"stored": False, "ok": True, "error": None}
             return {"stored": False, "ok": False, "error": "too many redirects"}

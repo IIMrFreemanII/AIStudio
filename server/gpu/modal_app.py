@@ -196,6 +196,10 @@ gpu_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERV
 TORCHVISION = "torchvision==0.29.2"
 edit_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS, TORCHVISION)
               .env(env).add_local_python_source("aistudio_gpu"))
+# Fine-tune imports also read GGUF files (Wan 2.2 checkpoints from ComfyUI-GGUF), with the gguf package.
+GGUF = "gguf==0.17.1"
+import_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, *TORCH_DEPS, GGUF)
+                .env(env).add_local_python_source("aistudio_gpu"))
 
 # ACE-Step 1.5's own code at a pinned commit, with the versions its uv.lock pins (torch 2.10 + CUDA 12.8, transformers
 # 4.57) and its bundled nano-vllm for the planner; flash-attn from the prebuilt wheel its lock file names (py3.11).
@@ -770,7 +774,7 @@ class Breeze:
                        models=(volume, MODELS))
 
 
-@app.function(image=gpu_image, cpu=4, memory=(32768, 98304), volumes={MODELS: volume}, timeout=3 * 60 * 60,
+@app.function(image=import_image, cpu=4, memory=(32768, 98304), volumes={MODELS: volume}, timeout=3 * 60 * 60,
               secrets=[modal.Secret.from_name(n) for n in (HF_SECRET, CIVITAI_SECRET) if n])
 def import_model(family: str, vid: str, name: str, files: list | None, repo: str | None):
     """Installs a fine-tune from a link onto the models Volume (variants.py), on CPUs: download, convert, commit."""

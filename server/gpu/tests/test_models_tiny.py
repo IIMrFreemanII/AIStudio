@@ -655,6 +655,54 @@ def official_wan_names(state: dict) -> dict:
     return out
 
 
+def write_gguf(path: Path, tensors: dict) -> None:
+    """A GGUF file as ComfyUI-GGUF writes one: 2-D weights whose rows fit Q8_0 blocks quantized, the rest F16 / F32."""
+    import gguf
+
+    w = gguf.GGUFWriter(str(path), "wan")
+    for name, t in tensors.items():
+        a = t.float().numpy()
+        if a.ndim == 2 and a.shape[-1] % 32 == 0:
+            w.add_tensor(name, gguf.quants.quantize(a, gguf.GGMLQuantizationType.Q8_0),
+                         raw_dtype=gguf.GGMLQuantizationType.Q8_0)
+        elif a.ndim == 1:
+            w.add_tensor(name, a.astype(np.float16))
+        else:
+            w.add_tensor(name, a.astype(np.float32))
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
+
+
+def test_wan_fine_tune_from_a_gguf_file(models, tmp_path):
+    """A Wan expert as GGUF (official names; Q8_0, F16 and F32 tensors, 5-D patch embedding included) is dequantized
+    and converted like a safetensors file; a GGUF is refused for other families."""
+    pytest.importorskip("gguf")  # the import image installs it
+    from diffusers import WanTransformer3DModel
+
+    from aistudio_gpu import variants
+
+    base_high = WanTransformer3DModel.from_pretrained(models / "wan22-t2v" / "transformer")
+    torch.manual_seed(11)
+    tuned = {k: v.float() + torch.randn_like(v.float()) * 0.05 for k, v in base_high.state_dict().items()}
+    path = tmp_path / "wan-high.gguf"
+    write_gguf(path, official_wan_names(tuned))
+    assert variants._is_gguf(path)
+    state = variants.load_gguf_state(path)
+    assert state["patch_embedding.weight"].shape == tuned["patch_embedding.weight"].shape
+    assert any(t.ndim == 2 and t.shape[-1] % 32 == 0 for t in official_wan_names(tuned).values())  # some Q8_0
+    dest = tmp_path / "out"
+    variants.convert_checkpoint("wan-2.2-t2v", path, models / "wan22-t2v", dest, "transformer")
+    converted = WanTransformer3DModel.from_pretrained(dest).state_dict()
+    assert set(converted) == set(tuned)
+    for k, v in converted.items():
+        assert torch.allclose(v.float(), tuned[k], atol=2e-2), k
+    with pytest.raises(ValueError, match="Wan 2.2 only"):
+        variants._refuse_gguf("sdxl", path)
+    variants._refuse_gguf("wan-2.2-i2v", path)
+
+
 def test_wan_fine_tune_of_one_expert_from_an_official_fp8_file(models, tmp_path):
     """A low-noise expert fine-tune in the official names, scaled fp8 (as Kijai's files): converted by diffusers'
     converter; a job with it swaps only transformer_2, and `base` restores the original exactly."""
