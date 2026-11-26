@@ -125,8 +125,14 @@ extension CharacterOptions {
         "hairStyle/short/woman": ("a short pixie cut", "long hair, shoulder-length hair"),
         "hairStyle/bob/man": ("a chin-length bob haircut", "full body, short hair"),
         "body/slim": ("a very slim, thin, slender body and a narrow frame", "muscular, abs, curvy, fat"),
+        // MiniMax has no negative prompt, and "glamour" pulls the man towards a fitness model: say what he isn't
+        "body/slim/man": ("a skinny, scrawny, lanky body: bony narrow shoulders, thin bony arms, a flat stomach with "
+                          + "no abs at all and no muscle definition, visible ribs and collarbones, a long thin neck",
+                          "muscular, abs, six-pack, bodybuilder, broad shoulders"),
         "body/athletic": ("an athletic, toned, fit body", "fat, skinny"),
         "body/average": ("an ordinary everyday body, soft untoned stomach", "abs, six-pack, muscular, fitness model, skinny"),
+        "body/average/man": ("a dad bod: an ordinary out-of-shape body with a soft round belly that hangs a little over "
+                             + "the waistband, a soft chest, no visible abs at all and no muscle definition", "abs, six-pack, muscular, fitness model, skinny"),
         "body/curvy": ("a curvy body with a full bust and full rounded hips", "skinny, abs, muscular"),
         "body/curvy/man": ("a soft, stocky body with a little belly", "abs, six-pack, muscular, fitness model"),
         "body/muscular": ("a very muscular bodybuilder physique, big muscles", "skinny, fat"),
@@ -149,6 +155,12 @@ extension CharacterOptions {
         "figure/toned-arms": ("toned, muscular arms", "thin arms"),
         "figure/broad-chest": ("a very broad, big, muscular chest", "narrow chest, skinny"),
         "figure/hairy-chest": ("a very hairy chest, thick chest hair", "hairless chest, smooth chest, bodybuilder"),
+        "clothes/streetwear/man": ("streetwear: an oversized plain black hoodie with no print or text, a silver chain, baggy olive cargo "
+                                   + "pants and chunky white high-top sneakers, no jacket, no denim",
+                                   "denim, jeans, denim jacket, shirt"),
+        "clothes/boho/man": ("boho style: a loose white linen shirt open at the chest, layered wooden bead necklaces "
+                             + "and leather bracelets, wide light beige linen trousers and leather sandals, no denim",
+                             "denim, jeans, denim jacket, t-shirt"),
         "extras/freckles": ("lots of freckles across the nose and cheeks", ""),
         "extras/tattoos": ("sleeve tattoos covering both arms and a neck tattoo", ""),
         "extras/piercings": ("a big silver nose ring, a lip ring and several silver ear piercings", "no jewelry"),
