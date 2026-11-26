@@ -112,6 +112,13 @@ struct NodeExtras: View {
                      + "With a built-in voice, the description sets the delivery (\"excited, whispering\").")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
+            if node.type == "RemoteH3Image" {
+                Text("A picture from the prompt, or from up to four reference pictures named in the prompt as "
+                     + "<Picture 1>…<Picture 4> (\"the woman in <Picture 1> sits in the café of <Picture 2>\"). It "
+                     + "follows long, detailed descriptions best. Six fixed steps, no negative prompt. MiniMax H3 "
+                     + "Image's licence excludes the US, EU, UK and Korea without MiniMax's own licence.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
             if node.type == "RemoteH3Video" || node.type == "RemoteH3References" {
                 Text((node.type == "RemoteH3Video"
                       ? "A clip with its own sound (dialogue, effects, ambience), 5–15 s at 24 fps: from the prompt "

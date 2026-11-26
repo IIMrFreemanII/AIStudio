@@ -2,8 +2,8 @@ import Foundation
 import GraphRuntime
 import MovieCore
 
-/// What a character's photos are drawn with: the prompts (by the character's art style) and the graph (SDXL or
-/// Chroma on a Cloud GPU server, by the character's art model).
+/// What a character's photos are drawn with: the prompts (by the character's art style) and the graph (SDXL, Chroma or
+/// MiniMax H3 Image on a Cloud GPU server, by the character's art model).
 public enum CharacterArt {
     public static let photoSize = (width: 832, height: 1216)
     public static let faceStrength = 0.6
@@ -116,13 +116,21 @@ public enum CharacterArt {
         switch family {
         case .sdxl: "sdxl"
         case .chroma: "chroma"
+        case .minimax: "h3-image"
         }
     }
+
+    /// MiniMax H3 Image keeps the face by editing: the face reference goes in as <Picture 1> and the prompt says so.
+    public static let minimaxFaceLead = "The same person as in <Picture 1>, with exactly that face and hair: "
 
     /// The graph: Load Image (face) → SDXL or Chroma (Cloud GPU) ← a chain of `loras` LoRA nodes → Preview Image.
     /// Chroma runs in full (40 steps with guidance), not Flash: only guidance uses the negative prompt, which holds
     /// AgeGuard's terms.
+    ///
+    /// MiniMax H3 Image: Load Image (face) → its picture 1; no negative prompt (AgeGuard's age and youth-term checks
+    /// still apply to the prompt), no fine-tunes or LoRAs.
     public static func template(_ family: ArtModel.Family = .sdxl, loras: Int) -> MovieTemplate {
+        if family == .minimax { return minimaxTemplate() }
         let n = min(max(loras, 0), maxLoRAs)
         var nodes = [GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))],
                                position: GraphPoint(x: 40, y: 40))]
@@ -142,6 +150,8 @@ public enum CharacterArt {
             gen["fast"] = .value(.bool(false))
             gen["steps"] = .value(.int(0))  // automatic: 40 at guidance 3
             gen["guidance"] = .value(.double(0))
+        case .minimax:
+            break  // minimaxTemplate()
         }
         for k in stride(from: 1, through: n, by: 1) {
             var inputs: [String: NodeInput] = ["lora": .value(.string("")), "strength": .value(.double(1))]
@@ -163,13 +173,31 @@ public enum CharacterArt {
         return MovieTemplate(name: templateName, graph: Graph(nodes: nodes), slots: slots)
     }
 
+    private static func minimaxTemplate() -> MovieTemplate {
+        let gen: [String: NodeInput] = [
+            "prompt": .value(.string("")), "seed": .value(.int(0)), "width": .value(.int(photoSize.width)),
+            "height": .value(.int(photoSize.height)), "server": .value(.string("")), "canvas_mp": .value(.double(4)),
+            "image1": .link(node: "face", output: "image"),
+        ]
+        let nodes = [
+            GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))], position: GraphPoint(x: 40, y: 40)),
+            GraphNode(id: "image", type: "RemoteH3Image", inputs: gen, position: GraphPoint(x: 400, y: 60)),
+            GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
+                      position: GraphPoint(x: 780, y: 80)),
+        ]
+        var slots: [String: MovieTemplate.Slot] = ["face": .init(node: "face", input: "path")]
+        for name in ["prompt", "seed", "width", "height", "server"] { slots[name] = .init(node: "image", input: name) }
+        return MovieTemplate(name: templateName, graph: Graph(nodes: nodes), slots: slots)
+    }
+
     /// The values to bind for one picture. `face` nil: the face node is removed (portrait candidates).
     /// `extraNegative` is added to the character's negative prompt (the option example photos use it).
     public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?,
                               extraNegative: String = "") -> MovieArt.Render {
         let negative = extraNegative.isEmpty ? negative(c) : negative(c) + ", " + extraNegative
+        let lead = c.artModel.family == .minimax && face != nil ? minimaxFaceLead : ""
         var values: [String: JSONValue] = [
-            "prompt": .string(prompt), "negative": .string(negative), "seed": .int(seed),
+            "prompt": .string(lead + prompt), "negative": .string(negative), "seed": .int(seed),
             "width": .int(photoSize.width), "height": .int(photoSize.height), "server": .string(server),
             "model": .string(c.artModel.variant ?? ""), "face_strength": .double(faceStrength),
         ]

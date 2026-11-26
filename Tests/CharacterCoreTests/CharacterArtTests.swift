@@ -108,6 +108,29 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(CharacterArt.task(.chroma) == "chroma" && CharacterArt.task(.sdxl) == "sdxl")
     }
 
+    @Test func minimaxTemplateEditsFromTheFaceAndSkipsNegativeAndLoRAs() throws {
+        var c = hero()
+        c.artModel = ArtModel(family: .minimax)
+        c.loras = [CharacterLoRA(lora: "a")]
+        let face = URL(fileURLWithPath: "/tmp/f.png")
+        let r = CharacterArt.render(c, prompt: "Photo of her", seed: 5, server: "s", face: face)
+        let t = CharacterArt.template(.minimax, loras: 1)
+        let g = try t.bind(r.values, optional: Set(r.values.keys), remove: r.unusedPictures)
+        #expect(g["image"]?.type == "RemoteH3Image" && g.nodes.allSatisfy { $0.type != "RemoteLoRA" })
+        #expect(g["image"]?.inputs["image1"] == .link(node: "face", output: "image"))
+        #expect(g["image"]?.inputs["negative"] == nil && g["image"]?.inputs["model"] == nil)
+        #expect(g["image"]?.inputs["prompt"] == .value(.string(CharacterArt.minimaxFaceLead + "Photo of her")))
+        #expect(g["face"]?.inputs["path"] == .value(.string(face.path)))
+        // Portrait candidates have no face: no <Picture 1> in the prompt, and image1 unwired.
+        let p = CharacterArt.render(c, prompt: "Photo of her", seed: 5, server: "s", face: nil)
+        let pg = try t.bind(p.values, optional: Set(p.values.keys), remove: p.unusedPictures)
+        #expect(pg["face"] == nil && pg["image"]?.inputs["image1"] == nil)
+        #expect(pg["image"]?.inputs["prompt"] == .value(.string("Photo of her")))
+        #expect(CharacterArt.task(.minimax) == "h3-image")
+        #expect(!ArtModel.Family.minimax.takesLibraryModels && ArtModel.Family.chroma.takesLibraryModels)
+        #expect(ArtModel.Family.allCases.map(\.title) == ["SDXL", "Chroma", "MiniMax"])
+    }
+
     @Test func loraDecodesOldLinkKey() throws {
         let old = try JSONDecoder().decode(CharacterLoRA.self, from: Data(#"{"link": "x", "strength": 0.5}"#.utf8))
         #expect(old == CharacterLoRA(lora: "x", strength: 0.5))

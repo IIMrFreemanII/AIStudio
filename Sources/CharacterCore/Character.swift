@@ -115,7 +115,21 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
 
 /// Which image model draws the character.
 public struct ArtModel: Codable, Equatable, Sendable, Hashable {
-    public enum Family: String, Codable, Sendable, CaseIterable { case sdxl, chroma }
+    public enum Family: String, Codable, Sendable, CaseIterable {
+        case sdxl, chroma, minimax
+
+        /// The name in pickers.
+        public var title: String {
+            switch self {
+            case .sdxl: "SDXL"
+            case .chroma: "Chroma"
+            case .minimax: "MiniMax"
+            }
+        }
+
+        /// Fine-tunes and LoRAs from the Models library (MiniMax H3 Image takes neither).
+        public var takesLibraryModels: Bool { self != .minimax }
+    }
     public enum Style: String, Codable, Sendable, CaseIterable { case photoreal, anime }
     public var family: Family = .sdxl
     public var style: Style = .photoreal

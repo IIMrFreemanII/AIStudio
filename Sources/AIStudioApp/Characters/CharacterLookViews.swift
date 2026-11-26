@@ -179,7 +179,7 @@ private struct PortraitThumb: View {
     }
 }
 
-/// The image model (SDXL or Chroma, and a fine-tune of it), art style and LoRAs their photos use, and what one photo
+/// The image model (SDXL, Chroma or MiniMax, and a fine-tune of the first two), art style and LoRAs their photos use, and what one photo
 /// may cost without asking.
 struct CharacterPhotosSection: View {
     @Environment(AppModel.self) private var model
@@ -197,9 +197,9 @@ struct CharacterPhotosSection: View {
         MGSection("Photos") {
             MGFormRow("Image model") {
                 MGSegmentedPicker(selection: modelFamily,
-                                  options: ArtModel.Family.allCases.map { ($0, $0 == .chroma ? "Chroma" : "SDXL") })
-                    .frame(width: 200)
-                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo")
+                                  options: ArtModel.Family.allCases.map { ($0, $0.title) })
+                    .frame(width: 270)
+                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo; MiniMax H3 Image is the most detailed and realistic and keeps the face by editing the portrait, but runs on an H200 (no fine-tunes or LoRAs)")
             }
             MGFormRow("Style") {
                 MGSegmentedPicker(selection: $c.artModel.style,
@@ -207,12 +207,14 @@ struct CharacterPhotosSection: View {
                     .frame(width: 200)
                     .mgHelp("Photoreal looks like a camera picture; anime like a drawing")
             }
-            MGFormRow("Model") {
-                MGPicker(selection: variant, options: variantOptions, maxWidth: 260)
-                    .mgHelp("The \(familyName) fine-tune that draws their photos (from the Models library)")
+            if c.artModel.family.takesLibraryModels {
+                MGFormRow("Model") {
+                    MGPicker(selection: variant, options: variantOptions, maxWidth: 260)
+                        .mgHelp("The \(familyName) fine-tune that draws their photos (from the Models library)")
+                }
+                ForEach(Array(c.loras.enumerated()), id: \.offset) { i, _ in loraRow(i) }
             }
-            ForEach(Array(c.loras.enumerated()), id: \.offset) { i, _ in loraRow(i) }
-            if c.loras.count < CharacterArt.maxLoRAs {
+            if c.artModel.family.takesLibraryModels && c.loras.count < CharacterArt.maxLoRAs {
                 HStack {
                     Button("Add LoRA") { c.loras.append(CharacterLoRA(lora: loras.first?.id ?? "")) }
                         .buttonStyle(.mg(.bordered)).controlSize(.small).disabled(loras.isEmpty)

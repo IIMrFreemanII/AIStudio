@@ -271,6 +271,8 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.libraryFamilies["RemoteSD35"] == "sd3.5-large")
         #expect(RemoteNodes.libraryFamilies["RemoteSDXL"] == "sdxl")
         #expect(RemoteNodes.taskID(forNodeType: "RemoteChroma") == "chroma")
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteH3Image") == "h3-image")
+        #expect(RemoteNodes.types.contains("RemoteH3Image") && RemoteNodes.libraryFamilies["RemoteH3Image"] == nil)
         #expect(RemoteNodes.libraryFamilies["RemoteChroma"] == "chroma")
         #expect(RemoteNodes.baseTitle(family: "chroma") == "Chroma1-HD (base)")
         #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))

@@ -132,6 +132,11 @@ MODELS: dict[str, dict] = {
             "fl2v.safetensors": "minimax_h3_fl2v_turbo_8step_v1.2_768p_bf16.safetensors",
             "ref2v.safetensors": "minimax_h3_ref2v_turbo_8step_v1.1_768p_bf16.safetensors"}),
     ]},
+    # MiniMax-H3-Image (Community Licence, same territories as H3): the diffusers layout only (transformer ≈ 66 GB, image
+    # VAE ≈ 2.3 GB), not the original `transformer/` and `vae/` copies. Its text encoder is H3's (read from minimax-h3).
+    "minimax-h3-image": {"repo": "MiniMaxAI/MiniMax-H3-Image", "revision": "8ced60068623def5b74b4d10558117cb61d6482d",
+                         "allow": ["model_index.json", "modular_model_index.json", "LICENSE", "processor/*",
+                                   "tokenizer/*", "scheduler/*", "transformer_diffusers/*", "vae_diffusers/*"]},
     # Research and non-commercial licence; the audio tokenizer (Qwen3-TTS's) ships inside the repo.
     "breeze-tts": {"repo": "BreezeBlue/Breeze-TTS-2", "revision": "3e28c5151381a722f1d8661b4118c298caa77aa4",
                    "allow": ["*.json", "*.safetensors", "audio_tokenizer/*", "LICENSE"]},
@@ -214,7 +219,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
-          "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3", "minimax-h3-pruned-affine"],  # not in "audio": it is non-commercial, so only on request
+          "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3", "minimax-h3-pruned-affine"],
+          "minimax-h3-image": ["minimax-h3-image"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "sd15": ["sd15"], "anima": ["anima"],
           "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face", "sd15"],
           "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"],

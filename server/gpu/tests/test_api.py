@@ -801,3 +801,43 @@ def test_h3_tasks_take_a_fine_tune_from_their_partitions_library_family():
     assert variants.components("minimax-h3") == ("transformer",)
     assert variants.components("minimax-h3-ref") == ("transformer_ref",)
     assert variants.FAMILIES["minimax-h3"] == variants.FAMILIES["minimax-h3-ref"] == "minimax-h3"
+
+
+def test_h3_image_spec_download_and_fake_run(tmp_path, monkeypatch):
+    import pytest
+    from PIL import Image
+
+    from aistudio_gpu.download import GROUPS, MODELS
+    from aistudio_gpu.tasks import CONTAINERS, TASKS, make_worker
+    from aistudio_gpu.tasks.minimax_h3_image import output_size
+
+    spec = TASKS["h3-image"]
+    assert spec.kind == "image" and spec.gpu == "H200" and "US/EU/UK/Korea" in spec.title
+    assert spec.models == ("minimax-h3-image", "minimax-h3")  # the text encoder is H3's
+    assert spec.optional_inputs == ("image1", "image2", "image3", "image4") and not spec.inputs
+    assert {"steps", "cfg", "guidance", "negative"}.isdisjoint(spec.params)  # six fixed steps, guidance baked in
+    with pytest.raises(ValueError, match="unknown parameter"):
+        spec.normalize({"prompt": "x", "negative": "blurry"})
+    p = spec.normalize({"prompt": "a lighthouse", "width": 832, "height": 1216})
+    assert output_size(p) == (832, 1216) and p["canvas_mp"] == 4.0
+    assert output_size(spec.normalize({"prompt": "x", "width": 1000, "height": 1000})) == (992, 992)
+    assert CONTAINERS["h3-image"][0] >= 163840  # ≈ 130 GB of weights in host RAM
+
+    entry = MODELS["minimax-h3-image"]
+    assert entry["revision"] == "8ced60068623def5b74b4d10558117cb61d6482d"
+    assert "transformer_diffusers/*" in entry["allow"] and "vae_diffusers/*" in entry["allow"]
+    assert "transformer/*" not in entry["allow"] and not any(a.startswith("text_encoder") for a in entry["allow"])
+    assert GROUPS["minimax-h3-image"] == ["minimax-h3-image"]
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    worker = make_worker(spec.family)
+    out = worker.run(spec, p, {}, _QuietSink(), tmp_path)
+    assert Image.open(out.path).size == (832, 1216)
+    ref = tmp_path / "ref.png"
+    Image.new("RGB", (512, 512), (0, 0, 255)).save(ref)
+    out = worker.run(spec, p, {"image1": ref, "image2": ref}, _QuietSink(), tmp_path)
+    assert Image.open(out.path).size == (832, 1216)
+    with pytest.raises(ValueError, match="in order"):
+        worker.run(spec, p, {"image2": ref}, _QuietSink(), tmp_path)
+    with pytest.raises(ValueError, match="prompt"):
+        worker.run(spec, spec.normalize({"prompt": " "}), {}, _QuietSink(), tmp_path)

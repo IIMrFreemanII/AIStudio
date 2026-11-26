@@ -59,20 +59,33 @@ extension CharacterOptions {
     public static func examplePrompt(category: String, option: String, gender: String) -> String {
         guard photoCategories.contains(category),
               let phrase = Self.category(category)?.options.first(where: { $0.id == option })?.phrase else { return "" }
-        let hair = gender == "woman" ? "shoulder-length brown hair" : "short brown hair"
-        let underwear = gender == "woman" ? "wearing a plain black bra and briefs" : "wearing plain black boxer briefs"
-        var who = "Photo of a 30-year-old adult \(gender)"
+        // The models: a sexy 21-year-old blonde woman with fair skin and light makeup; a handsome 30-year-old
+        // brown-haired man. Both look like attractive glamour models whatever body the option shows.
+        let woman = gender == "woman"
+        let hair = woman ? "long blonde hair" : "short brown hair"
+        var base = woman ? "fair skin, European features, a beautiful face, full lips"
+            : "a handsome face, strong jawline, light stubble"
+        if woman && option != "bold-makeup" { base += ", natural light makeup" }
+        base += woman ? ", sexy and alluring, confident seductive look" : ", sexy and attractive, confident smoldering look"
+        let underwear = woman ? "wearing only a black lace lingerie set, bra and panties"
+            : "shirtless, wearing only fitted black boxer briefs"
+        let top = woman ? "fitted low-cut black top" : "fitted black t-shirt"
+        var who = "Glamour photo of a \(exampleAge(gender: gender))-year-old adult \(gender)"
         if let e = emphasis(category: category, option: option, gender: gender) { who += " with \(e.text)" }
+        who += ", \(base)"
         let body: String
         switch category {
         case "hairStyle":
-            body = "\(who), brown hair, \(phrase), head-and-shoulders portrait, plain gray t-shirt"
+            body = "\(who), \(woman ? "blonde" : "brown") hair, \(phrase), head-and-shoulders portrait, \(top)"
         case "extras":
-            let framing = option == "tattoos" ? "waist-up portrait, arms visible, plain black tank top"
-                : "close-up portrait of the face, plain gray t-shirt"
+            let framing = switch option {
+            case "tattoos": "waist-up portrait, arms visible, \(woman ? "black tank top" : "shirtless")"
+            case "piercings": "close-up of the face and ears, \(top)"
+            default: "close-up portrait of the face, \(top)"
+            }
             body = "\(who), \(hair), \(phrase), \(framing)"
         case "body", "bust", "figure":
-            body = "\(who), \(hair), \(phrase), full body, standing, facing the camera, \(underwear)"
+            body = "\(who), \(hair), \(phrase), full body, standing in a confident alluring pose, facing the camera, \(underwear)"
         case "butt":
             body = "\(who), \(hair), \(phrase), \(underwear), full body seen from behind, looking over the shoulder"
         case "clothes":
@@ -80,15 +93,19 @@ extension CharacterOptions {
         default:
             return ""
         }
-        return body + ", plain light gray studio background, soft light."
+        return body + ", plain light gray studio background, flattering soft light."
     }
+
+    /// The model's age in the example photos: 21 for the woman, 30 for the man.
+    public static func exampleAge(gender: String) -> Int { gender == "woman" ? 21 : 30 }
 
     /// Extra negative-prompt words for an example: never nude for the body types (they're shown in underwear), plus
     /// what pushes away from the neighbouring options.
     public static func exampleNegative(category: String, option: String, gender: String) -> String {
         var words: [String] = []
         if ["body", "bust", "butt", "figure"].contains(category) {
-            words.append("nude, naked, nipples, topless, explicit, shirt, t-shirt")
+            words.append("nude, naked, nipples, topless, explicit, shirt, t-shirt, shorts, sneakers, "
+                         + "outdoors, street, building, cropped")
         }
         words.append("black and white, monochrome")
         if let e = emphasis(category: category, option: option, gender: gender), !e.negative.isEmpty {
@@ -118,7 +135,7 @@ extension CharacterOptions {
         "bust/small": ("small breasts, a flat chest, A cup", "large breasts, big breasts, cleavage"),
         "bust/medium": ("medium breasts, B cup", "huge breasts, flat chest"),
         "bust/large": ("large breasts, D cup, cleavage", "small breasts, flat chest"),
-        "bust/very-large": ("huge breasts, a very large bust, F cup, cleavage", "small breasts, flat chest"),
+        "bust/very-large": ("huge breasts, an extremely large bust, G cup, deep cleavage", "small breasts, medium breasts, flat chest"),
         "butt/small": ("a small flat butt and narrow hips", "big butt, wide hips, round butt"),
         "butt/perky": ("a perky, lifted, firm butt", "flat butt, saggy butt"),
         "butt/round": ("a round, full bubble butt", "flat butt"),
@@ -134,7 +151,7 @@ extension CharacterOptions {
         "extras/freckles": ("lots of freckles across the nose and cheeks", ""),
         "extras/tattoos": ("sleeve tattoos covering both arms and a neck tattoo", ""),
         "extras/piercings": ("a big silver nose ring, a lip ring and several silver ear piercings", "no jewelry"),
-        "extras/scar": ("a long, clearly visible pale scar running down the left cheek", "smooth flawless skin"),
+        "extras/scar": ("a prominent scar across the face from the eyebrow down to the cheek", "smooth flawless skin"),
         "extras/bold-makeup": ("bold makeup: bright red lipstick and dark smoky eyes", "no makeup"),
     ]
 
