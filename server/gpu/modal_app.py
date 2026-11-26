@@ -45,7 +45,7 @@ from pathlib import Path
 import modal
 
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
-from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
+from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, H3_IMAGE_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
 # GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
@@ -61,6 +61,10 @@ H3_GPUS = [GPU_H3, *H3_FALLBACKS]
 GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
 GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
 LTX_GPUS = [GPU_LTX, *LTX_FALLBACKS]
+# MiniMax H3 Image keeps all its weights on one GPU: a B200 (fallbacks only when set, and then it swaps).
+GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
+GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
+H3_IMAGE_GPUS = [GPU_H3_IMAGE, *H3_IMAGE_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")
@@ -131,6 +135,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
        "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
+       "AISTUDIO_GPU_H3_IMAGE": GPU_H3_IMAGE, "AISTUDIO_GPU_H3_IMAGE_FALLBACK": GPU_H3_IMAGE_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -605,7 +610,8 @@ h3_image_image = (modal.Image.debian_slim(python_version="3.12")
                   .env(env).add_local_python_source("aistudio_gpu"))
 
 
-@_gpu_class(image=h3_image_image, gpu=H3_GPUS, **_container("h3-image"))
+@_gpu_class(image=h3_image_image, gpu=H3_IMAGE_GPUS if len(H3_IMAGE_GPUS) > 1 else GPU_H3_IMAGE,
+            **_container("h3-image"))
 class H3Image:
     @modal.enter(snap=True)
     def imports(self):

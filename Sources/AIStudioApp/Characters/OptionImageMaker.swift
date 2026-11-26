@@ -11,11 +11,12 @@ enum OptionImageMaker {
     static let quality = 0.8
 
     /// Draws every example (or only those of `categories`, and of them only the files matching one of `files`, `*`
-    /// wildcards allowed, e.g. "body-*-woman.jpg") into `out` with `family`, skipping files already there. Returns the
+    /// wildcards allowed, e.g. "body-*-woman.jpg") into `out` with `family` (and the model's face from `faces`, by
+    /// gender, when given), skipping files already there. Returns the
     /// files it made and their summed cost; a failed example is reported through `say` and skipped.
     @MainActor
     static func make(_ model: AppModel, server: String, out: URL, categories: Set<String>? = nil,
-                     files: [String]? = nil, family: ArtModel.Family = .sdxl,
+                     files: [String]? = nil, family: ArtModel.Family = .sdxl, faces: [String: URL] = [:],
                      limit: Int? = nil, say: (String) -> Void) async -> (made: [URL], cost: Double) {
         let fm = FileManager.default
         try? fm.createDirectory(at: out, withIntermediateDirectories: true)
@@ -33,7 +34,8 @@ enum OptionImageMaker {
             let file = out.appendingPathComponent(CharacterOptions.exampleFile(category: ex.category, option: ex.option,
                                                                               gender: ex.gender))
             if fm.fileExists(atPath: file.path) { continue }
-            // A throwaway character: photoreal, no portraits (so no face reference).
+            // A throwaway character: photoreal, no portraits; the face reference is the model's (`faces` by gender:
+            // scripts/option-models), so every example shows the same woman or man. Hairstyles keep only the face.
             var c = AppModel.Companion(name: "Example", age: CharacterOptions.exampleAge(gender: ex.gender),
                                        gender: ex.gender)
             c.artModel = ArtModel(family: family)
@@ -45,7 +47,8 @@ enum OptionImageMaker {
                     c, prompt: prompt, server: server, to: full, title: "option example",
                     seed: CharacterOptions.exampleSeed(category: ex.category, gender: ex.gender),
                     extraNegative: CharacterOptions.exampleNegative(category: ex.category, option: ex.option,
-                                                                    gender: ex.gender)) { _ in }
+                                                                    gender: ex.gender),
+                    face: faces[ex.gender], keepHair: ex.category != "hairStyle") { _ in }
                 cost += spent ?? 0
                 try shrink(full, to: file)
                 made.append(file)

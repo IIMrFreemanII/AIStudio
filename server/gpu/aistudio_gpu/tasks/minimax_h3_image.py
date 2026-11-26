@@ -9,7 +9,8 @@ its own image. The checkpoint is distilled to a fixed grid of six steps with gui
 negative prompt. It generates on a canvas of at least ``canvas_mp`` megapixels (the model card: best at 4–16 MP) and
 resizes to the asked size, so a 1024×1024 picture costs about what a 2048×2048 one does.
 
-Like H3 video, the text encoder and transformer take turns on an H200 under a ``ComponentsManager``; a B200 holds both.
+All of it stays on the GPU (≈ 125 GiB: a B200). Only on a smaller card (an opt-in fallback) do the text encoder and
+transformer take turns under a ``ComponentsManager``, which costs ≈ 80 s a picture on an H200 instead of seconds.
 """
 
 from __future__ import annotations
@@ -28,6 +29,19 @@ CANVAS_MULTIPLE = 32  # VAE ×16, then 2×2 patches
 MAX_PICTURES = 4
 PICTURES = tuple(f"image{i}" for i in range(1, MAX_PICTURES + 1))
 OFFLOAD_MARGIN_GIB = 16  # a picture's activations are small (≤ 20k tokens), unlike a video's
+RESIDENT_MARGIN_GIB = 24  # what must stay free beside all the weights (activations, the VAE decode at 16 MP)
+
+
+def weight_bytes(module) -> int:
+    """Bytes of a torch module's parameters and buffers (0 for tokenizers and processors)."""
+    if not hasattr(module, "parameters"):
+        return 0
+    return sum(t.numel() * t.element_size() for t in [*module.parameters(), *module.buffers()])
+
+
+def fits_resident(weights: int, gpu_total: int) -> bool:
+    """Whether all the weights fit on the GPU at once with room to run (else the components take turns)."""
+    return gpu_total - weights >= RESIDENT_MARGIN_GIB * 2**30
 
 
 def output_size(params: dict) -> tuple[int, int]:
@@ -49,6 +63,7 @@ def check(task: TaskSpec, params: dict, inputs: dict[str, Path]) -> None:
 class H3ImageWorker:
     def __init__(self):
         self.pipe = None
+        self.resident = False
 
     def load(self, models_root: Path, status) -> None:
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -70,7 +85,18 @@ class H3ImageWorker:
                    if getattr(self.pipe, n, None) is None]
         if missing:  # load_components only warns
             raise RuntimeError(f"MiniMax H3 Image couldn't load: {', '.join(missing)}")
-        manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=OFFLOAD_MARGIN_GIB * 2**30)
+        parts = {n: getattr(self.pipe, n) for n in ("transformer", "vae", "text_encoder")}
+        weights = sum(weight_bytes(m) for m in parts.values())
+        total = torch.cuda.mem_get_info()[1]
+        self.resident = fits_resident(weights, total)
+        if self.resident:
+            status("Moving MiniMax H3 Image onto the GPU")
+            for module in parts.values():
+                module.to("cuda")
+        else:  # an opt-in smaller fallback GPU: they take turns (slow; see the module docstring)
+            print(f"h3-image: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room to run; "
+                  "offloading", flush=True)
+            manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=OFFLOAD_MARGIN_GIB * 2**30)
         self._denoise = denoise
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
@@ -118,7 +144,8 @@ class H3ImageWorker:
         path = out_dir / "result.png"
         write_png(np.asarray(image.convert("RGB")), path)
         return Output(path, "image", "image/png",
-                      extra={"gpu": gpu_name(), "workflow": "image_conditioned" if pictures else "text2image",
+                      extra={"gpu": gpu_name(), "resident": self.resident,
+                             "workflow": "image_conditioned" if pictures else "text2image",
                              "steps": STEPS, "pictures": len(pictures), "width": image.width, "height": image.height,
                              "canvasMegapixels": params["canvas_mp"],
                              "sampleSeconds": round(time.monotonic() - t0, 2)})

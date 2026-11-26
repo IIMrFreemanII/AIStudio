@@ -59,12 +59,13 @@ extension CharacterOptions {
     public static func examplePrompt(category: String, option: String, gender: String) -> String {
         guard photoCategories.contains(category),
               let phrase = Self.category(category)?.options.first(where: { $0.id == option })?.phrase else { return "" }
-        // The models: a sexy 21-year-old blonde woman with fair skin and light makeup; a handsome 30-year-old
-        // brown-haired man. Both look like attractive glamour models whatever body the option shows.
+        // The models (the user's picks, scripts/option-models): a sexy 21-year-old woman with a platinum blonde bob, green
+        // eyes and freckles; a handsome 30-year-old man with a dark brown quiff, green eyes and a short full beard. Both
+        // look like attractive glamour models whatever body the option shows.
         let woman = gender == "woman"
-        let hair = woman ? "long blonde hair" : "short brown hair"
-        var base = woman ? "fair skin, European features, a beautiful face, full lips"
-            : "a handsome face, strong jawline, light stubble"
+        let hair = woman ? "platinum blonde hair in a sleek bob with bangs" : "dark brown hair in a textured quiff"
+        var base = woman ? "fair skin, European features, a heart-shaped face, green eyes, light freckles, soft pink lips"
+            : "a handsome face, green eyes, a short neat full beard"
         if woman && option != "bold-makeup" { base += ", natural light makeup" }
         base += woman ? ", sexy and alluring, confident seductive look" : ", sexy and attractive, confident smoldering look"
         let underwear = woman ? "wearing only a black lace lingerie set, bra and panties"
@@ -76,7 +77,7 @@ extension CharacterOptions {
         let body: String
         switch category {
         case "hairStyle":
-            body = "\(who), \(woman ? "blonde" : "brown") hair, \(phrase), head-and-shoulders portrait, \(top)"
+            body = "\(who), \(woman ? "platinum blonde" : "dark brown") hair, \(phrase), head-and-shoulders portrait, \(top)"
         case "extras":
             let framing = switch option {
             case "tattoos": "waist-up portrait, arms visible, \(woman ? "black tank top" : "shirtless")"
