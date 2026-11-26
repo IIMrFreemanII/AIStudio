@@ -956,7 +956,12 @@ enum Snapshot {
                 id: "hands", kind: .lora, family: "flux.1", title: "Hands XL · Hand F1D v2.0",
                 link: "https://civitai.com/models/200255?modelVersionId=804967", source: nil, fileName: "Hand v2.safetensors",
                 sha256: nil, bytes: 343_805_376, baseModel: "Flux.1 D", triggerWords: ["Detailed hand", "Hand", "Perfect hand"],
-                thumbnail: "library/thumbs/hands.png", localFile: nil)])
+                thumbnail: "library/thumbs/hands.png", localFile: nil),
+                LibraryEntry(
+                id: "motion-booster", kind: .lora, family: "minimax-h3", title: "H3 Motion Booster (V0.2)",
+                link: "https://civitai.com/models/2840146?modelVersionId=3228867", source: nil,
+                fileName: "H3_Motion_BoosterV2.safetensors", sha256: nil, bytes: 150_000_000, baseModel: "MiniMax H3",
+                triggerWords: [], thumbnail: nil, localFile: nil)])
             lib.reload()
             let doc = model.openPreset(preset)
             model.setLiteral(.string("hands"), node: "lora1", input: "lora", undoManager: nil)
@@ -966,7 +971,19 @@ enum Snapshot {
             await render(model, to: dir.appendingPathComponent("55-lora-library.png"))
             model.selection = []
             model.closeTab(doc.id)
-            // 56. The Models window with that LoRA in its LoRAs section.
+            // 57. A MiniMax H3 LoRA picked for the H3 video node (its menu lists only MiniMax H3 LoRAs).
+            if let h3 = model.preset(id: "cloud-h3-t2v") {
+                let doc = model.openPreset(h3)
+                model.addCloudLoRA(nil, strength: 0.8, undoManager: nil)
+                model.setLiteral(.string("motion-booster"), node: "lora1", input: "lora", undoManager: nil)
+                model.selection = ["lora1"]
+                panel(nil)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                await render(model, to: dir.appendingPathComponent("57-h3-lora.png"))
+                model.selection = []
+                model.closeTab(doc.id)
+            }
+            // 56. The Models window with those LoRAs in its LoRAs section.
             if let st = model.store {
                 await render(ModelManagerView().mgWindow("Models").environment(model).environment(st),
                              to: dir.appendingPathComponent("56-models-loras.png"), size: CGSize(width: 760, height: 1400))

@@ -657,7 +657,9 @@ def test_fake_h3_makes_24fps_video_with_stereo_sound_on_its_canvas(tmp_path, mon
 
     monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
     info = {t: TASKS[t] for t in ("h3-video", "h3-references")}
-    assert info["h3-video"].gpu == "H200" and info["h3-video"].optional_inputs == ("image", "last_image")
+    assert info["h3-video"].gpu == "H200"
+    assert info["h3-video"].optional_inputs == ("image", "last_image", "lora1", "lora2", "lora3", "lora4")
+    assert "lora4" in info["h3-references"].optional_inputs and "lora1_strength" in info["h3-references"].params
     assert info["h3-references"].inputs == ("image1",) and "audio3" in info["h3-references"].optional_inputs
     assert "US/EU/UK/Korea" in info["h3-video"].title
 

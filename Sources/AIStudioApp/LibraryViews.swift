@@ -118,7 +118,7 @@ struct LibraryRow: View {
         let mac = lib.macState(item)
         MGMenuItem.button("Rename…") { newTitle = item.title; renaming = true }
         MGMenuItem.menu("Family") {
-            for f in [nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v"] as [String?] {
+            for f in [nil] + LoRASources.families.map({ Optional($0) }) {
                 MGMenuItem.button(LoRASources.familyName(f), checked: item.family == f) { lib.setFamily(item.id, f) }
             }
         }
@@ -294,8 +294,7 @@ struct LibraryAddSheet: View {
             if canChooseDetails {
                 MGFormRow("Name") { TextField("Name", text: $title).frame(width: 300) }
                 MGFormRow("Family") {
-                    MGPicker(selection: $family, options: ([nil, "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "chroma",
-                                                            "wan-2.2-t2v", "wan-2.2-i2v"] as [String?]).map { ($0, LoRASources.familyName($0)) })
+                    MGPicker(selection: $family, options: ([nil] + LoRASources.families.map { Optional($0) }).map { ($0, LoRASources.familyName($0)) })
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Install on").font(.mgSubheadline).foregroundStyle(MG.secondaryLabel)
@@ -321,7 +320,7 @@ struct LibraryAddSheet: View {
                             .foregroundStyle(MG.warning).fixedSize(horizontal: false, vertical: true)
                     }
                     if isModel && family == nil {
-                        Text("Pick the family: FLUX.1, Qwen-Image (cloud), Qwen-Image 2.1 (this Mac), SDXL (cloud), SD 3.5 Large (cloud), Chroma (cloud) or Wan 2.2.")
+                        Text("Pick the family: FLUX.1, Qwen-Image (cloud), Qwen-Image 2.1 (this Mac), SDXL (cloud), SD 3.5 Large (cloud), Chroma (cloud), Wan 2.2 or MiniMax H3 (cloud).")
                             .foregroundStyle(MG.warning)
                     }
                     ForEach(model.connections.gpuServers) { s in
@@ -412,9 +411,9 @@ struct LibraryAddSheet: View {
             let r = try await LoRASources.resolve(text, fits: { LoRASources.family(forBaseModel: $0) != nil })
             lookup = .found(r)
             title = (r.title ?? r.fileName).components(separatedBy: " · ").first ?? r.fileName
-            family = r.baseModel.flatMap(LoRASources.family(forBaseModel:))
+            family = LoRASources.family(for: r)
             if r.baseModel != nil, family == nil {
-                lookup = .failed("This \(r.kind == .lora ? "LoRA" : "model") is for \(r.baseModel!), which the app doesn't run (FLUX.1, Qwen-Image, SDXL, SD 3.5, Chroma and Wan 2.2 do).")
+                lookup = .failed("This \(r.kind == .lora ? "LoRA" : "model") is for \(r.baseModel!), which the app doesn't run (FLUX.1, Qwen-Image, SDXL, SD 3.5, Chroma, Wan 2.2 and MiniMax H3 do).")
                 return
             }
             if r.kind == .model { onMac = LinkLibrary.macModelRefusal(family) == nil }

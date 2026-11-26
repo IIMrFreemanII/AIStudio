@@ -221,7 +221,8 @@ public enum LoRASources {
     /// The app's family for a Civitai base model: "Flux.1 D" → `flux.1`, "Qwen" → `qwen-image` (the original 20B
     /// model), "Wan Video 2.2 T2V-A14B" → `wan-2.2-t2v`, … ; `sdxl` for SDXL and its
     /// SDXL-based relatives (Pony, Illustrious, NoobAI), `sd3.5-large` / `sd3.5-medium` for SD 3.5, `chroma` for Chroma
-    /// (Flux-based, but FLUX.1 LoRAs and fine-tunes don't fit it); nil for families the app
+    /// (Flux-based, but FLUX.1 LoRAs and fine-tunes don't fit it), `minimax-h3` for "MiniMax H3" (the video
+    /// partition; `family(for:)` tells the references partition apart); nil for families the app
     /// doesn't run ("Pony V7" is AuraFlow-based).
     public static func family(forBaseModel base: String) -> String? {
         let b = base.lowercased()
@@ -234,7 +235,28 @@ public enum LoRASources {
         if b.hasPrefix("sdxl") || b == "pony" || b.hasPrefix("illustrious") || b.hasPrefix("noobai") { return "sdxl" }
         if b.hasPrefix("sd 3.5") { return b.contains("medium") ? "sd3.5-medium" : "sd3.5-large" }
         if b.hasPrefix("chroma") { return "chroma" }
+        if b.contains("minimax") && b.contains("h3") { return "minimax-h3" }
         return nil
+    }
+
+    /// The families a library entry can have, in menu order.
+    public static let families: [String] = [
+        "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v",
+        "minimax-h3", "minimax-h3-ref",
+    ]
+
+    /// The family of a resolved file: its base model's, except that a MiniMax H3 file made for the references
+    /// partition (its file name or version name says REF2V / REF2VID / REF2VA, and not FL2V) is `minimax-h3-ref`.
+    public static func family(for remote: LoRARemote) -> String? {
+        guard let base = remote.baseModel, let f = family(forBaseModel: base) else { return nil }
+        guard f == "minimax-h3" else { return f }
+        let file = remote.fileName.lowercased()
+        if file.contains("ref2v") || file.contains("ref2vid") { return "minimax-h3-ref" }
+        let title = (remote.title ?? "").lowercased()
+        let version = title.range(of: " · ").map { String(title[$0.upperBound...]) } ?? title
+        if (version.contains("ref2v") || version.contains("ref2vid") || version.contains("ref2va")),
+           !version.contains("fl2v") { return "minimax-h3-ref" }
+        return "minimax-h3"
     }
 
     /// Readable names for the app's families.
@@ -249,6 +271,8 @@ public enum LoRASources {
         case "chroma"?: return "Chroma"
         case "wan-2.2-t2v"?: return "Wan 2.2 T2V"
         case "wan-2.2-i2v"?: return "Wan 2.2 I2V"
+        case "minimax-h3"?: return "MiniMax H3"
+        case "minimax-h3-ref"?: return "MiniMax H3 References"
         default: return "Other"
         }
     }

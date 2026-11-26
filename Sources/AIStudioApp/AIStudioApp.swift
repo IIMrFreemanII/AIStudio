@@ -190,6 +190,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let file = SmokeTest.argument("--install-links") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await InstallLinks.run(AppDelegate.model!, file: file, server: SmokeTest.argument("--install-server"))
+                exit(ok ? 0 : 1)
+            }
+        }
         if let link = SmokeTest.argument("--smoke-library-model") {
             Task { @MainActor in
                 while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }

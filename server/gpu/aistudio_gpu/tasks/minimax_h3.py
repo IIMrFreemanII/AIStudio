@@ -16,6 +16,13 @@ checkpoint's own shifts (12 video, 3 audio), as LightX2V's configs for these fil
 the file (FL2VA v1.2) or from its metadata (Ref2VA v1.1); diffusers' loader doesn't take the per-layer form, so
 ``prepare_lora`` folds the scale into ``lora_B`` and hands it a plain state dict.
 
+Community LoRAs (``lora1`` … ``lora4``) load through diffusers' ``MiniMaxH3LoraLoaderMixin``, which converts the
+layouts they're published in (musubi-tuner's ``lora_unet_blocks_0_attn_qkv_proj``, ai-toolkit's
+``diffusion_model.blocks.0.attn.qkv_proj``, kohya alphas, DiffSynth's interleaved QKV) onto diffusers' names and,
+since a worker holds one partition, into that one. A LoRA trained for the other partition still loads (the module
+names match) but fits worse, so the app keeps FL2VA and REF2VA LoRAs apart. They stay loaded as adapters
+(``adapters.py``) and stack on the Turbo LoRA when ``fast`` is on.
+
 Attention is PyTorch's default: the faster ``_flash_3_hub`` backend fetches its kernels from the Hub at run time, which
 the containers (``HF_HUB_OFFLINE``) don't do.
 """
@@ -30,6 +37,7 @@ import numpy as np
 
 from ..media import read_wav, resample, write_mp4, write_wav
 from . import Output, TaskSpec
+from .adapters import AdapterSlots
 
 FPS = 24
 CHUNK, KEEP = 17, 5  # the video VAE decodes 17·n + 5 frames
@@ -139,10 +147,29 @@ def offload_margin(total_bytes: int) -> int:
     return max(12 * 2**30, int(total_bytes - RESIDENT_GIB * 2**30))
 
 
-class H3Worker:
+class H3Worker(AdapterSlots):
+    family = "minimax-h3"
+    title = "MiniMax H3"
+
     def __init__(self, workflow: str):
         self.workflow = workflow  # "t2va" (serves fl2va too) or "ref2va": which transformer partition it loads
+        self.components = ("transformer_ref",) if workflow == "ref2va" else ("transformer",)
+        self.dtype = None
         self.pipe = None
+        self._init_slots()
+
+    def _load_lora(self, name: str, parts: list[tuple[Path, str]], slot: int) -> None:
+        """Loads a community LoRA, then checks it took: diffusers only warns (and loads nothing) when no key names an
+        H3 module. Its factors go to bf16 (many files are fp32, which would run the LoRA path in fp32)."""
+        import torch
+
+        super()._load_lora(name, parts, slot)
+        if not any(name in names for names in self.pipe.get_list_adapters().values()):
+            raise ValueError(f"LoRA {slot} doesn't fit {self.title}: none of its layers are MiniMax H3's")
+        for component in self.components:
+            for n, p in getattr(self.pipe, component).named_parameters():
+                if ".lora_" in n and p.dtype == torch.float32:
+                    p.data = p.data.to(torch.bfloat16)
 
     def load(self, models_root: Path, status) -> None:
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")  # read at the first CUDA allocation
@@ -152,6 +179,8 @@ class H3Worker:
         from safetensors import safe_open
         from safetensors.torch import load_file
 
+        self.models_root = models_root
+        self.dtype = torch.bfloat16
         root = models_root / "minimax-h3"
         status("Loading MiniMax H3")
         manager = ComponentsManager()
@@ -175,7 +204,8 @@ class H3Worker:
         check(task, params, inputs)
         fast = params["fast"]
         steps = params["steps"] or (FAST_STEPS if fast else FULL_STEPS)
-        (self.pipe.enable_lora if fast else self.pipe.disable_lora)()
+        # The Turbo LoRA when fast, plus this job's LoRAs (loaded once, then only switched).
+        loras = self._use_loras(params, inputs, sink, pinned={"turbo": 1.0} if fast else None)
         frames_wanted = num_frames(params["seconds"])
         kwargs: dict = {"prompt": params["prompt"].strip(), "num_frames": frames_wanted,
                         "num_inference_steps": steps + 1, "output_type": "np",
@@ -246,7 +276,8 @@ class H3Worker:
         path = out_dir / "result.mp4"
         write_mp4(frames, path, fps=FPS, audio=sound)
         return Output(path, "video", "video/mp4",
-                      extra={"gpu": gpu_name(), "workflow": workflow, "fast": fast, "steps": steps, "frames": int(len(frames)),
+                      extra={"gpu": gpu_name(), "workflow": workflow, "fast": fast, "steps": steps, "loras": loras,
+                             "frames": int(len(frames)),
                              "width": int(frames.shape[2]), "height": int(frames.shape[1]),
                              "seconds": round(len(frames) / FPS, 3), "sampleRate": rate,
                              "audioChannels": int(audio.shape[0]), "sampleSeconds": sample_seconds,

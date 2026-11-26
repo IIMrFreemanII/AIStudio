@@ -241,6 +241,46 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))
     }
 
+    @Test func miniMaxH3LoRAFamilies() throws {
+        #expect(LoRASources.family(forBaseModel: "MiniMax H3") == "minimax-h3")
+        #expect(LoRASources.familyName("minimax-h3") == "MiniMax H3")
+        #expect(LoRASources.familyName("minimax-h3-ref") == "MiniMax H3 References")
+        #expect(LoRASources.families.contains("minimax-h3") && LoRASources.families.contains("minimax-h3-ref"))
+        func remote(_ base: String, file: String, title: String?) -> LoRARemote {
+            LoRARemote(host: .civitai, downloadURL: URL(string: "https://civitai.com/api/download/models/1")!,
+                       fileName: file, title: title, baseModel: base, cacheName: "c.safetensors")
+        }
+        #expect(LoRASources.family(for: remote("MiniMax H3", file: "bounceV07-000230_Intense.safetensors",
+                                               title: "Bouncing Boobs - LTX / Wan / H3 · H3 REF2VA v0.7")) == "minimax-h3-ref")
+        #expect(LoRASources.family(for: remote("MiniMax H3", file: "ref2VA_Motion_v2.safetensors", title: nil)) == "minimax-h3-ref")
+        #expect(LoRASources.family(for: remote("MiniMax H3", file: "MysticXXX_MMH3-V5.safetensors",
+                                               title: "[MMH3] Mystic XXX · v5.0 (FL2VA & REF2VA)")) == "minimax-h3")
+        #expect(LoRASources.family(for: remote("MiniMax H3", file: "x.safetensors", title: "X · H3 FL2VA v0.7")) == "minimax-h3")
+        #expect(LoRASources.family(for: remote("Flux.1 D", file: "ref2v.safetensors", title: nil)) == "flux.1")
+        #expect(LoRASources.family(for: remote("Pony V7", file: "x.safetensors", title: nil)) == nil)
+    }
+
+    @Test func miniMaxH3NodesTakeLoRAs() throws {
+        func lora(_ base: String?) -> CloudLoRA {
+            CloudLoRA(source: .file(URL(fileURLWithPath: "/x.safetensors")), strength: 0.7, baseModel: base)
+        }
+        try lora("MiniMax H3").checkFits("minimax-h3")
+        try lora("MiniMax H3").checkFits("minimax-h3-ref")
+        #expect(throws: LoRASourceError.self) { try lora("SDXL 1.0").checkFits("minimax-h3") }
+        #expect(throws: LoRASourceError.self) { try lora("SDXL 1.0").checkFits("minimax-h3-ref") }
+        #expect(throws: LoRASourceError.self) { try lora("MiniMax H3").checkFits("sdxl") }
+        var params: [String: Any] = [:]
+        let (files, _) = try CloudLoRA.attach([lora("MiniMax H3")], family: "minimax-h3", to: &params)
+        #expect(files.keys.sorted() == ["lora1"])
+        #expect(params["lora1_strength"] as? Double == 0.7)
+        #expect(params["lora1_expert"] == nil)
+        #expect(RemoteNodes.libraryFamilies["RemoteH3Video"] == "minimax-h3")
+        #expect(RemoteNodes.libraryFamilies["RemoteH3References"] == "minimax-h3-ref")
+        #expect(RemoteNodes.baseTitle(family: "minimax-h3-ref") == "MiniMax H3 (base)")
+        #expect(RemoteH3VideoNode.schema.inputs.contains { $0.name == "loras" })
+        #expect(RemoteH3ReferencesNode.schema.inputs.contains { $0.name == "loras" })
+    }
+
     @Test func huggingFaceTreeAndRedirectHeaders() throws {
         let tree = """
         [{"type": "file", "path": "README.md", "size": 10},
