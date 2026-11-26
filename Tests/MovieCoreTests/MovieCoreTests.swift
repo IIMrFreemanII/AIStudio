@@ -257,6 +257,9 @@ private func castMovie() -> MovieProject {
     let edit = try #require(graph["edit"])
     #expect(edit.inputs["image1"] == .link(node: "picture1", output: "image") && edit.inputs["image2"] == nil)
     #expect(edit.inputs["seed"] == .value(.int(5)) && edit.inputs["server"] == .value(.string("gpu1")))
+    // In full, not Lightning: only guidance applies the style's negative.
+    #expect(edit.inputs["fast"] == .value(.bool(false)))
+    #expect(edit.inputs["negative"] == .value(.string(MovieStyle.named(m.style).negative)))
     #expect(graph["picture1"]?.inputs["path"] == .value(.string("/movies/x/cast/mara-1.png")))
     // Sheets: Qwen-Image at its wide size.
     let sheet = MovieArt.sheetRender(m.characters[0], movie: m, seed: 1, server: "")
@@ -283,7 +286,7 @@ private func castMovie() -> MovieProject {
 @Test func gpuTimingsLearnAndEstimate() throws {
     var t = GPUTimings()
     // Defaults until a job ran, scaled by pixels.
-    #expect(t.seconds(task: "qwen-image-edit", megapixels: 2) == 16 && t.loadSeconds(task: "qwen-image-edit") == 60)
+    #expect(t.seconds(task: "qwen-image-edit", megapixels: 2) == 150 && t.loadSeconds(task: "qwen-image-edit") == 60)
     #expect(t.seconds(task: "unknown", megapixels: 1) == 60)
     let now = Date()
     t.record(task: "qwen-image-edit", megapixels: 1.03, gpuSeconds: 8, loadSeconds: 70, at: now)
