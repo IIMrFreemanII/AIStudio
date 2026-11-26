@@ -29,6 +29,7 @@ the containers (``HF_HUB_OFFLINE``) don't do.
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 from pathlib import Path
@@ -154,6 +155,9 @@ class H3Worker(AdapterSlots):
     def __init__(self, workflow: str):
         self.workflow = workflow  # "t2va" (serves fl2va too) or "ref2va": which transformer partition it loads
         self.components = ("transformer_ref",) if workflow == "ref2va" else ("transformer",)
+        self.family = "minimax-h3-ref" if workflow == "ref2va" else "minimax-h3"  # the library's (variants.py)
+        self.layout = "full"  # what the loaded transformer is: "full" (released) or "pruned" (variants.py)
+        self.manager = None
         self.dtype = None
         self.pipe = None
         self._init_slots()
@@ -176,8 +180,6 @@ class H3Worker(AdapterSlots):
         import torch
         from diffusers import ComponentsManager, ModularPipeline
         from diffusers.modular_pipelines.minimax_h3 import denoise
-        from safetensors import safe_open
-        from safetensors.torch import load_file
 
         self.models_root = models_root
         self.dtype = torch.bfloat16
@@ -188,13 +190,76 @@ class H3Worker(AdapterSlots):
         # index names the Hub repo for every component, so they load from the volume instead.
         self.pipe = ModularPipeline.from_pretrained(str(root), components_manager=manager)
         self.pipe.load_components(workflow=self.workflow, dtype=torch.bfloat16, pretrained_model_name_or_path=str(root))
+        self.manager = manager
+        self._load_turbo(status)
+        self._enable_offload()
+        self._denoise = denoise
+
+    def _load_turbo(self, status) -> None:
+        """LightX2V's Turbo LoRA for this partition, as the adapter "turbo" (the loaded transformer takes it, also a
+        pruned one: its ``load_lora_adapter`` projects the released-layout AdaLN factors)."""
+        from safetensors import safe_open
+        from safetensors.torch import load_file
+
         status("Loading the Turbo LoRA")
-        lora = root / LORAS[self.workflow]
+        lora = self.models_root / "minimax-h3" / LORAS[self.workflow]
         with safe_open(str(lora), framework="pt") as f:
             metadata = f.metadata()
         self.pipe.load_lora_weights(prepare_lora(load_file(str(lora)), metadata), adapter_name="turbo")
-        manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=offload_margin(torch.cuda.mem_get_info()[1]))
-        self._denoise = denoise
+
+    def _enable_offload(self) -> None:
+        import torch
+
+        self.manager.enable_auto_cpu_offload(device="cuda",
+                                             memory_reserve_margin=offload_margin(torch.cuda.mem_get_info()[1]))
+
+    # MARK: fine-tunes
+
+    def _use_h3_variant(self, vid: str, sink) -> None:
+        """Makes the loaded transformer this job's model: the base's, or a fine-tune's. Same layout as what's loaded
+        (full → full, pruned → pruned): its weights are copied in place (``AdapterSlots._use_variant``, the Turbo LoRA
+        and loaded LoRAs stay). A different layout: the partition's transformer is rebuilt."""
+        from .. import variants
+
+        vid = vid or "base"
+        if vid == self.variant and self.layout:
+            return
+        if vid != "base" and not self._variant_installed(vid):
+            raise ValueError(f"the model {vid!r} isn't installed on this server: install it from the app's Models window")
+        layout = "full" if vid == "base" else variants.variant_layout(self.models_root, self.family, vid)
+        if layout == self.layout:
+            return self._use_variant(vid, sink)
+        self._rebuild(vid, layout, sink)
+
+    def _rebuild(self, vid: str, layout: str, sink) -> None:
+        """Swaps this partition's transformer for another layout's. With the manager's offload off, the old module is
+        unloaded (``unload_components``: attribute to None, out of the ``ComponentsManager``, collected), the new one
+        loaded on the CPU and registered (``update_components`` adds it to the manager), the Turbo LoRA attached, and
+        offload switched on again with this worker's margin. Memory: the old transformer is gone before the new loads."""
+        import torch
+        from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Transformer3DModel
+
+        from .h3_pruned import MiniMaxH3PrunedTransformer3DModel
+
+        component = self.components[0]
+        folder = self._variant_dir(vid, component)
+        model_class = MiniMaxH3PrunedTransformer3DModel if layout == "pruned" else MiniMaxH3Transformer3DModel
+        sink.status(f"Loading {vid} ({layout} layout)" if vid != "base" else "Loading the base model (full layout)")
+        # Unknown until this finishes: a failure leaves no transformer, so the next job rebuilds whatever it needs.
+        self.variant, self.layout, self.loaded[component] = None, None, None
+        self.manager.disable_auto_cpu_offload()
+        self.pipe.unload_components(component)
+        self.loras.clear()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        model = model_class.from_pretrained(str(folder), torch_dtype=self.dtype)
+        self.pipe.update_components(**{component: model})
+        del model
+        self._load_turbo(lambda _: None)
+        self._enable_offload()
+        self.loaded[component] = folder
+        self.variant, self.layout = vid, layout
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
         import torch
@@ -204,6 +269,7 @@ class H3Worker(AdapterSlots):
         check(task, params, inputs)
         fast = params["fast"]
         steps = params["steps"] or (FAST_STEPS if fast else FULL_STEPS)
+        self._use_h3_variant(params.get("model") or "base", sink)
         # The Turbo LoRA when fast, plus this job's LoRAs (loaded once, then only switched).
         loras = self._use_loras(params, inputs, sink, pinned={"turbo": 1.0} if fast else None)
         frames_wanted = num_frames(params["seconds"])

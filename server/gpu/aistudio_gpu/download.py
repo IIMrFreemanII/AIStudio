@@ -180,6 +180,12 @@ MODELS: dict[str, dict] = {
     # like Chroma1-Flash.
     "ltx23-distilled": {"repo": "diffusers/LTX-2.3-Distilled-Diffusers",
                         "revision": "432e0d3c2d1769aaa4d295f9243f7062bf6b47ee", "allow": ["transformer/*"]},
+    # The AdaLN-pruned H3's affine maps (adaln_basis, adaln_mean: a few KB per partition) from the reference pruned
+    # checkpoint (Apache-2.0 code, MiniMax H3 licence weights), for pruned fine-tunes that leave them out.
+    "minimax-h3-pruned-affine": {"repo": "multimodalart/MiniMax-H3-Pruned",
+                                 "revision": "1a0ef5e65b639e84af81d883817968532180e9c7",
+                                 "allow": ["transformer/adaln_affine.safetensors",
+                                           "transformer_ref/adaln_affine.safetensors"]},
     # IP-Adapter "plus face" for SDXL (Apache-2.0): the ViT-H image encoder (≈ 2.5 GB) and the face adapter (≈ 0.85 GB).
     "sdxl-face": {"repo": "h94/IP-Adapter", "revision": "018e402774aeeddd60609b4ecdb7e298259dc729",
                   "allow": ["models/image_encoder/config.json", "models/image_encoder/model.safetensors",
@@ -208,7 +214,7 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
-          "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3"],  # not in "audio": it is non-commercial, so only on request
+          "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3", "minimax-h3-pruned-affine"],  # not in "audio": it is non-commercial, so only on request
           "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "sd15": ["sd15"], "anima": ["anima"],
           "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face", "sd15"],
           "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"],

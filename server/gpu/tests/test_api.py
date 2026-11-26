@@ -785,4 +785,19 @@ def test_h3_download_takes_the_diffusers_layout_and_both_turbo_loras():
     assert not any(p.startswith(("FL2VA", "Ref2VA")) for p in allow)
     assert lora_into == "turbo" and set(files) == {"fl2v.safetensors", "ref2v.safetensors"}
     assert "8step_v1.2_768p" in files["fl2v.safetensors"] and "ref2v_turbo_8step_v1.1_768p" in files["ref2v.safetensors"]
-    assert GROUPS["minimax-h3"] == ["minimax-h3"]
+    assert GROUPS["minimax-h3"] == ["minimax-h3", "minimax-h3-pruned-affine"]  # + the pruned affine maps (KB)
+
+
+def test_h3_tasks_take_a_fine_tune_from_their_partitions_library_family():
+    from aistudio_gpu import variants
+    from aistudio_gpu.tasks import TASKS
+
+    for task in ("h3-video", "h3-references"):
+        p = TASKS[task].normalize({"prompt": "a lighthouse"})
+        assert p["model"] == "base"  # the full layout stays the default
+        assert TASKS[task].normalize({"prompt": "x", "model": "eros"})["model"] == "eros"
+    assert variants.TASK_FAMILIES["h3-video"] == "minimax-h3"
+    assert variants.TASK_FAMILIES["h3-references"] == "minimax-h3-ref"
+    assert variants.components("minimax-h3") == ("transformer",)
+    assert variants.components("minimax-h3-ref") == ("transformer_ref",)
+    assert variants.FAMILIES["minimax-h3"] == variants.FAMILIES["minimax-h3-ref"] == "minimax-h3"

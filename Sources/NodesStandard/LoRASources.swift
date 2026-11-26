@@ -299,7 +299,10 @@ public enum LoRASources {
     public static func civitaiRemote(_ data: Data) throws -> LoRARemote {
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let versionID = obj["id"] as? Int else { throw LoRASourceError.noSafetensors("this Civitai model") }
-        let models = (obj["files"] as? [[String: Any]] ?? []).filter { ($0["type"] as? String ?? "Model") == "Model" }
+        // "Diffusion Model": what Civitai calls the file of a checkpoint published as the transformer alone (H3 Eros Max).
+        let models = (obj["files"] as? [[String: Any]] ?? []).filter {
+            ["Model", "Diffusion Model"].contains($0["type"] as? String ?? "Model")
+        }
         // safetensors only, and not NF4 (bitsandbytes) or GGUF; bf16/fp16 first, then fp8 (or unstated), then fp32,
         // then other precisions (ComfyUI-only int8 / int4 files); the primary file first among equals.
         func meta(_ f: [String: Any], _ k: String) -> String { ((f["metadata"] as? [String: Any])?[k] as? String ?? "").lowercased() }
