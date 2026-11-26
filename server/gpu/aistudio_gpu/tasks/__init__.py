@@ -173,9 +173,10 @@ def _wan_params() -> dict[str, Param]:
 GPU_WAN = os.environ.get("AISTUDIO_GPU_WAN", "H100")
 GPU_FLUX = os.environ.get("AISTUDIO_GPU_FLUX", "L40S")
 GPU_AUDIO = os.environ.get("AISTUDIO_GPU_AUDIO", "L40S")
-GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 62 GB conditioner take turns on it
-# Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
-GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
+# MiniMax H3 video: a partition's 61.7 GiB transformer, the 62.1 GiB conditioner and the VAEs (≈ 134 GiB) all stay on a
+# B200. No fallback by default (an H200 would swap them every clip); AISTUDIO_GPU_H3_FALLBACK=H200 accepts that.
+GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "B200")
+GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "")
 H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3)
 # MiniMax H3 Image: its 66 GB transformer, H3's 66.7 GB text encoder and the VAE (≈ 125 GiB) stay on the GPU together,
 # so a B200 (180 GB); on a smaller card they would swap for every picture (≈ 80 s and $0.12 each on an H200). No
@@ -183,16 +184,20 @@ H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) 
 GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
 GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
 H3_IMAGE_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_IMAGE_FALLBACK.split(",")) if g and g != GPU_H3_IMAGE)
-# LTX-2.3 (22B DiT, bf16, model offload: the 49 GB text encoder and the 38 GB transformer take turns on the GPU).
-GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
-GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
+# LTX-2.3 (22B DiT, bf16): the 49 GB text encoder, the base and distilled 38 GB transformers and the VAEs (≈ 119 GiB) all
+# stay on a B200. No fallback by default (a smaller card swaps them); AISTUDIO_GPU_LTX_FALLBACK=H200 accepts that.
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "B200")
+GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "")
 LTX_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_LTX_FALLBACK.split(",")) if g and g != GPU_LTX)
 # Qwen-Image's 20B transformer: bf16 on an H100 (80 GB); on a 48 GB card (L40S) its weights are stored in fp8.
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
-GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # Stable Diffusion 3.5 Large and SDXL
+GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # SDXL
+# SD 3.5 Large and Large Turbo: both 16 GB transformers stay on the GPU with the text encoders (≈ 44 GB), so an H100.
+GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
 GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")  # Stable Diffusion 1.5
 GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")  # Anima (2B)
-GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "L40S")  # Chroma1-HD: ≈ 28 GB of bf16 weights
+# Chroma1-HD and Chroma1-Flash: both 17.8 GB transformers stay on the GPU with T5 and the face adapter (≈ 48 GB): an H100.
+GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "H100")
 # The lip-sync models (LongCat-Video-Avatar's 15.8B DiT, InfiniteTalk on Wan 2.1's 14B), bf16 on an 80 GB card.
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 
@@ -316,7 +321,7 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         **_lora_params(),
     }, inputs=("image1",), optional_inputs=("image2", "image3") + LORA_INPUTS,
         models=("qwen-image-edit", "qwen-image-edit-lightning")),
-    TaskSpec("sd35-large", "Stable Diffusion 3.5 Large", "image", "sd35-large", GPU_SD, {
+    TaskSpec("sd35-large", "Stable Diffusion 3.5 Large", "image", "sd35-large", GPU_SD35, {
         "prompt": Param("string", ""),
         # Used with guidance above 1 (Large's classifier-free guidance); Turbo runs without guidance and ignores it.
         "negative": Param("string", ""),

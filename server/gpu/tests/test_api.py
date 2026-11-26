@@ -326,8 +326,8 @@ def test_ltx23_task_wiring(tmp_path, monkeypatch):
     from aistudio_gpu.tasks import CONTAINERS, GPU_PRICES, TASKS, container_price, make_worker
 
     spec = TASKS["ltx23-video"]
-    assert spec.family == "ltx23" and spec.kind == "video" and spec.models == ("ltx23",) and spec.gpu == "H100"
-    assert CONTAINERS["ltx23"] == (131072, 196608, 8) and spec.fallback_gpus == ("H200",)
+    assert spec.family == "ltx23" and spec.kind == "video" and spec.models == ("ltx23",) and spec.gpu == "B200"
+    assert CONTAINERS["ltx23"] == (131072, 196608, 8) and spec.fallback_gpus == ()  # resident: no smaller card
     assert spec.optional_inputs == ("image", "lora1", "lora2", "lora3", "lora4") and spec.inputs == ()
     p = spec.normalize({})
     assert (p["seconds"], p["width"], p["height"], p["fast"], p["steps"], p["guidance"], p["model"], p["negative"]) == (
@@ -338,7 +338,7 @@ def test_ltx23_task_wiring(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="at least 1"):
         spec.normalize({"guidance": 0.5})
     d = spec.describe(installed=True)
-    assert d["fallbackGpu"] == "H200" and d["pricePerSecond"] == GPU_PRICES["H100"] + container_price("ltx23")
+    assert "fallbackGpu" not in d and d["pricePerSecond"] == GPU_PRICES["B200"] + container_price("ltx23")
     assert variants.FAMILIES["ltx-2.3"] == "ltx23" and variants.TASK_FAMILIES["ltx23"] == "ltx-2.3"
     assert variants.components("ltx-2.3") == ("transformer",)
     models = download.MODELS
@@ -669,13 +669,13 @@ def test_resample_keeps_a_tone_and_its_length():
     assert resample(x, 48000, 16000).shape == (2, 8000)
 
 
-def test_prices_count_the_containers_memory_and_cpu_and_name_h3s_fallback():
+def test_prices_count_the_containers_memory_and_cpu_and_keep_h3_on_one_b200():
     from aistudio_gpu.tasks import CPU_PRICE, GPU_PRICES, MEMORY_PRICE, TASKS
     h3 = TASKS["h3-video"]
     container = 160 * MEMORY_PRICE + 8 * CPU_PRICE  # 160 GiB and 8 cores requested
-    assert abs(h3.price_per_second - (GPU_PRICES["H200"] + container)) < 1e-12
+    assert abs(h3.price_per_second - (GPU_PRICES["B200"] + container)) < 1e-12
     d = h3.describe(installed=True)
-    assert d["fallbackGpu"] == "B200" and abs(d["fallbackPricePerSecond"] - (GPU_PRICES["B200"] + container)) < 1e-12
+    assert "fallbackGpu" not in d  # everything resident on a B200: no smaller card that would swap
     sdxl = TASKS["sdxl"].describe(installed=True)  # 8 GiB, Modal's minimum 0.125 cores; no fallback
     assert abs(sdxl["pricePerSecond"] - (GPU_PRICES["L40S"] + 8 * MEMORY_PRICE + 0.125 * CPU_PRICE)) < 1e-12
     assert "fallbackGpu" not in sdxl
@@ -742,7 +742,7 @@ def test_fake_h3_makes_24fps_video_with_stereo_sound_on_its_canvas(tmp_path, mon
 
     monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
     info = {t: TASKS[t] for t in ("h3-video", "h3-references")}
-    assert info["h3-video"].gpu == "H200"
+    assert info["h3-video"].gpu == "B200"
     assert info["h3-video"].optional_inputs == ("image", "last_image", "lora1", "lora2", "lora3", "lora4")
     assert "lora4" in info["h3-references"].optional_inputs and "lora1_strength" in info["h3-references"].params
     assert info["h3-references"].inputs == ("image1",) and "audio3" in info["h3-references"].optional_inputs
@@ -846,3 +846,55 @@ def test_h3_image_spec_download_and_fake_run(tmp_path, monkeypatch):
         worker.run(spec, p, {"image2": ref}, _QuietSink(), tmp_path)
     with pytest.raises(ValueError, match="prompt"):
         worker.run(spec, spec.normalize({"prompt": " "}), {}, _QuietSink(), tmp_path)
+
+
+
+def test_big_models_stay_resident_on_their_gpu():
+    """The user's rule: every part on the GPU at once (residency.py), with room left for a job's activations."""
+    from aistudio_gpu.tasks import TASKS
+    from aistudio_gpu.tasks import ltx23, minimax_h3, minimax_h3_image
+    from aistudio_gpu.tasks.residency import fits, modules_of, weight_bytes
+
+    gib = 2**30
+    totals = {"B200": 178.4 * gib, "H200": 139.8 * gib, "H100": 79.2 * gib}
+    h3 = (61.7 + 62.1 + 9.7) * gib  # one transformer partition, the conditioner, the VAEs
+    assert TASKS["h3-video"].gpu == TASKS["h3-references"].gpu == "B200"
+    assert fits(h3, totals["B200"], minimax_h3.RESIDENT_MARGIN_GIB)
+    assert not fits(h3, totals["H200"], minimax_h3.RESIDENT_MARGIN_GIB)
+    ltx = (49 + 38 + 38 + 3) * 1e9  # text encoder, base and distilled transformers (both kept), VAEs
+    assert TASKS["ltx23-video"].gpu == "B200" and fits(ltx, totals["B200"], ltx23.RESIDENT_MARGIN_GIB)
+    assert not fits(ltx, totals["H200"], ltx23.RESIDENT_MARGIN_GIB)
+    # The image models whose fast mode is a second transformer keep both on an H100 (adapters.WeightPark).
+    assert TASKS["chroma"].gpu == TASKS["sd35-large"].gpu == "H100" and TASKS["sdxl"].gpu == "L40S"
+    from aistudio_gpu.tasks import chroma, sd35  # noqa: F401  (import without torch)
+    assert chroma.ChromaWorker.parked_variants == ("base", "@flash")
+    assert ltx23.LTX23Worker.parked_variants == ("base", "@distilled")
+    image = (66.3 + 66.7 + 2.3) * 1e9
+    assert TASKS["h3-image"].gpu == "B200" and minimax_h3_image.fits_resident(int(image), int(totals["B200"]))
+
+    class Fake:
+        def __init__(self, n):
+            import numpy as np
+            self.p = [np.zeros(n, dtype=np.float32)]
+
+        def parameters(self):
+            return iter([_T(x) for x in self.p])
+
+        def buffers(self):
+            return iter([])
+
+        def to(self, _):
+            return self
+
+    class _T:
+        def __init__(self, a):
+            self.a = a
+
+        def numel(self):
+            return self.a.size
+
+        def element_size(self):
+            return self.a.itemsize
+
+    assert weight_bytes(Fake(10)) == 40 and weight_bytes("tokenizer") == 0
+    assert set(modules_of({"transformer": Fake(1), "tokenizer": "tok", "scheduler": None})) == {"transformer"}
