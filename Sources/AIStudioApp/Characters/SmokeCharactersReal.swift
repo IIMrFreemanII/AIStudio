@@ -330,8 +330,8 @@ extension SmokeTest {
     }
 
     /// `--smoke-characters-real <any> --smoke-real-builder` (+ `--smoke-real-out`, `--smoke-real-models
-    /// sdxl,chroma,minimaxImage`, `--smoke-real-steps plain,face-body,elf`): no chat. The Prompt Builder's preview, SFW, with one seed per model: a plain woman,
-    /// then the same with face and body options changed, then as an elf, to see that the options show. The pictures
+    /// sdxl,chroma,minimaxImage`, `--smoke-real-steps plain,face-body,heritage`): no chat. The Prompt Builder's preview, SFW, with one seed per model: a plain woman,
+    /// then the same with face and body options changed, then with a heritage, to see that the options show. The pictures
     /// go to the out folder as `<model>-<n>-<step>.png`, with each prompt printed.
     static func realBuilderPreviews(_ model: AppModel, out: URL?, say: @escaping (String) -> Void) async -> Bool {
         let models = (argument("--smoke-real-models") ?? "sdxl,chroma,minimaxImage").split(separator: ",")
@@ -347,13 +347,13 @@ extension SmokeTest {
         var changed = base
         changed.traits.merge(["faceShape": ["heart"], "lips": ["full"], "makeup": ["soft-glam"], "body": ["athletic"],
                               "muscle": ["defined"]]) { $1 }
-        var elf = base
-        elf.traits["race"] = ["elf"]
-        // `--smoke-real-steps plain,elf`: only those (default all three).
+        var heritage = base
+        heritage.traits["heritage"] = ["japanese"]
+        // `--smoke-real-steps plain,heritage`: only those (default all three).
         let steps = Set((argument("--smoke-real-steps") ?? "").split(separator: ",").map(String.init))
         var ok = true, total = 0.0
         for m in models {
-            for (i, (step, d)) in [("plain", base), ("face-body", changed), ("elf", elf)].enumerated()
+            for (i, (step, d)) in [("plain", base), ("face-body", changed), ("heritage", heritage)].enumerated()
             where steps.isEmpty || steps.contains(step) {
                 var draft = d
                 draft.model = m

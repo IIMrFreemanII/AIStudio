@@ -134,6 +134,7 @@ struct PromptBuilderDraft: Codable, Equatable {
         if isPerson {
             let g = Self.clean(gender)
             s.subject = "a \(max(age, AgeGuard.minimumAge))-year-old adult " + (g.isEmpty ? "person" : g)
+                + (who.isEmpty ? "" : ", \(who)")
             switch g.lowercased() {
             case "woman": s.pronoun = .she
             case "man": s.pronoun = .he
@@ -141,11 +142,8 @@ struct PromptBuilderDraft: Codable, Equatable {
             }
             s.coverage = PromptCatalog.coverage(picks, adult: adult)
             let parts = CharacterOptions.lookParts(traits, gender: g, coverage: s.coverage, adult: adult)
-            // Who they are: the race ("a kitsune with fox ears…"), then what they are ("a jazz singer").
             s.details = parts.details
             s.body = parts.body
-            parts.addRace(to: &s, weighted: model.takesWeights)
-            if !who.isEmpty { s.subject += ", " + who }
             s.outfit = parts.outfit
             s.avoid = AgeGuard.negative.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } + parts.avoid
             s.without = parts.without

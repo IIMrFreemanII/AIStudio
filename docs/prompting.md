@@ -133,9 +133,9 @@ once chunking is in.
   Danbooru framing tags are read literally here: on 2026-11-27 `cowboy shot` drew a cowboy hat and a western outfit,
   so the builder writes "medium full shot, framed from mid-thigh up" for these models and keeps `cowboy shot` for the
   tag-trained ones. Plain SDXL drew no elf ears in a photo, whether they were in the subject ("an elf with long
-  pointed elf ears"), weighted right after the action (`(long pointed elf ears:1.4)`, which the writers now do), or
-  with "hair tucked behind the ears" added: the hair always covered them. Chroma and MiniMax drew them from the plain
-  sentence. For fantasy races on SDXL, use an anime or fantasy fine-tune. **(ours)**
+  pointed elf ears"), weighted right after the action (`(long pointed elf ears:1.4)`), or with "hair tucked behind the
+  ears" added: the hair always covered them. Chroma and MiniMax drew them from the plain sentence. (The fantasy races
+  were removed from the app on 2026-11-27; only human heritages remain.) **(ours)**
 - **Pony Diffusion V6 XL:** tags, opening with its score tags `score_9, score_8_up, score_7_up, score_6_up, score_5_up,
   score_4_up`, then `source_…` and `rating_…` tags, then Danbooru-style content tags
   ([Civitai page](https://civitai.com/models/257749/pony-diffusion-v6-xl)). The Civitai page refused our automated read
