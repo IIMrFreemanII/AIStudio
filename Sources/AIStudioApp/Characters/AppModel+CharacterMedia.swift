@@ -241,14 +241,15 @@ extension AppModel {
 
     private static func mediaSeed() -> Int { Int.random(in: 0..<Int(Int32.max)) }
 
-    /// Draws one picture of the character (with the chosen portrait's face, cropped to it unless `wholePortrait`)
-    /// into `file` (PNG); returns its cost.
+    /// Draws one picture of the character (with the chosen portrait's face, cropped to it unless `wholePortrait`;
+    /// `face` instead, when given) into `file` (PNG); returns its cost.
     func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String, seed: Int? = nil,
-                   wholePortrait: Bool = false, extraNegative: String = "",
+                   wholePortrait: Bool = false, extraNegative: String = "", face given: URL? = nil, keepHair: Bool = true,
                    progress: @escaping @MainActor (String) -> Void) async throws -> Double? {
-        let face = wholePortrait ? portraitURL(c) : await faceReference(c)
+        let face: URL?
+        if let given { face = given } else { face = wholePortrait ? portraitURL(c) : await faceReference(c) }
         let render = CharacterArt.render(c, prompt: prompt, seed: seed ?? Self.mediaSeed(), server: server, face: face,
-                                         extraNegative: extraNegative)
+                                         keepHair: keepHair, extraNegative: extraNegative)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
                                                          render: render, title: title, progress: progress)
         // The jobs cost money even if the picture then can't be saved.

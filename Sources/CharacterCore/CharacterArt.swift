@@ -122,6 +122,8 @@ public enum CharacterArt {
 
     /// MiniMax H3 Image keeps the face by editing: the face reference goes in as <Picture 1> and the prompt says so.
     public static let minimaxFaceLead = "The same person as in <Picture 1>, with exactly that face and hair: "
+    /// The same, when the picture is about a different hairstyle (the creator's hairstyle examples).
+    public static let minimaxFaceOnlyLead = "The same person as in <Picture 1>, with exactly that face (only the hair differs): "
 
     /// The graph: Load Image (face) → SDXL or Chroma (Cloud GPU) ← a chain of `loras` LoRA nodes → Preview Image.
     /// Chroma runs in full (40 steps with guidance), not Flash: only guidance uses the negative prompt, which holds
@@ -191,11 +193,12 @@ public enum CharacterArt {
     }
 
     /// The values to bind for one picture. `face` nil: the face node is removed (portrait candidates).
-    /// `extraNegative` is added to the character's negative prompt (the option example photos use it).
-    public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?,
+    /// `extraNegative` is added to the character's negative prompt (the option example photos use it). `keepHair`
+    /// false: on MiniMax the face reference keeps only the face (a hairstyle example).
+    public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?, keepHair: Bool = true,
                               extraNegative: String = "") -> MovieArt.Render {
         let negative = extraNegative.isEmpty ? negative(c) : negative(c) + ", " + extraNegative
-        let lead = c.artModel.family == .minimax && face != nil ? minimaxFaceLead : ""
+        let lead = c.artModel.family == .minimax && face != nil ? (keepHair ? minimaxFaceLead : minimaxFaceOnlyLead) : ""
         var values: [String: JSONValue] = [
             "prompt": .string(lead + prompt), "negative": .string(negative), "seed": .int(seed),
             "width": .int(photoSize.width), "height": .int(photoSize.height), "server": .string(server),

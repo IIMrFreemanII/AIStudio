@@ -812,7 +812,12 @@ def test_h3_image_spec_download_and_fake_run(tmp_path, monkeypatch):
     from aistudio_gpu.tasks.minimax_h3_image import output_size
 
     spec = TASKS["h3-image"]
-    assert spec.kind == "image" and spec.gpu == "H200" and "US/EU/UK/Korea" in spec.title
+    assert spec.kind == "image" and spec.gpu == "B200" and "US/EU/UK/Korea" in spec.title
+    assert spec.fallback_gpus == ()  # no smaller card by default: there the models would swap for every picture
+    from aistudio_gpu.tasks.minimax_h3_image import fits_resident
+    gib = 2**30
+    assert fits_resident(125 * gib, 178 * gib)  # a B200 holds transformer + text encoder + VAE
+    assert not fits_resident(125 * gib, 131 * gib)  # an H200 doesn't (with room to run)
     assert spec.models == ("minimax-h3-image", "minimax-h3")  # the text encoder is H3's
     assert spec.optional_inputs == ("image1", "image2", "image3", "image4") and not spec.inputs
     assert {"steps", "cfg", "guidance", "negative"}.isdisjoint(spec.params)  # six fixed steps, guidance baked in

@@ -293,15 +293,23 @@ extension SmokeTest {
     }
 
     /// `--smoke-characters-real <any> --smoke-real-option-images --smoke-real-out <folder>` (+ `--smoke-real-only
-    /// <category,…>`, `--smoke-real-files <file pattern,…>` such as `body-*-woman.jpg`, `--smoke-real-art chroma`): no chat. Draws the creator's option example photos (SDXL) into the folder, skipping files already
+    /// <category,…>`, `--smoke-real-files <file pattern,…>` such as `body-*-woman.jpg`, `--smoke-real-art minimax`, `--smoke-real-faces scripts/option-models`): no chat. Draws the creator's option example photos (SDXL) into the folder, skipping files already
     /// there, so a run can be resumed or a bad file deleted and remade. Copy the result into Resources/OptionImages.
     static func realOptionImages(_ model: AppModel, server: String, out: URL?, say: @escaping (String) -> Void) async -> Bool {
         guard let out else { say("FAIL --smoke-real-out <folder> is needed"); return false }
         let only = argument("--smoke-real-only").map { Set($0.split(separator: ",").map(String.init)) }
         let files = argument("--smoke-real-files").map { $0.split(separator: ",").map(String.init) }
         let family = argument("--smoke-real-art").flatMap(ArtModel.Family.init(rawValue:)) ?? .sdxl
+        var faces: [String: URL] = [:]  // --smoke-real-faces <dir>: woman.png / man.png (scripts/option-models)
+        if let dir = argument("--smoke-real-faces") {
+            for g in ["woman", "man"] {
+                let url = URL(fileURLWithPath: dir).appendingPathComponent("\(g).png")
+                if FileManager.default.fileExists(atPath: url.path) { faces[g] = url }
+            }
+            guard !faces.isEmpty else { say("FAIL no woman.png or man.png in \(dir)"); return false }
+        }
         let (made, cost) = await OptionImageMaker.make(model, server: server, out: out, categories: only, files: files,
-                                                       family: family, say: say)
+                                                       family: family, faces: faces, say: say)
         let wanted = CharacterOptions.examples.filter { ex in
             (only?.contains(ex.category) ?? true) && (files.map { patterns in
                 let name = CharacterOptions.exampleFile(category: ex.category, option: ex.option, gender: ex.gender)

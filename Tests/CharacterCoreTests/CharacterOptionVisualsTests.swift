@@ -76,7 +76,7 @@ import Testing
         // The weak options get a stronger description up front and their opposite in the negative.
         let small = CO.examplePrompt(category: "bust", option: "small", gender: "woman")
         #expect(small.hasPrefix("Glamour photo of a 21-year-old adult woman with small breasts, a flat chest"))
-        #expect(small.contains("fair skin") && small.contains("long blonde hair") && small.contains("light makeup"))
+        #expect(small.contains("fair skin") && small.contains("platinum blonde hair in a sleek bob") && small.contains("light makeup"))
         #expect(CO.examplePrompt(category: "extras", option: "bold-makeup", gender: "woman").contains("light makeup") == false)
         #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").hasPrefix("Glamour photo of a 30-year-old adult man"))
         #expect(CO.examplePrompt(category: "body", option: "average", gender: "man").contains("shirtless"))

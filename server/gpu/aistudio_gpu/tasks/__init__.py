@@ -177,6 +177,12 @@ GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "H200")  # its 61.7 GB transformer + 
 # Modal takes the first of these GPUs it has free: H200s can queue for long stretches, and a B200 holds H3 as well.
 GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "B200")
 H3_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_FALLBACK.split(",")) if g and g != GPU_H3)
+# MiniMax H3 Image: its 66 GB transformer, H3's 66.7 GB text encoder and the VAE (≈ 125 GiB) stay on the GPU together,
+# so a B200 (180 GB); on a smaller card they would swap for every picture (≈ 80 s and $0.12 each on an H200). No
+# fallback by default: set AISTUDIO_GPU_H3_IMAGE_FALLBACK (e.g. H200) to accept the swapping when no B200 is free.
+GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
+GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
+H3_IMAGE_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_H3_IMAGE_FALLBACK.split(",")) if g and g != GPU_H3_IMAGE)
 # LTX-2.3 (22B DiT, bf16, model offload: the 49 GB text encoder and the 38 GB transformer take turns on the GPU).
 GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H100")
 GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "H200")
@@ -439,7 +445,7 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     }, optional_inputs=("image",) + LORA_INPUTS, models=("ltx23",), fallback_gpus=LTX_FALLBACKS),
     # MiniMax-H3-Image (Community Licence, same territories as H3): a picture from text, or from up to four reference
     # pictures the prompt names as <Picture 1>…<Picture 4>. Six fixed steps, guidance baked in: no steps, cfg or negative.
-    TaskSpec("h3-image", "MiniMax H3 Image (licence: not US/EU/UK/Korea)", "image", "h3-image", GPU_H3, {
+    TaskSpec("h3-image", "MiniMax H3 Image (licence: not US/EU/UK/Korea)", "image", "h3-image", GPU_H3_IMAGE, {
         "prompt": Param("string", ""),
         "seed": Param("int", 0, min=0, max=2**32 - 1),
         # The returned size (multiples of 32); the model card's best is 4–16 MP, but it works down to small sizes
@@ -448,7 +454,7 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "height": Param("int", 1024, min=256, max=6272, multiple=32),
         "canvas_mp": Param("float", 4.0, min=1.0, max=16.0),
     }, optional_inputs=("image1", "image2", "image3", "image4"), models=("minimax-h3-image", "minimax-h3"),
-        fallback_gpus=H3_FALLBACKS),
+        fallback_gpus=H3_IMAGE_FALLBACKS),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
         "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]

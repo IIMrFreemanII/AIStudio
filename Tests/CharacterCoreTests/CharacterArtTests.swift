@@ -126,6 +126,9 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         let pg = try t.bind(p.values, optional: Set(p.values.keys), remove: p.unusedPictures)
         #expect(pg["face"] == nil && pg["image"]?.inputs["image1"] == nil)
         #expect(pg["image"]?.inputs["prompt"] == .value(.string("Photo of her")))
+        // A hairstyle example keeps only the face.
+        let style = CharacterArt.render(c, prompt: "a bob", seed: 5, server: "s", face: face, keepHair: false)
+        #expect(style.values["prompt"] == .string(CharacterArt.minimaxFaceOnlyLead + "a bob"))
         #expect(CharacterArt.task(.minimax) == "h3-image")
         #expect(!ArtModel.Family.minimax.takesLibraryModels && ArtModel.Family.chroma.takesLibraryModels)
         #expect(ArtModel.Family.allCases.map(\.title) == ["SDXL", "Chroma", "MiniMax"])
