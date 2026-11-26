@@ -30,8 +30,8 @@ Layout:
 
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
-default B200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default none: a smaller card swaps the models), ``AISTUDIO_GPU_H3_IMAGE`` (MiniMax H3 Image, default B200, fallback ``AISTUDIO_GPU_H3_IMAGE_FALLBACK``), ``AISTUDIO_GPU_LTX`` (LTX-2.3, default H200) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
-L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SD 3.5 and SDXL, default L40S), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (default L40S), ``AISTUDIO_GPU_AUDIO`` (default L40S),
+default B200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default none: a smaller card swaps the models), ``AISTUDIO_GPU_H3_IMAGE`` (MiniMax H3 Image, default B200, fallback ``AISTUDIO_GPU_H3_IMAGE_FALLBACK``), ``AISTUDIO_GPU_LTX`` (LTX-2.3 with its distilled transformer resident, default B200) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
+L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SDXL, default L40S), ``AISTUDIO_GPU_SD35`` (SD 3.5 Large with Turbo resident beside it, default H100), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (Chroma1-HD with Flash resident beside it, default H100), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
@@ -58,7 +58,7 @@ GPU_H3 = os.environ.get("AISTUDIO_GPU_H3", "B200")
 # Every part resident: a B200 for H3, an H200 for LTX (fallbacks only when set, and then they swap).
 GPU_H3_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_FALLBACK", "")
 H3_GPUS = [GPU_H3, *H3_FALLBACKS]
-GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "H200")
+GPU_LTX = os.environ.get("AISTUDIO_GPU_LTX", "B200")
 GPU_LTX_FALLBACK = os.environ.get("AISTUDIO_GPU_LTX_FALLBACK", "")
 LTX_GPUS = [GPU_LTX, *LTX_FALLBACKS]
 # MiniMax H3 Image keeps all its weights on one GPU: a B200 (fallbacks only when set, and then it swaps).
@@ -67,9 +67,10 @@ GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
 H3_IMAGE_GPUS = [GPU_H3_IMAGE, *H3_IMAGE_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
+GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
 GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")
 GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")
-GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "L40S")
+GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "H100")
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 MODELS = Path("/models")
 UPLOADS = Path("/uploads")
@@ -133,7 +134,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD35": GPU_SD35, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
        "AISTUDIO_GPU_H3_IMAGE": GPU_H3_IMAGE, "AISTUDIO_GPU_H3_IMAGE_FALLBACK": GPU_H3_IMAGE_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
@@ -658,7 +659,7 @@ class LTX23:
                        models=(volume, MODELS))
 
 
-@_gpu_class(gpu=GPU_SD, **_container("sd35-large"))
+@_gpu_class(gpu=GPU_SD35, **_container("sd35-large"))
 class SD35:
     @modal.enter(snap=True)
     def imports(self):

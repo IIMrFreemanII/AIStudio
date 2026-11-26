@@ -60,12 +60,18 @@ class SD35Worker(AdapterSlots):
         self.pipe = pipe
 
     def _use_transformer(self, which: str, sink) -> None:
-        """Copies the other model's transformer weights in place; a job in the same mode costs nothing."""
+        """Makes the loaded transformer the other model's: its weights parked on the GPU swap in (both models stay
+        there on an H100, ``adapters.WeightPark``); without room, they're copied from disk in place. A job in the same
+        mode costs nothing."""
         if which == self.current:
             return
+        src = self.models_root / FOLDERS[which] / "transformer"
+        current, self.current = self.current, None  # half-loaded if this fails: the next job reloads
+        if self.park.switch(self.pipe.transformer, current, which, src, sink):
+            self.current = which
+            return
         sink.status("Loading SD 3.5 Large Turbo" if which == "turbo" else "Loading SD 3.5 Large")
-        self.current = None  # half-loaded if this fails: the next job reloads
-        adapters._copy_weights(self.pipe.transformer, self.models_root / FOLDERS[which] / "transformer", which)
+        adapters._copy_weights(self.pipe.transformer, src, which)
         self.current = which
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:

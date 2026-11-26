@@ -34,6 +34,7 @@ PREVIEW_EVERY = 4  # a VAE decode per preview: every few steps is plenty
 class ChromaWorker(AdapterSlots):
     family = "chroma"
     title = "Chroma1-HD"
+    parked_variants = ("base", FLASH)  # both transformers stay on the GPU (an H100): a mode change swaps no weights
 
     def __init__(self):
         self.pipe = None

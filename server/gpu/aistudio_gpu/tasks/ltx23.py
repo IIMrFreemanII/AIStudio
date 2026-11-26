@@ -52,6 +52,7 @@ class LTX23Worker(AdapterSlots):
     family = "ltx-2.3"
     title = "LTX-2.3"
     components = ("transformer",)
+    parked_variants = ("base", DISTILLED)  # both transformers stay on the GPU (a B200): a mode change swaps nothing
 
     def __init__(self):
         self.pipe = None  # text to video; owns the offload hooks (fallback only)

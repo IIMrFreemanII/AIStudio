@@ -326,7 +326,7 @@ def test_ltx23_task_wiring(tmp_path, monkeypatch):
     from aistudio_gpu.tasks import CONTAINERS, GPU_PRICES, TASKS, container_price, make_worker
 
     spec = TASKS["ltx23-video"]
-    assert spec.family == "ltx23" and spec.kind == "video" and spec.models == ("ltx23",) and spec.gpu == "H200"
+    assert spec.family == "ltx23" and spec.kind == "video" and spec.models == ("ltx23",) and spec.gpu == "B200"
     assert CONTAINERS["ltx23"] == (131072, 196608, 8) and spec.fallback_gpus == ()  # resident: no smaller card
     assert spec.optional_inputs == ("image", "lora1", "lora2", "lora3", "lora4") and spec.inputs == ()
     p = spec.normalize({})
@@ -338,7 +338,7 @@ def test_ltx23_task_wiring(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="at least 1"):
         spec.normalize({"guidance": 0.5})
     d = spec.describe(installed=True)
-    assert "fallbackGpu" not in d and d["pricePerSecond"] == GPU_PRICES["H200"] + container_price("ltx23")
+    assert "fallbackGpu" not in d and d["pricePerSecond"] == GPU_PRICES["B200"] + container_price("ltx23")
     assert variants.FAMILIES["ltx-2.3"] == "ltx23" and variants.TASK_FAMILIES["ltx23"] == "ltx-2.3"
     assert variants.components("ltx-2.3") == ("transformer",)
     models = download.MODELS
@@ -861,9 +861,14 @@ def test_big_models_stay_resident_on_their_gpu():
     assert TASKS["h3-video"].gpu == TASKS["h3-references"].gpu == "B200"
     assert fits(h3, totals["B200"], minimax_h3.RESIDENT_MARGIN_GIB)
     assert not fits(h3, totals["H200"], minimax_h3.RESIDENT_MARGIN_GIB)
-    ltx = (49 + 38 + 3) * 1e9
-    assert TASKS["ltx23-video"].gpu == "H200" and fits(ltx, totals["H200"], ltx23.RESIDENT_MARGIN_GIB)
-    assert not fits(ltx, totals["H100"], ltx23.RESIDENT_MARGIN_GIB)
+    ltx = (49 + 38 + 38 + 3) * 1e9  # text encoder, base and distilled transformers (both kept), VAEs
+    assert TASKS["ltx23-video"].gpu == "B200" and fits(ltx, totals["B200"], ltx23.RESIDENT_MARGIN_GIB)
+    assert not fits(ltx, totals["H200"], ltx23.RESIDENT_MARGIN_GIB)
+    # The image models whose fast mode is a second transformer keep both on an H100 (adapters.WeightPark).
+    assert TASKS["chroma"].gpu == TASKS["sd35-large"].gpu == "H100" and TASKS["sdxl"].gpu == "L40S"
+    from aistudio_gpu.tasks import chroma, sd35  # noqa: F401  (import without torch)
+    assert chroma.ChromaWorker.parked_variants == ("base", "@flash")
+    assert ltx23.LTX23Worker.parked_variants == ("base", "@distilled")
     image = (66.3 + 66.7 + 2.3) * 1e9
     assert TASKS["h3-image"].gpu == "B200" and minimax_h3_image.fits_resident(int(image), int(totals["B200"]))
 

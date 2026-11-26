@@ -31,11 +31,15 @@ class AdapterSlots:
 
     components: tuple[str, ...] = ("transformer",)  # what LoRAs load into; Wan: ("transformer", "transformer_2")
     variant_components: tuple[str, ...] = ()  # what a fine-tune replaces, when more than ``components`` (SDXL)
+    # The built-in modes (base and a fast transformer such as Chroma's "@flash"): once loaded, their weights stay on
+    # the GPU and a mode change swaps tensors instead of reading the other's from disk (``WeightPark``).
+    parked_variants: tuple[str, ...] = ()
 
     def _init_slots(self) -> None:
         self.variant = "base"  # the fine-tune whose transformer weights are loaded
         self.loaded: dict[str, Path] = {}  # component → the folder its weights came from (unset: the base's)
         self.loras: OrderedDict[str, None] = OrderedDict()  # user adapters, least recently used first
+        self.park = WeightPark()
 
     # MARK: fine-tunes
 
@@ -51,7 +55,17 @@ class AdapterSlots:
         base = {c: self._variant_dir("base", c) for c in parts}
         wanted = {c: self._variant_dir(vid, c) for c in parts}
         changed = [c for c in parts if self.loaded.get(c, base[c]) != wanted[c]]
+        current = self.variant
         self.variant = None  # half-loaded if this fails: the next job reloads
+        if changed and vid in self.parked_variants and len(parts) == 1:
+            c = parts[0]
+            # A built-in mode: swap in its parked weights (or load them beside the current ones, when they fit), and
+            # park the current ones if they're a built-in mode too.
+            if self.park.switch(getattr(self.pipe, c), current if current in self.parked_variants else None, vid,
+                                wanted[c], sink):
+                self.loaded[c] = wanted[c]
+                self.variant = vid
+                return
         if changed:
             sink.status("Loading the base model" if vid == "base" else f"Loading {vid}")
         for c in changed:
@@ -163,6 +177,79 @@ def _lora_to_compute_dtype(module, dtype) -> None:
     for n, p in module.named_parameters():
         if ".lora_" in n and p.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
             p.data = p.data.to(dtype or torch.bfloat16)
+
+
+PARK_MARGIN_GIB = 16  # GPU memory left free for a job after parking another mode's weights
+
+
+class WeightPark:
+    """Other modes' transformer weights kept on the GPU (the user's rule: no swapping weights through the disk or the
+    CPU). A switch points the module's parameters at the wanted mode's tensors and keeps the current ones: no copy.
+    Weights load once, beside the current ones, only when the GPU has room for them and a job after; otherwise the
+    caller falls back to copying the other's weights from disk in place."""
+
+    def __init__(self):
+        self.parked: dict[str, dict[str, object]] = {}  # mode → parameter name → tensor
+
+    def switch(self, module, current: str | None, wanted: str, src: Path, sink) -> bool:
+        params = _base_params(module)
+        tensors = self.parked.pop(wanted, None)
+        if tensors is None:
+            if not _room_for(params):
+                return False
+            sink.status(f"Loading {wanted} beside the loaded weights")
+            tensors = _read_weights(module, params, src, wanted)
+        if current is not None:
+            self.parked[current] = {n: p.data for n, p in params.items()}
+        for n, p in params.items():
+            p.data = tensors[n]
+        return True
+
+    def drop(self) -> None:
+        self.parked.clear()
+
+
+def _base_params(module) -> dict:
+    """A module's own weights by their plain names (PEFT's ``base_layer`` unwrapped; LoRA factors left out)."""
+    return {_plain(n): p for n, p in module.named_parameters() if ".lora_" not in n}
+
+
+def _room_for(params: dict) -> bool:
+    """Whether another copy of these weights fits on their GPU with ``PARK_MARGIN_GIB`` left."""
+    import torch
+
+    first = next(iter(params.values()), None)
+    if first is None or first.device.type != "cuda":
+        return False
+    size = sum(p.numel() * p.element_size() for p in params.values())
+    free, _ = torch.cuda.mem_get_info(first.device)
+    return free - size >= PARK_MARGIN_GIB * 2**30
+
+
+def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
+    """A diffusers folder's tensors as new tensors on the parameters' devices and dtypes, by parameter name; every
+    parameter must be covered (saved buffers are skipped: modes share them)."""
+    from safetensors import safe_open
+
+    files = sorted(src.glob("*.safetensors"))
+    if not files:
+        raise ValueError(f"{vid}: no weights in {src.name}")
+    buffers = {_plain(n) for n, _ in module.named_buffers()}
+    out = {}
+    for f in files:
+        with safe_open(str(f), "pt", device="cpu") as sf:
+            for key in sf.keys():
+                name = _name_for(params, key)
+                if name is None and key in buffers:
+                    continue
+                if name is None or name not in params:
+                    raise ValueError(f"{vid}: unexpected weight {key}")
+                p = params[name]
+                out[name] = sf.get_tensor(key).to(device=p.device, dtype=p.dtype)
+    missing = set(params) - set(out)
+    if missing:
+        raise ValueError(f"{vid}: {len(missing)} weights missing, e.g. {sorted(missing)[0]}")
+    return out
 
 
 def _copy_weights(module, src: Path, vid: str) -> None:
