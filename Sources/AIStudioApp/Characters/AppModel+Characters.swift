@@ -111,10 +111,11 @@ extension AppModel {
         let store = characterStore
         let scene = scene(of: doc)
         let kinds = mediaKinds(c, server: photoServer(for: doc))
+        let adult = Self.adultOptions
         var setup = AgentSetup(tools: [], root: library.root) {
             let memory = store.memory(c.id)
             return CharacterPrompt.system(c, memory: memory, scene: scene, others: others, media: kinds,
-                                          initiativeLeft: CharacterCost.initiativeLeft(c, memory: memory))
+                                          initiativeLeft: CharacterCost.initiativeLeft(c, memory: memory), adult: adult)
         }
         setup.character = true
         setup.speaker = c.id

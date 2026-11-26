@@ -3,7 +3,7 @@ import Foundation
 /// The Prompt Builder's choices: groups of chips, each adding words to one part of a `PromptSpec`.
 public enum PromptCatalog {
     /// Which part of the spec a group fills.
-    public enum Field: String, Sendable, Codable { case medium, shot, camera, lighting, time, mood, palette, composition, place, sound, action }
+    public enum Field: String, Sendable, Codable { case medium, shot, camera, lighting, time, mood, palette, composition, place, sound, action, coverage }
 
     public struct Choice: Identifiable, Equatable, Sendable, Hashable {
         public let id: String
@@ -26,15 +26,18 @@ public enum PromptCatalog {
         /// Only for video models, or only for those with sound.
         public let videoOnly: Bool
         public let soundOnly: Bool
+        /// 18+: shown only when the user turned the adult options on.
+        public let adult: Bool
         public let choices: [Choice]
         public init(_ id: String, _ title: String, _ field: Field, max: Int, videoOnly: Bool = false, soundOnly: Bool = false,
-                    _ choices: [Choice]) {
+                    adult: Bool = false, _ choices: [Choice]) {
             self.id = id
             self.title = title
             self.field = field
             self.max = max
             self.videoOnly = videoOnly
             self.soundOnly = soundOnly
+            self.adult = adult
             self.choices = choices
         }
     }
@@ -173,19 +176,32 @@ public enum PromptCatalog {
             C("silence", "Near silence", "near silence, room tone"), C("dialogue", "Speaks", "the person speaks the line clearly"),
             C("laugh", "Laughter", "soft laughter"), C("wind-sound", "Wind", "howling wind"),
         ]),
+        // A person's coverage (PromptSpec.Coverage; choice ids are its raw values). Nothing picked = dressed.
+        Group("nudity", "Nudity (18+)", .coverage, max: 1, adult: true, [
+            C("swimwear", "Swimwear", PromptSpec.Coverage.swimwear.tag), C("lingerie", "Lingerie", PromptSpec.Coverage.lingerie.tag),
+            C("underwear", "Underwear", PromptSpec.Coverage.underwear.tag), C("topless", "Topless", PromptSpec.Coverage.topless.tag),
+            C("impliedNude", "Implied nude", PromptSpec.Coverage.impliedNude.tag), C("nude", "Fully nude", PromptSpec.Coverage.nude.tag),
+        ]),
     ]
 
     public static func group(_ id: String) -> Group? { groups.first { $0.id == id } }
 
     /// The groups that apply to a model (camera moves only for video, sound only where the model makes it).
-    public static func groups(for model: PromptModel) -> [Group] {
-        groups.filter { (!$0.videoOnly || model.isVideo) && (!$0.soundOnly || model.hasSound) }
+    /// `adult`: include the 18+ groups (Nudity).
+    public static func groups(for model: PromptModel, adult: Bool = false) -> [Group] {
+        groups.filter { (!$0.videoOnly || model.isVideo) && (!$0.soundOnly || model.hasSound) && (!$0.adult || adult) }
+    }
+
+    /// The picked coverage (dressed when nothing is picked, or when the 18+ options are off).
+    public static func coverage(_ picks: [String: [String]], adult: Bool) -> PromptSpec.Coverage {
+        guard adult, let id = picks["nudity"]?.first else { return .dressed }
+        return PromptSpec.Coverage(rawValue: id) ?? .dressed
     }
 
     /// Adds the picked choices (group id → choice ids, in catalog order) to `spec`. Unknown ids are ignored; a
     /// single-value field (medium, shot, place, action) keeps what the spec already has unless it is empty.
-    public static func apply(_ picks: [String: [String]], to spec: inout PromptSpec, model: PromptModel) {
-        for g in groups(for: model) {
+    public static func apply(_ picks: [String: [String]], to spec: inout PromptSpec, model: PromptModel, adult: Bool = false) {
+        for g in groups(for: model, adult: adult) {
             let ids = Set(picks[g.id] ?? [])
             let words = g.choices.filter { ids.contains($0.id) }.map(\.words)
             guard !words.isEmpty else { continue }
@@ -201,6 +217,7 @@ public enum PromptCatalog {
             case .palette: spec.palette += words
             case .composition: spec.composition += words
             case .sound: spec.sound += words
+            case .coverage: if spec.coverage == .dressed { spec.coverage = coverage(picks, adult: adult) }
             }
         }
     }

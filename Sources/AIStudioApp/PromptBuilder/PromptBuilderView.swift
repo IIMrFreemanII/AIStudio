@@ -16,6 +16,7 @@ struct PromptBuilderView: View {
     var onUse: ((WrittenPrompt) -> Void)? = nil
 
     @State private var copied: String?
+    @AppStorage(AppModel.adultOptionsKey) private var adult = false
     /// The look options take room (photo tiles): folded until opened; open at first when something is picked.
     @State private var lookOpen = false
 
@@ -28,7 +29,7 @@ struct PromptBuilderView: View {
                     subjectSection
                     if draft.isPerson { lookSection }
                     sceneSection
-                    ForEach(PromptCatalog.groups(for: draft.model).filter { $0.field != .place }) { g in
+                    ForEach(PromptCatalog.groups(for: draft.model, adult: adult && draft.isPerson).filter { $0.field != .place }) { g in
                         ChoiceChips(group: g, picks: $draft.picks)
                     }
                     extrasSection
@@ -101,9 +102,7 @@ struct PromptBuilderView: View {
                     return c
                 },
                 set: { draft.traits = $0.traits })
-            ForEach(CharacterOptions.categories(.look).filter { !CharacterOptions.options($0, gender: draft.gender).isEmpty }) {
-                TraitChips(category: $0, c: person)
-            }
+            TraitGroupView(group: .look, c: person)
         }
     }
 

@@ -105,6 +105,34 @@ public struct PromptSpec: Equatable, Sendable, Codable {
     public enum Pronoun: String, Sendable, Codable { case she, he, they, it }
     /// A reference picture (`<Picture 1>` on MiniMax; the face adapter elsewhere, where the prompt doesn't mention it).
     public enum Reference: String, Sendable, Codable { case none, faceAndHair, faceOnly }
+    /// How much a person wears (18+ choices beyond dressed): replaces the outfit. Revealing coverage adds an adult
+    /// cue to the body, and to the closing sentences of models without a negative prompt.
+    public enum Coverage: String, Sendable, Codable, CaseIterable {
+        case dressed, swimwear, lingerie, underwear, topless, impliedNude, nude
+
+        /// The short tag the tag models read ("" when dressed).
+        public var tag: String {
+            switch self {
+            case .dressed: ""
+            case .swimwear: "swimsuit"
+            case .lingerie: "lingerie"
+            case .underwear: "only underwear"
+            case .topless: "topless"
+            case .impliedNude: "implied nudity, covered by a bedsheet"
+            case .nude: "fully nude, naked"
+            }
+        }
+
+        /// The parts shown bare: topless shows the chest, nude everything; implied nudity covers it.
+        public var showsChest: Bool { self == .topless || self == .nude }
+        public var showsAll: Bool { self == .nude }
+        /// Bare skin where an adult cue belongs.
+        public var revealing: Bool { self == .topless || self == .impliedNude || self == .nude }
+    }
+
+    /// The adult cue revealing pictures carry (in the body, and as a sentence where there is no negative prompt).
+    public static let adultBody = "an adult body with mature proportions"
+    public static let adultSentence = "The person is clearly a grown adult"
 
     /// What the picture is, e.g. "candid smartphone photo", "35mm film photo", "anime illustration".
     public var medium = ""
@@ -141,8 +169,31 @@ public struct PromptSpec: Equatable, Sendable, Codable {
     public var without: [String] = []
     /// LoRA trigger words: first in tag and sentence prompts (MiniMax and the video models take no LoRAs here).
     public var triggerWords: [String] = []
+    /// Dressed (the outfit), or less (18+): replaces the outfit when not dressed.
+    public var coverage = Coverage.dressed
 
     public init() {}
+
+    /// The spec as the writers read it: revealing coverage adds the adult cue.
+    var withCoverage: PromptSpec {
+        guard coverage.revealing else { return self }
+        var s = self
+        if !s.body.contains(where: { $0.tag == Self.adultBody }) { s.body.append(PromptDetail(Self.adultBody)) }
+        if !s.without.contains(Self.adultSentence) { s.without.append(Self.adultSentence) }
+        return s
+    }
+
+    public init(from decoder: Decoder) throws {
+        let k = try decoder.container(keyedBy: CodingKeys.self)
+        func v<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T { (try? k.decodeIfPresent(T.self, forKey: key)) ?? fallback }
+        medium = v(.medium, medium); subject = v(.subject, subject); pronoun = v(.pronoun, pronoun)
+        shot = v(.shot, shot); action = v(.action, action); details = v(.details, details); body = v(.body, body)
+        outfit = v(.outfit, outfit); place = v(.place, place); time = v(.time, time); camera = v(.camera, camera)
+        lighting = v(.lighting, lighting); mood = v(.mood, mood); palette = v(.palette, palette)
+        composition = v(.composition, composition); sound = v(.sound, sound); text = v(.text, text)
+        reference = v(.reference, reference); avoid = v(.avoid, avoid); without = v(.without, without)
+        triggerWords = v(.triggerWords, triggerWords); coverage = v(.coverage, coverage)
+    }
 }
 
 /// A model's prompt and negative ("" when the model takes none).
@@ -162,7 +213,8 @@ public struct WrittenPrompt: Equatable, Sendable {
 /// - **motion** (Wan, LTX-2.3, MiniMax H3 video): one flowing paragraph, the shot and camera move, then the action as it
 ///   unfolds, the look, the place and light, and the sound for models that make it.
 public enum PromptWriter {
-    public static func write(_ s: PromptSpec, for model: PromptModel) -> WrittenPrompt {
+    public static func write(_ spec: PromptSpec, for model: PromptModel) -> WrittenPrompt {
+        let s = spec.withCoverage
         let prompt: String
         switch model.dialect {
         case .tags: prompt = tags(s, model)
@@ -181,7 +233,8 @@ public enum PromptWriter {
         out.append(clean(s.subject))
         out.append(clean(s.shot))
         out.append(lowerFirst(clean(s.action)))
-        for d in s.body + s.outfit + s.details { out.append(weighted(d, m)) }
+        let outfit = s.coverage == .dressed ? s.outfit : [PromptDetail(s.coverage.tag, weight: 1.2)]
+        for d in s.body + outfit + s.details { out.append(weighted(d, m)) }
         if !s.place.isEmpty { out.append(clean(s.place)) }
         out += (s.time + s.lighting + s.camera + s.mood + s.palette + s.composition).map(clean)
         if !s.text.isEmpty, m.drawsText { out.append("text \"\(clean(s.text))\"") }
@@ -229,7 +282,8 @@ public enum PromptWriter {
         let body = s.body.map { clean($0.text) }.filter { !$0.isEmpty }
         if !body.isEmpty { out.append(sentence("\(p) \(has) \(list(body))")) }
         let clothes = s.outfit.map { clean($0.text) }.filter { !$0.isEmpty }
-        if !clothes.isEmpty { out.append(sentence("\(p) \(wears) \(list(clothes))")) }
+        if s.coverage != .dressed { out.append(coverageSentence(s.coverage, s.pronoun)) }
+        else if !clothes.isEmpty { out.append(sentence("\(p) \(wears) \(list(clothes))")) }
         let place = clean(s.place), time = s.time.map(clean).filter { !$0.isEmpty }
         if !place.isEmpty || !time.isEmpty {
             var where_ = place.isEmpty ? "" : (startsWithPreposition(place) ? place : "at \(place)")
@@ -373,6 +427,21 @@ public enum PromptWriter {
         case .he: ("He", "has", "wears")
         case .they: ("They", "have", "wear")
         case .it: ("It", "has", "wears")
+        }
+    }
+
+    /// "She is fully nude." and the like: coverage as a sentence (the outfit's "She wears …" would not read).
+    private static func coverageSentence(_ c: PromptSpec.Coverage, _ p: PromptSpec.Pronoun) -> String {
+        let (who, _, wears) = verbs(p)
+        let isVerb = p == .they ? "are" : "is"
+        switch c {
+        case .dressed: return ""
+        case .swimwear: return sentence("\(who) \(wears) a swimsuit")
+        case .lingerie: return sentence("\(who) \(wears) lingerie")
+        case .underwear: return sentence("\(who) \(wears) only underwear")
+        case .topless: return sentence("\(who) \(isVerb) topless, bare-chested")
+        case .impliedNude: return sentence("\(who) \(isVerb) nude but covered by a bedsheet, nothing explicit visible")
+        case .nude: return sentence("\(who) \(isVerb) fully nude")
         }
     }
 

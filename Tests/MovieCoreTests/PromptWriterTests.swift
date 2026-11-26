@@ -90,3 +90,31 @@ import Testing
         #expect(PromptModel.allCases.filter(\.hasSound) == [.ltx23, .minimaxVideo])
     }
 }
+
+@Suite struct PromptCoverageTests {
+    private func person(_ c: PromptSpec.Coverage) -> PromptSpec {
+        var s = PromptSpec()
+        s.subject = "a 30-year-old adult woman"
+        s.pronoun = .she
+        s.outfit = [PromptDetail("a red dress", weight: 1.2)]
+        s.coverage = c
+        return s
+    }
+
+    @Test func coverageReplacesTheOutfitInEveryDialect() {
+        let tags = PromptWriter.write(person(.nude), for: .sdxl).prompt
+        #expect(tags.contains("(fully nude, naked:1.2)") && !tags.contains("red dress"))
+        #expect(tags.contains("adult body with mature proportions"))  // tags drop the article
+        let chroma = PromptWriter.write(person(.nude), for: .chroma).prompt
+        #expect(chroma.contains("She is fully nude.") && !chroma.contains("wears"))
+        let h3 = PromptWriter.write(person(.topless), for: .minimaxImage).prompt
+        #expect(h3.contains("She is topless") && h3.contains("The person is clearly a grown adult."))
+        let swim = PromptWriter.write(person(.swimwear), for: .chroma).prompt
+        #expect(swim.contains("She wears a swimsuit.") && !swim.contains(PromptSpec.adultBody))
+        let dressed = PromptWriter.write(person(.dressed), for: .chroma).prompt
+        #expect(dressed.contains("She wears a red dress."))
+        var they = person(.impliedNude)
+        they.pronoun = .they
+        #expect(PromptWriter.write(they, for: .flux).prompt.contains("They are nude but covered by a bedsheet"))
+    }
+}

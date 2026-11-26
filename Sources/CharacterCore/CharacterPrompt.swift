@@ -8,7 +8,7 @@ public enum CharacterPrompt {
 
     public static func system(_ c: Character, memory: CharacterMemory, scene: Scenario?, others: [Character] = [],
                               media: [MediaKind] = [], initiativeLeft: Int = 0, now: Date = Date(),
-                              calendar: Calendar = .current) -> String {
+                              calendar: Calendar = .current, adult: Bool = false) -> String {
         var sections: [String] = []
 
         var intro = ["You are \(c.name), a \(c.age)-year-old \(c.gender)."]
@@ -16,6 +16,9 @@ public enum CharacterPrompt {
                               ("Speaking style", c.fullSpeakingStyle), ("Habits", c.habits), ("Likes", c.fullLikes)] where !text.isEmpty {
             intro.append("\(label): \(text)")
         }
+        // The 18+ body details, only with the adult options on.
+        let intimate = CharacterOptions.phrases(c.traits, group: .intimate, gender: c.gender)
+        if adult && !intimate.isEmpty { intro.append("Private details: " + intimate.joined(separator: ", ")) }
         sections.append(intro.joined(separator: "\n"))
 
         sections.append("""

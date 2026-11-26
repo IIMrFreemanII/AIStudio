@@ -140,7 +140,8 @@ struct PromptBuilderDraft: Codable, Equatable {
             case "man": s.pronoun = .he
             default: s.pronoun = .they
             }
-            let parts = CharacterOptions.lookParts(traits, gender: g)
+            s.coverage = PromptCatalog.coverage(picks, adult: adult)
+            let parts = CharacterOptions.lookParts(traits, gender: g, coverage: s.coverage, adult: adult)
             s.details = parts.details
             s.body = parts.body
             s.outfit = parts.outfit
@@ -156,9 +157,13 @@ struct PromptBuilderDraft: Codable, Equatable {
         s.text = Self.clean(text)
         s.avoid += Self.list(avoid)
         s.triggerWords = Self.list(triggerWords)
-        PromptCatalog.apply(picks, to: &s, model: model)
+        PromptCatalog.apply(picks, to: &s, model: model, adult: adult && isPerson)
         return s
     }
+
+    /// The 18+ options are on ("Show 18+ options"; automated runs set `adultOverride` instead of the user default).
+    var adult: Bool { AppModel.adultOptions }
+    nonisolated(unsafe) static var adultOverride: Bool?
 
     /// The prompt for the picked model; nil when a free-text field describes someone under 18.
     var written: WrittenPrompt? {

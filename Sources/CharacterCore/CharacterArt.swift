@@ -38,9 +38,12 @@ public enum CharacterArt {
     public struct Context: Equatable, Sendable {
         public var baseModel: String?
         public var triggerWords: [String]
-        public init(baseModel: String? = nil, triggerWords: [String] = []) {
+        /// The user turned the 18+ options on: a revealing photo shows the character's intimate picks.
+        public var adult: Bool
+        public init(baseModel: String? = nil, triggerWords: [String] = [], adult: Bool = false) {
             self.baseModel = baseModel
             self.triggerWords = triggerWords
+            self.adult = adult
         }
     }
 
@@ -87,7 +90,9 @@ public enum CharacterArt {
         let place = clean(scene?.place ?? ""), outfit = clean(scene?.outfit ?? ""), time = clean(scene?.time ?? "")
         let dressed = !outfit.isEmpty || setsOutfit(request)
         let gender = clean(c.gender)
-        let parts = CharacterOptions.lookParts(c.traits, gender: gender, withClothes: !dressed)
+        let cover = coverage(request)
+        let parts = CharacterOptions.lookParts(c.traits, gender: gender, withClothes: !dressed, coverage: cover,
+                                               adult: context.adult)
         let model = promptModel(c, context: context)
         var s = PromptSpec()
         switch c.artModel.style {
@@ -116,7 +121,24 @@ public enum CharacterArt {
         s.avoid = avoid(c, parts: parts)
         s.without = parts.without
         s.triggerWords = context.triggerWords
+        s.coverage = cover
         return s
+    }
+
+    private static let coverageWords: [(PromptSpec.Coverage, NSRegularExpression)] = ([
+        (.impliedNude, "implied nud\\w*|covered (?:only )?(?:by|with|in) (?:a |the )?(?:sheet|bedsheet|towel)"),
+        (.nude, "nude|naked|no clothes|nothing on|undressed"),
+        (.topless, "topless|bare[- ]chested|shirtless"),
+        (.lingerie, "lingerie|negligee"),
+        (.underwear, "underwear|panties|bra and panties|boxers|briefs"),
+        (.swimwear, "bikini|swimsuit|swimwear|swim trunks"),
+    ] as [(PromptSpec.Coverage, String)]).map { ($0.0, try! NSRegularExpression(pattern: "\\b(?:\($0.1))\\b", options: .caseInsensitive)) }
+
+    /// How much the request has the character wear: the first match of nude, topless, lingerie, underwear and swimwear
+    /// words (implied nudity before nude); dressed when none.
+    public static func coverage(_ request: String) -> PromptSpec.Coverage {
+        let range = NSRange(request.startIndex..., in: request)
+        return coverageWords.first { $0.1.firstMatch(in: request, range: range) != nil }?.0 ?? .dressed
     }
 
     private static let outfitWords: NSRegularExpression = try! NSRegularExpression(

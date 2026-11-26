@@ -121,17 +121,49 @@ struct TraitChips: View {
     }
 }
 
-/// Every category of one option group, then (when given) a free-text field for what the chips don't cover.
+/// Every category of one option group, then (when given) a free-text field for what the chips don't cover. The look
+/// group is laid out in folding sections (hair, face, body, style), then the 18+ switch and, when it is on, the
+/// intimate details.
 struct TraitGroupView: View {
     let group: CharacterOptions.Group
     @Binding var c: AppModel.Companion
     var detailsTitle: String? = nil
     var details: Binding<String>? = nil
+    @AppStorage(AppModel.adultOptionsKey) private var adult = false
+    /// Open look sections; nil until the user folds one: Hair and those with picks start open.
+    @State private var open: Set<CharacterOptions.Section>?
+
+    /// A category with nothing for this gender (Breasts for a man) isn't shown.
+    private func shown(_ cats: [CharacterOptions.Category]) -> [CharacterOptions.Category] {
+        cats.filter { !CharacterOptions.options($0, gender: c.gender).isEmpty }
+    }
+
+    private func picks(_ section: CharacterOptions.Section) -> Int {
+        CharacterOptions.categories(section).reduce(0) { $0 + (c.traits[$1.id]?.count ?? 0) }
+    }
+
+    private var openSections: Set<CharacterOptions.Section> {
+        open ?? Set(CharacterOptions.Section.allCases.filter { $0 == .hair || picks($0) > 0 })
+    }
 
     var body: some View {
-        // A category with nothing for this gender (Breasts for a man) isn't shown.
-        ForEach(CharacterOptions.categories(group).filter { !CharacterOptions.options($0, gender: c.gender).isEmpty }) {
-            TraitChips(category: $0, c: $c)
+        if group == .look {
+            ForEach(CharacterOptions.Section.allCases, id: \.self) { section in
+                let cats = shown(CharacterOptions.categories(section))
+                if !cats.isEmpty { sectionView(section, cats) }
+            }
+            Toggle("Show 18+ options", isOn: $adult)
+                .mgHelp("Intimate body details, used only in photos that show them, and the Prompt Builder's Nudity choices")
+            if adult {
+                let cats = shown(CharacterOptions.categories(.intimate))
+                if !cats.isEmpty {
+                    Text("18+ details: only written into photos that show them").font(.mgFootnote)
+                        .foregroundStyle(MG.secondaryLabel)
+                    ForEach(cats) { TraitChips(category: $0, c: $c) }
+                }
+            }
+        } else {
+            ForEach(shown(CharacterOptions.categories(group))) { TraitChips(category: $0, c: $c) }
         }
         if let details, let detailsTitle {
             VStack(alignment: .leading, spacing: 6) {
@@ -140,5 +172,25 @@ struct TraitGroupView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    @ViewBuilder private func sectionView(_ section: CharacterOptions.Section, _ cats: [CharacterOptions.Category]) -> some View {
+        let isOpen = openSections.contains(section)
+        Button {
+            var o = openSections
+            if isOpen { o.remove(section) } else { o.insert(section) }
+            open = o
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isOpen ? "chevron.down" : "chevron.right").font(.system(size: 10))
+                Text(section.title).font(.mgCallout.weight(.semibold)).foregroundStyle(MG.label)
+                let n = picks(section)
+                if n > 0 { Text("\(n) picked").font(.mgFootnote).foregroundStyle(MG.secondaryLabel) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 4)
+        if isOpen { ForEach(cats) { TraitChips(category: $0, c: $c) } }
     }
 }
