@@ -147,6 +147,7 @@ struct ContentView: View {
         .mgSheet("character-creator", item: $model.creatingCharacter) { e in CharacterCreator(edit: e) }
         .mgSheet("character-memory", item: $model.memoryCharacter) { r in CharacterMemoryView(characterID: r.id) }
         .mgSheet("mask-editor", item: $model.maskEditorTarget) { target in MaskEditorSheet(target: target) }
+        .mgSheet("prompt-builder", item: $model.promptBuilderTarget) { target in PromptBuilderSheet(target: target) }
         .mgSheet("library-add", item: $model.libraryRequest) { r in
             if let lib = model.store?.library { LibraryAddSheet(request: r, library: lib) }
         }

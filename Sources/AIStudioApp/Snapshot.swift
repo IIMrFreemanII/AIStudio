@@ -9,6 +9,7 @@ import AIStudioLibrary
 import MLXDiffusionCore
 import NodesRemote
 import NodesStandard
+import MovieCore
 import SwiftUI
 
 /// `AIStudioApp --snapshot <dir>` renders the main window offscreen in a few representative states and exits.
@@ -42,6 +43,7 @@ enum Snapshot {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         // `--only characters`: just the character sheets.
         if SmokeTest.argument("--only") == "characters" { await renderCharacters(to: dir); return }
+        if SmokeTest.argument("--only") == "prompt-builder" { await renderPromptBuilder(to: dir); return }
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
         let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab", "wireStyle", "showModelWires", "showMinimap",
@@ -244,6 +246,39 @@ enum Snapshot {
         await renderLLMContext(to: dir)
         await renderChrome(m, to: dir)
         await renderCharacters(to: dir)
+        await renderPromptBuilder(to: dir)
+    }
+
+    /// 70–71: the Prompt Builder on a person (MiniMax, then a Pony SDXL fine-tune) and 72 on a video with sound.
+    static func renderPromptBuilder(to dir: URL) async {
+        let m = makeModel(dir)
+        var d = PromptBuilderDraft()
+        d.model = .minimaxImage
+        d.subject = "a jazz singer"
+        d.traits = ["hairColor": ["auburn"], "hairStyle": ["long-wavy"], "body": ["curvy"], "clothes": ["elegant"]]
+        d.action = "singing into a vintage microphone, eyes closed"
+        d.place = "a dim cocktail bar"
+        d.picks = ["medium": ["film-35mm"], "shot": ["medium"], "lighting": ["rim", "practical"], "mood": ["intimate"],
+                   "palette": ["warm"], "lens": ["shallow-dof"]]
+        for (i, model) in [PromptModel.minimaxImage, .sdxlPony].enumerated() {
+            d.model = model
+            await render(PromptBuilderView(draft: .constant(d)).mgWindow("Prompt Builder").environment(m),
+                         to: dir.appendingPathComponent("\(70 + i)-prompt-builder-\(model.rawValue).png"),
+                         size: CGSize(width: 1000, height: 1100))
+        }
+        var v = PromptBuilderDraft()
+        v.model = .ltx23
+        v.isPerson = false
+        v.subject = "a red fox"
+        v.action = "trots through fresh snow, stops and looks back at the camera"
+        v.place = "snowy woods"
+        v.picks = ["shot": ["wide"], "movement": ["tracking"], "time": ["sunrise"], "sound": ["wind-sound", "footsteps"]]
+        await render(PromptBuilderView(draft: .constant(v)).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("72-prompt-builder-video.png"), size: CGSize(width: 1000, height: 900))
+        // 73: the sheet a Cloud SDXL node opens (Use in Node writes the prompt and negative).
+        await render(sheet(PromptBuilderSheet(target: PromptBuilderTarget(id: "sdxl", model: .sdxl, takesNegative: true))
+                        .environment(m)),
+                     to: dir.appendingPathComponent("73-prompt-builder-sheet.png"), size: CGSize(width: 960, height: 760))
     }
 
     /// 61–63: the character gallery, the editor on a template, and a character's memory with two facts.
