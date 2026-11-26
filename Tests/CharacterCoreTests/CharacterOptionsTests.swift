@@ -80,7 +80,7 @@ private func person(gender: String = "woman") -> Character {
         woman.traits = ["bust": ["large"], "butt": ["round"]]
         #expect(woman.fullLook.contains("large breasts") && woman.fullLook.contains("a round butt"))
         let prompt = CharacterArt.portraitPrompt(woman)
-        #expect(prompt.contains("large breasts") && prompt.contains("a round butt"))
+        #expect(prompt.contains("large breasts") && prompt.contains("round butt"))
         woman.traits = ["extras": ["freckles"], "bust": ["small"]]
         let look = woman.fullLook
         let f = look.range(of: "freckles"), b = look.range(of: "small breasts")

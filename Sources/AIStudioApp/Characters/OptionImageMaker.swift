@@ -39,7 +39,8 @@ enum OptionImageMaker {
             var c = AppModel.Companion(name: "Example", age: CharacterOptions.exampleAge(gender: ex.gender),
                                        gender: ex.gender)
             c.artModel = ArtModel(family: family)
-            let prompt = CharacterOptions.examplePrompt(category: ex.category, option: ex.option, gender: ex.gender)
+            let prompt = CharacterOptions.examplePrompt(category: ex.category, option: ex.option, gender: ex.gender,
+                                                        model: CharacterArt.promptModel(c))
             let full = fm.temporaryDirectory.appendingPathComponent("option-example-\(UUID().uuidString).png")
             defer { try? fm.removeItem(at: full) }
             do {

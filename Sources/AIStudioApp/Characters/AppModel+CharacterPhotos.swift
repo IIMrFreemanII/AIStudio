@@ -9,6 +9,15 @@ import NodesRemote
 /// A character's portraits: drawn on the first GPU server (no face reference) or imported, and which one is the face
 /// in their photos and videos.
 extension AppModel {
+    /// What the prompt writers need from the Models library for this character: the fine-tune's Civitai base model
+    /// (its SDXL quality tags) and the trigger words of the LoRAs it uses.
+    func artContext(_ c: Companion) -> CharacterArt.Context {
+        let library = store?.library
+        let base = c.artModel.variant.flatMap { library?.item($0)?.baseModel }
+        let words = c.loras.prefix(CharacterArt.maxLoRAs).flatMap { library?.item($0.lora)?.triggerWords ?? [] }
+        return CharacterArt.Context(baseModel: base, triggerWords: words)
+    }
+
     // MARK: portraits
 
     /// Draws `count` portrait candidates of the stored character `id`; see the other `generatePortraits`.
@@ -32,8 +41,9 @@ extension AppModel {
         var names: [String] = []
         for i in 0..<count {
             try Task.checkCancellation()
-            let render = CharacterArt.render(c, prompt: CharacterArt.portraitPrompt(c), seed: Int.random(in: 0..<Int(Int32.max)),
-                                             server: server, face: nil)
+            let context = artContext(c)
+            let render = CharacterArt.render(c, prompt: CharacterArt.portraitPrompt(c, context: context),
+                                             seed: Int.random(in: 0..<Int(Int32.max)), server: server, face: nil, context: context)
             let (outputs, jobs) = try await runHeadlessGraph(
                 template: CharacterArt.template(c.artModel.family, loras: c.loras.count), render: render,
                 title: "\(c.name)'s portrait \(i + 1) of \(count)", progress: progress)

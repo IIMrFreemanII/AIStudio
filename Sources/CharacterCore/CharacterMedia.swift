@@ -143,8 +143,9 @@ public enum CharacterMedia {
 
     public static func videoTemplate() -> MovieTemplate { MovieShots.template(name: "character-video") }
 
-    public static func videoStillPrompt(_ c: Character, request: String, scene: Scenario?) -> String {
-        CharacterArt.photoPrompt(c, request: request, scene: scene)
+    public static func videoStillPrompt(_ c: Character, request: String, scene: Scenario?,
+                                        context: CharacterArt.Context = .init()) -> String {
+        CharacterArt.photoPrompt(c, request: request, scene: scene, context: context)
     }
 
     public static func motionPrompt(_ c: Character, request: String) -> String {
@@ -168,8 +169,9 @@ public enum CharacterMedia {
 
     public static func talkTemplate() -> MovieTemplate { MovieShots.longCatTemplate(name: "character-talk") }
 
-    public static func talkStillPrompt(_ c: Character, scene: Scenario?) -> String {
-        CharacterArt.photoPrompt(c, request: "looking into the camera, head and shoulders, about to speak", scene: scene)
+    public static func talkStillPrompt(_ c: Character, scene: Scenario?, context: CharacterArt.Context = .init()) -> String {
+        CharacterArt.photoPrompt(c, request: "looking into the camera, head and shoulders, about to speak", scene: scene,
+                                 context: context)
     }
 
     public static func talkPrompt(_ c: Character) -> String {

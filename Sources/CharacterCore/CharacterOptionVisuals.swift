@@ -1,4 +1,5 @@
 import Foundation
+import MovieCore
 
 /// How each option is pictured in the creator (photo, color swatch, symbol or nothing), a one-line hint for every
 /// option, and the prompts used to make the example photos.
@@ -54,48 +55,166 @@ extension CharacterOptions {
         return Int(hash & 0x7FFF_FFFF)
     }
 
-    /// The SDXL prompt for one example photo. "" for an unknown category or option. Options whose plain phrase barely
-    /// changes the picture get a stronger description right after the subject (see `emphasis`); the phrase still follows.
-    public static func examplePrompt(category: String, option: String, gender: String) -> String {
+    /// The example photo of one option as a model-neutral description (nil for an unknown category or option). Options
+    /// whose plain phrase barely changes the picture get a stronger description (see `emphasis`); the phrase stays too.
+    public static func exampleSpec(category: String, option: String, gender: String) -> PromptSpec? {
         guard photoCategories.contains(category),
-              let phrase = Self.category(category)?.options.first(where: { $0.id == option })?.phrase else { return "" }
+              let phrase = Self.category(category)?.options.first(where: { $0.id == option })?.phrase else { return nil }
         // The models (the user's picks, scripts/option-models): a sexy 21-year-old woman with a platinum blonde bob, green
         // eyes and freckles; a handsome 30-year-old man with a dark brown quiff, green eyes and a short full beard. Both
-        // look like attractive glamour models whatever body the option shows.
+        // look like attractive models whatever body the option shows.
         let woman = gender == "woman"
+        var s = PromptSpec()
+        s.medium = "studio photo"
+        s.subject = "a \(exampleAge(gender: gender))-year-old adult \(gender)"
+        s.pronoun = woman ? .she : .he
+        s.place = "in front of a plain light gray studio background"
+        s.lighting = ["flattering soft light"]
+        var face = woman ? ["fair skin", "European features", "a heart-shaped face", "green eyes", "light freckles", "soft pink lips"]
+            : ["a handsome face", "green eyes", "a short neat full beard"]
+        if woman && option != "bold-makeup" { face.append("natural light makeup") }
+        face.append(woman ? "a sexy, alluring, confident seductive look" : "a sexy, attractive, confident smoldering look")
         let hair = woman ? "platinum blonde hair in a sleek bob with bangs" : "dark brown hair in a textured quiff"
-        var base = woman ? "fair skin, European features, a heart-shaped face, green eyes, light freckles, soft pink lips"
-            : "a handsome face, green eyes, a short neat full beard"
-        if woman && option != "bold-makeup" { base += ", natural light makeup" }
-        base += woman ? ", sexy and alluring, confident seductive look" : ", sexy and attractive, confident smoldering look"
-        let underwear = woman ? "wearing only a black lace lingerie set, bra and panties"
-            : "shirtless, wearing only fitted black boxer briefs"
-        let top = woman ? "fitted low-cut black top" : "fitted black t-shirt"
-        var who = "Glamour photo of a \(exampleAge(gender: gender))-year-old adult \(gender)"
-        if let e = emphasis(category: category, option: option, gender: gender) { who += " with \(e.text)" }
-        who += ", \(base)"
-        let body: String
+        let underwear = woman ? "only a black lace lingerie set, bra and panties" : "only fitted black boxer briefs, shirtless"
+        let top = woman ? "a fitted low-cut black top" : "a fitted black t-shirt"
+        let e = emphasis(category: category, option: option, gender: gender)
+        // The option itself: its stronger description and its phrase, emphasized where the model takes weights.
+        let picked = PromptDetail(tag: phrase, text: e.map { "\($0.text), \(phrase)" } ?? phrase, weight: 1.3)
+        s.details = face.map { PromptDetail($0) }
         switch category {
         case "hairStyle":
-            body = "\(who), \(woman ? "platinum blonde" : "dark brown") hair, \(phrase), head-and-shoulders portrait, \(top)"
+            s.shot = "head-and-shoulders portrait"
+            s.details.append(PromptDetail(woman ? "platinum blonde hair" : "dark brown hair"))
+            s.details.append(picked)
+            s.outfit = [PromptDetail(top)]
         case "extras":
-            let framing = switch option {
-            case "tattoos": "waist-up portrait, arms visible, \(woman ? "black tank top" : "shirtless")"
-            case "piercings": "close-up of the face and ears, \(top)"
-            default: "close-up portrait of the face, \(top)"
+            s.details.append(PromptDetail(hair))
+            s.details.append(picked)
+            switch option {
+            case "tattoos":
+                s.shot = "waist-up portrait, arms visible"
+                s.outfit = [PromptDetail(woman ? "a black tank top" : "no shirt")]
+            case "piercings":
+                s.shot = "close-up of the face and ears"
+                s.outfit = [PromptDetail(top)]
+            default:
+                s.shot = "close-up portrait of the face"
+                s.outfit = [PromptDetail(top)]
             }
-            body = "\(who), \(hair), \(phrase), \(framing)"
         case "body", "bust", "figure":
-            body = "\(who), \(hair), \(phrase), full body, standing in a confident alluring pose, facing the camera, \(underwear)"
+            s.shot = "full body"
+            s.action = "standing in a confident alluring pose, facing the camera"
+            s.details.append(PromptDetail(hair))
+            s.body = [picked]
+            s.outfit = [PromptDetail(underwear)]
         case "butt":
-            body = "\(who), \(hair), \(phrase), \(underwear), full body seen from behind, looking over the shoulder"
+            s.shot = "full body seen from behind"
+            s.action = "looking over the shoulder"
+            s.details.append(PromptDetail(hair))
+            s.body = [picked]
+            s.outfit = [PromptDetail(underwear)]
         case "clothes":
-            body = "\(who), \(hair), \(phrase), full body, standing"
+            s.shot = "full body"
+            s.action = "standing"
+            s.details.append(PromptDetail(hair))
+            s.outfit = [picked]
         default:
-            return ""
+            return nil
         }
-        return body + ", plain light gray studio background, flattering soft light."
+        s.avoid = exampleNegative(category: category, option: option, gender: gender)
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        if let w = without(category: category, option: option, gender: gender) { s.without = [w] }
+        return s
     }
+
+    /// The example photo's prompt for one model ("" for an unknown category or option). The bundled set is drawn by
+    /// MiniMax H3 Image.
+    public static func examplePrompt(category: String, option: String, gender: String,
+                                     model: PromptModel = .minimaxImage) -> String {
+        exampleSpec(category: category, option: option, gender: gender).map { PromptWriter.write($0, for: model).prompt } ?? ""
+    }
+
+    /// The picked look options as picture details (docs/prompting.md): looks, body and outfit. Each uses the chip's
+    /// phrase as the short tag and the stronger visual description (if any) as the text. Also what to keep out of the
+    /// body, both as negative words and in words for models without a negative. Clothing picks are left out when
+    /// `withClothes` is false (the photo names its own outfit). With two clothing picks each is named by its tag,
+    /// because two full outfits would fight.
+    public struct LookParts: Equatable, Sendable {
+        public var details: [PromptDetail] = []
+        public var body: [PromptDetail] = []
+        public var outfit: [PromptDetail] = []
+        public var avoid: [String] = []
+        public var without: [String] = []
+    }
+
+    public static let identityCategories = ["hairColor", "hairStyle", "eyes", "skin", "extras"]
+    public static let bodyCategories = ["body", "height", "bust", "butt", "figure"]
+
+    public static func lookParts(_ traits: [String: [String]], gender: String, withClothes: Bool = true) -> LookParts {
+        var parts = LookParts()
+        func picked(_ id: String) -> [Option] {
+            guard let cat = category(id) else { return [] }
+            let ids = Set(traits[id] ?? [])
+            return options(cat, gender: gender).filter { ids.contains($0.id) }
+        }
+        let g = gender.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        for id in identityCategories {
+            parts.details += picked(id).map { PromptDetail($0.phrase) }
+        }
+        var avoid: [(term: String, from: Int)] = []  // `from`: the body detail it came from
+        for id in bodyCategories {
+            for o in picked(id) {
+                let e = emphasis(category: id, option: o.id, gender: g)
+                parts.body.append(PromptDetail(tag: o.phrase, text: e?.text ?? o.phrase, weight: 1.2))
+                if let e, !e.negative.isEmpty {
+                    avoid += e.negative.split(separator: ",").map { ($0.trimmingCharacters(in: .whitespaces), parts.body.count - 1) }
+                }
+                if let w = without(category: id, option: o.id, gender: g) { parts.without.append(w) }
+            }
+        }
+        if withClothes {
+            let clothes = picked("clothes")
+            for o in clothes {
+                let tag = clothesTags[o.id] ?? o.phrase
+                let text = clothes.count == 1 ? (emphasis(category: "clothes", option: o.id, gender: g)?.text ?? tag) : tag
+                parts.outfit.append(PromptDetail(tag: tag, text: text, weight: 1.2))
+            }
+        }
+        // A word to avoid that another pick asks for (toned abs with an average body) is dropped. A pick's own text
+        // may name it ("no visible abs"), so only the other picks count.
+        let others = parts.details.map { ($0.tag + " " + $0.text).lowercased() }
+            + parts.outfit.map { ($0.tag + " " + $0.text).lowercased() }
+        var seen = Set<String>()
+        parts.avoid = avoid.filter { a in
+            let t = a.term.lowercased()
+            let asked = others + parts.body.enumerated().filter { $0.offset != a.from }
+                .map { ($0.element.tag + " " + $0.element.text).lowercased() }
+            return !t.isEmpty && !asked.contains { $0.contains(t) } && seen.insert(t).inserted
+        }.map(\.term)
+        return parts
+    }
+
+    /// The clothing styles' chip phrases are about the person ("dresses in boho style"). These are the short tags the
+    /// picture models read.
+    private static let clothesTags: [String: String] = [
+        "casual": "casual clothes", "elegant": "elegant outfit", "sporty": "sporty clothes", "streetwear": "streetwear",
+        "boho": "boho style clothes", "business": "business attire", "punk": "edgy punk style outfit",
+        "cozy": "cozy knitwear",
+    ]
+
+    /// An option's exclusion in words, for models without a negative prompt (MiniMax).
+    private static func without(category: String, option: String, gender: String) -> String? {
+        withouts["\(category)/\(option)/\(gender)"] ?? withouts["\(category)/\(option)"]
+    }
+
+    private static let withouts: [String: String] = [
+        "body/slim": "no visible muscle definition",
+        "body/average": "no visible abs and no muscle definition",
+        "body/curvy/man": "no visible abs",
+        "body/plus-size": "no visible abs",
+        "clothes/streetwear/man": "no denim",
+        "clothes/boho/man": "no denim",
+    ]
 
     /// The model's age in the example photos: 21 for the woman, 30 for the man.
     public static func exampleAge(gender: String) -> Int { gender == "woman" ? 21 : 30 }
@@ -155,6 +274,17 @@ extension CharacterOptions {
         "figure/toned-arms": ("toned, muscular arms", "thin arms"),
         "figure/broad-chest": ("a very broad, big, muscular chest", "narrow chest, skinny"),
         "figure/hairy-chest": ("a very hairy chest, thick chest hair", "hairless chest, smooth chest, bodybuilder"),
+        "clothes/casual": ("casual clothes: a soft t-shirt, relaxed jeans and white sneakers", ""),
+        "clothes/elegant": ("an elegant outfit: a fitted satin cocktail dress and heels", ""),
+        "clothes/elegant/man": ("an elegant outfit: a tailored dark suit, a crisp white shirt and polished shoes", ""),
+        "clothes/sporty": ("sporty clothes: high-waisted athletic leggings, a fitted sports top and running shoes", ""),
+        "clothes/sporty/man": ("sporty clothes: a zip-up track jacket, joggers and running shoes", ""),
+        "clothes/streetwear": ("streetwear: an oversized hoodie, baggy cargo pants and chunky sneakers", "denim jacket"),
+        "clothes/boho": ("boho style: a flowy floral maxi dress, layered necklaces and leather sandals", "denim jacket"),
+        "clothes/business": ("business attire: a tailored blazer, a silk blouse and slim trousers", ""),
+        "clothes/business/man": ("business attire: a navy suit, a white shirt and a silk tie", ""),
+        "clothes/punk": ("an edgy punk style: a black leather jacket, ripped black jeans, studs and combat boots", ""),
+        "clothes/cozy": ("cozy knits: a chunky oversized knit sweater and soft knit lounge pants", ""),
         "clothes/streetwear/man": ("streetwear: an oversized plain black hoodie with no print or text, a silver chain, baggy olive cargo "
                                    + "pants and chunky white high-top sneakers, no jacket, no denim",
                                    "denim, jeans, denim jacket, shirt"),
