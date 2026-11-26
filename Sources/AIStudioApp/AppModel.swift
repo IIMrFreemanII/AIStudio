@@ -303,6 +303,8 @@ final class AppModel {
     var showSavePresetSheet = false
     /// The Load Image node whose mask is being painted.
     var maskEditorTarget: MaskEditorTarget?
+    /// The node the Prompt Builder sheet writes into.
+    var promptBuilderTarget: PromptBuilderTarget?
     /// Live previews received during the current/last run (for the smoke test).
     @ObservationIgnored var previewCount = 0
 

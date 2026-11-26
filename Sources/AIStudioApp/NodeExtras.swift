@@ -1,6 +1,7 @@
 import AppKit
 import GraphRuntime
 import MLXDiffusionCore
+import MovieCore
 import NodesRemote
 import NodesStandard
 import SwiftUI
@@ -27,7 +28,9 @@ struct NodeExtras: View {
             case "LoadImage", "LoadMask": imageSection
             case "LoadVideo", "LoadAudio": mediaSection
             case "TextToSpeech": voiceSection
-            case let t where RemoteNodes.types.contains(t): gpuServerSection
+            case let t where RemoteNodes.types.contains(t):
+                promptBuilderButton
+                gpuServerSection
             case "RemoteLoRA":
                 loraLinkPreview
                 Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2, MiniMax H3, LTX-2.3), picked from the library (Models window). One "
@@ -51,6 +54,32 @@ struct NodeExtras: View {
     @ViewBuilder var loraLinkPreview: some View {
         if case .value(.string(let id))? = node.inputs["lora"], !id.isEmpty, let item = store.library.item(id) {
             LibraryItemCard(node: node, item: item)
+        }
+    }
+
+    // MARK: Prompt Builder (Cloud GPU image and video nodes)
+
+    /// Opens the Prompt Builder for this node, writing for its model (an SDXL fine-tune's base model picks Pony or
+    /// Illustrious tags). Nodes whose prompt is wired from another node don't get it.
+    @ViewBuilder var promptBuilderButton: some View {
+        let base: String? = {
+            guard case .value(.string(let id))? = node.inputs["model"], !id.isEmpty else { return nil }
+            return store.library.item(id)?.baseModel
+        }()
+        if let pm = PromptBuilderDraft.promptModel(nodeType: node.type, baseModel: base) {
+            let linked: Bool = { if case .link? = node.inputs["prompt"] { return true }; return false }()
+            MGSection("Prompt") {
+                Button {
+                    model.promptBuilderTarget = PromptBuilderTarget(
+                        id: node.id, model: pm, takesNegative: model.schema(for: node)?.input("negative") != nil)
+                } label: {
+                    Label("Prompt Builder…", systemImage: "square.grid.3x3.square")
+                }
+                .controlSize(.small)
+                .disabled(linked)
+                .mgHelp(linked ? "The prompt comes from another node"
+                        : "Build the prompt from choices, written the way \(pm.title) reads best")
+            }
         }
     }
 

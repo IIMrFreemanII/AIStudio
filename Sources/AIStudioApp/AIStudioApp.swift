@@ -355,6 +355,16 @@ struct AIStudioApp: App {
         .defaultSize(width: 680, height: 720)
         .windowStyle(.hiddenTitleBar)
 
+        Window("Prompt Builder", id: "prompt-builder") {
+            PromptBuilderWindow()
+                .mgWindow("Prompt Builder")
+                .environment(model)
+                .environment(store)
+                .mgRoot()
+        }
+        .defaultSize(width: 1000, height: 720)
+        .windowStyle(.hiddenTitleBar)
+
         Settings {
             SettingsView()
                 .mgWindow("Settings")
@@ -454,6 +464,8 @@ struct AppCommands: Commands {
             Divider()
             Button("Models…") { openWindow(id: "models") }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            Button("Prompt Builder…") { openWindow(id: "prompt-builder") }
+                .keyboardShortcut("p", modifiers: [.command, .option])
             Button("Load Model Now") { model.preloadModel() }
             Button("Unload Models") { model.unloadModels() }
         }
