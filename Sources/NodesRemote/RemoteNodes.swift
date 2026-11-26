@@ -1175,13 +1175,17 @@ private func h3Inputs() -> [InputSpec] {
         InputSpec("fast", .bool, default: .bool(true)),
         // Model evaluations; 0 = automatic (8 fast, 49 full).
         InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 100, step: 1), zeroLabel: "auto"),
+        // An H3 fine-tune from the library for this node's partition (empty: MiniMax H3 itself). Pruned-layout and
+        // ComfyUI int8 files work too; the server swaps the model's layout for jobs that pick one.
+        InputSpec("model", .string, default: .string(""), widget: .library("model")),
     ]
 }
 
 private func h3Params(_ inputs: NodeInputs) throws -> [String: Any] {
-    ["prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"), "seconds": try inputs.float("seconds"),
-     "size": try inputs.string("size"), "aspect": try inputs.string("aspect"), "fast": try inputs.bool("fast"),
-     "steps": try inputs.int("steps")]
+    let model = (try? inputs.string("model")) ?? ""
+    return ["prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"), "seconds": try inputs.float("seconds"),
+            "size": try inputs.string("size"), "aspect": try inputs.string("aspect"), "fast": try inputs.bool("fast"),
+            "steps": try inputs.int("steps"), "model": model.isEmpty ? "base" : model]
 }
 
 /// MiniMax H3: a 5–15 s clip with its own sound (dialogue, effects, ambience) from one model, 24 fps at a 768 short

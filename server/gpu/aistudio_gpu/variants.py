@@ -31,19 +31,26 @@ from .fetch import DEFAULT_HOSTS, MAX_BYTES, REDIRECTS, _family, looks_like_safe
 # The library's family → the base model folder whose text encoders and VAE a variant reuses.
 FAMILIES = {"flux.1": "flux1-dev", "qwen-image": "qwen-image", "wan-2.2-t2v": "wan22-t2v", "wan-2.2-i2v": "wan22-i2v",
             "sdxl": "sdxl", "chroma": "chroma", "sd1.5": "sd15", "anima": "anima",
-            "ltx-2.3": "ltx23"}
+            "ltx-2.3": "ltx23",
+            # MiniMax H3 has two transformer partitions in one base folder; each library family is one of them.
+            "minimax-h3": "minimax-h3", "minimax-h3-ref": "minimax-h3"}
 # The task family (tasks/__init__.py) → the library family its `model` parameter picks from.
 TASK_FAMILIES = {"flux1-dev": "flux.1", "qwen-image": "qwen-image", "wan22-t2v": "wan-2.2-t2v",
                  "wan22-i2v": "wan-2.2-i2v", "sdxl": "sdxl", "chroma": "chroma", "sd15": "sd1.5", "anima": "anima",
-                 "ltx23": "ltx-2.3"}
+                 "ltx23": "ltx-2.3", "h3-video": "minimax-h3", "h3-references": "minimax-h3-ref"}
 # The transformers a family's variant can replace. Wan 2.2 A14B has two experts: `transformer` denoises the
 # high-noise steps, `transformer_2` the low-noise ones; a fine-tune may ship either or both (the other stays the base's).
 COMPONENTS = {"wan-2.2-t2v": ("transformer", "transformer_2"), "wan-2.2-i2v": ("transformer", "transformer_2"),
               "sdxl": ("unet", "text_encoder", "text_encoder_2"), "sd1.5": ("unet", "text_encoder"),
-              "anima": ("transformer", "text_conditioner")}
+              "anima": ("transformer", "text_conditioner"),
+              # H3's FL2VA / T2VA partition (`transformer/`) and its REF2VA one (`transformer_ref/`).
+              "minimax-h3": ("transformer",), "minimax-h3-ref": ("transformer_ref",)}
 # Families whose fine-tune is one checkpoint file (UNet + text encoders), and how their name reads in errors.
 SINGLE_FILE = {"sdxl": "SDXL", "sd1.5": "SD 1.5", "anima": "Anima"}
 ROLES = {"high": "transformer", "low": "transformer_2"}
+
+
+H3_FAMILIES = ("minimax-h3", "minimax-h3-ref")
 
 
 def components(family: str) -> tuple[str, ...]:
@@ -76,6 +83,11 @@ def transformer_dir(models_root: Path, family: str, vid: str | None, component: 
     if not (d / ".complete").exists():
         return d / component  # not installed: the caller finds no weights there
     return d / component if (d / component).exists() else base
+
+
+def variant_layout(models_root: Path, family: str, vid: str) -> str:
+    """"full" (the released MiniMax H3 layout, the default) or "pruned" (AdaLN-pruned, ``tasks/h3_pruned.py``)."""
+    return _read_json(variant_dir(models_root, family, vid) / "variant.json").get("layout") or "full"
 
 
 def installed(models_root: Path, family: str, vid: str) -> bool:
@@ -160,7 +172,7 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
                 role = (f.get("role") or "").lower()
                 if len(parts) > 1 and role not in ROLES:
                     raise ValueError("a Wan 2.2 fine-tune file must say which expert it is (high or low noise)")
-                jobs.append((ROLES.get(role, "transformer") if len(parts) > 1 else "transformer", f))
+                jobs.append((ROLES.get(role, parts[0]) if len(parts) > 1 else parts[0], f))
             if len({c for c, _ in jobs}) != len(jobs):
                 raise ValueError("two files for the same transformer")
             for i, (component, f) in enumerate(jobs):
@@ -184,10 +196,11 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
         for component in done:
             os.replace(work / component, dest / component)
             size += sum(p.stat().st_size for p in (dest / component).glob("*") if p.is_file())
-        (dest / "variant.json").write_text(json.dumps({"id": vid, "name": name, "family": family, "bytes": size,
-                                                       "components": done,
-                                                       "source": repo or [f.get("url") for f in files or []],
-                                                       "added": time.time()}))
+        meta = {"id": vid, "name": name, "family": family, "bytes": size, "components": done,
+                "source": repo or [f.get("url") for f in files or []], "added": time.time()}
+        if family in H3_FAMILIES:
+            meta["layout"] = h3_layout(dest / done[0])
+        (dest / "variant.json").write_text(json.dumps(meta))
         (dest / ".complete").write_text("{}")
         progress({"state": "done", "bytes": size})
         return dest
@@ -288,6 +301,8 @@ def convert_checkpoint(family: str, ckpt: Path, base: Path, out: Path, component
         return convert_wan(ckpt, base / component, out)
     if family == "ltx-2.3":
         return convert_ltx23(ckpt, base / component, out)
+    if family in H3_FAMILIES:
+        return convert_minimax_h3(ckpt, base / component, out)
     assert family in ("flux.1", "chroma")
     # Chroma is Flux's layout with a pruned modulation (its own diffusers class and single-file conversion).
     model_class = ChromaTransformer2DModel if family == "chroma" else FluxTransformer2DModel
@@ -455,6 +470,150 @@ def convert_ltx23(ckpt: Path, base_transformer: Path, out: Path) -> None:
     shutil.copy(base_transformer / "config.json", out / "config.json")
 
 
+H3_PREFIXES = ("model.diffusion_model.", "diffusion_model.", "")
+H3_QUANT_FORMATS = ("int8", "float8")  # ComfyUI `comfy_quant` formats this reads (the rest: int4, w4a8, nvfp4…)
+
+
+def h3_layout(transformer: Path) -> str:
+    """"pruned" for a transformer folder saved by the AdaLN-pruned class, else "full"."""
+    return "pruned" if "Pruned" in str(_read_json(transformer / "config.json").get("_class_name", "")) else "full"
+
+
+def _h3_quant_info(f, keys: set) -> dict:
+    """ComfyUI's per-layer quantization notes: ``X.weight`` → (format, convrot, group size), from the ``X.comfy_quant``
+    tensors (uint8 holding JSON). Refuses formats other than int8 and fp8."""
+    info = {}
+    for k in sorted(keys):
+        if not k.endswith(".comfy_quant"):
+            continue
+        try:
+            note = json.loads(bytes(f.get_tensor(k).tolist()).decode())
+            fmt = str(note.get("format", ""))
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"unreadable quantization note {k} ({e})") from e
+        if not fmt.startswith(H3_QUANT_FORMATS):
+            raise ValueError(f"this quantization ({fmt or 'unknown'}) isn't supported; pick the bf16, fp8 or int8 file")
+        # ComfyUI writes e.g. {"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256, "per_row": true}.
+        group = int(note.get("convrot_groupsize") or note.get("group_size") or 256)
+        info[k[: -len("comfy_quant")] + "weight"] = (fmt, bool(note.get("convrot")), group)
+    return info
+
+
+def _h3_tensor(f, keys: set, key: str, quant: dict):
+    """One tensor of a ComfyUI H3 file. int8 weights: ``weight × weight_scale``, and with ConvRot the rows' groups
+    rotated back by the (self-inverse) Hadamard matrix; fp8: times its scale; the rest as stored."""
+    import torch
+
+    t = f.get_tensor(key)
+    if t.dtype == torch.int8:
+        if key not in quant or not quant[key][0].startswith("int8"):
+            raise ValueError(f"{key} is int8 but has no int8 quantization note; pick the bf16, fp8 or int8 file")
+        _, convrot, group = quant[key]
+        w = t.to(torch.float32) * f.get_tensor(key + "_scale").to(torch.float32)
+        if convrot:
+            from .tasks.h3_pruned import _hadamard
+
+            n, k = w.shape
+            if k % group:
+                raise ValueError(f"{key}: {k} columns aren't a multiple of the ConvRot group size {group}")
+            w = (w.reshape(n, k // group, group) @ _hadamard(group, "cpu", torch.float32)).reshape(n, k)
+        return w.to(torch.bfloat16).contiguous()
+    if t.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        return _dequantized(f, keys, key)
+    return t.contiguous()
+
+
+def _h3_to_diffusers(state: dict, pruned: bool) -> dict:
+    """ComfyUI names → diffusers' (``convert_minimax_h3_transformer_checkpoint_to_diffusers``, which splits the fused
+    qkv and swaps the fc1 halves). A pruned file's own tensors (the timestep table, the folded AdaLN biases, the
+    affine map) are renamed here, since that converter only knows the released layout. Consumes ``state``."""
+    from diffusers.loaders.single_file_utils import convert_minimax_h3_transformer_checkpoint_to_diffusers
+
+    extra = {}
+    if pruned:
+        for k in list(state):
+            if k == "adaln_t_table":
+                extra["time_embedder.table"] = state.pop(k)
+            elif k in ("adaln_basis", "adaln_mean"):
+                extra[k] = state.pop(k)
+            elif k == "final_layer.adaln_proj.linear.bias":
+                extra["norm_out.folded_bias"] = state.pop(k)
+            elif k.startswith("blocks.") and k.endswith(".adaln_proj.linear.bias"):
+                extra["transformer_" + k[: -len("linear.bias")] + "folded_bias"] = state.pop(k)
+    return {**convert_minimax_h3_transformer_checkpoint_to_diffusers(state, {}, qkv_layout="stacked"), **extra}
+
+
+PRUNED_AFFINE = "minimax-h3-pruned-affine"  # the reference pruned checkpoint's affine maps (download.py)
+
+
+def convert_minimax_h3(ckpt: Path, base_transformer: Path, out: Path) -> None:
+    """A ComfyUI MiniMax H3 transformer file (bf16, fp8 or ConvRot int8; the released layout or the community's
+    AdaLN-pruned one) → a diffusers folder in the same layout (bf16, the class's float32 modules kept). The released
+    layout is checked against the base's names and takes its config; the pruned one against a meta-device
+    ``MiniMaxH3PrunedTransformer3DModel`` and gets ``PRUNED_CONFIG``. Memory: each block's tensors are read,
+    dequantized, converted and written before the next block's, so it stays around one block (≈ 1 GB), never the
+    whole file."""
+    import torch
+    from diffusers.models.transformers.transformer_minimax_h3 import MiniMaxH3Transformer3DModel
+    from safetensors import safe_open
+
+    from .tasks.h3_pruned import PRUNED_CONFIG, MiniMaxH3PrunedTransformer3DModel
+
+    with safe_open(str(ckpt), "pt") as f:
+        keys = set(f.keys())
+        prefix = next((p for p in H3_PREFIXES if any(k.startswith(p + "blocks.0.") for k in keys)), None)
+        if prefix is None:
+            raise ValueError("this file isn't a MiniMax H3 checkpoint (no blocks.0 weights)")
+        quant = _h3_quant_info(f, keys)
+        source = {k[len(prefix):]: k for k in keys if k.startswith(prefix) and not k.endswith(LTX_SCALE_SUFFIXES)
+                  and k != "scaled_fp8"}
+        pruned = "adaln_t_table" in source
+        # The converted names, from the shapes alone (meta tensors): completeness is known before anything is written.
+        probe = {n: torch.empty(f.get_slice(k).get_shape(), device="meta") for n, k in source.items()}
+        have = set(_h3_to_diffusers(probe, pruned))
+        # Some pruned files (DaSiWa's) leave out the affine map back to the released timestep embedding, which only
+        # LoRAs trained on the released layout (the Turbo LoRA) need. Their timestep tables match the reference
+        # pruned checkpoint's partition to ~1 %, so its map is borrowed (`minimax-h3-pruned-affine`, a few KB).
+        affine = {}
+        if pruned and not {"adaln_basis", "adaln_mean"} <= have:
+            path = base_transformer.parent.parent / PRUNED_AFFINE / base_transformer.name / "adaln_affine.safetensors"
+            if not path.exists():
+                raise RuntimeError(f"install {PRUNED_AFFINE} first (this pruned file has no adaln_basis / adaln_mean)")
+            from safetensors.torch import load_file
+
+            affine = {k: v for k, v in load_file(str(path)).items() if k in ("adaln_basis", "adaln_mean")}
+            have |= set(affine)
+        if pruned:
+            with torch.device("meta"):
+                expected = list(MiniMaxH3PrunedTransformer3DModel(**PRUNED_CONFIG).state_dict())
+            keep = MiniMaxH3PrunedTransformer3DModel._keep_in_fp32_modules
+        else:
+            expected = _base_names(base_transformer)
+            keep = MiniMaxH3Transformer3DModel._keep_in_fp32_modules
+        _check_complete(expected, have)
+        wanted = set(expected)
+        groups: dict[str, list[str]] = {}
+        for n in source:
+            groups.setdefault(".".join(n.split(".")[:2]) if n.startswith("blocks.") else "", []).append(n)
+
+        def tensors():
+            for name, t in affine.items():
+                yield name, t.to(torch.float32).contiguous()
+            for g in sorted(groups):
+                state = {n: _h3_tensor(f, keys, source[n], quant) for n in groups[g]}
+                for name, t in _h3_to_diffusers(state, pruned).items():
+                    if name in wanted:
+                        fp32 = any(m in name for m in keep or ())
+                        yield name, t.to(torch.float32 if fp32 else torch.bfloat16).contiguous()
+
+        _write_shards(tensors(), out)
+    if pruned:
+        (out / "config.json").write_text(json.dumps({"_class_name": "MiniMaxH3PrunedTransformer3DModel",
+                                                     **PRUNED_CONFIG}, indent=2))
+    else:
+        shutil.copy(base_transformer / "config.json", out / "config.json")
+
+
 GGUF_MAGIC = b"GGUF"
 
 
@@ -534,10 +693,11 @@ def _write_shards(tensors, out: Path) -> None:
             shard, shard_bytes = {}, 0
 
     for n, t in tensors:
-        if shard_bytes + t.numel() * 2 > SHARD_BYTES:
+        size = t.numel() * t.element_size()
+        if shard_bytes + size > SHARD_BYTES:
             flush()
         shard[n] = t
-        shard_bytes += t.numel() * 2
+        shard_bytes += size
     flush()
     final = {}
     for i, name in enumerate(files, 1):

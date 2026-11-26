@@ -110,6 +110,16 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(mixed.fileName == "x-high-fp8.safetensors")
     }
 
+    @Test func civitaiDiffusionModelFilesCountAsTheCheckpoint() throws {
+        let r = try LoRASources.civitaiRemote(Data("""
+            {"id": 3, "baseModel": "MiniMax H3", "model": {"name": "Eros", "type": "Checkpoint"}, "files": [
+             {"name": "eros-int8.safetensors", "type": "Diffusion Model", "metadata": {"format": "SafeTensor", "fp": "int8"}, "downloadUrl": "https://civitai.com/i"},
+             {"name": "eros.safetensors", "type": "Diffusion Model", "metadata": {"format": "SafeTensor", "fp": "bf16"}, "downloadUrl": "https://civitai.com/b"},
+             {"name": "notes.zip", "type": "Training Data", "downloadUrl": "https://civitai.com/z"}]}
+            """.utf8))
+        #expect(r.kind == .model && r.fileName == "eros.safetensors")
+    }
+
     @Test func civitaiPreviewImageIsTheFirstSafeOneAtThumbnailSize() throws {
         let json = """
         {"id": 1, "files": [{"name": "a.safetensors", "type": "Model", "downloadUrl": "https://civitai.com/api/download/models/1"}],
@@ -350,6 +360,9 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.baseTitle(family: "minimax-h3-ref") == "MiniMax H3 (base)")
         #expect(RemoteH3VideoNode.schema.inputs.contains { $0.name == "loras" })
         #expect(RemoteH3ReferencesNode.schema.inputs.contains { $0.name == "loras" })
+        // Fine-tunes too (full or pruned layout), each node's partition its own library family.
+        #expect(RemoteH3VideoNode.schema.inputs.contains { $0.name == "model" })
+        #expect(RemoteH3ReferencesNode.schema.inputs.contains { $0.name == "model" })
     }
 
     @Test func huggingFaceTreeAndRedirectHeaders() throws {

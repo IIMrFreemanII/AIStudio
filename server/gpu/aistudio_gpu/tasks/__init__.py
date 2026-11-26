@@ -214,6 +214,10 @@ def _h3_params() -> dict[str, Param]:
         # LightX2V's Turbo LoRA, 8 model evaluations; off: the base model at 49 (≈ 6× the GPU time).
         "fast": Param("bool", True),
         "steps": Param("int", 0, min=0, max=100),  # model evaluations; 0 = 8 fast, 49 full
+        # A fine-tune installed from a link (variants.py), by its id, from this task's partition's family
+        # (minimax-h3 for h3-video, minimax-h3-ref for h3-references); "base" is MiniMax H3 itself. A pruned fine-tune
+        # swaps the partition's transformer for the pruned layout (the base stays the default).
+        "model": Param("string", "base"),
         # Community LoRAs (lora1 … lora4: musubi-tuner, ai-toolkit, kohya, DiffSynth files; diffusers converts them),
         # for this task's partition; with `fast` they stack on the Turbo LoRA.
         **_lora_params(),
