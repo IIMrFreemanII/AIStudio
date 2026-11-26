@@ -420,6 +420,7 @@ struct LibraryAddSheet: View {
             // A LoRA for a model this Mac doesn't run (SDXL, SD 3.5, Chroma, Qwen-Image 20B): off unless asked for, since a
             // server downloads a linked LoRA itself.
             else { onMac = family.map { LinkLibrary.macModelBases[$0] != nil } ?? true }
+            if r.fileName.lowercased().hasSuffix(".gguf") { onMac = false }  // the Mac's importer reads safetensors only
             async let mac = LoRADownloads.probe(r, models: ModelPaths.directory)
             for s in model.connections.gpuServers {
                 let id = s.id

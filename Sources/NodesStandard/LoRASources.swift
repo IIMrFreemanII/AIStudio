@@ -298,16 +298,30 @@ public enum LoRASources {
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let versionID = obj["id"] as? Int else { throw LoRASourceError.noSafetensors("this Civitai model") }
         let models = (obj["files"] as? [[String: Any]] ?? []).filter { ($0["type"] as? String ?? "Model") == "Model" }
-        // safetensors only, and not NF4 (bitsandbytes) or GGUF; bf16/fp16 first, then fp8, then fp32; the primary
-        // file first among equals.
+        // safetensors only, and not NF4 (bitsandbytes) or GGUF; bf16/fp16 first, then fp8 (or unstated), then fp32,
+        // then other precisions (ComfyUI-only int8 / int4 files); the primary file first among equals.
         func meta(_ f: [String: Any], _ k: String) -> String { ((f["metadata"] as? [String: Any])?[k] as? String ?? "").lowercased() }
-        let files = models.filter {
+        var files = models.filter {
             ($0["name"] as? String ?? "").lowercased().hasSuffix(".safetensors") && meta($0, "fp") != "nf4"
                 && ["", "safetensor"].contains(meta($0, "format"))
         }
+        // A Wan 2.2 checkpoint published only as GGUF (ComfyUI-GGUF): the GPU server dequantizes it at import. The
+        // highest quant first (Q8 > Q6 > Q5 > Q4 …).
+        let isCheckpoint = ((obj["model"] as? [String: Any])?["type"] as? String ?? "").lowercased() == "checkpoint"
+        var gguf = false
+        if files.isEmpty, isCheckpoint, isWan22(obj["baseModel"] as? String) {
+            files = models.filter { ($0["name"] as? String ?? "").lowercased().hasSuffix(".gguf") }
+            gguf = !files.isEmpty
+        }
+        func quant(_ f: [String: Any]) -> Int {
+            let n = (f["name"] as? String ?? "").lowercased()
+            return ["q8", "q6", "q5", "q4", "q3", "q2"].firstIndex { n.contains($0) } ?? 6
+        }
         func rank(_ f: [String: Any]) -> Int {
-            let fp = ["bf16": 0, "fp16": 0, "fp8": 1, "fp32": 2][meta(f, "fp")] ?? 1
-            return fp * 2 + (f["primary"] as? Bool == true ? 0 : 1)
+            let primary = f["primary"] as? Bool == true ? 0 : 1
+            if gguf { return quant(f) * 2 + primary }
+            let fp = ["bf16": 0, "fp16": 0, "fp8": 1, "": 1, "fp32": 2][meta(f, "fp")] ?? 3
+            return fp * 2 + primary
         }
         if files.isEmpty, !models.isEmpty {
             throw LoRASourceError.unsupportedFormat(models.compactMap { $0["name"] as? String })
@@ -712,6 +726,7 @@ extension LoRADownloads {
                 if code == 401 || code == 403 { return .unavailable("the site refused your API key") }
             }
             guard code == 200 || code == 206 else { return .unavailable("HTTP \(code) from \(remote.downloadURL.host ?? "")") }
+            if head.prefix(4) == Data("GGUF".utf8) { return .unavailable("a GGUF file installs on a GPU server only") }
             guard LoRASources.looksLikeSafetensors(head) else { return .unavailable("the link isn't a .safetensors file") }
             return .available(withKey: withKey)
         } catch {

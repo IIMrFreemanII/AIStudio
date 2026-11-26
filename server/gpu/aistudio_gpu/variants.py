@@ -146,6 +146,7 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
                 download_file(files[0]["url"], ckpt, files[0].get("sha256"), tokens,
                               (lambda p: progress({**p, "file": 1, "files": 1})), extra_hosts, cancelled)
                 progress({"state": "converting", "file": 1, "files": 1})
+                _refuse_gguf(family, ckpt)
                 if fake:
                     (work / parts[0]).mkdir()
                     os.replace(ckpt, work / parts[0] / "diffusion_pytorch_model.safetensors")
@@ -166,6 +167,7 @@ def import_variant(models_root: Path, family: str, vid: str, name: str, files: l
                               (lambda p, i=i: progress({**p, "file": i + 1, "files": len(jobs)})), extra_hosts,
                               cancelled)
                 progress({"state": "converting", "file": i + 1, "files": len(jobs)})
+                _refuse_gguf(family, ckpt)
                 out = work / component
                 if fake:
                     out.mkdir()
@@ -231,8 +233,8 @@ def download_file(url: str, dest: Path, sha256: str | None, tokens: dict, progre
                             raise InterruptedError("cancelled")
                         if len(head) < 9:
                             head += chunk[:9 - len(head)]
-                            if len(head) == 9 and not looks_like_safetensors(head):
-                                raise ValueError("the link isn't a .safetensors file")
+                            if len(head) == 9 and not (looks_like_safetensors(head) or head[:4] == GGUF_MAGIC):
+                                raise ValueError("the link isn't a .safetensors (or Wan 2.2 .gguf) file")
                         out.write(chunk)
                         hasher.update(chunk)
                         done += len(chunk)
@@ -396,10 +398,13 @@ def copy_diffusers_named(ckpt: Path, base_transformer: Path, out: Path) -> None:
 
 def convert_wan(ckpt: Path, base_transformer: Path, out: Path) -> None:
     """One Wan 2.2 expert: the official / ComfyUI names (``blocks.N.self_attn.q``…, KJ's scaled fp8 included) are
-    renamed to diffusers' by diffusers' own converter; diffusers-named files are copied. bf16 output."""
+    renamed to diffusers' by diffusers' own converter; diffusers-named files are copied. A GGUF file (ComfyUI-GGUF's
+    Q8_0, Q6_K, …) is dequantized first. bf16 output."""
     from safetensors import safe_open
 
     names = _base_names(base_transformer)
+    if _is_gguf(ckpt):
+        return _write_wan_state(load_gguf_state(ckpt), names, base_transformer, out)
     with safe_open(str(ckpt), "pt") as f:
         keys = set(f.keys())
         prefix = max(PREFIXES, key=lambda p: sum(1 for n in names if p + n in keys))
@@ -413,6 +418,48 @@ def convert_wan(ckpt: Path, base_transformer: Path, out: Path) -> None:
     from diffusers.loaders.single_file_utils import convert_wan_transformer_to_diffusers
 
     state = convert_wan_transformer_to_diffusers(state)
+    _check_complete(names, set(state))
+    _write_shards(((n, state.pop(n)) for n in names), out)
+    shutil.copy(base_transformer / "config.json", out / "config.json")
+
+
+GGUF_MAGIC = b"GGUF"
+
+
+def _is_gguf(path: Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(4) == GGUF_MAGIC
+
+
+def _refuse_gguf(family: str, ckpt: Path) -> None:
+    if not family.startswith("wan-2.2") and _is_gguf(ckpt):
+        raise ValueError("GGUF fine-tunes install for Wan 2.2 only; pick this model's .safetensors file")
+
+
+def load_gguf_state(path: Path) -> dict:
+    """Every tensor of a GGUF file as bf16, under its own names (dequantized one at a time by diffusers' GGUF code:
+    Q8_0, Q6_K, Q5_K, Q4_K…; F16 / F32 as they are). GGUF stores dims reversed; the reader gives torch order."""
+    import torch
+    from diffusers.models.model_loading_utils import load_gguf_checkpoint
+    from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
+
+    state = load_gguf_checkpoint(str(path), return_tensors=True)
+    for k in list(state):
+        state[k] = dequantize_gguf_tensor(state[k]).to(torch.bfloat16).contiguous()
+    return state
+
+
+def _write_wan_state(state: dict, names: list[str], base_transformer: Path, out: Path) -> None:
+    """A Wan expert's tensors (diffusers or official names, under any of ``PREFIXES``) → the base's layout."""
+    prefix = max(PREFIXES, key=lambda p: sum(1 for n in names if p + n in state))
+    if sum(1 for n in names if prefix + n in state) > len(names) // 2:
+        state = {k[len(prefix):]: v for k, v in state.items() if k.startswith(prefix)}
+    else:
+        from diffusers.loaders.single_file_utils import convert_wan_transformer_to_diffusers
+
+        prefix = next((p for p in PREFIXES if any(k.startswith(p + "blocks.") for k in state)), "")
+        state = convert_wan_transformer_to_diffusers({k[len(prefix):]: v for k, v in state.items()
+                                                      if k.startswith(prefix)})
     _check_complete(names, set(state))
     _write_shards(((n, state.pop(n)) for n in names), out)
     shutil.copy(base_transformer / "config.json", out / "config.json")
