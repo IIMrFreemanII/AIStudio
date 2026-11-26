@@ -6,6 +6,9 @@ The download keeps only the fp16 files (≈ 2 GB, no safety checker); they run i
 swapped into the loaded pipeline in place, the VAE stays SD 1.5's. LoRAs load into the UNet and, when the file has
 them, the text encoder.
 
+Prompts may be longer than CLIP's 77 tokens and carry A1111 weights, ``(red jacket:1.3)``: the worker encodes
+them itself (``prompt_weights.py``) and passes the embeddings.
+
 The sampler is chosen per job from three schedulers built once: DPM++ 2M Karras (the default), Euler a, Euler.
 """
 
@@ -21,6 +24,7 @@ from . import Output, TaskSpec
 from .adapters import AdapterSlots
 from .device import generator, pick_device
 from .previews import remember_x0
+from .prompt_weights import encode_sd15
 
 PREVIEW_EVERY = 5  # a VAE decode per preview: every few steps is plenty
 
@@ -85,8 +89,9 @@ class SD15Worker(AdapterSlots):
         sink.status("Sampling")
         start = time.monotonic()
         with torch.inference_mode():
-            image = self.pipe(prompt=params["prompt"], negative_prompt=params["negative"].strip() or None,
-                              width=width, height=height, num_inference_steps=steps, guidance_scale=guidance,
+            # After the LoRAs: the ones with text-encoder parts change the embeddings.
+            embeds = encode_sd15(self.pipe, params["prompt"], params["negative"])
+            image = self.pipe(**embeds, width=width, height=height, num_inference_steps=steps, guidance_scale=guidance,
                               generator=generator(params["seed"]), callback_on_step_end=on_step,
                               callback_on_step_end_tensor_inputs=["latents"]).images[0]
         path = out_dir / "result.png"

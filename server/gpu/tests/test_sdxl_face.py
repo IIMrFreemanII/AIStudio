@@ -7,6 +7,7 @@ from PIL import Image
 
 from aistudio_gpu import download
 from aistudio_gpu.tasks import TASKS
+from aistudio_gpu.tasks import sdxl as sdxl_module
 from aistudio_gpu.tasks.sdxl import SDXLWorker
 
 
@@ -55,6 +56,8 @@ def worker(tmp_path, monkeypatch):
     w.models_root = tmp_path / "models"
     w.device, w.dtype = "cpu", torch.float32
     monkeypatch.setattr(w, "_use_loras", lambda *a, **kw: 0)
+    # The stub has no text encoders: the prompt's embeddings are prompt_weights.py's (test_prompt_weights.py).
+    monkeypatch.setattr(sdxl_module, "encode_sdxl", lambda pipe, prompt, negative: {"prompt_embeds": prompt})
     return w
 
 
