@@ -280,6 +280,10 @@ mode only looks and explains. Each tab keeps its helper conversation across laun
 bill only for GPU seconds), networking with Tailscale or an SSH tunnel, the bootstrap scripts, getting models onto the
 server, the dashboard, Modal setup and costs, and troubleshooting.
 
+[docs/prompting.md](docs/prompting.md) gives the rules for writing prompts for each model the app sends them to
+(the image, video and audio models). For each it covers the text encoder and its token limit, tags or sentences,
+when a negative prompt works, reference pictures, and where the app builds its prompts.
+
 ## Graphs
 
 A graph is JSON with a `nodes` list. Each input is either a literal value or a link written as `{"node": "<id>", "output": "<name>"}`. See [examples/txt2img.json](examples/txt2img.json).
