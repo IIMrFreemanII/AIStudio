@@ -375,6 +375,43 @@ extension SmokeTest {
         check(OptionImages.image(category: "hairStyle", option: "bob", gender: "non-binary") != nil,
               "another gender gets the woman's example")
 
+        // g10. The Prompt Builder's preview: from the character (their own family, face and fine-tune), then plain
+        // SDXL with the same seed, which the strip keeps newest first; video models draw no preview.
+        if let stored = model.character(c.id) {
+            var d = PromptBuilderDraft()
+            let context = model.artContext(stored)
+            d.apply(character: stored, model: CharacterArt.promptModel(stored, context: context),
+                    triggerWords: context.triggerWords)
+            d.action = "reading by the window"
+            do {
+                let before = model.promptPreviews().count
+                let a = try await model.previewPrompt(d)
+                check(model.previewCharacter(d)?.id == stored.id && a.model == d.model
+                      && FileManager.default.fileExists(atPath: model.promptPreviewURL(a).path)
+                      && model.promptPreviews().count == before + 1,
+                      "the builder previews \(stored.name) on their own model (\(a.model.title))")
+                var plain = d
+                plain.detachCharacter()
+                plain.model = .sdxl
+                let b = try await model.previewPrompt(plain)
+                let changes = b.draft.changes(from: a.draft)
+                check(b.seed == a.seed && model.promptPreviews().prefix(2).map(\.id) == [b.id, a.id]
+                      && changes.contains("Model: SDXL"), "a plain SDXL preview keeps the seed (\(changes))")
+                var video = plain
+                video.model = .wan
+                do {
+                    _ = try await model.previewPrompt(video)
+                    check(false, "a video model draws no preview")
+                } catch {
+                    check(error is PromptPreviewError, "a video model draws no preview (\(error))")
+                }
+                model.deletePromptPreview(a)
+                model.deletePromptPreview(b)
+            } catch {
+                check(false, "the builder preview (\(error))")
+            }
+        }
+
         // h. Saved.
         model.saveChat(doc)
         check(model.chatStore.list().contains { $0.id == doc.id && $0.character }, "the chat is listed as a character chat")

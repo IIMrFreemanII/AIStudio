@@ -239,11 +239,13 @@ public enum CharacterArt {
     }
 
     /// The values to bind for one picture. `face` nil: the face node is removed (portrait candidates).
-    /// `extraNegative` is added to the character's negative prompt (the option example photos use it). `keepHair`
+    /// `extraNegative` is added to the character's negative prompt (the option example photos use it); `negative`
+    /// replaces it (the Prompt Builder's preview writes its own). `keepHair`
     /// false: on MiniMax the face reference keeps only the face (a hairstyle example).
     public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?, keepHair: Bool = true,
-                              extraNegative: String = "", context: Context = .init()) -> MovieArt.Render {
-        let base = negative(c, context: context)
+                              extraNegative: String = "", negative written: String? = nil,
+                              context: Context = .init()) -> MovieArt.Render {
+        let base = written ?? negative(c, context: context)
         let negative = extraNegative.isEmpty ? base : base + ", " + extraNegative
         let lead = c.artModel.family == .minimax && face != nil ? (keepHair ? minimaxFaceLead : minimaxFaceOnlyLead) : ""
         var values: [String: JSONValue] = [

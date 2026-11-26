@@ -6,7 +6,8 @@ import SwiftUI
 /// Builds a prompt from choices: the model to write for, the subject (a person with the character creator's look
 /// options, or anything), what happens and where, then chips for medium, shot, camera, light, time, mood, colour,
 /// composition and (video) camera moves and sound. The right side shows the prompt and negative as that model reads
-/// best, live. `onUse` (from a node) writes them into the node; the window copies them.
+/// best, live, and a preview draws it (PromptPreviewPanel). `onUse` (from a node) writes them into the node; the window
+/// copies them.
 struct PromptBuilderView: View {
     @Binding var draft: PromptBuilderDraft
     /// The model is fixed by the node it writes into.
@@ -38,7 +39,7 @@ struct PromptBuilderView: View {
             .frame(minWidth: 460)
             .onAppear { lookOpen = !draft.traits.isEmpty }
             Divider()
-            output.frame(width: 360)
+            ScrollView { output }.frame(width: 400)
         }
         .background(MG.windowBackground)
     }
@@ -48,6 +49,7 @@ struct PromptBuilderView: View {
     private var subjectSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Model and subject")
+            PromptBuilderCharacterPicker(draft: $draft, lockedModel: lockedModel)
             if !lockedModel {
                 MGFormRow("Write for") {
                     MGPicker(selection: $draft.model, options: PromptModel.allCases.map { ($0, $0.title) }, maxWidth: 240)
@@ -166,7 +168,6 @@ struct PromptBuilderView: View {
                 Text("About \(tokens) tokens" + (tokens > 75 ? ": past CLIP's first 75 the server splits it into chunks, which weigh less" : ""))
                     .font(.mgFootnote).foregroundStyle(tokens > 75 ? MG.warning : MG.tertiaryLabel)
             }
-            Spacer()
             HStack {
                 Button(copied == "prompt" ? "Copied" : "Copy Prompt") { copy(written?.prompt ?? "", as: "prompt") }
                     .disabled((written?.prompt ?? "").isEmpty).fixedSize()
@@ -182,9 +183,11 @@ struct PromptBuilderView: View {
                     Button(useTitle) { onUse(w) }.buttonStyle(.mg(.prominent)).disabled(w.prompt.isEmpty).fixedSize()
                 }
             }
+            Divider().padding(.vertical, 4)
+            PromptPreviewPanel(draft: $draft, allowsModelChange: !lockedModel)
         }
         .padding(20)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func box(_ title: String, _ text: String) -> some View {
@@ -287,7 +290,7 @@ struct PromptBuilderWindow: View {
 
     var body: some View {
         PromptBuilderView(draft: $draft)
-            .frame(minWidth: 840, minHeight: 560)
+            .frame(minWidth: 880, minHeight: 600)
             .onAppear {
                 guard !loaded else { return }
                 loaded = true
@@ -325,7 +328,7 @@ struct PromptBuilderSheet: View {
                 dismiss()
             }
         }
-        .frame(width: 900, height: 680)
+        .frame(width: 960, height: 760)
         .onAppear {
             if let d = try? JSONDecoder().decode(PromptBuilderDraft.self, from: Data(stored.utf8)) { draft = d }
             draft.model = target.model
