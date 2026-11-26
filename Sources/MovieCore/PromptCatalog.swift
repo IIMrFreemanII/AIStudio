@@ -8,13 +8,20 @@ public enum PromptCatalog {
     public struct Choice: Identifiable, Equatable, Sendable, Hashable {
         public let id: String
         public let label: String
-        /// The words it adds (the same for every model; the writer places them).
+        /// The words it adds (the writer places them).
         public let words: String
-        public init(_ id: String, _ label: String, _ words: String? = nil) {
+        /// Other words for the models trained on Danbooru tags (Pony, Illustrious, Anima), where a tag means what
+        /// it says there ("cowboy shot" is a framing; photo SDXL draws a cowboy).
+        public let booru: String?
+        public init(_ id: String, _ label: String, _ words: String? = nil, booru: String? = nil) {
             self.id = id
             self.label = label
             self.words = words ?? label.lowercased()
+            self.booru = booru
         }
+
+        /// The words for `model`.
+        public func words(for model: PromptModel) -> String { model.qualityTags.isEmpty ? words : booru ?? words }
     }
 
     public struct Group: Identifiable, Equatable, Sendable {
@@ -79,7 +86,7 @@ public enum PromptCatalog {
         Group("shot", "Shot", .shot, max: 1, [
             C("extreme-close-up", "Extreme close-up"), C("close-up", "Close-up"),
             C("head-shoulders", "Head and shoulders", "head-and-shoulders portrait"),
-            C("medium-close", "Medium close-up"), C("medium", "Medium shot"), C("cowboy", "Cowboy shot", "cowboy shot, from mid-thigh up"),
+            C("medium-close", "Medium close-up"), C("medium", "Medium shot"), C("cowboy", "Mid-thigh up", "medium full shot, framed from mid-thigh up", booru: "cowboy shot"),
             C("full-body", "Full body"), C("wide", "Wide shot"), C("extreme-wide", "Extreme wide shot"),
             C("establishing", "Establishing shot"), C("over-shoulder", "Over the shoulder", "over-the-shoulder shot"),
             C("pov", "POV", "first-person point of view"), C("selfie", "Selfie", "selfie, arm's length"),
@@ -203,7 +210,7 @@ public enum PromptCatalog {
     public static func apply(_ picks: [String: [String]], to spec: inout PromptSpec, model: PromptModel, adult: Bool = false) {
         for g in groups(for: model, adult: adult) {
             let ids = Set(picks[g.id] ?? [])
-            let words = g.choices.filter { ids.contains($0.id) }.map(\.words)
+            let words = g.choices.filter { ids.contains($0.id) }.map { $0.words(for: model) }
             guard !words.isEmpty else { continue }
             switch g.field {
             case .medium: if spec.medium.isEmpty { spec.medium = words.joined(separator: ", ") }
