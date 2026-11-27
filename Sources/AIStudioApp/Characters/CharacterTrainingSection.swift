@@ -109,7 +109,9 @@ struct CharacterTrainingSection: View {
 
     private func redraw(_ file: String) {
         let who = c
-        model.runTraining(c.id) { progress in try await model.redrawTrainingPicture(who, file: file, progress: progress) }
+        gate = CostGate(estimate: model.trainingPicturesCost(who, count: 1, redraw: true)) {
+            model.runTraining(who.id) { progress in try await model.redrawTrainingPicture(who, file: file, progress: progress) }
+        }
     }
 
     private func train() {
