@@ -181,9 +181,16 @@ extension CharacterOptions {
             for o in picked(id) {
                 let e = emphasis(category: id, option: o.id, gender: g)
                 let tag = booru ? booruBodyTags["\(id)/\(o.id)"] ?? o.phrase : o.phrase
-                parts.body.append(PromptDetail(tag: tag, text: e?.text ?? o.phrase, weight: 1.2))
+                // Two picks can share a tag (an athletic build with toned muscles: `toned`); the tag models read it once.
+                let at: Int
+                if booru, let same = parts.body.firstIndex(where: { $0.tag == tag }) {
+                    at = same
+                } else {
+                    parts.body.append(PromptDetail(tag: tag, text: e?.text ?? o.phrase, weight: 1.2))
+                    at = parts.body.count - 1
+                }
                 if let e, !e.negative.isEmpty {
-                    avoid += e.negative.split(separator: ",").map { ($0.trimmingCharacters(in: .whitespaces), parts.body.count - 1) }
+                    avoid += e.negative.split(separator: ",").map { ($0.trimmingCharacters(in: .whitespaces), at) }
                 }
                 if let w = without(category: id, option: o.id, gender: g) { parts.without.append(w) }
             }
@@ -223,9 +230,10 @@ extension CharacterOptions {
     ]
 
     /// Danbooru tags for body picks whose plain phrase the tag-trained models misread: on Anima "athletic build,
-    /// clearly defined muscles" drew an extreme bodybuilder in a bikini.
+    /// clearly defined muscles" drew an extreme bodybuilder in a bikini, and `toned, abs` still drew a bodybuilder
+    /// (Anima) or a crop top over a six-pack (Illustrious), so defined muscles are `toned` too.
     private static let booruBodyTags: [String: String] = [
-        "body/athletic": "toned", "muscle/toned": "toned", "muscle/defined": "toned, abs",
+        "body/athletic": "toned", "muscle/toned": "toned", "muscle/defined": "toned",
         "muscle/very-muscular": "muscular",
     ]
     /// Danbooru clothing tags: "casual clothes" says too little there, and Anima undressed her.

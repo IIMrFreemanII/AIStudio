@@ -166,7 +166,9 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         let p = CharacterArt.photoPrompt(c, request: "in a park", scene: nil, context: ill)
         #expect(p.contains("realistic, photo (medium)"))
         #expect(!p.contains("smartphone"))
-        #expect(p.contains("(toned:1.2)") && p.contains("(toned, abs:1.2)"))
+        // Defined muscles are `toned` too (`toned, abs` drew a bodybuilder), and the shared tag is written once.
+        #expect(p.components(separatedBy: "(toned:1.2)").count == 2)
+        #expect(!p.contains("toned, abs") && !p.contains("(abs"))  // ("absurdres" is a quality tag)
         #expect(p.contains("(t-shirt, jeans, sneakers:1.2)"))
         #expect(!p.contains("clearly defined muscles") && !p.contains("casual clothes"))
         // Plain SDXL and Chroma keep their words.
