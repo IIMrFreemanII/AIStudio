@@ -30,6 +30,17 @@ def generator(seed: int):
     return torch.Generator(device="cpu").manual_seed(int(seed))
 
 
+def fp8_cast(module, compute_dtype) -> None:
+    """fp8 weight storage (e4m3, a plain cast with no scales), cast to `compute_dtype` per layer while computing.
+    Norms, embeddings and LoRA weights stay as they are. The same call makes the fp8 copies on disk
+    (`download.fp8_copy`), so loading one gives exactly the weights this would make from the original."""
+    import torch
+    from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
+
+    module.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=compute_dtype,
+                                    skip_modules_pattern=tuple(DEFAULT_SKIP_MODULES_PATTERN) + ("lora_",))
+
+
 def fp8_storage_supported(device: str) -> bool:
     """fp8 weights (cast to bf16 per layer while computing) need CUDA; `AISTUDIO_FP8=force` allows the CPU too
     (tests), `AISTUDIO_FP8=0` turns it off."""

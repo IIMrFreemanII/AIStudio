@@ -36,7 +36,8 @@ image = (modal.Image.debian_slim(python_version="3.12")
 def download(models: str):
     from aistudio_gpu.download import download as fetch
 
-    fetch([m.strip() for m in models.split(",") if m.strip()], MODELS, on_done=lambda _: volume.commit())
+    # fp8: the Modal workers run on CUDA, so Wan's transformers are stored in fp8 too (half the read on a cold start).
+    fetch([m.strip() for m in models.split(",") if m.strip()], MODELS, on_done=lambda _: volume.commit(), fp8=True)
 
 
 @app.local_entrypoint()
