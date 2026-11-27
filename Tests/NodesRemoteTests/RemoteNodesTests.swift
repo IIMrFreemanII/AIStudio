@@ -363,6 +363,21 @@ struct RemoteNodesTests {
         #expect(moved.frames[0].mean(axes: [0, 1])[2].item(Float.self) > 0.7)  // the picture
         #expect(moved.frames[23].mean(axes: [0, 1])[1].item(Float.self) > 0.7)  // the clip from 1 s: green
         #expect(RemoteNodes.taskID(forNodeType: "RemoteWanAnimate") == "wan-animate2")
+        // Keep background: Wan-Animate v1's replacement, at 30 fps.
+        let (kept, _) = try await run([
+            GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(mp4.path))]),
+            GraphNode(id: "her", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "animate", type: "RemoteWanAnimate", inputs: [
+                "image": .link(node: "her", output: "image"), "video": .link(node: "clip", output: "video"),
+                "seconds": .value(.double(1)), "keep_background": .value(.bool(true))]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "animate", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        let replaced = try #require({ () -> VideoClip? in
+            if case .object(let o)? = kept.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(replaced.frameCount == 30 && replaced.fps == 30)
+        #expect(RemoteWanAnimateNode.task(keepBackground: true) == "wan-animate-replace")
     }
 
     @Test(.enabled(if: hasServer)) func h3MakesA24FPSClipWithStereoSoundFromItsStartPicture() async throws {

@@ -110,3 +110,36 @@ def test_download_entry_and_group():
     assert expand(["wan-animate2"]) == ["wan-animate2"]
     entry = MODELS["wan-animate2"]
     assert entry["repo"] == "Wan-AI/Wan2.2-Animate-2-14B-Distilled-Diffusers" and len(entry["revision"]) == 40
+
+
+def test_fake_replace_runs_at_30_fps(tmp_path, clip, monkeypatch):
+    from PIL import Image
+
+    from aistudio_gpu.tasks import TASKS, make_worker
+
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    spec = TASKS["wan-animate-replace"]
+    assert spec.inputs == ("image", "video") and spec.gpu == "H100" and spec.fallback_gpus == ("H200",)
+    assert spec.params["steps"].default == 20 and spec.params["area"].choices == ("832x480", "1280x720")
+    pic = tmp_path / "her.png"
+    Image.new("RGB", (40, 80), (0, 0, 255)).save(pic)
+    out = make_worker(spec.family).run(spec, spec.normalize({"seconds": 1.0}), {"image": pic, "video": clip},
+                                       _QuietSink(), tmp_path)
+    meta, frames = _frames(out.path)
+    assert meta["fps"] == 30 and len(frames) == 30 and _has_audio(out.path)
+
+
+def test_replace_segments_follow_the_official_loop():
+    from aistudio_gpu.tasks.wan_animate import replace_segments
+
+    assert replace_segments(10) == 1 and replace_segments(77) == 1  # one 77-frame segment
+    assert replace_segments(78) == 2 and replace_segments(153) == 2 and replace_segments(154) == 3  # 76 new a segment
+
+
+def test_replace_download_picks_its_files():
+    from aistudio_gpu.download import MODELS, expand
+
+    assert expand(["wan-animate"]) == ["wan-animate"]
+    allow = MODELS["wan-animate"]["allow"]
+    assert "relighting_lora.ckpt" in allow and "process_checkpoint/sam2/sam2_hiera_large.pt" in allow
+    assert not any("tiny" in a or "flax" in a or a.endswith(".h5") for a in allow)

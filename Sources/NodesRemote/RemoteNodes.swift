@@ -603,7 +603,9 @@ public struct RemoteInfiniteTalkNode: NodeImplementation {
 
 /// Wan-Animate-2 (Apache 2.0): the picture's character moving as the person in the video moves, expressions included,
 /// in the picture's scene. The clip is cut to start … start + seconds; 10 steps, 24 fps, about 2.5 minutes of H200 time
-/// for 5 s. The clip's sound stays on the result, and its colours are matched to the picture.
+/// for 5 s. The clip's sound stays on the result, and its colours are matched to the picture. With "keep background"
+/// it runs Wan-Animate v1's replacement instead (`wan-animate-replace`, 20 steps, 30 fps): the person in the video
+/// becomes the picture's character, and the video's own background and lighting stay.
 public struct RemoteWanAnimateNode: NodeImplementation {
     public static let schema = NodeSchema(
         type: "RemoteWanAnimate", displayName: "Wan Animate: Copy Motion (Cloud GPU)", category: "remote",
@@ -617,8 +619,11 @@ public struct RemoteWanAnimateNode: NodeImplementation {
             InputSpec("seed", .int, default: .int(0), widget: .seed),
             InputSpec("seconds", .float, default: .double(5), widget: .number(min: 1, max: 15, step: 0.5)),
             InputSpec("start", .float, default: .double(0), widget: .number(min: 0, max: 600, step: 0.5)),
-            InputSpec("area", .string, default: .string("640x800"), widget: .choice(["640x800", "720x1280"])),
-            InputSpec("steps", .int, default: .int(10), widget: .number(min: 4, max: 20, step: 1)),
+            // The size: small (640×800 a picture's shape; 832×480 a video's with keep background) or large.
+            InputSpec("area", .string, default: .string("small"), widget: .choice(["small", "large"])),
+            // 0 = automatic (10; 20 with keep background).
+            InputSpec("steps", .int, default: .int(0), widget: .number(min: 0, max: 40, step: 1), zeroLabel: "auto"),
+            InputSpec("keep_background", .bool, default: .bool(false), widget: .toggle),
             InputSpec("keep_audio", .bool, default: .bool(true), widget: .toggle),
             InputSpec("color_match", .bool, default: .bool(true), widget: .toggle),
         ],
@@ -626,18 +631,30 @@ public struct RemoteWanAnimateNode: NodeImplementation {
     public init() {}
 
     public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
-        let params: [String: Any] = [
-            "prompt": try inputs.string("prompt"), "scene": try inputs.string("scene"), "seed": try inputs.int("seed"),
-            "seconds": try inputs.float("seconds"), "start": try inputs.float("start"), "area": try inputs.string("area"),
-            "steps": try inputs.int("steps"), "keep_audio": try inputs.bool("keep_audio"),
-            "color_match": try inputs.bool("color_match"),
+        let replace = try inputs.bool("keep_background")
+        let large = try inputs.string("area") == "large"
+        let steps = try inputs.int("steps")
+        var params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"),
+            "seconds": try inputs.float("seconds"), "start": try inputs.float("start"),
+            "steps": steps > 0 ? steps : (replace ? 20 : 10), "keep_audio": try inputs.bool("keep_audio"),
         ]
+        if replace {
+            params["area"] = large ? "1280x720" : "832x480"
+        } else {
+            params["area"] = large ? "720x1280" : "640x800"
+            params["scene"] = try inputs.string("scene")
+            params["color_match"] = try inputs.bool("color_match")
+        }
         let images: [String: MLXArray] = ["image": try inputs.object("image")]
-        let (url, _) = try await runRemoteJob(task: "wan-animate2", params: params, images: images,
+        let (url, _) = try await runRemoteJob(task: Self.task(keepBackground: replace), params: params, images: images,
                                               videos: ["video": try inputs.object("video")], inputs: inputs,
                                               context: context)
         return ["video": .object(try await loadVideo(url))]
     }
+
+    /// The server task: Wan-Animate-2, or Wan-Animate v1's replacement when the video's background stays.
+    public static func task(keepBackground: Bool) -> String { keepBackground ? "wan-animate-replace" : "wan-animate2" }
 }
 
 // MARK: LoRAs

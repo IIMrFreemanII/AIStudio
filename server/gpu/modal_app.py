@@ -45,7 +45,7 @@ from pathlib import Path
 import modal
 
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
-from aistudio_gpu.tasks import ANIMATE2_FALLBACKS, CONTAINERS, H3_FALLBACKS, H3_IMAGE_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
+from aistudio_gpu.tasks import ANIMATE2_FALLBACKS, ANIMATE_REPLACE_FALLBACKS, CONTAINERS, H3_FALLBACKS, H3_IMAGE_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
 # GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
@@ -69,6 +69,9 @@ H3_IMAGE_GPUS = [GPU_H3_IMAGE, *H3_IMAGE_FALLBACKS]
 GPU_ANIMATE2 = os.environ.get("AISTUDIO_GPU_ANIMATE2", "H200")
 GPU_ANIMATE2_FALLBACK = os.environ.get("AISTUDIO_GPU_ANIMATE2_FALLBACK", "B200")
 ANIMATE2_GPUS = [GPU_ANIMATE2, *ANIMATE2_FALLBACKS]
+# Wan-Animate v1 (replacement): an H100, an H200 when none is free.
+GPU_ANIMATE_REPLACE_FALLBACK = os.environ.get("AISTUDIO_GPU_ANIMATE_REPLACE_FALLBACK", "H200")
+ANIMATE_REPLACE_GPUS = [GPU_WAN, *ANIMATE_REPLACE_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
@@ -141,6 +144,7 @@ env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU
        "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
        "AISTUDIO_GPU_H3_IMAGE": GPU_H3_IMAGE, "AISTUDIO_GPU_H3_IMAGE_FALLBACK": GPU_H3_IMAGE_FALLBACK,
        "AISTUDIO_GPU_ANIMATE2": GPU_ANIMATE2, "AISTUDIO_GPU_ANIMATE2_FALLBACK": GPU_ANIMATE2_FALLBACK,
+       "AISTUDIO_GPU_ANIMATE_REPLACE_FALLBACK": GPU_ANIMATE_REPLACE_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -270,7 +274,7 @@ breeze_image = (
 WAN22_COMMIT = "1ea34ff48f87168174e12956e200b1d908b1c5ff"
 FLASH_ATTN_TORCH28 = ("https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/"
                       "flash_attn-2.8.3+cu128torch2.8-cp311-cp311-linux_x86_64.whl")
-s2v_image = (
+s2v_base = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install("git", "ffmpeg", "libsndfile1")
     .run_commands("git init -q /opt/wan22 && cd /opt/wan22 && git remote add origin "
@@ -283,8 +287,24 @@ s2v_image = (
                     "einops==0.8.1", "librosa==0.11.0", "soundfile==0.13.1", "decord==0.6.0", "safetensors==0.6.2",
                     "peft==0.17.1", "scipy", "regex", "tqdm", "imageio", "imageio-ffmpeg", "huggingface_hub<1.0",
                     "fastapi==0.162.2", "pillow", "httpx==0.28.1", FLASH_ATTN_TORCH28)
-    .env({**env, "PYTHONPATH": "/opt/wan22"})
+    .env({**env, "PYTHONPATH": "/opt/wan22"}))
+s2v_image = s2v_base.add_local_python_source("aistudio_gpu")
+
+# Wan-Animate v1's replacement mode: the S2V image (the same official repo and commit) plus what the repo's
+# preprocessing imports (requirements_animate.txt): onnxruntime for the YOLO and ViTPose trackers, SAM2 at the repo's
+# commit from source on the path (its setup builds a CUDA extension the image can't; the video predictor runs without
+# it), moviepy 1 (it writes its videos with moviepy.editor), loguru, matplotlib, pandas, SAM2's hydra and iopath.
+SAM2_COMMIT = "0e78a118995e66bb27d78518c4bd9a3e95b4e266"
+animate_image = (
+    s2v_base
+    .uv_pip_install("onnxruntime-gpu==1.22.0", "moviepy==1.0.3", "loguru==0.7.3", "matplotlib==3.10.3",
+                    "pandas==2.3.1", "hydra-core==1.3.2", "omegaconf==2.3.0", "iopath==0.1.10")
+    .run_commands("git init -q /opt/sam2 && cd /opt/sam2 && git remote add origin "
+                  f"https://github.com/facebookresearch/sam2 && git fetch -q --depth 1 origin {SAM2_COMMIT} && "
+                  "git checkout -q FETCH_HEAD")
+    .env({"PYTHONPATH": "/opt/wan22:/opt/sam2"})
     .add_local_python_source("aistudio_gpu"))
+
 
 # LongCat-Video-Avatar 1.6: the official repo at a pinned commit with its requirements.txt pins (torch 2.6 + CUDA
 # 12.4, transformers 4.41, diffusers 0.35.1) and the parts of requirements_avatar.txt the avatar pipeline imports
@@ -452,6 +472,27 @@ class WanS2V:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-s2v", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(image=animate_image, gpu=ANIMATE_REPLACE_GPUS if len(ANIMATE_REPLACE_GPUS) > 1 else GPU_WAN,
+            **_container("wan-animate-replace"))
+class WanAnimateReplace:
+    @modal.enter(snap=True)
+    def imports(self):
+        _s2v_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("wan-animate-replace", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1663,7 +1704,8 @@ def api():
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sdxl-train": SDXLTrain, "h3-image-train": H3ImageTrain, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
                           "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23,
-                          "h3-image": H3Image, "wan-animate2": WanAnimate2}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "h3-image": H3Image, "wan-animate2": WanAnimate2,
+                          "wan-animate-replace": WanAnimateReplace}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

@@ -443,6 +443,19 @@ H100 (`AISTUDIO_GPU_AVATAR`):
 - Check it with `python server/gpu/modal_check.py wan-animate2 --image her.png --input video=dance.mp4`.
 - The result's `extra` holds `animateSeconds` and `peakGB`.
 
+**`wan-animate-replace`**: Wan-Animate v1 14B (Apache 2.0) in replacement mode, with the official Wan 2.2 repo's code (the
+S2V image's commit, plus its preprocessing's packages: onnxruntime, SAM2, moviepy).
+- The person in the video (`video`) becomes the picture's character (`image`). The video's background and camera stay,
+  and the relighting LoRA matches the character to its light.
+- The repo's preprocessing tracks the person first: YOLOv10 and ViTPose give the pose and face crops, and SAM2 masks
+  the person out. The model then draws 77-frame segments at 30 fps.
+- Parameters: `prompt` (empty: the model's own caption), `seed`, `seconds` (1–15), `start`, `area` (`832x480` or
+  `1280x720`; the shape is the video's), `steps` (default 20), `keep_audio`.
+- It runs on an H100, with an H200 when none is free (`AISTUDIO_GPU_ANIMATE_REPLACE_FALLBACK`).
+- Download it with `--models wan-animate` (≈ 56 GB, without SAM2's smaller sizes or XLM-RoBERTa's weights).
+- Check it with `python server/gpu/modal_check.py wan-animate-replace --image her.png --input video=dance.mp4`.
+- The app's Wan Animate node runs it when "keep background" is on.
+
 ### MiniMax H3: video with its own sound
 
 | Node | Task | What it makes |

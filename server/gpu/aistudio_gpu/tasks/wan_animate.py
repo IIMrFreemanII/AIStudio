@@ -176,3 +176,137 @@ class WanAnimate2Worker:
             "frames": len(video), "width": int(video.shape[2]), "height": int(video.shape[1]), "fps": FPS,
             "drivingFrames": len(frames), "drivingFps": round(fps, 3), "audio": bool(params["keep_audio"] and has_audio),
             "animateSeconds": round(seconds, 1), "peakGB": round(torch.cuda.max_memory_allocated() / 1e9, 1)})
+
+
+# MARK: Wan-Animate v1, replacement
+
+
+REPLACE_FPS = 30  # the official preprocessing's and model's frame rate
+REPLACE_CLIP, REPLACE_OVERLAP = 77, 1  # frames per segment, frames each carries over
+REPLACE_AREAS = {"832x480": (832, 480), "1280x720": (1280, 720)}  # width × height of the target area
+REPLACE_PROMPT = "视频中的人在做动作"  # the model's default caption ("the person in the video moves")
+
+
+def replace_segments(frames: int, clip: int = REPLACE_CLIP, overlap: int = REPLACE_OVERLAP) -> int:
+    """How many segments the official loop renders for ``frames`` driving frames."""
+    return max(1, -(-(max(frames, clip) - overlap) // (clip - overlap)))
+
+
+def _sam2_connected_components() -> None:
+    """SAM2 fills small holes in its masks with a compiled CUDA extension (``sam2._C``), which the image doesn't build;
+    this is the same function on OpenCV: each pixel's component label and that component's area (0 off the mask)."""
+    import cv2
+    import sam2.utils.misc as misc
+    import torch
+
+    def get_connected_components(mask):
+        m = mask.squeeze(1).to(torch.uint8).cpu().numpy()
+        labels = np.zeros(m.shape, np.int32)
+        counts = np.zeros(m.shape, np.int32)
+        for i in range(m.shape[0]):
+            _, lab, stats, _ = cv2.connectedComponentsWithStats(m[i], connectivity=8)
+            labels[i] = lab
+            counts[i] = np.where(lab > 0, stats[lab, cv2.CC_STAT_AREA], 0)
+        return (torch.from_numpy(labels)[:, None].to(mask.device), torch.from_numpy(counts)[:, None].to(mask.device))
+
+    misc.get_connected_components = get_connected_components
+
+
+class WanAnimateReplaceWorker:
+    """Wan-Animate v1 (``Wan-AI/Wan2.2-Animate-14B``, Apache 2.0) in replacement mode, with the official repo's code
+    (as ``wan_s2v.py`` uses it): the repo's preprocessing tracks the person in the clip (YOLOv10 and ViTPose ONNX
+    models: pose and face crops) and masks them out (SAM2), then the model draws the picture's character in their place,
+    with the clip's background, lighting (the relighting LoRA) and motion kept. Everything stays on the GPU."""
+
+    family = "wan-animate-replace"
+
+    def __init__(self):
+        self.model = None
+        self.process = None
+        self.attention = "flash_attn"
+
+    def load(self, models_root: Path, status) -> None:
+        import sys
+
+        import wan
+        from wan.configs import WAN_CONFIGS
+
+        from .wan_s2v import _use_sdpa_attention
+
+        root = models_root / "wan-animate"
+        if _use_sdpa_attention():
+            self.attention = "sdpa"
+        status("Loading the trackers")
+        preprocess = Path(wan.__file__).parent / "modules" / "animate" / "preprocess"
+        sys.path.insert(0, str(preprocess))  # its modules import each other by their bare names
+        _sam2_connected_components()
+        from process_pipepline import ProcessPipeline
+
+        ckpt = root / "process_checkpoint"
+        self.process = ProcessPipeline(det_checkpoint_path=str(ckpt / "det" / "yolov10m.onnx"),
+                                       pose2d_checkpoint_path=str(ckpt / "pose2d" / "vitpose_h_wholebody.onnx"),
+                                       sam_checkpoint_path=str(ckpt / "sam2" / "sam2_hiera_large.pt"),
+                                       flux_kontext_path=None)
+        status("Loading Wan-Animate")
+        self.model = wan.WanAnimate(config=WAN_CONFIGS["animate-14B"], checkpoint_dir=str(root), device_id=0, rank=0,
+                                    t5_cpu=False, init_on_cpu=False, convert_model_dtype=True,
+                                    use_relighting_lora=True)
+
+    def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
+        import torch
+        import wan.animate as animate
+
+        sink.status("Reading the video")
+        clip = out_dir / "driving.mp4"
+        has_audio = cut_clip(inputs["video"], clip, params["start"], params["seconds"])
+        source = out_dir / "source"
+        source.mkdir(exist_ok=True)
+        # The repo reads the picture with OpenCV, whose libpng refused an uploaded PNG ("bad parameters to zlib"):
+        # hand it a plain RGB JPEG instead.
+        from PIL import Image
+
+        picture = out_dir / "character.jpg"
+        Image.open(inputs["image"]).convert("RGB").save(picture, quality=95)
+        sink.status("Tracking the person")
+        t0 = time.monotonic()
+        self.process(video_path=str(clip), refer_image_path=str(picture), output_path=str(source),
+                     resolution_area=list(REPLACE_AREAS[params["area"]]), fps=REPLACE_FPS, replace_flag=True)
+        track_seconds = time.monotonic() - t0
+        frames_in = len(read_frames(source / "src_pose.mp4")[0])
+        steps = params["steps"]
+        total = steps * replace_segments(frames_in)
+        done = 0
+
+        def tqdm(items, *args, **kwargs):  # the official loop's progress bar: ours reports and honours cancel
+            nonlocal done
+            for item in items:
+                sink.check()
+                yield item
+                done += 1
+                sink.progress(min(done, total), total)
+
+        sink.status("Replacing")
+        t1 = time.monotonic()
+        original = animate.tqdm
+        animate.tqdm = tqdm
+        try:
+            with torch.inference_mode():
+                video = self.model.generate(src_root_path=str(source), replace_flag=True, clip_len=REPLACE_CLIP,
+                                            refert_num=REPLACE_OVERLAP, shift=5.0, sample_solver="dpm++",
+                                            sampling_steps=steps, guide_scale=1.0,
+                                            input_prompt=params["prompt"] or REPLACE_PROMPT, n_prompt="",
+                                            seed=params["seed"], offload_model=False)
+        finally:
+            animate.tqdm = original
+        replace_seconds = time.monotonic() - t1
+        # [C, N, H, W] in -1…1 → [N, H, W, 3] in 0…1.
+        frames = ((video.float().clamp(-1, 1) + 1.0) / 2.0).permute(1, 2, 3, 0).cpu().numpy()
+        sink.status("Encoding video")
+        path = out_dir / "result.mp4"
+        keep = bool(params["keep_audio"] and has_audio)
+        write_mp4(frames, path, fps=REPLACE_FPS, audio=clip if keep else None)
+        return Output(path, "video", "video/mp4", extra={
+            "frames": int(len(frames)), "width": int(frames.shape[2]), "height": int(frames.shape[1]),
+            "fps": REPLACE_FPS, "audio": keep, "trackSeconds": round(track_seconds, 1),
+            "replaceSeconds": round(replace_seconds, 1), "attention": self.attention,
+            "peakGB": round(torch.cuda.max_memory_allocated() / 1e9, 1)})
