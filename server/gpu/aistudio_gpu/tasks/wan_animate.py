@@ -192,6 +192,26 @@ def replace_segments(frames: int, clip: int = REPLACE_CLIP, overlap: int = REPLA
     return max(1, -(-(max(frames, clip) - overlap) // (clip - overlap)))
 
 
+def _sam2_connected_components() -> None:
+    """SAM2 fills small holes in its masks with a compiled CUDA extension (``sam2._C``), which the image doesn't build;
+    this is the same function on OpenCV: each pixel's component label and that component's area (0 off the mask)."""
+    import cv2
+    import sam2.utils.misc as misc
+    import torch
+
+    def get_connected_components(mask):
+        m = mask.squeeze(1).to(torch.uint8).cpu().numpy()
+        labels = np.zeros(m.shape, np.int32)
+        counts = np.zeros(m.shape, np.int32)
+        for i in range(m.shape[0]):
+            _, lab, stats, _ = cv2.connectedComponentsWithStats(m[i], connectivity=8)
+            labels[i] = lab
+            counts[i] = np.where(lab > 0, stats[lab, cv2.CC_STAT_AREA], 0)
+        return (torch.from_numpy(labels)[:, None].to(mask.device), torch.from_numpy(counts)[:, None].to(mask.device))
+
+    misc.get_connected_components = get_connected_components
+
+
 class WanAnimateReplaceWorker:
     """Wan-Animate v1 (``Wan-AI/Wan2.2-Animate-14B``, Apache 2.0) in replacement mode, with the official repo's code
     (as ``wan_s2v.py`` uses it): the repo's preprocessing tracks the person in the clip (YOLOv10 and ViTPose ONNX
@@ -219,6 +239,7 @@ class WanAnimateReplaceWorker:
         status("Loading the trackers")
         preprocess = Path(wan.__file__).parent / "modules" / "animate" / "preprocess"
         sys.path.insert(0, str(preprocess))  # its modules import each other by their bare names
+        _sam2_connected_components()
         from process_pipepline import ProcessPipeline
 
         ckpt = root / "process_checkpoint"
@@ -240,9 +261,15 @@ class WanAnimateReplaceWorker:
         has_audio = cut_clip(inputs["video"], clip, params["start"], params["seconds"])
         source = out_dir / "source"
         source.mkdir(exist_ok=True)
+        # The repo reads the picture with OpenCV, whose libpng refused an uploaded PNG ("bad parameters to zlib"):
+        # hand it a plain RGB JPEG instead.
+        from PIL import Image
+
+        picture = out_dir / "character.jpg"
+        Image.open(inputs["image"]).convert("RGB").save(picture, quality=95)
         sink.status("Tracking the person")
         t0 = time.monotonic()
-        self.process(video_path=str(clip), refer_image_path=str(inputs["image"]), output_path=str(source),
+        self.process(video_path=str(clip), refer_image_path=str(picture), output_path=str(source),
                      resolution_area=list(REPLACE_AREAS[params["area"]]), fps=REPLACE_FPS, replace_flag=True)
         track_seconds = time.monotonic() - t0
         frames_in = len(read_frames(source / "src_pose.mp4")[0])
