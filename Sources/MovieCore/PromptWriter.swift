@@ -39,6 +39,9 @@ public enum PromptModel: String, CaseIterable, Codable, Sendable, Identifiable {
 
     /// The model reads a negative prompt (classifier-free guidance, or NAG for Wan's fast mode). MiniMax (distilled,
     /// no CFG) and FLUX.1 dev (guidance-distilled) don't: their exclusions are written as sentences instead.
+    /// Trained on Danbooru tags (Pony, Illustrious, Anima): a tag means what it says there.
+    public var readsBooru: Bool { !qualityTags.isEmpty }
+
     public var takesNegative: Bool {
         switch self {
         case .flux, .minimaxImage, .minimaxVideo: false

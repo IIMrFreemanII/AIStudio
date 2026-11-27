@@ -162,8 +162,10 @@ extension CharacterOptions {
 
     /// `coverage` and `adult`: with the 18+ options on, a picture that shows the chest (topless, nude) adds the
     /// nipple picks, and a nude one every intimate pick; they go with the body.
+    /// `booru`: the model reads Danbooru tags (`PromptModel.readsBooru`), so body and clothing picks use those tags.
     public static func lookParts(_ traits: [String: [String]], gender: String, withClothes: Bool = true,
-                                 coverage: PromptSpec.Coverage = .dressed, adult: Bool = false) -> LookParts {
+                                 coverage: PromptSpec.Coverage = .dressed, adult: Bool = false,
+                                 booru: Bool = false) -> LookParts {
         var parts = LookParts()
         func picked(_ id: String) -> [Option] {
             guard let cat = category(id) else { return [] }
@@ -178,7 +180,8 @@ extension CharacterOptions {
         for id in bodyCategories {
             for o in picked(id) {
                 let e = emphasis(category: id, option: o.id, gender: g)
-                parts.body.append(PromptDetail(tag: o.phrase, text: e?.text ?? o.phrase, weight: 1.2))
+                let tag = booru ? booruBodyTags["\(id)/\(o.id)"] ?? o.phrase : o.phrase
+                parts.body.append(PromptDetail(tag: tag, text: e?.text ?? o.phrase, weight: 1.2))
                 if let e, !e.negative.isEmpty {
                     avoid += e.negative.split(separator: ",").map { ($0.trimmingCharacters(in: .whitespaces), parts.body.count - 1) }
                 }
@@ -192,7 +195,7 @@ extension CharacterOptions {
         if withClothes && coverage == .dressed {
             let clothes = picked("clothes")
             for o in clothes {
-                let tag = clothesTags[o.id] ?? o.phrase
+                let tag = (booru ? booruClothesTags[o.id] : nil) ?? clothesTags[o.id] ?? o.phrase
                 let text = clothes.count == 1 ? (emphasis(category: "clothes", option: o.id, gender: g)?.text ?? tag) : tag
                 parts.outfit.append(PromptDetail(tag: tag, text: text, weight: 1.2))
             }
@@ -217,6 +220,18 @@ extension CharacterOptions {
         "casual": "casual clothes", "elegant": "elegant outfit", "sporty": "sporty clothes", "streetwear": "streetwear",
         "boho": "boho style clothes", "business": "business attire", "punk": "edgy punk style outfit",
         "cozy": "cozy knitwear",
+    ]
+
+    /// Danbooru tags for body picks whose plain phrase the tag-trained models misread: on Anima "athletic build,
+    /// clearly defined muscles" drew an extreme bodybuilder in a bikini.
+    private static let booruBodyTags: [String: String] = [
+        "body/athletic": "toned", "muscle/toned": "toned", "muscle/defined": "toned, abs",
+        "muscle/very-muscular": "muscular",
+    ]
+    /// Danbooru clothing tags: "casual clothes" says too little there, and Anima undressed her.
+    private static let booruClothesTags: [String: String] = [
+        "casual": "t-shirt, jeans, sneakers", "sporty": "sportswear", "streetwear": "hoodie, streetwear",
+        "cozy": "sweater",
     ]
 
     /// An option's exclusion in words, for models without a negative prompt (MiniMax).

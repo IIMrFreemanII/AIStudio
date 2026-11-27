@@ -21,7 +21,7 @@ public enum PromptCatalog {
         }
 
         /// The words for `model`.
-        public func words(for model: PromptModel) -> String { model.qualityTags.isEmpty ? words : booru ?? words }
+        public func words(for model: PromptModel) -> String { model.readsBooru ? booru ?? words : words }
     }
 
     public struct Group: Identifiable, Equatable, Sendable {
@@ -51,9 +51,13 @@ public enum PromptCatalog {
 
     private typealias C = Choice
 
+    /// A candid photo for the tag-trained models: "smartphone" drew a phone camera screen around the picture on Anima
+    /// and a phone in her hand on Illustrious.
+    public static let booruPhoto = "realistic, photo (medium)"
+
     public static let groups: [Group] = [
         Group("medium", "Medium", .medium, max: 1, [
-            C("candid-phone", "Candid phone photo", "candid smartphone photo"),
+            C("candid-phone", "Candid phone photo", "candid smartphone photo", booru: booruPhoto),
             C("studio-photo", "Studio photo", "studio photo"),
             C("film-35mm", "35mm film photo", "35mm film photo"),
             C("polaroid", "Polaroid", "instant polaroid photo"),

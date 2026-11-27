@@ -55,6 +55,17 @@ import Testing
         }
     }
 
+    @Test func candidPhotoHasNoPhoneForTagModels() {
+        // "smartphone" drew a phone screen (Anima) or a phone in hand (Illustrious).
+        for (model, medium) in [(PromptModel.sdxl, "candid smartphone photo"), (.chroma, "candid smartphone photo"),
+                                (.sdxlIllustrious, PromptCatalog.booruPhoto), (.anima, PromptCatalog.booruPhoto)] {
+            var s = PromptSpec()
+            PromptCatalog.apply(["medium": ["candid-phone"]], to: &s, model: model)
+            #expect(s.medium == medium, "\(model)")
+        }
+        #expect(!PromptCatalog.booruPhoto.contains("phone"))
+    }
+
     @Test func toggleFollowsEachGroupsLimit() {
         var p: [String: [String]] = [:]
         p = PromptCatalog.toggle(p, group: "shot", choice: "wide")

@@ -60,7 +60,7 @@ public enum CharacterArt {
     public static func negative(_ c: Character, context: Context = .init()) -> String {
         let model = promptModel(c, context: context)
         var s = PromptSpec()
-        s.avoid = avoid(c, parts: CharacterOptions.lookParts(c.traits, gender: c.gender))
+        s.avoid = avoid(c, parts: CharacterOptions.lookParts(c.traits, gender: c.gender, booru: model.readsBooru))
         return PromptWriter.write(s, for: model.takesNegative ? model : .sdxl).negative
     }
 
@@ -91,13 +91,13 @@ public enum CharacterArt {
         let dressed = !outfit.isEmpty || setsOutfit(request)
         let gender = clean(c.gender)
         let cover = coverage(request)
-        let parts = CharacterOptions.lookParts(c.traits, gender: gender, withClothes: !dressed, coverage: cover,
-                                               adult: context.adult)
         let model = promptModel(c, context: context)
+        let parts = CharacterOptions.lookParts(c.traits, gender: gender, withClothes: !dressed, coverage: cover,
+                                               adult: context.adult, booru: model.readsBooru)
         var s = PromptSpec()
         switch c.artModel.style {
         case .photoreal:
-            s.medium = "candid smartphone photo"
+            s.medium = model.readsBooru ? PromptCatalog.booruPhoto : "candid smartphone photo"
             s.lighting = ["natural light", "sharp focus", "detailed skin"]
         case .anime:
             // Plain SDXL has no quality tags of its own; anime fine-tunes bring theirs (PromptModel.qualityTags).

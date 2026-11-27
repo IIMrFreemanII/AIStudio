@@ -157,6 +157,26 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(!CharacterArt.photoPrompt(c, request: "in a red bikini on the beach", scene: nil).contains("boho"))
     }
 
+    @Test func tagTrainedModelsGetDanbooruPhotoBodyAndClothesTags() {
+        // On Anima "candid smartphone photo" drew a phone camera screen, and "athletic build, clearly defined
+        // muscles" with "casual clothes" drew a bodybuilder in a bikini: the tag models get Danbooru tags instead.
+        var c = hero()
+        c.traits = ["body": ["athletic"], "muscle": ["defined"], "clothes": ["casual"]]
+        let ill = CharacterArt.Context(baseModel: "Illustrious")
+        let p = CharacterArt.photoPrompt(c, request: "in a park", scene: nil, context: ill)
+        #expect(p.contains("realistic, photo (medium)"))
+        #expect(!p.contains("smartphone"))
+        #expect(p.contains("(toned:1.2)") && p.contains("(toned, abs:1.2)"))
+        #expect(p.contains("(t-shirt, jeans, sneakers:1.2)"))
+        #expect(!p.contains("clearly defined muscles") && !p.contains("casual clothes"))
+        // Plain SDXL and Chroma keep their words.
+        let sdxl = CharacterArt.photoPrompt(c, request: "in a park", scene: nil)
+        #expect(sdxl.contains("candid smartphone photo") && sdxl.contains("clearly defined muscles")
+                && sdxl.contains("casual clothes"))
+        c.artModel.family = .chroma
+        #expect(CharacterArt.photoPrompt(c, request: "in a park", scene: nil, context: ill).contains("clearly defined, visible muscles"))
+    }
+
     @Test func fineTuneBaseModelAndTriggerWords() {
         var c = hero(style: .anime)
         let ctx = CharacterArt.Context(baseModel: "Pony", triggerWords: ["jinx_style"])
