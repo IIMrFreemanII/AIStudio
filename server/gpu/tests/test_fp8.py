@@ -187,3 +187,31 @@ def test_a_lora_on_wans_fp8_cast_layers_keeps_its_factors_exact():
     layer = t.blocks[0].attn1.to_q
     assert layer.base_layer.weight.dtype == torch.float8_e4m3fn
     assert torch.equal(layer.lora_A["x"].weight, a) and torch.equal(layer.lora_B["x"].weight, b)
+
+
+def test_an_fp8_layer_takes_an_input_cast_to_its_weight_dtype(monkeypatch):
+    """T5 casts its feed-forward input to that layer's weight dtype: an fp8 input runs in bf16 instead of failing."""
+    monkeypatch.setattr(fp8, "MATMUL", "dequant")
+    model = _block()
+    fp8.convert(model, device="cpu")
+    x = torch.randn(4, 512, dtype=torch.bfloat16)
+    want = model.ff(x.to(torch.float8_e4m3fn).to(torch.bfloat16))
+    assert torch.equal(model.ff(x.to(torch.float8_e4m3fn)), want)
+
+
+def test_t5s_feed_forward_output_stays_bf16():
+    class FF(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wi_0 = torch.nn.Linear(512, 1024, bias=False)
+            self.wo = torch.nn.Linear(1024, 512, bias=False)
+
+    class T5ish(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.DenseReluDense = FF()
+
+    m = T5ish().to(torch.bfloat16)
+    fp8.convert_parts({"text_encoder": m}, device="cpu")
+    assert m.DenseReluDense.wi_0.weight.dtype == torch.float8_e4m3fn
+    assert m.DenseReluDense.wo.weight.dtype == torch.bfloat16

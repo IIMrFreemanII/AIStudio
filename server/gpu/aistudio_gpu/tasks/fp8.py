@@ -24,7 +24,9 @@ FP8_MAX = 448.0  # the largest e4m3 value
 MATMUL = os.environ.get("AISTUDIO_FP8_MATMUL", "scaled").lower()
 # Substrings of module names that stay bf16 (lower case).
 TRANSFORMER_KEEP = ("adaln", "time", "norm", "embed", "modulation", "lora_", "scale_shift", "proj_out", "proj_in")
-TEXT_KEEP = ("embed", "lm_head", "visual", "vision", "multi_modal_projector", "norm", "lora_")
+# T5's feed-forward output (``…DenseReluDense.wo``) stays: T5 runs it in fp32 where it can, and casts its input to
+# that layer's weight dtype, which would be fp8.
+TEXT_KEEP = ("embed", "lm_head", "visual", "vision", "multi_modal_projector", "norm", "lora_", "densereludense.wo")
 MIN_FEATURES = 256  # smaller layers aren't worth it
 
 _linear = None
@@ -105,6 +107,8 @@ def linear_class():
     class FP8Linear(nn.Linear):
         def forward(self, x):
             global MATMUL
+            if x.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):  # a caller cast its input to our weight's dtype
+                x = x.to(getattr(self, "compute_dtype", torch.bfloat16))
             if MATMUL == "scaled" and x.is_cuda and x.dtype == torch.bfloat16 and _scaled_ok():
                 try:
                     return self._scaled(x)
