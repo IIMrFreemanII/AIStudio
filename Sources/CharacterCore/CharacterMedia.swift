@@ -205,14 +205,24 @@ public enum CharacterMedia {
         return MovieTemplate(name: name, graph: Graph(nodes: [still, clip, animate, out]), slots: slots)
     }
 
-    /// The still the motion starts from: full body, so a dance's arms and legs have somewhere to go; its background
-    /// is the clip's scene (Wan-Animate-2 keeps the picture's).
+    /// The still the motion starts from: the whole body, standing, empty hands, so a dance's arms and legs have
+    /// somewhere to go (a seated, phone-holding selfie made the first real one dance sitting down); a plain photo, not
+    /// a smartphone shot (which puts a phone in the hand). Its background is the reply's or the scene's place
+    /// (Wan-Animate-2 keeps the picture's).
     public static func motionStillPrompt(_ c: Character, request: String, scene: Scenario?,
                                          context: CharacterArt.Context = .init()) -> String {
+        var s = CharacterArt.spec(c, request: "", scene: scene, context: context)
+        if c.artModel.style == .photoreal { s.medium = "photo" }
+        s.shot = "full-body shot, head to feet in frame"
+        s.action = "standing upright, arms relaxed at the sides, hands empty, facing the camera"
         let req = clean(request)
-        return CharacterArt.photoPrompt(c, request: "full-body shot, standing, facing the camera" + (req.isEmpty ? "" : ", \(req)"),
-                                        scene: scene, context: context)
+        if !req.isEmpty { s.place = CharacterArt.caption(req) }
+        return PromptWriter.write(s, for: CharacterArt.promptModel(c, context: context)).prompt
     }
+
+    /// The face reference's strength for the still: the training pictures' (weaker than photos'), so the portrait's
+    /// framing and pose don't carry over.
+    public static let motionFaceStrength = CharacterTraining.faceStrength
 
     /// The reply's words as the motion clip's scene (a caption without "you"/"I").
     public static func motionScene(_ request: String) -> String { CharacterArt.caption(clean(request)) }

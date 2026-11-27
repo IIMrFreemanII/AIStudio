@@ -256,7 +256,8 @@ extension AppModel {
                 let still = folder.appendingPathComponent("\(base)-start.png")
                 charge(try await drawPhoto(c, prompt: CharacterMedia.motionStillPrompt(c, request: media.prompt, scene: scene, context: artContext(c)),
                                            server: server, to: still, title: "\(c.name)'s video (picture)",
-                                           progress: phase("picture")))
+                                           extraNegative: "sitting, holding a phone, cropped legs",
+                                           faceStrength: CharacterMedia.motionFaceStrength, progress: phase("picture")))
                 let render = CharacterMedia.motionRender(c, still: still, clip: clip, seconds: seconds,
                                                          scene: CharacterMedia.motionScene(media.prompt),
                                                          seed: Self.mediaSeed(), server: server)

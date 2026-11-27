@@ -62,6 +62,18 @@ MODELS: dict[str, dict] = {
     # the CLIP image encoder and the Wan VAE; ≈ 45.9 GB, summed from the repo's file listing at this revision, 2026-11-27.
     "wan-animate2": {"repo": "Wan-AI/Wan2.2-Animate-2-14B-Distilled-Diffusers",
                      "revision": "59e4141466bcb1bf9733eca1bc78be6891c9fbdf"},
+    # Wan-Animate v1 14B (Apache 2.0), the official repo's layout: the bf16 transformer (4 shards), UMT5-XXL, the
+    # open-clip XLM-RoBERTa ViT-H image encoder and its tokenizer, the Wan 2.1 VAE, the relighting LoRA, and the
+    # preprocessing models (YOLOv10m and ViTPose-H ONNX, SAM2 large; not SAM2's smaller sizes, the LoRA's second copy
+    # or XLM-RoBERTa's weights in four formats). ≈ 55.7 GB, from the repo's file listing at this revision, 2026-11-27.
+    "wan-animate": {"repo": "Wan-AI/Wan2.2-Animate-14B", "revision": "cb93a225fbaf1ca100f54e79da8f994995b689b3", "allow": [
+        "config.json", "configuration.json", "diffusion_pytorch_model-*.safetensors",
+        "diffusion_pytorch_model.safetensors.index.json", "Wan2.1_VAE.pth", "models_t5_umt5-xxl-enc-bf16.pth",
+        "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth", "google/umt5-xxl/*", "relighting_lora.ckpt",
+        "xlm-roberta-large/config.json", "xlm-roberta-large/tokenizer.json", "xlm-roberta-large/tokenizer_config.json",
+        "xlm-roberta-large/sentencepiece.bpe.model", "xlm-roberta-large/special_tokens_map.json",
+        "process_checkpoint/det/yolov10m.onnx", "process_checkpoint/pose2d/*",
+        "process_checkpoint/sam2/sam2_hiera_large.pt"]},
     # LongCat-Video-Avatar 1.6 (MIT): its bf16 avatar DiT, the two distillation LoRAs, the scheduler and
     # Whisper-large-v3 (safetensors only; not the int8 DiT, the vocal separator or Whisper's flax/pt copies), plus
     # LongCat-Video's UMT5 text encoder, tokenizer and VAE (not its own 54 GB DiT). ≈ 63.6 GB, summed from the repos'
@@ -212,7 +224,7 @@ MODELS: dict[str, dict] = {
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"],
           "longcat-avatar": ["longcat-avatar"], "infinitetalk": ["infinitetalk"],
-          "lipsync": ["wan22-s2v", "longcat-avatar", "infinitetalk"], "wan-animate2": ["wan-animate2"], "flux": ["flux1-dev"],
+          "lipsync": ["wan22-s2v", "longcat-avatar", "infinitetalk"], "wan-animate2": ["wan-animate2"], "wan-animate": ["wan-animate"], "flux": ["flux1-dev"],
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],

@@ -55,12 +55,14 @@ class TestPatternWorker:
         return Output(path, "image", "image/png")
 
 
-def _animate(params: dict, inputs: dict[str, Path], out_dir: Path) -> Output:
-    """The fake Wan-Animate-2: the clip cut to start … start + seconds (the real worker's cut), re-timed to 24 fps at
-    the clip's size, its first frame the picture, its sound kept when asked."""
+def _animate(params: dict, inputs: dict[str, Path], out_dir: Path, fps: int = 24) -> Output:
+    """The fake Wan-Animate (2: 24 fps; replacement: 30): the clip cut to start … start + seconds (the real worker's
+    cut), re-timed to the model's rate at the clip's size, its first frame the picture, its sound kept when asked."""
     from PIL import Image
 
-    from .wan_animate import FPS, cut_clip, read_frames
+    from .wan_animate import cut_clip, read_frames
+
+    FPS = fps
 
     clip = out_dir / "driving.mp4"
     has_audio = cut_clip(inputs["video"], clip, params["start"], params["seconds"])
@@ -185,8 +187,8 @@ class FakeModelWorker:
             check(task, params, inputs)
         if task.id == "infinitetalk":  # a dub: the uploaded clip's frames at 25 fps, as long as the speech
             return _dub(inputs, speech_seconds, out_dir)
-        if task.id == "wan-animate2":  # the clip's cut, at 24 fps, opening on the picture, with its sound
-            return _animate(params, inputs, out_dir)
+        if task.id in ("wan-animate2", "wan-animate-replace"):  # the clip's cut, opening on the picture, with its sound
+            return _animate(params, inputs, out_dir, fps=30 if task.id == "wan-animate-replace" else 24)
         w, h = params.get("width", 832), params.get("height", 480)  # tasks without a size: Wan's
         # LoRAs with a strength: the top row's brightness is their count / 4 (Wan pairs' low-noise files: the second
         # row's); a fine-tune (`model` other than base): the right-hand column turns white. So a client can check they
