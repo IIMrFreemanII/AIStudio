@@ -55,3 +55,71 @@ def test_a_lora_with_no_image_layer_is_refused():
     with pytest.raises(ValueError, match="none of its layers"):
         pipe.load_lora_weights({"transformer.audio_proj_in.lora_A.weight": torch.zeros(4, 4),
                                 "transformer.audio_proj_in.lora_B.weight": torch.zeros(4, 4)}, adapter_name="x")
+
+
+def _tiny_image_transformer():
+    import inspect
+
+    cls = diffusers.MiniMaxH3ImageTransformer2DModel
+    keys = inspect.signature(cls.__init__).parameters
+    return cls(**{k: v for k, v in TINY.items() if k in keys})
+
+
+def test_training_targets_the_blocks_and_its_file_loads_for_drawing():
+    # The trainer's adapter covers the transformer blocks' attention and feed-forward layers (not the refiner or the
+    # per-step output heads), and the file it writes loads through the drawing worker's LoRA path.
+    import re
+
+    from peft import LoraConfig
+    from peft.utils import get_peft_model_state_dict
+
+    from aistudio_gpu.tasks.train_h3_image import ADAPTER, TARGETS, lora_file_keys
+
+    names = [n for n, m in _tiny_image_transformer().named_modules() if isinstance(m, torch.nn.Linear)]
+    hit = [n for n in names if re.fullmatch(TARGETS, n)]
+    assert "transformer_blocks.0.attn.to_q" in hit and "transformer_blocks.0.ff.net.2" in hit
+    assert not any(n.startswith(("token_refiner", "pdd_proj_out")) for n in hit)
+
+    trained = _tiny_image_transformer()
+    LoRAPipe(types.SimpleNamespace(transformer=trained))  # adds the adapter methods, as the trainer's load does
+    trained.requires_grad_(False)
+    trained.add_adapter(LoraConfig(r=4, lora_alpha=4, init_lora_weights="gaussian", target_modules=TARGETS),
+                        adapter_name=ADAPTER)
+    with torch.no_grad():
+        for n, p in trained.named_parameters():
+            if ".lora_B." in n:
+                p.normal_(0, 0.01)
+    state = lora_file_keys(get_peft_model_state_dict(trained, adapter_name=ADAPTER))
+    assert state and all(k.startswith("transformer.transformer_blocks.") for k in state)
+
+    drawing = LoRAPipe(types.SimpleNamespace(transformer=_tiny_image_transformer()))
+    drawing.load_lora_weights(state, adapter_name="lora_trained")
+    assert drawing.get_list_adapters() == {"transformer": ["lora_trained"]}
+
+
+def test_velocity_target_and_capture():
+    from aistudio_gpu.tasks.train_h3_image import Captured, capture, noisy_and_target
+
+    clean, noise = torch.ones(3, 2), torch.zeros(3, 2)
+    x, v = noisy_and_target(clean, noise, 0.25)
+    assert torch.allclose(x, torch.full((3, 2), 0.75)) and torch.allclose(x + 0.25 * v, clean)  # denoised = x + σ·v
+
+    class Wrapper:  # stands in for the denoise loop block
+        def get_block_state(self, state):
+            return state
+
+        def __call__(self, components, state):
+            raise AssertionError("the loop must not run")
+
+    class Step(Wrapper):
+        pass
+
+    denoise = types.SimpleNamespace(MiniMaxH3ImageDenoiseLoopWrapper=Wrapper)
+    scheduler = types.SimpleNamespace(sigmas=torch.tensor([1.0, 0.5, 0.0]))
+
+    def pipe(**kwargs):
+        return Step()(types.SimpleNamespace(scheduler=scheduler), {"prompt": kwargs["prompt"]})
+
+    c = capture(pipe, denoise, prompt="zq_mia, a woman")
+    assert isinstance(c, Captured) and c.state == {"prompt": "zq_mia, a woman"} and c.sigmas == [1.0, 0.5, 0.0]
+    assert Wrapper.__call__.__name__ == "__call__"  # restored

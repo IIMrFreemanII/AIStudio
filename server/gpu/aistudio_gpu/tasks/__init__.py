@@ -34,7 +34,8 @@ CONTAINERS: dict[str, tuple[int, int, float]] = {
     "ltx23": (131072, 196608, 8),
     # MiniMax H3 Image: its 66 GB transformer and H3's 66.7 GB text encoder, taking turns on an H200.
     "h3-image": (163840, 262144, 8),
-    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
+    "h3-image-train": (163840, 262144, 8),
+    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sdxl-train": (16384, 65536, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
     "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
 }
 
@@ -350,6 +351,16 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "face_strength": Param("float", 0.6, min=0.0, max=1.0),
         **_lora_params(),
     }, optional_inputs=("face",) + LORA_INPUTS, models=("sdxl",)),
+    # A character LoRA for SDXL (or one of its fine-tunes, `model`) from a zip of pictures with captions
+    # (training.py); returns the .safetensors, which the SDXL task's LoRA slots load.
+    TaskSpec("train-sdxl-lora", "Train a character LoRA (SDXL)", "train", "sdxl-train", GPU_SD, {
+        "steps": Param("int", 0, min=0, max=6000),  # 0: 80 per picture, 1200–2400
+        "rank": Param("int", 32, min=4, max=128),
+        "learning_rate": Param("float", 1e-4, min=1e-6, max=1e-2),
+        "resolution": Param("int", 1024, min=256, max=1536, multiple=64),  # the side of the buckets' area
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "model": Param("string", "base"),
+    }, inputs=("dataset",), models=("sdxl",)),
     TaskSpec("anima", "Anima", "image", "anima", GPU_ANIMA, {
         "prompt": Param("string", ""),
         "negative": Param("string", "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, "
@@ -447,6 +458,16 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         **_lora_params(),  # H3 LoRAs, the video model's too (their audio-branch layers are dropped)
     }, optional_inputs=("image1", "image2", "image3", "image4") + LORA_INPUTS, models=("minimax-h3-image", "minimax-h3"),
         fallback_gpus=H3_IMAGE_FALLBACKS),
+    # A character LoRA for MiniMax H3 Image from a zip of pictures with captions (train_h3_image.py): each of the
+    # six distilled steps trains on its own; returns the .safetensors, which the h3-image task's LoRA slots load.
+    TaskSpec("train-h3-image-lora", "Train a character LoRA (MiniMax H3 Image)", "train", "h3-image-train",
+             GPU_H3_IMAGE, {
+        "steps": Param("int", 0, min=0, max=4000),  # 0: 50 per picture, 800–1600
+        "rank": Param("int", 16, min=4, max=64),
+        "learning_rate": Param("float", 1e-4, min=1e-6, max=1e-2),
+        "resolution": Param("int", 1024, min=512, max=2048, multiple=32),  # the side of the buckets' area
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+    }, inputs=("dataset",), models=("minimax-h3-image", "minimax-h3")),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {
         "text": Param("string", ""),  # vocal events inline: (laugh), (sigh), (clears throat); in Chinese [笑]
@@ -550,6 +571,9 @@ def make_worker(family: str) -> Worker:
     if family == "sdxl":
         from .sdxl import SDXLWorker
         return SDXLWorker()
+    if family == "sdxl-train":
+        from .train_sdxl import SDXLTrainWorker
+        return SDXLTrainWorker()
     if family == "anima":
         from .anima import AnimaWorker
         return AnimaWorker()
@@ -580,6 +604,9 @@ def make_worker(family: str) -> Worker:
     if family == "h3-image":
         from .minimax_h3_image import H3ImageWorker
         return H3ImageWorker()
+    if family == "h3-image-train":
+        from .train_h3_image import H3ImageTrainWorker
+        return H3ImageTrainWorker()
     raise KeyError(family)
 
 

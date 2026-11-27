@@ -1159,6 +1159,71 @@ def test_sdxl_loras(models, tmp_path):
     assert np.array_equal(jobs()[0], plain)
 
 
+def _dataset_zip(path: Path, n: int = 4) -> Path:
+    """A training zip: n small coloured pictures with captions (one without), as the app sends."""
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    with zipfile.ZipFile(path, "w") as z:
+        for i in range(n):
+            buf = io.BytesIO()
+            Image.new("RGB", (96, 64) if i % 2 else (64, 96), (40 * i, 120, 200 - 30 * i)).save(buf, "PNG")
+            z.writestr(f"{i:02d}.png", buf.getvalue())
+            if i:
+                z.writestr(f"{i:02d}.txt", f"zq_mia, a woman, picture {i}")
+    return path
+
+
+def test_sdxl_lora_training_makes_a_lora_the_sdxl_task_loads(models, tmp_path):
+    """Three steps on four tiny pictures: progress, a diffusers-format LoRA, the adapter removed afterwards; then the
+    SDXL task draws with it, and the picture differs from the plain one."""
+    spec = TASKS["train-sdxl-lora"]
+    worker = make_worker(spec.family)
+    worker.load(models, lambda s: None)
+    sink = Sink()
+    out_dir = tmp_path / "train"
+    out_dir.mkdir()
+    params = {**spec.normalize({}), "steps": 3, "resolution": 64, "rank": 4}
+    out = worker.run(spec, params, {"dataset": _dataset_zip(tmp_path / ("d" * 64 + ".zip"))}, sink, out_dir)
+    assert out.kind == "file" and out.path.exists() and out.extra["steps"] == 3 and out.extra["pictures"] == 4
+    assert "Training" in sink.statuses and sink.steps[-1] == (3, 3)
+    assert not any(".lora_" in n for n, _ in worker.pipe.unet.named_parameters())  # the next job starts clean
+    from safetensors.torch import load_file
+    keys = list(load_file(str(out.path)))
+    assert keys and all(k.startswith("unet.") for k in keys)
+
+    lora = tmp_path / ("e" * 64 + ".lora")
+    lora.write_bytes(out.path.read_bytes())
+    jobs = ImageJobs("sdxl", models, tmp_path, steps=2)
+    plain, _, _ = jobs()
+    with_lora, _, info = jobs({"lora1": lora})
+    assert info.extra["loras"] == 1 and np.abs(with_lora - plain).max() > 0
+
+
+def test_training_refuses_a_bad_dataset(tmp_path):
+    import zipfile
+
+    from aistudio_gpu.tasks.training import bucket, read_dataset, total_steps
+
+    with pytest.raises(ValueError, match="at least"):
+        read_dataset(_dataset_zip(tmp_path / "few.zip", n=2))
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("../evil.png", b"x")
+    with pytest.raises(ValueError, match="unsafe"):
+        read_dataset(bad)
+    (tmp_path / "not.zip").write_bytes(b"nope")
+    with pytest.raises(ValueError, match="zip"):
+        read_dataset(tmp_path / "not.zip")
+    samples = read_dataset(_dataset_zip(tmp_path / "ok.zip"))
+    assert [s.caption for s in samples][:2] == ["", "zq_mia, a woman, picture 1"]
+    assert bucket(1024, 1024) == (1024, 1024) and bucket(832, 1216)[0] < bucket(832, 1216)[1]
+    assert total_steps(20, 0, 80, 1200, 2400) == 1600 and total_steps(5, 0, 80, 1200, 2400) == 1200
+    assert total_steps(20, 300, 80, 1200, 2400) == 300
+
+
 def test_sdxl_fine_tune_from_a_single_file_and_swapping_back(models, tmp_path, monkeypatch):
     """An SDXL fine-tune is one checkpoint file. A real one (the original SGM layout) can't be made tiny, so the
     single-file loader returns a tiny pipeline with perturbed UNet and text encoders; what's checked is the rest:
