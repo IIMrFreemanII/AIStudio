@@ -51,21 +51,27 @@ extension StudioActor {
     }
 
     /// The glow inside the glass (low and right).
-    var orbTint: Color {
+    var orbTint: Color { Color(red: orbTintRGB.0, green: orbTintRGB.1, blue: orbTintRGB.2) }
+
+    /// The frosted rim: a light tint of its colour (lavender for the architect).
+    var orbRim: Color { Color(red: orbRimRGB.0, green: orbRimRGB.1, blue: orbRimRGB.2) }
+
+    /// `orbTint` as red, green and blue (the 3D orb's shader takes the numbers).
+    var orbTintRGB: (Double, Double, Double) {
         switch number {
-        case 0: return StudioColors.magenta
-        case 1: return Color(red: 0.11, green: 0.62, blue: 0.46)
-        case 2: return Color(red: 0.85, green: 0.35, blue: 0.19)
-        default: return Color(red: 0.50, green: 0.47, blue: 0.87)
+        case 0: return (0.83, 0.33, 0.53)
+        case 1: return (0.11, 0.62, 0.46)
+        case 2: return (0.85, 0.35, 0.19)
+        default: return (0.50, 0.47, 0.87)
         }
     }
 
-    /// The frosted rim: a light tint of its colour (lavender for the architect).
-    var orbRim: Color {
+    /// `orbRim` as red, green and blue.
+    var orbRimRGB: (Double, Double, Double) {
         switch number {
-        case 1: return Color(red: 0.62, green: 0.88, blue: 0.80)
-        case 2: return Color(red: 0.96, green: 0.77, blue: 0.70)
-        default: return Color(red: 0.81, green: 0.80, blue: 0.96)
+        case 1: return (0.62, 0.88, 0.80)
+        case 2: return (0.96, 0.77, 0.70)
+        default: return (0.81, 0.80, 0.96)
         }
     }
 }
@@ -74,8 +80,12 @@ extension StudioActor {
 /// architect, which also has a tilted orbit ring with a spark riding it; one colour for each worker). Its eyes show
 /// its mood (`StudioFace`): they blink and glance when idle, narrow while working, look where it's going, bounce while
 /// its model writes, go wide when it waits on you, turn into happy arcs or crosses when a task ends, and close when
-/// paused. Sparkles drift around it all the time (not below 24 pt, nor with Reduce Motion). Everything outside the orb (glow, ring, sparkles)
-/// draws beyond its frame, so it takes only `size` × `size` in a layout.
+/// paused. Sparkles in its own colours drift around it all the time (not below 24 pt, nor with Reduce Motion).
+/// Everything outside the orb (glow, ring, sparkles) draws beyond its frame, so it takes only `size` × `size` in a layout.
+///
+/// The orb itself is a 3D sphere (`StudioOrb.metal`): glossy dark glass lit from the upper left, the glow inside it,
+/// and the eyes on its surface; it turns toward where it looks while the highlight stays put. It falls back to the
+/// flat drawing when the shader library is missing or Reduce Transparency is on.
 struct StudioOrb: View {
     let actor: StudioActor
     var state: StudioActorState = .idle
@@ -93,7 +103,11 @@ struct StudioOrb: View {
     var still = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var scheme
+
+    /// Whether it draws the 3D sphere (or the flat orb).
+    var isSphere: Bool { StudioOrbShader.available && !reduceTransparency }
 
     var face: StudioFace {
         var f = StudioFace.face(state: state, talking: talking, moving: moving, pace: pace, reduceMotion: reduceMotion || still)
@@ -163,13 +177,22 @@ struct StudioOrb: View {
         let breathe = f.breathe ? 0.8 + 0.2 * sin(t * 1.8) : 1
         let angle = f.orbit ? t * 0.9 : -0.45
         let dim = state == .paused
-        return ZStack {
-            Circle().fill(StudioColors.glass)
-            Circle().fill(RadialGradient(colors: [actor.orbTint.opacity(0.75), actor.orbTint.opacity(0)],
-                                         center: UnitPoint(x: 0.72, y: 0.76), startRadius: 0, endRadius: s * 0.62))
-            if actor.isArchitect {
-                Circle().fill(RadialGradient(colors: [StudioColors.violet.opacity(0.45), .clear],
-                                             center: UnitPoint(x: 0.3, y: 0.28), startRadius: 0, endRadius: s * 0.5))
+        let sphere = isSphere
+        return Group {
+            if sphere {
+                StudioOrbSphere(actor: actor, face: f, size: s, blinking: blink, gaze: look,
+                                bounce: f.bounce ? sin(t * 2 * .pi * 3) : 0, breathe: breathe, paused: dim)
+                    .animation(.spring(duration: 0.35), value: look)
+            } else {
+                ZStack {
+                    Circle().fill(StudioColors.glass)
+                    Circle().fill(RadialGradient(colors: [actor.orbTint.opacity(0.75), actor.orbTint.opacity(0)],
+                                                 center: UnitPoint(x: 0.72, y: 0.76), startRadius: 0, endRadius: s * 0.62))
+                    if actor.isArchitect {
+                        Circle().fill(RadialGradient(colors: [StudioColors.violet.opacity(0.45), .clear],
+                                                     center: UnitPoint(x: 0.3, y: 0.28), startRadius: 0, endRadius: s * 0.5))
+                    }
+                }
             }
         }
         .frame(width: s, height: s)
@@ -182,9 +205,11 @@ struct StudioOrb: View {
         }
         .overlay {
             ZStack {
-                rim
-                eyes(f.eyes, blink: blink).offset(x: look.dx * s * 0.08, y: look.dy * s * 0.08 + bounce)
-                    .animation(.spring(duration: 0.35), value: look)
+                if !sphere {
+                    rim
+                    eyes(f.eyes, blink: blink).offset(x: look.dx * s * 0.08, y: look.dy * s * 0.08 + bounce)
+                        .animation(.spring(duration: 0.35), value: look)
+                }
                 if actor.isArchitect { orbit(angle: angle, front: true) }
                 if f.particles { particles(t) }
             }
@@ -278,14 +303,66 @@ struct StudioOrb: View {
         return Canvas { ctx, box in
             let c = CGPoint(x: box.width / 2, y: box.height / 2)
             let r = max(0.8, s * 0.035)
-            for p in StudioFace.particles(actor: actor.number, time: t) {
+            for (i, p) in StudioFace.particles(actor: actor.number, time: t).enumerated() {
                 let at = CGPoint(x: c.x + p.offset.dx * s, y: c.y + p.offset.dy * s)
                 ctx.fill(Path(ellipseIn: CGRect(x: at.x - r, y: at.y - r, width: r * 2, height: r * 2)),
-                         with: .color(StudioColors.spark.opacity(p.opacity * 0.9)))
+                         with: .color(particleColor(i).opacity(p.opacity * 0.9)))
             }
         }
         .frame(width: s * 2.2, height: s * 2.2)
         .allowsHitTesting(false)
+    }
+
+    /// A sparkle's colour: the architect's take violet, magenta and teal in turn, a worker's its glow colour; lightened
+    /// a little on a dark window so they read as light.
+    private func particleColor(_ i: Int) -> Color {
+        let base = actor.isArchitect ? [StudioColors.violet, StudioColors.magenta, StudioColors.teal][i % 3] : actor.orbTint
+        return scheme == .dark ? base.mix(with: .white, by: 0.3) : base
+    }
+}
+
+/// The 3D orb's shader (`StudioOrb.metal`, compiled into the module's resource bundle).
+enum StudioOrbShader {
+    static let library = ShaderLibrary.bundle(.module)
+    /// The compiled library is there (the flat orb is drawn otherwise).
+    static let available = Bundle.module.url(forResource: "default", withExtension: "metallib") != nil
+}
+
+/// The 3D sphere: dark glass, the glow inside it, the rim, the highlight and the eyes on its surface. Animatable in its
+/// gaze, so the sphere turns smoothly toward where it looks.
+private struct StudioOrbSphere: View, Animatable {
+    let actor: StudioActor
+    let face: StudioFace
+    let size: CGFloat
+    let blinking: Bool
+    var gaze: CGVector
+    let bounce: Double
+    let breathe: Double
+    let paused: Bool
+    var glass = StudioOrbGlass.standard
+
+    @Environment(\.displayScale) private var displayScale
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(gaze.dx, gaze.dy) }
+        set { gaze = CGVector(dx: newValue.first, dy: newValue.second) }
+    }
+
+    var body: some View {
+        let pose = StudioOrbPose.pose(face: face, blinking: blinking, gaze: gaze, bounce: bounce, breathe: breathe,
+                                      paused: paused, radius: size / 2)
+        let tint = actor.orbTintRGB, rim = actor.orbRimRGB, g = glass
+        Rectangle().fill(.white)
+            .frame(width: size, height: size)
+            .colorEffect(StudioOrbShader.library.studioOrbSphere(
+                .boundingRect, .float(displayScale),
+                .float3(tint.0, tint.1, tint.2), .float3(rim.0, rim.1, rim.2), .float(actor.isArchitect ? 1 : 0),
+                .floatArray(pose.rotation),
+                .float4(Double(pose.eyeShape.rawValue), pose.eyeWidth, pose.eyeHeight, pose.eyeLift),
+                .float(pose.eyeGap), .float(pose.glow), .float(0),
+                .float4(g.highlightSize, g.highlightStrength, g.rim, g.frost),
+                .float3(g.glowSpread, g.glowStrength, g.iridescence)))
+            .allowsHitTesting(false)
     }
 }
 

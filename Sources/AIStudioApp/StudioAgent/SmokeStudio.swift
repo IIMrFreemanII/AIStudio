@@ -355,6 +355,26 @@ extension SmokeTest {
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("orbs-\(name).png"))
                 }
+                // The 3D turn: the architect and Mint at 64 pt looking left, up, ahead, right and down.
+                let gazes = [CGVector(dx: -1, dy: 0), CGVector(dx: 0, dy: -1), .zero, CGVector(dx: 1, dy: 0), CGVector(dx: 0.7, dy: 0.7)]
+                let turns = VStack(alignment: .leading, spacing: 56) {
+                    ForEach([0, 1], id: \.self) { n in
+                        HStack(spacing: 64) {
+                            ForEach(Array(gazes.enumerated()), id: \.offset) { _, g in
+                                StudioOrb(actor: StudioActor(n), size: 64, pace: .watchable, gaze: g, still: true)
+                            }
+                        }
+                    }
+                }
+                .padding(60)
+                .background(bg)
+                .environment(\.colorScheme, scheme)
+                let gr = ImageRenderer(content: turns)
+                gr.scale = 2
+                if let img = gr.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("orbs-turn-\(name).png"))
+                }
                 // The ghost echoes: the architect and Mint mid-flight, Plum just landed (pulling in), the handoff
                 // sparkle on its way; the orbs drawn where they are.
                 let flights: [(StudioActor, StudioFlight, Double)] = [
