@@ -13,11 +13,17 @@ extension StudioActor {
     /// The colour of its echoes at `band` (0 front, 1 back): a worker's own tone (fixed, as the orbs are dark glass in
     /// both modes); the architect shifts violet → magenta → teal.
     func trailColor(band: Double) -> Color {
+        let c = trailRGB(band: band)
+        return Color(red: c.0, green: c.1, blue: c.2)
+    }
+
+    /// `trailColor` as red, green and blue (the 3D echoes' shader takes the numbers).
+    func trailRGB(band: Double) -> (Double, Double, Double) {
         switch number {
-        case 0: return band < 1.0 / 3 ? StudioColors.violet : band < 2.0 / 3 ? StudioColors.magenta : StudioColors.teal
-        case 1: return Color(red: 0.176, green: 0.741, blue: 0.565)
-        case 2: return Color(red: 0.910, green: 0.455, blue: 0.290)
-        default: return Color(red: 0.604, green: 0.576, blue: 0.918)
+        case 0: return band < 1.0 / 3 ? (0.50, 0.47, 0.87) : band < 2.0 / 3 ? (0.83, 0.33, 0.53) : (0.36, 0.79, 0.65)
+        case 1: return (0.176, 0.741, 0.565)
+        case 2: return (0.910, 0.455, 0.290)
+        default: return (0.604, 0.576, 0.918)
         }
     }
 }
@@ -34,14 +40,36 @@ extension StudioCursor {
     }
 }
 
-/// The ghost echoes behind flying orbs: glass silhouettes (dark glass, a rim and a faint glow in the trail colour, no
-/// eyes), each smaller and fainter towards the back, plus small sparkles behind the handoff sparkle. One canvas for
-/// all of them, drawn under the orbs.
+/// The ghost echoes behind flying orbs: glass spheres (the 3D orb's dark glass with no eyes, its glow and rim in the
+/// trail colour), each smaller and fainter towards the back, plus small sparkles behind the handoff sparkle. Drawn
+/// under the orbs. Without the 3D orb (no shader library, or Reduce Transparency) they're flat glass silhouettes.
 struct StudioEchoesView: View {
     let groups: [StudioEchoGroup]
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
+        let spheres = StudioOrbShader.available && !reduceTransparency
+        ZStack(alignment: .topLeading) {
+            canvas(spheres: spheres)
+            if spheres {
+                ForEach(Array(groups.enumerated()), id: \.offset) { _, g in
+                    if !g.sparkle {
+                        ForEach(Array(g.echoes.enumerated()), id: \.offset) { _, e in
+                            StudioEchoSphere(size: (g.actor.isArchitect ? 36 : 32) * e.scale, color: g.actor.trailRGB(band: e.band))
+                                .opacity(min(1, e.opacity * 1.3))
+                                .position(e.point)
+                        }
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    /// The glows and the handoff sparkle's echoes (and, without the 3D orb, the flat glass).
+    private func canvas(spheres: Bool) -> some View {
         Canvas { ctx, _ in
             let rimBoost = scheme == .light ? 1.25 : 1
             for g in groups {
@@ -59,6 +87,7 @@ struct StudioEchoesView: View {
                     ctx.fill(Path(ellipseIn: CGRect(x: c.x - glowR, y: c.y - glowR, width: glowR * 2, height: glowR * 2)),
                              with: .radialGradient(Gradient(colors: [color.opacity(0.8 * e.opacity), color.opacity(0)]),
                                                    center: c, startRadius: 0, endRadius: glowR))
+                    if spheres { continue }
                     let disc = CGRect(x: c.x - s / 2, y: c.y - s / 2, width: s, height: s)
                     ctx.fill(Path(ellipseIn: disc), with: .color(StudioColors.glass.opacity(e.opacity)))
                     let w = s * 0.085
@@ -67,7 +96,5 @@ struct StudioEchoesView: View {
                 }
             }
         }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }

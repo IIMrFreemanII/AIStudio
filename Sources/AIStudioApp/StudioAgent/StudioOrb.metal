@@ -67,7 +67,7 @@ float sdCross(float2 p) {
 /// - box: the layer's bounding rect (x, y, width, height), in points.
 /// - scale: the display's pixels per point (for antialiasing).
 /// - rot / rotCount: the body's 3×3 rotation, column by column.
-/// - eye: shape (0 pill, 1 happy, 2 cross), width, height, lift; eyeGap: between the eye centres.
+/// - eye: shape (0 pill, 1 happy, 2 cross, -1 none: a trail echo), width, height, lift; eyeGap: between the eye centres.
 /// - glow: the inner glow's brightness (breathing, paused); spin: the inner glow's drift angle.
 /// - glass: highlight size, highlight strength, rim, frost; glass2: glow spread, glow strength, iridescence.
 [[ stitchable ]] half4 studioOrbSphere(float2 position, half4 color, float4 box, float scale,
@@ -104,7 +104,7 @@ float sdCross(float2 p) {
 
     // Eyes, painted on the surface in the body's frame: they turn with it and foreshorten toward the edge.
     float dmin = 1e3;
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < (eye.x < 0.0 ? 0 : 2); i++) {
         float side = i == 0 ? -1.0 : 1.0;
         float2 e2 = float2(-0.2 + side * eyeGap * 0.5, 0.12 + eye.w);
         float3 c = normalize(float3(e2, sqrt(max(1.0 - dot(e2, e2), 0.0))));
