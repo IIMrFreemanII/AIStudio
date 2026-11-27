@@ -155,6 +155,7 @@ struct ContentView: View {
         .mgSheet("llm-add", item: $model.llmAddRequest) { r in LLMAddSheet(request: r) }
         .mgSheet("llm-settings", item: $model.llmSettingsRequest) { r in LLMSettingsSheet(request: r) }
         .mgSheet("studio-run-gate", item: $model.studioRunGate) { gate in CostGateSheet(gate: gate) }
+        .mgSheet("prompt-engine-gate", item: $model.promptEngineGate) { gate in CostGateSheet(gate: gate) }
         .task { model.llm.start() }
         .mgPresentationHost(model.presenter)
     }

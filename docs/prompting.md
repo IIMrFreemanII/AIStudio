@@ -53,20 +53,20 @@ picture ("glamour photo", "reference sheet", "masterpiece") to models whose card
 
 **Weights.** The `(word:1.3)` syntax is AUTOMATIC1111's. It raises attention on `word` 1.3 times, and each plain `( )`
 multiplies by 1.1 ([A1111 wiki](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#attentionemphasis)).
-It is a feature of the UI, not of the models. diffusers does not parse it, so today our workers pass the brackets and
-numbers to the encoder as text. **(code)** SDXL weights are being added on the server. No other model of ours reads
-weights.
+It is a feature of the UI, not of the models. diffusers does not parse it. Our SDXL worker does
+(`tasks/prompt_weights.py`); the other workers pass the brackets and numbers to the encoder as text. **(code)** No other
+model of ours reads weights.
 
 **LoRA trigger words.** A LoRA trained on a trigger word (`ohwx woman`, an artist tag, a style name) only works with
 that word in the prompt, usually near the start. The LoRA's Civitai or Hugging Face page names the word. Put it where
-the encoder will still read it, which on SDXL means inside the first 77 tokens. The app's prompt writer puts a picked LoRA's
+the encoder will still read it, which on SDXL means inside the first 75-token chunk. The app's prompt writer puts a picked LoRA's
 words first in every dialect: tags, sentences, MiniMax H3 Image's paragraph and the video models' paragraph.
 
 ## Quick reference
 
 | Model | Reads with | Limit (what we send) | Style | Negative works | Our default |
 |---|---|---|---|---|---|
-| SDXL + fine-tunes | CLIP ViT-L + OpenCLIP bigG | 77 tokens, rest cut | tags | yes (CFG 6) | 30 steps, CFG 6, DPM++ 2M Karras |
+| SDXL + fine-tunes | CLIP ViT-L + OpenCLIP bigG | 75-token chunks, first weighs most | tags | yes (CFG 6) | 30 steps, CFG 6, DPM++ 2M Karras |
 | SD 3.5 Large | 2 CLIP + T5-XXL | CLIP 77, T5 256 | sentences | Large only (3.5) | Turbo: 4 steps, no CFG |
 | FLUX.1 dev | CLIP ViT-L + T5-XXL | CLIP 77, T5 512 | sentences | no (distilled) | 28 steps, guidance 3.5 |
 | Chroma1-HD | T5-XXL | 512 | sentences | HD only (CFG 3) | Flash: 16 steps, no CFG |
@@ -90,14 +90,12 @@ words first in every dialect: tags, sentences, MiniMax H3 Image's paragraph and 
 ### SDXL (plain, Pony, Illustrious, NoobAI)
 
 **Reads with:** two CLIP encoders, CLIP ViT-L and OpenCLIP ViT-bigG
-([card](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)). Each reads 77 tokens. `tasks/sdxl.py:108`
-passes the plain prompt string, so **only the first 77 tokens count and the rest is dropped silently**. **(code)** Our
-character prompts run 90–130 tokens, so the photo's request and its place, which come last, are lost. **(ours)**
-Long-prompt support (A1111-style 75-token chunks, concatenated) and `(word:1.3)` weights are being added on the server.
-Until they land, keep SDXL prompts under about 70 tokens with the request near the front. A1111's `BREAK` keyword ends
-a chunk early and starts the next one
-([wiki](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#break)); it will only mean something
-once chunking is in.
+([card](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)). Each reads 77 tokens. Our worker encodes
+longer prompts itself, A1111-style: 75-token chunks, each encoded and joined, and it parses `(word:1.3)` weights
+(`tasks/prompt_weights.py`). **(code)** Later chunks still weigh less than the first, so keep the subject, framing,
+action and place in the first 75 tokens and the look and quality words after them. **(ours)** A1111's `BREAK`
+keyword ends a chunk early and starts the next one
+([wiki](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#break)).
 
 **Style:** depends on the checkpoint.
 - **Plain SDXL and photo fine-tunes (Juggernaut, RealVis):** short phrases or one plain sentence, then light and camera.
@@ -140,7 +138,7 @@ once chunking is in.
   win over the prompt's. **(ours)**
 - Clip skip: SDXL was trained on the penultimate CLIP layer, so the setting changes nothing
   ([wiki](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features)).
-- LoRAs: up to four, trigger words inside the first 77 tokens.
+- LoRAs: up to four, trigger words inside the first 75-token chunk.
 
 **Avoid:** prose paragraphs, because the 77-token cut takes the end. Mixing tag dialects in one prompt (Pony score
 tags on an Illustrious model, or Danbooru tags on Juggernaut) does little. **(ours)**
@@ -149,7 +147,8 @@ tags on an Illustrious model, or Danbooru tags on Juggernaut) does little. **(ou
 - Good: `photo of a 30-year-old adult woman reading in a cafe, rainy window, warm lamp light, shallow depth of field, candid, natural skin`
   with negative `cartoon, anime, illustration, deformed hands, blurry, watermark, text`
 - Bad: `Photo of a 30-year-old adult woman, long wavy auburn hair, green eyes, freckles, slim, wearing a cream knit sweater and jeans, silver earrings, soft smile. Reading a book. At a cafe by a rainy window. Candid smartphone photo, natural light, sharp focus, detailed skin.`
-  The description of her look uses the 77 tokens, so "reading a book" and the café never reach the model. **(ours)**
+  The description of her look fills the first chunk, so "reading a book" and the café land in a later chunk, which
+  weighs less (before the worker chunked long prompts, they were cut off entirely). **(ours)**
 
 **In AIStudio:** node `RemoteSDXL` (task `sdxl`, L40S). Defaults: 30 steps, CFG 6, DPM++ 2M Karras, fine-tunes from
 links, four LoRAs, optional face picture. The app builds SDXL prompts in
@@ -617,9 +616,9 @@ Studio). Each writer takes the same facts (age, look, request, place, outfit, ti
 model:
 
 1. **SDXL (CLIP):** tags or short phrases, request and place **first**, look after, quality words last.
-   Until long prompts land on the server, keep it under 75 tokens; afterwards keep the important part in the first
-   chunk anyway. Fine-tune tags go first (Pony score tags, NoobAI/Illustrious quality tags), and only on that
-   fine-tune. Use weights only once the server parses them. The negative carries the style terms and `AgeGuard.negative`.
+   The server reads long prompts in 75-token chunks, but keep the important part in the first chunk. Fine-tune tags
+   go first (Pony score tags, NoobAI/Illustrious quality tags), and only on that fine-tune. Weights such as
+   `(full body:1.3)` work on SDXL only. The negative carries the style terms and `AgeGuard.negative`.
 2. **Chroma, FLUX, SD 3.5, Qwen-Image (T5 or Qwen):** sentences, subject and action first, then place, light, camera.
    Send a negative only where guidance runs (Chroma HD, SD 3.5 Large, Qwen with `cfg` above 1). FLUX never gets one.
 3. **MiniMax H3 Image:** one English paragraph: purpose, framing, subjects and action, then light, colour and material.

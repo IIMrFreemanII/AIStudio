@@ -58,11 +58,14 @@ final class StudioSession {
     let studio: StudioController
     let vision: Bool
     private var helpers: [UUID: GraphHelperSession] = [:]
+    /// The prompt tools' side: their checklist, drafts and verdicts in this reply, drafts behind the run sheet.
+    let prompts: StudioPromptHost
 
     init(app: AppModel, vision: Bool) {
         self.app = app
         studio = app.studio
         self.vision = vision
+        prompts = StudioPromptHost(app: app, studio: app.studio)
     }
 
     func appModel() throws -> AppModel {

@@ -202,6 +202,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 exit(ok ? 0 : 1)
             }
         }
+        if let url = SmokeTest.argument("--smoke-prompt-engine-fake") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runPromptEngineFake(AppDelegate.model!, url: url)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let folder = SmokeTest.argument("--smoke-engine-judge") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runEngineJudge(AppDelegate.model!, folder: folder)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let idea = SmokeTest.argument("--smoke-prompt-engine") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await SmokeTest.runPromptEngineReal(AppDelegate.model!, idea: idea)
+                exit(ok ? 0 : 1)
+            }
+        }
+        if let link = SmokeTest.argument("--install-llm") {
+            Task { @MainActor in
+                while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }
+                let ok = await InstallLLM.run(AppDelegate.model!, link: link)
+                exit(ok ? 0 : 1)
+            }
+        }
         if let link = SmokeTest.argument("--smoke-library-model") {
             Task { @MainActor in
                 while AppDelegate.model == nil || AppDelegate.model?.store == nil { try? await Task.sleep(nanoseconds: 50_000_000) }

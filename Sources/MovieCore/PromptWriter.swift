@@ -202,6 +202,11 @@ public struct PromptSpec: Equatable, Sendable, Codable {
 public struct WrittenPrompt: Equatable, Sendable {
     public var prompt: String
     public var negative: String
+
+    public init(prompt: String, negative: String) {
+        self.prompt = prompt
+        self.negative = negative
+    }
 }
 
 /// Writes a `PromptSpec` the way each model reads best (docs/prompting.md):
