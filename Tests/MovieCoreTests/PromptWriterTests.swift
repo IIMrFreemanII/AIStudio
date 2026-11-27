@@ -86,7 +86,7 @@ import Testing
         #expect(PromptModel.sdxl(baseModel: "Illustrious") == .sdxlIllustrious)
         #expect(PromptModel.sdxl(baseModel: "NoobAI") == .sdxlIllustrious)
         #expect(PromptModel.sdxl(baseModel: "SDXL 1.0") == .sdxl && PromptModel.sdxl(baseModel: nil) == .sdxl)
-        #expect(PromptModel.allCases.filter(\.takesWeights).count == 4)
+        #expect(PromptModel.allCases.filter(\.takesWeights) == [.sdxl, .sdxlPony, .sdxlIllustrious])
         #expect(PromptModel.allCases.filter(\.hasSound) == [.ltx23, .minimaxVideo])
     }
 }

@@ -31,7 +31,7 @@ Layout:
 Environment variables at deploy time: ``AISTUDIO_IDLE``, ``AISTUDIO_GPU_WAN`` (default H100),
 ``AISTUDIO_GPU_FLUX`` (default L40S), ``AISTUDIO_GPU_AVATAR`` (LongCat Avatar and InfiniteTalk, default H100), ``AISTUDIO_GPU_H3`` (MiniMax H3,
 default B200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is free, comma-separated, default none: a smaller card swaps the models), ``AISTUDIO_GPU_H3_IMAGE`` (MiniMax H3 Image, default B200, fallback ``AISTUDIO_GPU_H3_IMAGE_FALLBACK``), ``AISTUDIO_GPU_LTX`` (LTX-2.3 with its distilled transformer resident, default B200) and ``AISTUDIO_GPU_LTX_FALLBACK`` (default none), ``AISTUDIO_GPU_QWEN`` (Qwen-Image and Qwen-Image-Edit, default H100; on a 48 GB
-L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SDXL, default L40S), ``AISTUDIO_GPU_SD35`` (SD 3.5 Large with Turbo resident beside it, default H100), ``AISTUDIO_GPU_SD15`` (SD 1.5, default L40S), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (Chroma1-HD with Flash resident beside it, default H100), ``AISTUDIO_GPU_AUDIO`` (default L40S),
+L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SDXL, default L40S), ``AISTUDIO_GPU_SD35`` (SD 3.5 Large with Turbo resident beside it, default H100), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (Chroma1-HD with Flash resident beside it, default H100), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
 ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
@@ -68,7 +68,6 @@ H3_IMAGE_GPUS = [GPU_H3_IMAGE, *H3_IMAGE_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
-GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")
 GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "H100")
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
@@ -134,7 +133,7 @@ TORCH_DEPS = ["torch==2.15.0", "diffusers==0.42.1", "transformers==5.22.2", "acc
               "sentencepiece", "ftfy", "safetensors", "huggingface_hub"]
 # Also inside the containers, so the module defines the same things there as here.
 env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU_AUDIO": GPU_AUDIO,
-       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD35": GPU_SD35, "AISTUDIO_GPU_SD15": GPU_SD15, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
+       "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD35": GPU_SD35, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
        "AISTUDIO_GPU_H3_IMAGE": GPU_H3_IMAGE, "AISTUDIO_GPU_H3_IMAGE_FALLBACK": GPU_H3_IMAGE_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
@@ -690,26 +689,6 @@ class SDXL:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("sdxl", MODELS)
-
-    @modal.method()
-    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from aistudio_gpu.modal_runner import run_job
-
-        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
-                       models=(volume, MODELS))
-
-
-@_gpu_class(gpu=GPU_SD15, **_container("sd15"))
-class SD15:
-    @modal.enter(snap=True)
-    def imports(self):
-        _imports()
-
-    @modal.enter(snap=False)
-    def load(self):
-        from aistudio_gpu.modal_runner import WorkerState
-
-        self.state = WorkerState("sd15", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1617,7 +1596,7 @@ def api():
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
-                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sd15": SD15, "anima": Anima, "chroma": Chroma, "music": Music,
+                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
                           "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23,
                           "h3-image": H3Image}, events, cancels, volume, MODELS, uploads_volume=uploads,

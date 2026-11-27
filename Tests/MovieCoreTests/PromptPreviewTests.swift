@@ -29,7 +29,8 @@ import Testing
     @Test func sizesAndFastModes() throws {
         #expect(PromptPreview.size(.sdxl, aspect: .portrait) == (832, 1216))
         #expect(PromptPreview.size(.sdxl, aspect: .landscape) == (1216, 832))
-        #expect(PromptPreview.size(.sd15, aspect: .square) == (512, 512))
+        #expect(PromptPreview.size(.chroma, aspect: .square) == (1024, 1024))
+        #expect(PromptModel(rawValue: "sd15") == nil)  // removed on 2026-11-27
         // A negative needs guidance: the fast modes that skip it are turned off.
         let chroma = try #require(PromptPreview.template(.chroma, negative: true))
         #expect(chroma.graph["image"]?.inputs["fast"] == .value(.bool(false)))

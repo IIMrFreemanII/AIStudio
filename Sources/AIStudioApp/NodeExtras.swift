@@ -33,7 +33,7 @@ struct NodeExtras: View {
                 gpuServerSection
             case "RemoteLoRA":
                 loraLinkPreview
-                Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, SD 1.5, Anima, Chroma, Wan 2.2, MiniMax H3, LTX-2.3), picked from the library (Models window). One "
+                Text("A LoRA for a Cloud GPU image or video node (FLUX.1 dev, Qwen-Image, SD 3.5 Large, SDXL, Anima, Chroma, Wan 2.2, MiniMax H3, LTX-2.3), picked from the library (Models window). One "
                      + "added from a link is downloaded by the server itself; a file is uploaded with the first job. "
                      + "Chain up to four; strength 0 skips one.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)

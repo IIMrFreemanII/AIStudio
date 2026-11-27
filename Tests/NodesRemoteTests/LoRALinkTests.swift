@@ -278,22 +278,14 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))
     }
 
-    @Test func sd15Family() throws {
+    @Test func sd15IsRemoved() {
+        // SD 1.5 was removed on 2026-11-27: its links aren't a family the app runs, and its node is gone.
         for b in ["SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper"] {
-            #expect(LoRASources.family(forBaseModel: b) == "sd1.5", "\(b)")
+            #expect(LoRASources.family(forBaseModel: b) == nil, "\(b)")
         }
-        #expect(LoRASources.familyName("sd1.5") == "SD 1.5")
-        #expect(LoRASources.families.contains("sd1.5"))
-        func lora(_ base: String?) -> CloudLoRA {
-            CloudLoRA(source: .file(URL(fileURLWithPath: "/x.safetensors")), strength: 1, baseModel: base)
-        }
-        try lora("SD 1.5").checkFits("sd1.5")
-        #expect(throws: LoRASourceError.wrongBaseModel("SD 1.5", expected: "SDXL")) { try lora("SD 1.5").checkFits("sdxl") }
-        #expect(RemoteNodes.taskID(forNodeType: "RemoteSD15") == "sd15")
-        #expect(RemoteNodes.libraryFamilies["RemoteSD15"] == "sd1.5")
-        #expect(RemoteNodes.baseTitle(family: "sd1.5") == "Stable Diffusion 1.5 (base)")
-        let names = RemoteSD15Node.schema.inputs.map(\.name)
-        #expect(names.contains("loras") && names.contains("model") && !names.contains("face"))
+        #expect(!LoRASources.families.contains("sd1.5"))
+        #expect(!RemoteNodes.types.contains("RemoteSD15"))
+        #expect(RemoteNodes.libraryFamilies["RemoteSD15"] == nil)
     }
 
     @Test func animaFamily() throws {

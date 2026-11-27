@@ -342,7 +342,7 @@ extension SmokeTest {
     /// run goes on. Each picture goes to the out folder as `<model>-<step>.png`, with `<model>-<step>.txt` holding its
     /// prompt, negative, seed and cost. `--smoke-real-dry` writes and checks the prompts only: no GPU, no server.
     static func realBuilderPreviews(_ model: AppModel, out: URL?, say: @escaping (String) -> Void) async -> Bool {
-        let defaultModels = "sd15,sdxl,sdxlIllustrious:ilustmix-v11-1,sd35,flux,chroma,anima,qwenImage,minimaxImage"
+        let defaultModels = "sdxl,sdxlIllustrious:ilustmix-v11-1,sd35,flux,chroma,anima,qwenImage,minimaxImage"
         var models: [(PromptModel, String)] = []
         for item in (argument("--smoke-real-models") ?? defaultModels).split(separator: ",") {
             let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
