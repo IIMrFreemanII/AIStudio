@@ -1,6 +1,7 @@
 import AppKit
 import CharacterCore
 import MovieCore
+import NodesStandard
 import SwiftUI
 
 /// Builds a prompt from choices: the model to write for, the subject (a person with the character creator's look
@@ -9,9 +10,12 @@ import SwiftUI
 /// best, live, and a preview draws it (PromptPreviewPanel). `onUse` (from a node) writes them into the node; the window
 /// copies them.
 struct PromptBuilderView: View {
+    @Environment(AppModel.self) private var app
     @Binding var draft: PromptBuilderDraft
     /// The model is fixed by the node it writes into.
     var lockedModel: Bool = false
+    /// In a node's sheet: the library family of the node's LoRAs (nil: it takes none).
+    var nodeLoRAFamily: String? = nil
     var useTitle = "Use in Node"
     var onUse: ((WrittenPrompt) -> Void)? = nil
 
@@ -27,6 +31,7 @@ struct PromptBuilderView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     subjectSection
+                    if loraFamily != nil { lorasSection }
                     if draft.isPerson { lookSection }
                     sceneSection
                     ForEach(PromptCatalog.groups(for: draft.model, adult: adult && draft.isPerson).filter { $0.field != .place }) { g in
@@ -38,7 +43,11 @@ struct PromptBuilderView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minWidth: 460)
-            .onAppear { lookOpen = !draft.traits.isEmpty }
+            .onAppear {
+                lookOpen = !draft.traits.isEmpty
+                draft.keepLoRAs(fitting: loraFamily, library: library)
+            }
+            .onChange(of: draft.model) { _, _ in draft.keepLoRAs(fitting: loraFamily, library: library) }
             Divider()
             ScrollView { output }.frame(width: 400)
         }
@@ -133,7 +142,8 @@ struct PromptBuilderView: View {
                 TextField("Exact text in the picture (a sign, a title)", text: $draft.text)
             }
             if draft.model.dialect == .tags || draft.model.dialect == .sentences {
-                TextField("LoRA trigger words, comma-separated", text: $draft.triggerWords)
+                TextField(draft.loras.isEmpty ? "LoRA trigger words, comma-separated"
+                          : "More trigger words, comma-separated (the picked LoRAs' are added)", text: $draft.triggerWords)
             }
             TextField(draft.model.takesNegative ? "Keep out (negative prompt), comma-separated"
                       : "Keep out (\(draft.model.title) has no negative prompt: these become words)", text: $draft.avoid)
@@ -143,6 +153,80 @@ struct PromptBuilderView: View {
                 draft.model = model
             }
             .controlSize(.small)
+        }
+    }
+
+    // MARK: LoRAs
+
+    private var library: LinkLibrary? { app.store?.library }
+    private var loraFamily: String? { lockedModel ? nodeLoRAFamily : PromptBuilderDraft.loraFamily(draft.model) }
+    private var availableLoRAs: [LibraryEntry] { loraFamily.map { library?.loras(for: $0) ?? [] } ?? [] }
+    private var loraFamilyName: String { LoRASources.familyName(loraFamily) }
+
+    /// LoRAs from the Models library that fit the model: picked with a strength, their trigger words join the prompt.
+    private var lorasSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("LoRAs")
+            ForEach(Array(draft.loras.enumerated()), id: \.offset) { i, _ in loraRow(i) }
+            HStack(spacing: 10) {
+                Button("Add LoRA") { addLoRA() }
+                    .buttonStyle(.mg(.bordered)).controlSize(.small)
+                    .disabled(availableLoRAs.isEmpty || draft.loras.count >= PromptPreview.maxLoRAs)
+                    .mgHelp(availableLoRAs.isEmpty ? "Add a \(loraFamilyName) LoRA in the Models library first (⇧⌘M)"
+                            : "Use a \(loraFamilyName) LoRA from the Models library (up to \(PromptPreview.maxLoRAs)): its "
+                            + "trigger words join the prompt, and the preview and Use in Node draw with it")
+                    .mgTestAnchor("prompt-builder-add-lora")
+                if availableLoRAs.isEmpty {
+                    Text("No \(loraFamilyName) LoRAs in the Models library yet").font(.mgFootnote)
+                        .foregroundStyle(MG.secondaryLabel)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    /// The next LoRA not picked yet (or the first one).
+    private func addLoRA() {
+        let used = Set(draft.loras.map(\.id))
+        guard let e = availableLoRAs.first(where: { !used.contains($0.id) }) ?? availableLoRAs.first else { return }
+        draft.loras.append(PromptBuilderLoRA(id: e.id, triggerWords: e.triggerWords))
+    }
+
+    private func loraOptions(current: String) -> [(value: String, title: String)] {
+        var o = availableLoRAs.map { (value: $0.id, title: $0.title) }
+        if !o.contains(where: { $0.value == current }) { o.append((current, "Missing: \(current)")) }
+        return o
+    }
+
+    @ViewBuilder private func loraRow(_ i: Int) -> some View {
+        if draft.loras.indices.contains(i) {
+            let l = draft.loras[i]
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    MGPicker(selection: Binding(get: { draft.loras.indices.contains(i) ? draft.loras[i].id : "" },
+                                                set: { id in
+                                                    guard draft.loras.indices.contains(i) else { return }
+                                                    draft.loras[i].id = id
+                                                    draft.loras[i].triggerWords = library?.item(id)?.triggerWords ?? []
+                                                }),
+                             options: loraOptions(current: l.id), placeholder: "Pick a LoRA", maxWidth: 220)
+                        .mgHelp("A \(loraFamilyName) LoRA from the Models library")
+                    MGSlider(value: Binding(get: { draft.loras.indices.contains(i) ? draft.loras[i].strength : 0 },
+                                            set: { if draft.loras.indices.contains(i) { draft.loras[i].strength = $0 } }),
+                             in: -1...2, step: 0.05).frame(width: 100)
+                        .mgHelp("How strongly it shapes the picture, −1 to 2. Around 0.6–0.8 keeps the prompt in charge")
+                    Text(String(format: "%.2f", l.strength)).monospacedDigit().foregroundStyle(MG.secondaryLabel)
+                        .frame(width: 38, alignment: .trailing)
+                    Button { if draft.loras.indices.contains(i) { draft.loras.remove(at: i) } } label: { Image(systemName: "trash") }
+                        .accessibilityLabel("Remove LoRA")
+                        .buttonStyle(.mg(.icon)).controlSize(.small)
+                        .mgHelp("Remove this LoRA")
+                }
+                if !l.triggerWords.isEmpty {
+                    Text("Adds: " + l.triggerWords.joined(separator: ", ")).font(.mgFootnote)
+                        .foregroundStyle(MG.tertiaryLabel).lineLimit(2)
+                }
+            }
         }
     }
 
@@ -321,10 +405,12 @@ struct PromptBuilderSheet: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
             Divider()
-            PromptBuilderView(draft: $draft, lockedModel: true) { w in
+            PromptBuilderView(draft: $draft, lockedModel: true, nodeLoRAFamily: target.loraFamily) { w in
                 model.mutate("Prompt Builder", undoManager: model.activeUndoManager) { g in
                     try? g.setValue(.string(w.prompt), node: target.id, input: "prompt")
                     if target.takesNegative { try? g.setValue(.string(w.negative), node: target.id, input: "negative") }
+                    // The picked LoRAs, wired into the node (ahead of any it already has).
+                    if target.loraFamily != nil { PromptBuilderDraft.wireLoRAs(draft.loras, into: target.id, graph: &g) }
                 }
                 dismiss()
             }
