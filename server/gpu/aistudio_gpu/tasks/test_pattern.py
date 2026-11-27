@@ -55,6 +55,27 @@ class TestPatternWorker:
         return Output(path, "image", "image/png")
 
 
+def _animate(params: dict, inputs: dict[str, Path], out_dir: Path) -> Output:
+    """The fake Wan-Animate-2: the clip cut to start … start + seconds (the real worker's cut), re-timed to 24 fps at
+    the clip's size, its first frame the picture, its sound kept when asked."""
+    from PIL import Image
+
+    from .wan_animate import FPS, cut_clip, read_frames
+
+    clip = out_dir / "driving.mp4"
+    has_audio = cut_clip(inputs["video"], clip, params["start"], params["seconds"])
+    source, rate = read_frames(clip)
+    h, w = source[0].shape[:2]
+    n = max(1, int(len(source) / rate * FPS))
+    frames = np.stack([source[min(len(source) - 1, round(i / FPS * rate))] for i in range(n)])
+    frames[0] = np.asarray(Image.open(inputs["image"]).convert("RGB").resize((w, h)))
+    path = out_dir / "result.mp4"
+    keep = bool(params["keep_audio"] and has_audio)
+    write_mp4(frames, path, fps=FPS, audio=clip if keep else None)
+    return Output(path, "video", "video/mp4", extra={"frames": n, "width": w, "height": h, "fps": FPS,
+                                                    "drivingFrames": len(source), "audio": keep})
+
+
 # The talking tasks: their clip is as long as the speech, at the model's frame rate.
 TALKING_FPS = {"wan22-s2v": 16, "longcat-avatar": 25, "infinitetalk": 25}
 
@@ -164,6 +185,8 @@ class FakeModelWorker:
             check(task, params, inputs)
         if task.id == "infinitetalk":  # a dub: the uploaded clip's frames at 25 fps, as long as the speech
             return _dub(inputs, speech_seconds, out_dir)
+        if task.id == "wan-animate2":  # the clip's cut, at 24 fps, opening on the picture, with its sound
+            return _animate(params, inputs, out_dir)
         w, h = params.get("width", 832), params.get("height", 480)  # tasks without a size: Wan's
         # LoRAs with a strength: the top row's brightness is their count / 4 (Wan pairs' low-noise files: the second
         # row's); a fine-tune (`model` other than base): the right-hand column turns white. So a client can check they

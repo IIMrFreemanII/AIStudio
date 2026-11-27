@@ -45,7 +45,7 @@ from pathlib import Path
 import modal
 
 import aistudio_gpu  # noqa: F401  (maps MLXCOMFY_* variables from before the rename to their AISTUDIO_* names)
-from aistudio_gpu.tasks import CONTAINERS, H3_FALLBACKS, H3_IMAGE_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
+from aistudio_gpu.tasks import ANIMATE2_FALLBACKS, CONTAINERS, H3_FALLBACKS, H3_IMAGE_FALLBACKS, LTX_FALLBACKS, MIN_CPU  # noqa: E402
 
 IDLE = int(os.environ.get("AISTUDIO_IDLE", "120"))
 # GPU containers per media model: up to this many of one model's jobs run at once, each on its own GPU (the app sends
@@ -65,6 +65,10 @@ LTX_GPUS = [GPU_LTX, *LTX_FALLBACKS]
 GPU_H3_IMAGE = os.environ.get("AISTUDIO_GPU_H3_IMAGE", "B200")
 GPU_H3_IMAGE_FALLBACK = os.environ.get("AISTUDIO_GPU_H3_IMAGE_FALLBACK", "")
 H3_IMAGE_GPUS = [GPU_H3_IMAGE, *H3_IMAGE_FALLBACKS]
+# Wan-Animate-2 keeps its weights and each segment's reference cache on one GPU: an H200, else a B200.
+GPU_ANIMATE2 = os.environ.get("AISTUDIO_GPU_ANIMATE2", "H200")
+GPU_ANIMATE2_FALLBACK = os.environ.get("AISTUDIO_GPU_ANIMATE2_FALLBACK", "B200")
+ANIMATE2_GPUS = [GPU_ANIMATE2, *ANIMATE2_FALLBACKS]
 GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")
 GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
@@ -136,6 +140,7 @@ env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU
        "AISTUDIO_GPU_QWEN": GPU_QWEN, "AISTUDIO_GPU_SD": GPU_SD, "AISTUDIO_GPU_SD35": GPU_SD35, "AISTUDIO_GPU_ANIMA": GPU_ANIMA, "AISTUDIO_GPU_CHROMA": GPU_CHROMA, "AISTUDIO_GPU_AVATAR": GPU_AVATAR, "AISTUDIO_GPU_H3": GPU_H3, "AISTUDIO_GPU_H3_FALLBACK": GPU_H3_FALLBACK,
        "AISTUDIO_GPU_LTX": GPU_LTX, "AISTUDIO_GPU_LTX_FALLBACK": GPU_LTX_FALLBACK,
        "AISTUDIO_GPU_H3_IMAGE": GPU_H3_IMAGE, "AISTUDIO_GPU_H3_IMAGE_FALLBACK": GPU_H3_IMAGE_FALLBACK,
+       "AISTUDIO_GPU_ANIMATE2": GPU_ANIMATE2, "AISTUDIO_GPU_ANIMATE2_FALLBACK": GPU_ANIMATE2_FALLBACK,
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
@@ -594,6 +599,28 @@ class H3References:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("h3-references", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# Wan-Animate-2 (diffusers 0.42.1's modular pipeline, so the main GPU image): everything resident, the transformer's
+# repeated blocks compiled as it loads, so the snapshot holds the imports only.
+@_gpu_class(gpu=ANIMATE2_GPUS if len(ANIMATE2_GPUS) > 1 else GPU_ANIMATE2, **_container("wan-animate2"))
+class WanAnimate2:
+    @modal.enter(snap=True)
+    def imports(self):
+        _imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("wan-animate2", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1636,7 +1663,7 @@ def api():
                           "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sdxl-train": SDXLTrain, "h3-image-train": H3ImageTrain, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
                           "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23,
-                          "h3-image": H3Image}, events, cancels, volume, MODELS, uploads_volume=uploads,
+                          "h3-image": H3Image, "wan-animate2": WanAnimate2}, events, cancels, volume, MODELS, uploads_volume=uploads,
                          parallel_jobs=GPU_CONTAINERS)
     # Uploads live on a Volume (kept across sessions, pruned past the cap); committed as each one completes, so the
     # GPU worker sees it.

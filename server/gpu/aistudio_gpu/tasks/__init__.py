@@ -27,6 +27,8 @@ MIN_CPU = 0.125
 CONTAINERS: dict[str, tuple[int, int, float]] = {
     "wan22-t2v": (16384, 98304, MIN_CPU), "wan22-i2v": (16384, 98304, MIN_CPU), "wan22-s2v": (16384, 131072, 4),
     "longcat-avatar": (16384, 131072, 4), "infinitetalk": (32768, 196608, 4), "flux1-dev": (8192, 65536, MIN_CPU),
+    # Wan-Animate-2: the driving clip's frames and the decoded segments in host RAM.
+    "wan-animate2": (32768, 131072, 4),
     "qwen-image": (16384, 98304, MIN_CPU), "qwen-image-edit": (16384, 98304, MIN_CPU),
     # MiniMax H3 keeps ≈ 140 GB of weights in host RAM (its two 61.7 GB models take turns on the GPU).
     "h3-video": (163840, 262144, 8), "h3-references": (163840, 262144, 8),
@@ -198,6 +200,11 @@ GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
 GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")  # Anima (2B)
 # Chroma1-HD and Chroma1-Flash: both 17.8 GB transformers stay on the GPU with T5 and the face adapter (≈ 48 GB): an H100.
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "H100")
+# Wan-Animate-2: ≈ 46 GB of weights plus each segment's reference K/V cache, which together don't fit an 80 GB card at
+# the default size, so an H200 with everything resident; a B200 when no H200 is free.
+GPU_ANIMATE2 = os.environ.get("AISTUDIO_GPU_ANIMATE2", "H200")
+GPU_ANIMATE2_FALLBACK = os.environ.get("AISTUDIO_GPU_ANIMATE2_FALLBACK", "B200")
+ANIMATE2_FALLBACKS = tuple(g for g in (x.strip() for x in GPU_ANIMATE2_FALLBACK.split(",")) if g and g != GPU_ANIMATE2)
 # The lip-sync models (LongCat-Video-Avatar's 15.8B DiT, InfiniteTalk on Wan 2.1's 14B), bf16 on an 80 GB card.
 GPU_AVATAR = os.environ.get("AISTUDIO_GPU_AVATAR", "H100")
 
@@ -277,6 +284,19 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "audio_guidance": Param("float", 0.0, min=0.0, max=10.0),  # 0 = 2 (with the LoRA; raise for tighter lips)
         "max_seconds": Param("float", 15.0, min=1.0, max=30.0),
     }, inputs=("video", "audio"), models=("infinitetalk",)),
+    # Wan-Animate-2 (Apache 2.0): the picture's character moving as the person in the video, in the picture's scene.
+    # The clip is cut to start … start + seconds; 10 steps (the distilled checkpoint), 24 fps.
+    TaskSpec("wan-animate2", "Wan-Animate-2 (motion transfer)", "video", "wan-animate2", GPU_ANIMATE2, {
+        "prompt": Param("string", ""),  # the character's look (or the model's own two-part caption)
+        "scene": Param("string", ""),  # the background; empty: as in the picture
+        "seed": Param("int", 0, min=0, max=2**32 - 1),
+        "seconds": Param("float", 5.0, min=1.0, max=15.0),
+        "start": Param("float", 0.0, min=0.0, max=600.0),
+        "area": Param("string", "640x800", choices=("640x800", "720x1280")),  # target area; aspect: the picture's
+        "steps": Param("int", 10, min=4, max=20),
+        "keep_audio": Param("bool", True),  # the clip's sound on the result
+        "color_match": Param("bool", True),  # colours matched to the picture (no drift between segments)
+    }, inputs=("image", "video"), models=("wan-animate2",), fallback_gpus=ANIMATE2_FALLBACKS),
     TaskSpec("flux1-dev", "FLUX.1 dev", "image", "flux1-dev", GPU_FLUX, {
         "prompt": Param("string", ""),
         "seed": Param("int", 0, min=0, max=2**32 - 1),
@@ -556,6 +576,9 @@ def make_worker(family: str) -> Worker:
     if family == "infinitetalk":
         from .infinitetalk import InfiniteTalkWorker
         return InfiniteTalkWorker()
+    if family == "wan-animate2":
+        from .wan_animate import WanAnimate2Worker
+        return WanAnimate2Worker()
     if family == "flux1-dev":
         from .flux import FluxWorker
         return FluxWorker()
