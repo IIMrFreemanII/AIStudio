@@ -199,6 +199,8 @@ final class RemoteMLXBackend: ExecutionBackend, @unchecked Sendable {
                                         isPreview: d.isPreview)
                 case .audio:
                     return EngineOutput(node: nodeID, kind: .audio, image: nil, url: dest, isPreview: d.isPreview)
+                case .file:  // a remote Mac's graph doesn't make one; nothing to show
+                    return nil
                 }
             }
             lock.withLock { downloads.append(task) }

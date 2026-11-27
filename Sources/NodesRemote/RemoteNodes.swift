@@ -200,7 +200,7 @@ private func submitRemoteJob(task: String, params: [String: Any], pngs: [String:
     }
 
     context.status("Downloading result")
-    let ext = switch result.output.kind { case .video: "mp4"; case .audio: "wav"; case .image: "png" }
+    let ext = switch result.output.kind { case .video: "mp4"; case .audio: "wav"; case .image: "png"; case .file: "bin" }
     let url = try StandardNodes.previewFolder().appendingPathComponent("remote-\(job.id).\(ext)")
     try await client.downloadResult(job.id, to: url)
     let load = (try? await client.job(job.id))?.loadSeconds ?? 0
