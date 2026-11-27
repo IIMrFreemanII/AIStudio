@@ -188,7 +188,7 @@ struct CharacterPhotosSection: View {
 
     private var library: LinkLibrary? { model.store?.library }
     /// The library family of the character's image model.
-    private var family: String { c.artModel.family.rawValue }
+    private var family: String { c.artModel.family.libraryFamily }
     private var familyName: String { LoRASources.familyName(family) }
     private var fineTunes: [LibraryEntry] { library?.models(for: family) ?? [] }
     private var loras: [LibraryEntry] { library?.loras(for: family) ?? [] }
@@ -199,7 +199,7 @@ struct CharacterPhotosSection: View {
                 MGSegmentedPicker(selection: modelFamily,
                                   options: ArtModel.Family.allCases.map { ($0, $0.title) })
                     .frame(width: 270)
-                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo; MiniMax H3 Image is the most detailed and realistic and keeps the face by editing the portrait, but runs on an H200 (no fine-tunes or LoRAs)")
+                    .mgHelp("SDXL is quick, keeps the portrait's face closely and has many fine-tunes; Chroma (Flux-based) follows descriptions and outfits more closely, but holds the face more loosely and costs about 10× more per photo; MiniMax H3 Image is the most detailed and realistic and keeps the face by editing the portrait, but runs on a B200 (no fine-tunes; H3 LoRAs work, video ones may not fit stills)")
             }
             MGFormRow("Style") {
                 MGSegmentedPicker(selection: $c.artModel.style,
@@ -212,9 +212,11 @@ struct CharacterPhotosSection: View {
                     MGPicker(selection: variant, options: variantOptions, maxWidth: 260)
                         .mgHelp("The \(familyName) fine-tune that draws their photos (from the Models library)")
                 }
+            }
+            if c.artModel.family.takesLoRAs {
                 ForEach(Array(c.loras.enumerated()), id: \.offset) { i, _ in loraRow(i) }
             }
-            if c.artModel.family.takesLibraryModels && c.loras.count < CharacterArt.maxLoRAs {
+            if c.artModel.family.takesLoRAs && c.loras.count < CharacterArt.maxLoRAs {
                 HStack {
                     Button("Add LoRA") { c.loras.append(CharacterLoRA(lora: loras.first?.id ?? "")) }
                         .buttonStyle(.mg(.bordered)).controlSize(.small).disabled(loras.isEmpty)
@@ -260,7 +262,7 @@ struct CharacterPhotosSection: View {
     }
 
     private func loraOptions(current: String) -> [(value: String, title: String)] {
-        var o = loras.map { (value: $0.id, title: $0.title) }
+        var o = loras.map { (value: $0.id, title: LinkLibrary.loraTitle($0, for: family)) }
         if !o.contains(where: { $0.value == current }) {
             o.append((current, current.isEmpty ? "Pick a LoRA" : "Missing: \(current)"))
         }

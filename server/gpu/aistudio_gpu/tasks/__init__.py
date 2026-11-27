@@ -444,7 +444,8 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "width": Param("int", 1024, min=256, max=6272, multiple=32),
         "height": Param("int", 1024, min=256, max=6272, multiple=32),
         "canvas_mp": Param("float", 4.0, min=1.0, max=16.0),
-    }, optional_inputs=("image1", "image2", "image3", "image4"), models=("minimax-h3-image", "minimax-h3"),
+        **_lora_params(),  # H3 LoRAs, the video model's too (their audio-branch layers are dropped)
+    }, optional_inputs=("image1", "image2", "image3", "image4") + LORA_INPUTS, models=("minimax-h3-image", "minimax-h3"),
         fallback_gpus=H3_IMAGE_FALLBACKS),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).
     TaskSpec("breeze-tts", "Breeze TTS 2 speech (non-commercial)", "audio", "breeze", GPU_AUDIO, {

@@ -193,7 +193,7 @@ struct PromptBuilderView: View {
     }
 
     private func loraOptions(current: String) -> [(value: String, title: String)] {
-        var o = availableLoRAs.map { (value: $0.id, title: $0.title) }
+        var o = availableLoRAs.map { (value: $0.id, title: LinkLibrary.loraTitle($0, for: loraFamily ?? "")) }
         if !o.contains(where: { $0.value == current }) { o.append((current, "Missing: \(current)")) }
         return o
     }

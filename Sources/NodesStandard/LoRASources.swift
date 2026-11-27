@@ -236,7 +236,7 @@ public enum LoRASources {
         if b == "anima" || b.hasPrefix("anima ") { return "anima" }
         if b.hasPrefix("sd 3.5") { return b.contains("medium") ? "sd3.5-medium" : "sd3.5-large" }
         if b.hasPrefix("chroma") { return "chroma" }
-        if b.contains("minimax") && b.contains("h3") { return "minimax-h3" }
+        if b.contains("minimax") && b.contains("h3") { return b.contains("image") ? "minimax-h3-image" : "minimax-h3" }
         if b.contains("ltx") && b.contains("2.3") { return "ltx-2.3" }
         return nil
     }
@@ -244,7 +244,7 @@ public enum LoRASources {
     /// The families a library entry can have, in menu order.
     public static let families: [String] = [
         "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "anima", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v", "ltx-2.3",
-        "minimax-h3", "minimax-h3-ref",
+        "minimax-h3", "minimax-h3-ref", "minimax-h3-image",
     ]
 
     /// The family of a resolved file: its base model's, except that a MiniMax H3 file made for the references
@@ -276,6 +276,7 @@ public enum LoRASources {
         case "wan-2.2-i2v"?: return "Wan 2.2 I2V"
         case "ltx-2.3"?: return "LTX-2.3"
         case "minimax-h3"?: return "MiniMax H3"
+        case "minimax-h3-image"?: return "MiniMax H3 Image"
         case "minimax-h3-ref"?: return "MiniMax H3 References"
         default: return "Other"
         }

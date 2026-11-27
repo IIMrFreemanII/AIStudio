@@ -91,6 +91,18 @@ extension AppModel {
         if let problem = draft.problem { throw PromptPreviewError.refused(problem) }
         guard PromptPreview.nodeType(draft.model) != nil else { throw PromptPreviewError.video }
         guard let server = connections.gpuServers.first?.id else { throw PortraitError.noServer }
+        let (template, render, written) = try await previewJob(draft, server: server)
+        let (outputs, jobs) = try await runHeadlessGraph(template: template, render: render, title: "Prompt preview",
+                                                         progress: progress)
+        return try keepPreview(draft, written: written, outputs: outputs, jobs: jobs)
+    }
+
+    /// The graph and values one preview of `draft` runs (also the dry run's, which prints its LoRA nodes).
+    func previewJob(_ draft: PromptBuilderDraft, server: String) async throws
+        -> (template: MovieTemplate, render: MovieArt.Render, written: WrittenPrompt)
+    {
+        if let problem = draft.problem { throw PromptPreviewError.refused(problem) }
+        guard PromptPreview.nodeType(draft.model) != nil else { throw PromptPreviewError.video }
         let (w, h) = PromptPreview.size(draft.model, aspect: draft.aspect)
         // The builder's LoRAs that are still in the library (a removed one would fail the job).
         let picked = PromptPreview.takesLoRAs(draft.model)
@@ -133,8 +145,11 @@ extension AppModel {
             render = MovieArt.Render(values: values, unusedPictures: [])
         }
         guard !written.prompt.isEmpty else { throw PromptPreviewError.empty }
-        let (outputs, jobs) = try await runHeadlessGraph(template: template, render: render, title: "Prompt preview",
-                                                         progress: progress)
+        return (template, render, written)
+    }
+
+    private func keepPreview(_ draft: PromptBuilderDraft, written: WrittenPrompt, outputs: [EngineOutput],
+                             jobs: [RemoteJobRecord]) throws -> PromptPreviewShot {
         let cost = recordGPUJobs(jobs)
         guard let image = outputs.first(where: { $0.kind == .image })?.image else { throw MovieArtError.noImage }
         try FileManager.default.createDirectory(at: promptPreviewFolder, withIntermediateDirectories: true)

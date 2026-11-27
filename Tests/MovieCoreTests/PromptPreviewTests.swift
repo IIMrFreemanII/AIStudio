@@ -32,10 +32,10 @@ import Testing
         #expect(t.graph["lora2"]?.inputs["loras"] == .link(node: "lora1", output: "loras"))
         #expect(t.graph["image"]?.inputs["loras"] == .link(node: "lora2", output: "loras"))
         #expect(t.slots["lora2_strength"] == .init(node: "lora2", input: "strength"))
-        // At most four, and none on MiniMax H3 Image, which takes no LoRAs.
+        // At most four; MiniMax H3 Image takes them too.
         #expect(PromptPreview.template(.chroma, negative: false, loras: 9)?.graph.nodes.filter { $0.type == "RemoteLoRA" }.count == 4)
         let h3 = try #require(PromptPreview.template(.minimaxImage, negative: false, loras: 2))
-        #expect(h3.graph["lora1"] == nil && h3.graph["image"]?.inputs["loras"] == nil)
+        #expect(h3.graph["image"]?.inputs["loras"] == .link(node: "lora2", output: "loras"))
         #expect(PromptPreview.template(.flux, negative: false)?.graph["lora1"] == nil)
         let v = PromptPreview.loraValues([("detail", 0.6), ("style", 1.0)], first: 2)
         #expect(v["lora2"] == .string("detail") && v["lora2_strength"] == .double(0.6) && v["lora3"] == .string("style"))

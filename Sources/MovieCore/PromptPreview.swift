@@ -83,7 +83,7 @@ public enum PromptPreview {
     public static let maxLoRAs = 4
 
     /// `loras`: that many `RemoteLoRA` nodes chained into the node's `loras` input, with slots `lora1`…, and
-    /// `lora1_strength`… (`loraValues`). The models without LoRAs (MiniMax H3 Image) ignore it.
+    /// `lora1_strength`… (`loraValues`).
     public static func template(_ model: PromptModel, negative: Bool, fast: Bool = false, loras: Int = 0) -> MovieTemplate? {
         guard let type = nodeType(model) else { return nil }
         var inputs: [String: NodeInput] = [
@@ -121,8 +121,8 @@ public enum PromptPreview {
         return MovieTemplate(name: "Prompt preview", graph: Graph(nodes: nodes), slots: slots)
     }
 
-    /// The node takes LoRAs (every image model but MiniMax H3 Image).
-    public static func takesLoRAs(_ model: PromptModel) -> Bool { nodeType(model) != nil && model != .minimaxImage }
+    /// The node takes LoRAs (every image model).
+    public static func takesLoRAs(_ model: PromptModel) -> Bool { nodeType(model) != nil }
 
     /// The values of LoRA slots `lora<first>`…: each library id and strength, in order.
     public static func loraValues(_ loras: [(id: String, strength: Double)], first: Int = 1) -> [String: JSONValue] {

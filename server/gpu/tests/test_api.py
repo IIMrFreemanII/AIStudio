@@ -801,7 +801,8 @@ def test_h3_image_spec_download_and_fake_run(tmp_path, monkeypatch):
     assert fits_resident(125 * gib, 178 * gib)  # a B200 holds transformer + text encoder + VAE
     assert not fits_resident(125 * gib, 131 * gib)  # an H200 doesn't (with room to run)
     assert spec.models == ("minimax-h3-image", "minimax-h3")  # the text encoder is H3's
-    assert spec.optional_inputs == ("image1", "image2", "image3", "image4") and not spec.inputs
+    assert spec.optional_inputs[:4] == ("image1", "image2", "image3", "image4") and not spec.inputs
+    assert {"lora1", "lora4"} <= set(spec.optional_inputs) and spec.normalize({"prompt": "x"})["lora1_strength"] == 1.0
     assert {"steps", "cfg", "guidance", "negative"}.isdisjoint(spec.params)  # six fixed steps, guidance baked in
     with pytest.raises(ValueError, match="unknown parameter"):
         spec.normalize({"prompt": "x", "negative": "blurry"})
@@ -880,3 +881,18 @@ def test_big_models_stay_resident_on_their_gpu():
 
     assert weight_bytes(Fake(10)) == 40 and weight_bytes("tokenizer") == 0
     assert set(modules_of({"transformer": Fake(1), "tokenizer": "tok", "scheduler": None})) == {"transformer"}
+
+
+def test_h3_image_lora_keeps_only_layers_it_has():
+    # A video LoRA's audio-branch tensors are dropped; the image transformer's layers stay.
+    from aistudio_gpu.tasks.minimax_h3_image import keep_existing, lora_module
+
+    assert lora_module("transformer.blocks.0.attn.to_q.lora_A.weight") == "blocks.0.attn.to_q"
+    assert lora_module("transformer.blocks.0.attn.to_q.alpha") == "blocks.0.attn.to_q"
+    assert lora_module("transformer.blocks.0.attn.to_q.weight") is None
+    state = {"transformer.blocks.0.attn.to_q.lora_A.weight": 1, "transformer.blocks.0.attn.to_q.lora_B.weight": 2,
+             "transformer.audio_blocks.0.to_q.lora_A.weight": 3, "transformer.audio_blocks.0.to_q.lora_B.weight": 4}
+    kept, dropped = keep_existing(state, {"blocks.0.attn.to_q"})
+    assert dropped == 2 and set(kept) == {"transformer.blocks.0.attn.to_q.lora_A.weight",
+                                          "transformer.blocks.0.attn.to_q.lora_B.weight"}
+

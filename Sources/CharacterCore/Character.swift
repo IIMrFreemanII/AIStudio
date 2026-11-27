@@ -127,8 +127,20 @@ public struct ArtModel: Codable, Equatable, Sendable, Hashable {
             }
         }
 
-        /// Fine-tunes and LoRAs from the Models library (MiniMax H3 Image takes neither).
+        /// Fine-tunes from the Models library (MiniMax H3 Image takes none).
         public var takesLibraryModels: Bool { self != .minimax }
+
+        /// LoRAs from the Models library (every family; on MiniMax, H3 Image LoRAs and the video model's).
+        public var takesLoRAs: Bool { true }
+
+        /// The Models library family of its fine-tunes and LoRAs.
+        public var libraryFamily: String {
+            switch self {
+            case .sdxl: "sdxl"
+            case .chroma: "chroma"
+            case .minimax: "minimax-h3-image"
+            }
+        }
     }
     public enum Style: String, Codable, Sendable, CaseIterable { case photoreal, anime }
     public var family: Family = .sdxl
