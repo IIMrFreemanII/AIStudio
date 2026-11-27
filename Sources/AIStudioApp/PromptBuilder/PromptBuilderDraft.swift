@@ -141,7 +141,8 @@ struct PromptBuilderDraft: Codable, Equatable {
             default: s.pronoun = .they
             }
             s.coverage = PromptCatalog.coverage(picks, adult: adult)
-            let parts = CharacterOptions.lookParts(traits, gender: g, coverage: s.coverage, adult: adult)
+            let parts = CharacterOptions.lookParts(traits, gender: g, coverage: s.coverage, adult: adult,
+                                                   booru: model.readsBooru)
             s.details = parts.details
             s.body = parts.body
             s.outfit = parts.outfit

@@ -146,6 +146,11 @@ once chunking is in.
   `full body`; don't stack conflicting ones such as `close-up` with `cowboy shot`. The card suggests Euler a, 20–28
   steps, CFG 5–7.5
   ([card](https://huggingface.co/OnomaAIResearch/Illustrious-xl-early-release-v0)).
+  English phrases misfire on the tag-trained models (Pony, Illustrious, Anima). On 2026-11-27, "candid smartphone
+  photo" drew a phone camera screen around the picture on Anima and a phone in her hand on iLustMix. On Anima,
+  "athletic build, clearly defined muscles" with "casual clothes" drew an extreme bodybuilder in a bikini. These
+  models now get Danbooru tags instead: `realistic, photo (medium)`, `toned`, `toned, abs`, `muscular`, and
+  `t-shirt, jeans, sneakers` (`PromptModel.readsBooru`). **(ours)**
 - **NoobAI-XL:** tags in the card's order: `1girl/1boy/…`, character, series, artists, special tags, general tags.
   Prefix `masterpiece, best quality, newest, absurdres, highres` (plus a rating tag). Quality tags follow popularity
   percentiles, and date tags run `old` (2005–10) to `newest` (2021–24). The card suggests CFG 5–6, 25–30 steps, Euler a,
