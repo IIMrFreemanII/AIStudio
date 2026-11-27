@@ -1,5 +1,6 @@
 import CharacterCore
 import Foundation
+import ImageIO
 import LLMClient
 import MovieCore
 
@@ -30,6 +31,10 @@ extension SmokeTest {
             try? fm.copyItem(at: file, to: dest)
         }
 
+        // The builder's dry run writes prompts only: no server.
+        if CommandLine.arguments.contains("--smoke-real-builder"), CommandLine.arguments.contains("--smoke-real-dry") {
+            return await realBuilderPreviews(model, out: out, say: say)
+        }
         guard let data = try? Data(contentsOf: ConnectionStore.defaultFileURL),
               let saved = try? JSONDecoder().decode([ServerConnection].self, from: data),
               let conn = saved.first(where: { $0.kind == .gpu }),
@@ -330,12 +335,23 @@ extension SmokeTest {
     }
 
     /// `--smoke-characters-real <any> --smoke-real-builder` (+ `--smoke-real-out`, `--smoke-real-models
-    /// sdxl,chroma,minimaxImage`, `--smoke-real-steps plain,face-body,heritage`): no chat. The Prompt Builder's preview, SFW, with one seed per model: a plain woman,
-    /// then the same with face and body options changed, then with a heritage, to see that the options show. The pictures
-    /// go to the out folder as `<model>-<n>-<step>.png`, with each prompt printed.
+    /// model[:fine-tune id],…`, `--smoke-real-steps plain,face-body,heritage`, `--smoke-real-dry`): no chat, no window
+    /// (it runs headless, see `SmokeTest.headless`). The Prompt Builder's preview, SFW, one seed per model: a plain
+    /// woman, then the same with face and body options changed (and, when asked, with a heritage), to see that the
+    /// options show. The default models are every image model the preview draws. A model that fails is reported and the
+    /// run goes on. Each picture goes to the out folder as `<model>-<step>.png`, with `<model>-<step>.txt` holding its
+    /// prompt, negative, seed and cost. `--smoke-real-dry` writes and checks the prompts only: no GPU, no server.
     static func realBuilderPreviews(_ model: AppModel, out: URL?, say: @escaping (String) -> Void) async -> Bool {
-        let models = (argument("--smoke-real-models") ?? "sdxl,chroma,minimaxImage").split(separator: ",")
-            .compactMap { PromptModel(rawValue: String($0)) }
+        let defaultModels = "sd15,sdxl,sdxlIllustrious:ilustmix-v11-1,sd35,flux,chroma,anima,qwenImage,minimaxImage"
+        var models: [(PromptModel, String)] = []
+        for item in (argument("--smoke-real-models") ?? defaultModels).split(separator: ",") {
+            let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let m = PromptModel(rawValue: parts[0]), PromptPreview.nodeType(m) != nil else {
+                say("FAIL \(item) isn't an image model the preview draws"); return false
+            }
+            models.append((m, parts.count > 1 ? parts[1] : ""))
+        }
+        let dry = CommandLine.arguments.contains("--smoke-real-dry")
         var base = PromptBuilderDraft()
         base.gender = "woman"
         base.age = 28
@@ -349,33 +365,77 @@ extension SmokeTest {
                               "muscle": ["defined"]]) { $1 }
         var heritage = base
         heritage.traits["heritage"] = ["japanese"]
-        // `--smoke-real-steps plain,heritage`: only those (default all three).
-        let steps = Set((argument("--smoke-real-steps") ?? "").split(separator: ",").map(String.init))
-        var ok = true, total = 0.0
-        for m in models {
-            for (i, (step, d)) in [("plain", base), ("face-body", changed), ("heritage", heritage)].enumerated()
-            where steps.isEmpty || steps.contains(step) {
+        // `--smoke-real-steps plain,heritage`: only those (default plain and face-body).
+        let steps = Set((argument("--smoke-real-steps") ?? "plain,face-body").split(separator: ",").map(String.init))
+        let fm = FileManager.default
+        if let out { try? fm.createDirectory(at: out, withIntermediateDirectories: true) }
+        var failures: [String] = [], total = 0.0, costs: [String] = []
+        func fail(_ what: String) { say("FAIL \(what)"); failures.append(what) }
+        for (m, fineTune) in models {
+            let name = fineTune.isEmpty ? m.rawValue : "\(m.rawValue)-\(fineTune)"
+            var spent = 0.0
+            for (step, d) in [("plain", base), ("face-body", changed), ("heritage", heritage)] where steps.contains(step) {
                 var draft = d
                 draft.model = m
+                draft.variant = fineTune
+                // The written prompt: not empty, allowed, with a negative where the model takes one.
+                guard let wp = draft.written, !wp.prompt.isEmpty else { fail("\(name) \(step): no prompt written"); continue }
+                if let problem = draft.problem { fail("\(name) \(step): refused: \(problem)"); continue }
+                do { try CharacterArt.check(wp.prompt) } catch { fail("\(name) \(step): \(error)"); continue }
+                if m.takesNegative && wp.negative.isEmpty { fail("\(name) \(step): no negative"); continue }
+                if dry {
+                    say("ok \(name) \(step) written: \(wp.prompt)\(wp.negative.isEmpty ? "" : " | negative: \(wp.negative)")")
+                    continue
+                }
                 do {
+                    let start = Date()
                     let shot = try await model.previewPrompt(draft) { _ in }
-                    total += shot.costUSD ?? 0
-                    say("ok \(m.rawValue) \(step) $\(String(format: "%.4f", shot.costUSD ?? 0)): \(shot.prompt)")
+                    let cost = shot.costUSD ?? 0
+                    spent += cost
+                    let file = model.promptPreviewURL(shot)
+                    guard let spread = Self.brightnessSpread(file), spread > 4 else {
+                        fail("\(name) \(step): the picture is blank (a safety filter or a broken render?)"); continue
+                    }
+                    say("ok \(name) \(step) in \(Int(Date().timeIntervalSince(start))) s, $\(String(format: "%.4f", cost)): \(shot.prompt)")
                     if let out {
-                        try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
-                        let dest = out.appendingPathComponent("\(m.rawValue)-\(i + 1)-\(step).png")
-                        try? FileManager.default.removeItem(at: dest)
-                        try? FileManager.default.copyItem(at: model.promptPreviewURL(shot), to: dest)
+                        let png = out.appendingPathComponent("\(name)-\(step).png")
+                        try? fm.removeItem(at: png)
+                        try? fm.copyItem(at: file, to: png)
+                        let text = "model: \(m.title)\(fineTune.isEmpty ? "" : " (\(fineTune))")\nseed: \(shot.seed)\n"
+                            + "cost: $\(String(format: "%.4f", cost))\n\nprompt:\n\(shot.prompt)\n\nnegative:\n\(shot.negative)\n"
+                        try? text.write(to: out.appendingPathComponent("\(name)-\(step).txt"), atomically: true, encoding: .utf8)
                     }
                 } catch {
-                    say("FAIL \(m.rawValue) \(step): \(error)")
-                    ok = false
+                    fail("\(name) \(step): \(error)")
                 }
             }
+            total += spent
+            if !dry { costs.append("\(name) $\(String(format: "%.3f", spent))") }
         }
-        say("spent $\(String(format: "%.3f", total))")
-        say(ok ? "ok all passed" : "FAIL some previews failed")
-        return ok
+        if !dry { say("spent $\(String(format: "%.3f", total)) (\(costs.joined(separator: ", ")))") }
+        if failures.isEmpty { say("ok all passed") } else {
+            say("FAIL \(failures.count) failed: \(failures.joined(separator: "; "))")
+        }
+        return failures.isEmpty
+    }
+
+    /// The spread (standard deviation, 0–255) of a 32×32 grey copy's brightness: near 0 for a black or flat picture.
+    static func brightnessSpread(_ file: URL) -> Double? {
+        guard let src = CGImageSourceCreateWithURL(file as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let side = 32
+        var pixels = [UInt8](repeating: 0, count: side * side)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buf in
+            guard let ctx = CGContext(data: buf.baseAddress, width: side, height: side, bitsPerComponent: 8,
+                                      bytesPerRow: side, space: CGColorSpaceCreateDeviceGray(),
+                                      bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return false }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        guard drawn else { return nil }
+        let values = pixels.map(Double.init)
+        let mean = values.reduce(0, +) / Double(values.count)
+        return (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)).squareRoot()
     }
 
     /// `--smoke-characters-real <any> --smoke-real-outfit` (+ `--smoke-real-out`): no chat. One portrait of Mia, then

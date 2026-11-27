@@ -21,8 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Running as a bare SwiftPM executable: become a regular foreground app with a Dock icon and menu bar.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        // Headless runs (`--headless`) stay out of the Dock and the menu bar and never take focus.
+        if SmokeTest.headless {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         // Text fields' edit menu, drawn by the design system (event monitors need the running app).
         MainActor.assumeIsolated { MGTextMenu.install() }
         // Preview files only live for one session.
@@ -284,7 +289,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// A headless run has no window; it ends with its own exit.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !SmokeTest.headless }
 
     /// Open tabs and their unsaved changes come back on the next launch.
     func applicationWillTerminate(_ notification: Notification) {
@@ -323,8 +329,16 @@ struct AIStudioApp: App {
         LegacyMigration.run()
         // JetBrains Mono, the design system's typeface, before any view draws.
         MGFonts.register()
-        _model = State(initialValue: AppModel())
-        _store = State(initialValue: ModelStore())
+        let model = AppModel()
+        let store = ModelStore()
+        _model = State(initialValue: model)
+        _store = State(initialValue: store)
+        // Headless: no window will appear to hand the model over, so the launch hooks get it now.
+        if SmokeTest.headless {
+            model.store = store
+            store.adopt(model.modelPath)
+            AppDelegate.model = model
+        }
     }
 
     var body: some Scene {
@@ -341,6 +355,7 @@ struct AIStudioApp: App {
                 }
         }
         .defaultSize(width: 1440, height: 900)
+        .defaultLaunchBehavior(SmokeTest.headless ? .suppressed : .automatic)
         .windowStyle(.hiddenTitleBar)
         .commands { AppCommands(model: model) }
 
