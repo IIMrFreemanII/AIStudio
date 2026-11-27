@@ -54,8 +54,7 @@ class WanWorker(AdapterSlots):
 
     def load(self, models_root: Path, status) -> None:
         import torch
-        from diffusers import (FlowMatchEulerDiscreteScheduler, WanImageToVideoPipeline, WanPipeline,
-                               WanTransformer3DModel)
+        from diffusers import FlowMatchEulerDiscreteScheduler, WanImageToVideoPipeline, WanPipeline
 
         device, dtype = pick_device()
         self.device, self.dtype = device, dtype
@@ -72,11 +71,8 @@ class WanWorker(AdapterSlots):
         self.fp8 = fp8_storage_supported(device)
         self.fp8_on_disk = self.fp8 and fp8_copy_installed(folder)
         status("Loading Wan 2.2")
-        parts = {}
-        if self.fp8_on_disk:
-            # diffusers upcasts while loading (to bf16, its fp32 modules to fp32): exact, and cast back to fp8 below.
-            for c in self.components:
-                parts[c] = WanTransformer3DModel.from_pretrained(folder / (c + FP8_SUFFIX), dtype=dtype)
+        parts = self._fp8_transformers(folder, device, dtype) if self.fp8_on_disk else {}
+        if parts:
             lap("fp8 transformers from disk")
         pipe = cls.from_pretrained(folder, dtype=dtype, **parts)
         # The VAE is small and decodes better in float32 (as the Wan reference code does).
@@ -95,7 +91,7 @@ class WanWorker(AdapterSlots):
 
         if self.fp8:
             for t in (pipe.transformer, pipe.transformer_2):
-                fp8_cast(t, dtype)  # LoRA weights stay in bf16
+                fp8_cast(t, dtype)  # LoRA weights stay in bf16; on the GPU when they're already there (fast)
             lap("fp8 casting")
         pipe.to(device)
         lap(f"to {device}")
@@ -105,6 +101,41 @@ class WanWorker(AdapterSlots):
         self.fast_scheduler = FlowMatchEulerDiscreteScheduler.from_config(
             {"num_train_timesteps": pipe.scheduler.config.get("num_train_timesteps", 1000)}, shift=LIGHTNING_SHIFT)
         self.pipe = pipe
+
+    def _fp8_transformers(self, folder: Path, device: str, dtype) -> dict:
+        """The transformers from their fp8 copies, without diffusers' loader (it would upcast every tensor on the CPU):
+        each file's tensors as they are, straight onto the GPU, then the fp8 ones back to ``dtype`` there (exact: every
+        fp8 value is a bf16 one) so the LoRAs load onto the same weights as from the bf16 files. ``fp8_cast`` then
+        casts them to fp8 again on the GPU, in a moment instead of the CPU's ≈ 40 s. On a GPU without room for the
+        bf16 weights all this happens on the CPU instead."""
+        import torch
+        from accelerate import init_empty_weights
+        from diffusers import WanTransformer3DModel
+        from safetensors.torch import load_file
+
+        from .residency import fits
+
+        dirs = {c: folder / (c + FP8_SUFFIX) for c in self.components}
+        stage = device
+        if device == "cuda":
+            fp8_bytes = sum(f.stat().st_size for d in dirs.values() for f in d.glob("*.safetensors"))
+            if not fits(2 * fp8_bytes, torch.cuda.get_device_properties(0).total_memory, margin_gib=8):
+                stage = "cpu"
+        out = {}
+        for c, d in dirs.items():
+            with init_empty_weights():  # parameters on the meta device; buffers (the rotary table) real
+                t = WanTransformer3DModel.from_config(WanTransformer3DModel.load_config(d))
+            state = {}
+            for f in sorted(d.glob("*.safetensors")):
+                state.update(load_file(str(f), device=stage))
+            t.load_state_dict(state, strict=True, assign=True)  # each parameter as stored: fp8, bf16 or fp32
+            del state
+            t.to(stage).eval()
+            for p in t.parameters():
+                if p.dtype == torch.float8_e4m3fn:
+                    p.data = p.data.to(dtype)
+            out[c] = t
+        return out
 
     def _variant_dir(self, vid: str, component: str) -> Path:
         """Back to the base weights: from the fp8 copy when the transformers are stored in fp8 (half the read)."""
