@@ -56,6 +56,9 @@ extension SmokeTest {
         if let family = argument("--smoke-real-train").flatMap(ArtModel.Family.init(rawValue:)) {
             return await realTraining(model, family: family, keep: keep, say: say)
         }
+        if let clip = argument("--smoke-real-motion") {
+            return await realMotion(model, clip: URL(fileURLWithPath: clip), keep: keep, say: say)
+        }
         if CommandLine.arguments.contains("--smoke-real-creator") {
             return await realCreator(model, count: portraitCount, keep: keep, say: say)
         }
@@ -471,6 +474,61 @@ extension SmokeTest {
     /// model gets one portrait, n training pictures with its face, a trained LoRA (added to the library and to the
     /// character), then the same four photos in new outfits and places before (face only) and after (face + LoRA).
     /// Everything goes to the out folder; the costs are printed. Costs GPU time.
+    /// `--smoke-characters-real <any> --smoke-real-motion <clip.mp4>`: the chat's motion video end to end on the real
+    /// server. A template character (SDXL) gets a portrait; a chat with her gets the clip as the user's attachment;
+    /// "Have her do this" makes the waiting motion video, which is approved and made (the still, then Wan-Animate-2 on
+    /// up to 10 s of the clip). The character and the chat are deleted afterwards; the out folder keeps the portrait,
+    /// the still and the video.
+    static func realMotion(_ model: AppModel, clip: URL, keep: (URL, String) -> Void,
+                           say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        guard FileManager.default.fileExists(atPath: clip.path) else { say("FAIL no clip at \(clip.path)"); return false }
+        var c = CharacterTemplates.make(CharacterTemplates.all[0])
+        c.artModel = ArtModel(family: .sdxl)
+        check(model.saveCharacter(c).isEmpty, "\(c.name) is saved")
+        defer { model.deleteCharacter(c.id) }
+        do {
+            _ = try await model.generatePortraits(for: c.id, count: 1) { say("portrait: \($0)") }
+            c = model.character(c.id) ?? c
+            if let p = model.portraitURL(c) { keep(p, "portrait.png") }
+            let doc = model.newCharacterChat([c.id])
+            defer { model.deleteChat(doc.id) }
+            let folder = model.chatStore.filesFolder(doc.id)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: clip, to: folder.appendingPathComponent("clip.mp4"))
+            doc.transcript.append(ChatTurn(role: .user, text: "can you do this?", images: ["clip.mp4"]))
+            check(model.motionCharacter(doc) != nil, "the server makes motion videos for \(c.name)")
+            model.requestMotion(doc, clip: "clip.mp4", character: c)
+            guard let turn = doc.transcript.turns.last, let waiting = turn.media?.first, waiting.status == .waiting else {
+                say("FAIL no waiting motion video"); return false
+            }
+            say("estimate $\(String(format: "%.3f", waiting.estimateUSD ?? 0))")
+            let start = Date()
+            model.approveMedia(doc, turnID: turn.id, mediaID: waiting.id)
+            var media = waiting
+            while Date().timeIntervalSince(start) < 1800 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let m = doc.transcript.turn(turn.id)?.media?.first else { break }
+                media = m
+                if m.status == .done || m.status == .failed { break }
+                if let phase = doc.mediaPhase[m.id] { say("  \(phase)") }
+            }
+            check(media.status == .done && media.file != nil, "the motion video is made (\(media.status.rawValue) \(media.error ?? ""))")
+            if let file = media.file {
+                keep(folder.appendingPathComponent(file), "motion.mp4")
+                let still = folder.appendingPathComponent(file.replacingOccurrences(of: ".mp4", with: "-start.png"))
+                if FileManager.default.fileExists(atPath: still.path) { keep(still, "still.png") }
+            }
+            say("spent $\(String(format: "%.3f", media.costUSD ?? 0)) in \(Int(Date().timeIntervalSince(start))) s")
+        } catch {
+            check(false, "\(error)")
+        }
+        return ok
+    }
+
     static func realTraining(_ model: AppModel, family: ArtModel.Family, keep: (URL, String) -> Void,
                              say: @escaping (String) -> Void) async -> Bool {
         var ok = true
