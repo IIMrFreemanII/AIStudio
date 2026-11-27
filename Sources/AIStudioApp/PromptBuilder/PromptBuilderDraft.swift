@@ -1,6 +1,8 @@
 import CharacterCore
 import Foundation
+import GraphRuntime
 import MovieCore
+import NodesRemote
 
 /// What the Prompt Builder has picked: the model to write for, the subject (a person, with the character creator's
 /// look options, or anything typed), what happens, and the catalog's chips. `written` turns it into that model's
@@ -21,6 +23,9 @@ struct PromptBuilderDraft: Codable, Equatable {
     /// For MiniMax: <Picture 1> is the person's face.
     var faceReference = false
     var triggerWords = ""
+    /// LoRAs from the Models library that fit the model (up to `PromptPreview.maxLoRAs`): their trigger words join the
+    /// prompt, the preview draws with them, and Use in Node wires them into the node.
+    var loras: [PromptBuilderLoRA] = []
     /// Catalog picks (group id → choice ids).
     var picks: [String: [String]] = [:]
 
@@ -59,6 +64,7 @@ struct PromptBuilderDraft: Codable, Equatable {
         avoid = v(.avoid, avoid)
         faceReference = v(.faceReference, faceReference)
         triggerWords = v(.triggerWords, triggerWords)
+        loras = v(.loras, loras)
         picks = v(.picks, picks)
         characterID = try? k.decodeIfPresent(UUID.self, forKey: .characterID)
         characterName = v(.characterName, characterName)
@@ -161,7 +167,9 @@ struct PromptBuilderDraft: Codable, Equatable {
         s.place = Self.clean(place)
         s.text = Self.clean(text)
         s.avoid += Self.list(avoid)
-        s.triggerWords = Self.list(triggerWords)
+        var words: [String] = []
+        for w in Self.list(triggerWords) + loras.flatMap(\.triggerWords) where !words.contains(w) { words.append(w) }
+        s.triggerWords = words
         PromptCatalog.apply(picks, to: &s, model: model, adult: adult && isPerson)
         return s
     }
@@ -192,6 +200,27 @@ struct PromptBuilderDraft: Codable, Equatable {
         s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     }
 
+    /// The library family whose LoRAs fit `model` in the builder window (nil: it takes none). In a node's sheet the
+    /// node's own family is used (`PromptBuilderTarget.loraFamily`).
+    static func loraFamily(_ model: PromptModel) -> String? {
+        switch model {
+        case .minimaxImage: nil
+        case .wan: "wan-2.2-t2v"  // LinkLibrary.fits counts every Wan 2.2 LoRA
+        case .ltx23: "ltx-2.3"
+        case .minimaxVideo: "minimax-h3"
+        default: PromptPreview.nodeType(model).flatMap { RemoteNodes.libraryFamilies[$0] }
+        }
+    }
+
+    /// Drops the LoRAs that don't fit `family` (the model changed); nil family: all of them.
+    @MainActor mutating func keepLoRAs(fitting family: String?, library: LinkLibrary?) {
+        guard let family else { loras = []; return }
+        loras.removeAll { l in
+            guard let f = library?.item(l.id)?.family else { return false }  // unknown family: fits everything
+            return !LinkLibrary.fits(f, family)
+        }
+    }
+
     /// The prompt model of a node type (and, for SDXL, its fine-tune's Civitai base model); nil when the node takes no
     /// prompt the builder can write.
     static func promptModel(nodeType: String, baseModel: String?) -> PromptModel? {
@@ -217,4 +246,48 @@ struct PromptBuilderTarget: Identifiable, Equatable {
     let model: PromptModel
     /// The node has a negative prompt input.
     let takesNegative: Bool
+    /// The library family of the node's LoRAs (nil: it takes none).
+    var loraFamily: String? = nil
+}
+
+extension PromptBuilderDraft {
+    /// Chains `loras` into node `id`'s `loras` input as `RemoteLoRA` nodes, ahead of the ones already wired there. A
+    /// LoRA already in that chain isn't added twice (Use in Node pressed again), and the chain stays within the
+    /// node's limit (`RemoteNodes.maxFluxLoRAs`). Returns how many were added.
+    @discardableResult
+    static func wireLoRAs(_ loras: [PromptBuilderLoRA], into id: String, graph g: inout Graph) -> Int {
+        guard let t = g.nodes.firstIndex(where: { $0.id == id }) else { return 0 }
+        // The LoRAs already wired: follow the chain upstream.
+        var wired: [String] = []
+        var link = g.nodes[t].inputs["loras"]
+        var seen = Set<String>()
+        while case .link(let up, _)? = link, seen.insert(up).inserted, let n = g[up], n.type == "RemoteLoRA" {
+            if case .value(.string(let lib))? = n.inputs["lora"] { wired.append(lib) }
+            link = n.inputs["loras"]
+        }
+        let room = max(RemoteNodes.maxFluxLoRAs - seen.count, 0)
+        let new = Array(loras.filter { !$0.id.isEmpty && !wired.contains($0.id) }.prefix(room))
+        guard !new.isEmpty else { return 0 }
+        let p = g.nodes[t].position ?? GraphPoint(x: 640, y: 120)
+        var head = g.nodes[t].inputs["loras"]
+        for (k, l) in new.enumerated() {
+            var n = 1
+            while g["lora\(n)"] != nil { n += 1 }
+            var inputs: [String: NodeInput] = ["lora": .value(.string(l.id)), "path": .value(.string("")),
+                                               "strength": .value(.double(l.strength))]
+            if let head { inputs["loras"] = head }
+            g.nodes.append(GraphNode(id: "lora\(n)", type: "RemoteLoRA", inputs: inputs,
+                                     position: GraphPoint(x: p.x - 320, y: p.y + Double(seen.count + k) * 170)))
+            head = .link(node: "lora\(n)", output: "loras")
+        }
+        g.nodes[t].inputs["loras"] = head
+        return new.count
+    }
+}
+
+/// One LoRA the Prompt Builder uses: a Models library id, its strength, and its trigger words (copied when picked).
+struct PromptBuilderLoRA: Codable, Equatable, Hashable {
+    var id: String
+    var strength = 0.8
+    var triggerWords: [String] = []
 }

@@ -26,6 +26,21 @@ import Testing
         }
     }
 
+    @Test func loRAsChainIntoTheNode() throws {
+        let t = try #require(PromptPreview.template(.sdxlIllustrious, negative: true, loras: 2))
+        #expect(t.graph["lora1"]?.type == "RemoteLoRA" && t.graph["lora1"]?.inputs["loras"] == nil)
+        #expect(t.graph["lora2"]?.inputs["loras"] == .link(node: "lora1", output: "loras"))
+        #expect(t.graph["image"]?.inputs["loras"] == .link(node: "lora2", output: "loras"))
+        #expect(t.slots["lora2_strength"] == .init(node: "lora2", input: "strength"))
+        // At most four, and none on MiniMax H3 Image, which takes no LoRAs.
+        #expect(PromptPreview.template(.chroma, negative: false, loras: 9)?.graph.nodes.filter { $0.type == "RemoteLoRA" }.count == 4)
+        let h3 = try #require(PromptPreview.template(.minimaxImage, negative: false, loras: 2))
+        #expect(h3.graph["lora1"] == nil && h3.graph["image"]?.inputs["loras"] == nil)
+        #expect(PromptPreview.template(.flux, negative: false)?.graph["lora1"] == nil)
+        let v = PromptPreview.loraValues([("detail", 0.6), ("style", 1.0)], first: 2)
+        #expect(v["lora2"] == .string("detail") && v["lora2_strength"] == .double(0.6) && v["lora3"] == .string("style"))
+    }
+
     @Test func sizesAndFastModes() throws {
         #expect(PromptPreview.size(.sdxl, aspect: .portrait) == (832, 1216))
         #expect(PromptPreview.size(.sdxl, aspect: .landscape) == (1216, 832))

@@ -92,6 +92,10 @@ extension AppModel {
         guard PromptPreview.nodeType(draft.model) != nil else { throw PromptPreviewError.video }
         guard let server = connections.gpuServers.first?.id else { throw PortraitError.noServer }
         let (w, h) = PromptPreview.size(draft.model, aspect: draft.aspect)
+        // The builder's LoRAs that are still in the library (a removed one would fail the job).
+        let picked = PromptPreview.takesLoRAs(draft.model)
+            ? draft.loras.filter { !$0.id.isEmpty && store?.library.item($0.id) != nil }.map { (id: $0.id, strength: $0.strength) }
+            : []
         let template: MovieTemplate
         var render: MovieArt.Render
         let written: WrittenPrompt
@@ -109,19 +113,24 @@ extension AppModel {
                                          face: await faceReference(c), negative: wp.negative, context: context)
             render.values["width"] = .int(w)
             render.values["height"] = .int(h)
-            template = CharacterArt.template(c.artModel.family, loras: c.loras.count)
+            // The character's own LoRAs first, then the builder's, up to the limit.
+            let own = min(c.loras.count, CharacterArt.maxLoRAs)
+            let extra = Array(picked.prefix(CharacterArt.maxLoRAs - own))
+            render.values.merge(PromptPreview.loraValues(extra, first: own + 1)) { $1 }
+            template = CharacterArt.template(c.artModel.family, loras: own + extra.count)
         } else {
             guard let wp = draft.written else { throw PromptPreviewError.empty }
             written = wp
             try CharacterArt.check(wp.prompt)
-            guard let t = PromptPreview.template(draft.model, negative: !wp.negative.isEmpty, fast: draft.fast) else {
+            guard let t = PromptPreview.template(draft.model, negative: !wp.negative.isEmpty, fast: draft.fast,
+                                                 loras: picked.count) else {
                 throw PromptPreviewError.video
             }
             template = t
-            render = MovieArt.Render(values: PromptPreview.values(wp, model: draft.model, seed: draft.seed,
-                                                                 aspect: draft.aspect, server: server,
-                                                                 fineTune: draft.variant),
-                                     unusedPictures: [])
+            var values = PromptPreview.values(wp, model: draft.model, seed: draft.seed, aspect: draft.aspect,
+                                              server: server, fineTune: draft.variant)
+            values.merge(PromptPreview.loraValues(picked)) { $1 }
+            render = MovieArt.Render(values: values, unusedPictures: [])
         }
         guard !written.prompt.isEmpty else { throw PromptPreviewError.empty }
         let (outputs, jobs) = try await runHeadlessGraph(template: template, render: render, title: "Prompt preview",

@@ -70,8 +70,10 @@ struct NodeExtras: View {
             let linked: Bool = { if case .link? = node.inputs["prompt"] { return true }; return false }()
             MGSection("Prompt") {
                 Button {
+                    let schema = model.schema(for: node)
                     model.promptBuilderTarget = PromptBuilderTarget(
-                        id: node.id, model: pm, takesNegative: model.schema(for: node)?.input("negative") != nil)
+                        id: node.id, model: pm, takesNegative: schema?.input("negative") != nil,
+                        loraFamily: schema?.input("loras") != nil ? RemoteNodes.libraryFamilies[node.type] : nil)
                 } label: {
                     Label("Prompt Builder…", systemImage: "square.grid.3x3.square")
                 }

@@ -79,7 +79,12 @@ public enum PromptPreview {
     /// Chroma, SD 3.5 and Qwen-Image default to their fast modes, which skip guidance and so ignore the negative
     /// prompt: with a negative they run in full, as the written prompt expects (docs/prompting.md), unless `fast`
     /// (the builder's Fast switch) keeps the fast mode anyway (`runsFast`).
-    public static func template(_ model: PromptModel, negative: Bool, fast: Bool = false) -> MovieTemplate? {
+    /// The most LoRAs one preview chains (the same as a character's photos).
+    public static let maxLoRAs = 4
+
+    /// `loras`: that many `RemoteLoRA` nodes chained into the node's `loras` input, with slots `lora1`…, and
+    /// `lora1_strength`… (`loraValues`). The models without LoRAs (MiniMax H3 Image) ignore it.
+    public static func template(_ model: PromptModel, negative: Bool, fast: Bool = false, loras: Int = 0) -> MovieTemplate? {
         guard let type = nodeType(model) else { return nil }
         var inputs: [String: NodeInput] = [
             "prompt": .value(.string("")), "seed": .value(.int(0)), "width": .value(.int(1024)),
@@ -97,12 +102,36 @@ public enum PromptPreview {
             names.append("model")
         }
         for n in names { slots[n] = .init(node: "image", input: n) }
-        let nodes = [
+        var nodes: [GraphNode] = []
+        let n = takesLoRAs(model) ? min(max(loras, 0), maxLoRAs) : 0
+        for k in stride(from: 1, through: n, by: 1) {
+            var l: [String: NodeInput] = ["lora": .value(.string("")), "strength": .value(.double(1))]
+            if k > 1 { l["loras"] = .link(node: "lora\(k - 1)", output: "loras") }
+            nodes.append(GraphNode(id: "lora\(k)", type: "RemoteLoRA", inputs: l,
+                                   position: GraphPoint(x: -320, y: 40 + Double(k - 1) * 160)))
+            slots["lora\(k)"] = .init(node: "lora\(k)", input: "lora")
+            slots["lora\(k)_strength"] = .init(node: "lora\(k)", input: "strength")
+        }
+        if n > 0 { inputs["loras"] = .link(node: "lora\(n)", output: "loras") }
+        nodes += [
             GraphNode(id: "image", type: type, inputs: inputs, position: GraphPoint(x: 40, y: 40)),
             GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
                       position: GraphPoint(x: 420, y: 60)),
         ]
         return MovieTemplate(name: "Prompt preview", graph: Graph(nodes: nodes), slots: slots)
+    }
+
+    /// The node takes LoRAs (every image model but MiniMax H3 Image).
+    public static func takesLoRAs(_ model: PromptModel) -> Bool { nodeType(model) != nil && model != .minimaxImage }
+
+    /// The values of LoRA slots `lora<first>`…: each library id and strength, in order.
+    public static func loraValues(_ loras: [(id: String, strength: Double)], first: Int = 1) -> [String: JSONValue] {
+        var v: [String: JSONValue] = [:]
+        for (i, l) in loras.enumerated() {
+            v["lora\(first + i)"] = .string(l.id)
+            v["lora\(first + i)_strength"] = .double(l.strength)
+        }
+        return v
     }
 
     /// The values for one preview of `written` (the negative is left out where the model reads none).
