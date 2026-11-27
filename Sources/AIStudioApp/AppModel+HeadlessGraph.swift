@@ -44,7 +44,8 @@ extension AppModel {
         for r in records {
             if let c = r.costUSD { cost = (cost ?? 0) + c }
             let mp = work ?? Double((r.width ?? 0) * (r.height ?? 0)) / 1e6
-            timings.record(task: r.task, megapixels: mp > 0 ? mp : 1, gpuSeconds: r.gpuSeconds, loadSeconds: r.loadSeconds)
+            timings.record(task: GPUTimings.timingTask(r.task, fast: r.fast ?? false), megapixels: mp > 0 ? mp : 1,
+                           gpuSeconds: r.gpuSeconds, loadSeconds: r.loadSeconds)
         }
         try? timings.save(gpuTimingsURL)
         return cost

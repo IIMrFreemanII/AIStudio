@@ -75,8 +75,12 @@ extension AppModel {
         let timings = GPUTimings.load(gpuTimingsURL)
         let (w, h) = PromptPreview.size(draft.model, aspect: draft.aspect)
         let warm = timings.isWarm(task: task, idleSeconds: Double(info.idleSeconds ?? 120))
-        var seconds = timings.seconds(task: task, megapixels: Double(w * h) / 1e6)
-        if !warm { seconds += timings.loadSeconds(task: task) }
+        // Qwen-Image's fast and full modes are timed apart.
+        let fast = previewCharacter(draft) == nil
+            && PromptPreview.runsFast(draft.model, negative: !(draft.written?.negative ?? "").isEmpty, fast: draft.fast) == true
+        let timing = GPUTimings.timingTask(task, fast: fast)
+        var seconds = timings.seconds(task: timing, megapixels: Double(w * h) / 1e6)
+        if !warm { seconds += timings.loadSeconds(task: timing) }
         return (seconds * price, warm)
     }
 
@@ -110,7 +114,7 @@ extension AppModel {
             guard let wp = draft.written else { throw PromptPreviewError.empty }
             written = wp
             try CharacterArt.check(wp.prompt)
-            guard let t = PromptPreview.template(draft.model, negative: !wp.negative.isEmpty) else {
+            guard let t = PromptPreview.template(draft.model, negative: !wp.negative.isEmpty, fast: draft.fast) else {
                 throw PromptPreviewError.video
             }
             template = t

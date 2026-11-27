@@ -26,6 +26,10 @@ extension AppModel {
         var jobs: Int
         /// A job's size: megapixels for a picture, megapixels × frames for a clip (`MovieShots.work`).
         var megapixels: Double
+        /// The task's fast mode (the movie's Fast switch for Qwen pictures), which is timed on its own.
+        var fast = false
+        /// What the learned timings call these jobs (`GPUTimings.timingTask`).
+        var timing: String { GPUTimings.timingTask(task, fast: fast) }
     }
 
     /// The download step that installs a task's models on the server.
@@ -82,10 +86,10 @@ extension AppModel {
                                           limit: MovieRenderer.maxParallel)
                 if gpus.waits { waiting.append(w.label.lowercased()) }
                 let warm = gpus.waits || timings.isWarm(task: w.task, idleSeconds: idle)
-                let perJob = timings.seconds(task: w.task, megapixels: w.megapixels)
-                let load = timings.loadSeconds(task: w.task)
+                let perJob = timings.seconds(task: w.timing, megapixels: w.megapixels)
+                let load = timings.loadSeconds(task: w.timing)
                 for (k, into) in [(1, 0), (gpus.count, 1)] {
-                    let line = MovieCost.images(label: w.label, task: w.task, jobs: w.jobs, megapixels: w.megapixels,
+                    let line = MovieCost.images(label: w.label, task: w.timing, jobs: w.jobs, megapixels: w.megapixels,
                                                 gpu: task.gpu, usdPerSecond: price, timings: timings, warm: warm,
                                                 idleSeconds: idle, containers: k)
                     let wall = MovieCost.wallSeconds(jobs: w.jobs, containers: k, perJob: perJob, load: load, warm: warm)
@@ -99,7 +103,7 @@ extension AppModel {
                 }
                 widest = max(widest, gpus.count)
             }
-            let learned = work.allSatisfy { w in timings.jobs.keys.contains { $0.hasPrefix(w.task + "@") } }
+            let learned = work.allSatisfy { w in timings.jobs.keys.contains { $0.hasPrefix(w.timing + "@") } }
             var notes = [
                 "Each kind of job runs on its own GPU worker, which loads its model first when it's cold (counted above) "
                     + "and stays up \(Int(idle)) s after the last job (counted too).",
@@ -127,6 +131,9 @@ extension AppModel {
             if work.contains(where: { $0.task == "qwen-image-edit" }) {
                 notes.append("Keyframes are made from the characters' chosen sheets, so faces and clothes stay the same.")
             }
+            if work.contains(where: { $0.fast && GPUTimings.modeTimed.contains($0.task) }) {
+                notes.append(Self.fastPicturesNote)
+            }
             notes += extraNotes
             let estimate = plans.isEmpty
                 ? CostEstimate(title: title, lines: single, notes: notes)
@@ -136,6 +143,11 @@ extension AppModel {
             doc.pendingGate = CostGate(estimate: estimate, run: run, choose: { doc.parallelLimit = $0 })
         }
     }
+
+    /// The cost sheet's note while a movie's Fast switch is on.
+    static let fastPicturesNote = "Fast mode is on: Qwen's Lightning LoRAs, 8 steps without guidance (≈ 6× cheaper for "
+        + "sheets and plates, ≈ 10× for keyframes with the cast). It ignores the negative prompt, so text or extra "
+        + "people can appear on sheets and people on plates; turn Fast off for the full models."
 
     // MARK: cast
 
@@ -172,10 +184,10 @@ extension AppModel {
                        : "Make Reference Sheets and Plates",
                    work: [ImageWork(label: sheets == 1 ? "1 reference sheet" : "\(sheets) reference sheets",
                                     task: "qwen-image", jobs: sheets,
-                                    megapixels: Double(size.width * size.height) / 1e6),
+                                    megapixels: Double(size.width * size.height) / 1e6, fast: doc.movie.fastPictures),
                           ImageWork(label: plates == 1 ? "1 place's plate" : "\(plates) plates of places",
                                     task: "qwen-image", jobs: plates,
-                                    megapixels: Double(plate.width * plate.height) / 1e6)],
+                                    megapixels: Double(plate.width * plate.height) / 1e6, fast: doc.movie.fastPictures)],
                    extraNotes: plates > 0 ? ["A plate is the place itself, empty: every keyframe there is made from it, "
                                              + "so the place stays the same from shot to shot."] : []) { [weak self] in
             self?.makeSheets(doc, items: items)
@@ -239,8 +251,10 @@ extension AppModel {
         let size = doc.movie.aspect.keyframeSize
         let mp = Double(size.width * size.height) / 1e6
         gateImages(doc, title: shots.count == 1 ? "Make a Keyframe" : "Make Keyframes", work: [
-            ImageWork(label: "Keyframes with the cast", task: "qwen-image-edit", jobs: edits, megapixels: mp),
-            ImageWork(label: "Keyframes without people", task: "qwen-image", jobs: shots.count - edits, megapixels: mp),
+            ImageWork(label: "Keyframes with the cast", task: "qwen-image-edit", jobs: edits, megapixels: mp,
+                      fast: doc.movie.fastPictures),
+            ImageWork(label: "Keyframes without people", task: "qwen-image", jobs: shots.count - edits, megapixels: mp,
+                      fast: doc.movie.fastPictures),
         ]) { [weak self] in
             self?.makeKeyframes(doc, shots: shots.map(\.id))
         }
@@ -369,7 +383,9 @@ extension AppModel {
     /// (also added to the movie's spend, and the job's time to the learned timings).
     private func renderStill(_ doc: MovieDocument, template: MovieTemplate, render: MovieArt.Render, to file: String,
                              title: String) async throws -> Double? {
-        // What it's making ("Mara (1 of 2)"), then the node's step or status.
+        // What it's making ("Mara (1 of 2)"), then the node's step or status. The movie's Fast switch sets the Qwen
+        // nodes' mode, in its edited templates too.
+        let template = MovieArt.fastMode(doc.movie.fastPictures, template)
         let (outputs, jobs) = try await runMovieGraph(doc, template: template, render: render, title: title)
         guard let image = outputs.first(where: { $0.kind == .image })?.image else {
             throw MovieArtError.noImage

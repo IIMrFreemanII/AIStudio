@@ -130,7 +130,8 @@ public enum MovieArt {
 
     /// Qwen-Image (Cloud GPU) into a Preview Image: character sheets, location plates and shots with no one in them.
     /// It runs in full (the model card's 50 steps at true CFG 4), not Lightning: only guidance uses the negative
-    /// prompt, which keeps text and extra people off the sheets and people off the plates.
+    /// prompt, which keeps text and extra people off the sheets and people off the plates. The movie's Fast switch
+    /// turns Lightning on at render time (`fastMode`).
     public static func textToImageTemplate(name: String) -> MovieTemplate {
         let gen = GraphNode(id: "image", type: "RemoteQwenImage", inputs: [
             "prompt": .value(.string("")), "negative": .value(.string("")), "seed": .value(.int(0)),
@@ -144,7 +145,8 @@ public enum MovieArt {
     }
 
     /// Three Load Images into Qwen-Image-Edit (Cloud GPU) into a Preview Image: keyframes from the cast's sheets.
-    /// It runs in full (the model card's 40 steps at true CFG 4), not Lightning, so the style's negative applies.
+    /// It runs in full (the model card's 40 steps at true CFG 4), not Lightning, so the style's negative applies;
+    /// the movie's Fast switch turns Lightning on at render time (`fastMode`).
     public static func editTemplate(name: String = TemplateName.keyframeEdit) -> MovieTemplate {
         var nodes: [GraphNode] = []
         var inputs: [String: NodeInput] = [
@@ -164,6 +166,20 @@ public enum MovieArt {
         nodes.append(GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "edit", output: "image")],
                                position: GraphPoint(x: 720, y: 80)))
         return MovieTemplate(name: name, graph: Graph(nodes: nodes), slots: slots)
+    }
+
+    /// The Qwen nodes Movie Studio's picture templates draw with: their `fast` input is the movie's Fast switch.
+    public static let qwenNodeTypes: Set<String> = ["RemoteQwenImage", "RemoteQwenImageEdit"]
+
+    /// The template with every Qwen-Image and Qwen-Image-Edit node's `fast` set to the movie's `fastPictures`: on, the
+    /// Lightning LoRA (8 steps without guidance, so the negative prompt is ignored); off, the full mode with guidance.
+    /// It applies to a movie's edited copy of a template too, so the switch decides, whatever the copy was saved with.
+    public static func fastMode(_ fast: Bool, _ template: MovieTemplate) -> MovieTemplate {
+        var t = template
+        for i in t.graph.nodes.indices where qwenNodeTypes.contains(t.graph.nodes[i].type) {
+            t.graph.nodes[i].inputs["fast"] = .value(.bool(fast))
+        }
+        return t
     }
 
     /// The values a sheet or keyframe render binds, and which picture slots it leaves out (their Load Image nodes

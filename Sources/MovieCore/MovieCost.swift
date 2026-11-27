@@ -176,6 +176,9 @@ public struct GPUTimings: Codable, Sendable, Equatable {
     public static let defaults: [String: (seconds: Double, megapixels: Double, load: Double)] = [
         "qwen-image": (30, 1.5, 60),
         "qwen-image-edit": (75, 1.0, 60),
+        // Their fast modes (Movie Studio's Fast switch), as measured.
+        "qwen-image:fast": (5, 1.5, 60),
+        "qwen-image-edit:fast": (8, 1.0, 60),
         "sdxl": (5, 1.0, 15),
         "sd35-large": (3, 1.0, 40),
         "flux1-dev": (20, 1.0, 45),
@@ -203,11 +206,26 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         "ace-step-xl": (25, 30, 90),
     ]
 
+    /// Tasks whose fast and full modes are timed apart, since Movie Studio runs either (its Fast switch): a fast
+    /// job's times are kept under `task:fast` (`timingTask`). Loading and the warm worker are the task's, shared.
+    public static let modeTimed: Set<String> = ["qwen-image", "qwen-image-edit"]
+
+    /// The name a job's times are kept under: the task, or `task:fast` for a fast job of a `modeTimed` task.
+    public static func timingTask(_ task: String, fast: Bool) -> String {
+        fast && modeTimed.contains(task) ? task + ":fast" : task
+    }
+
+    /// The server task a timing name is for (`qwen-image:fast` → `qwen-image`).
+    static func serverTask(_ timing: String) -> String {
+        timing.split(separator: ":", maxSplits: 1).first.map(String.init) ?? timing
+    }
+
     /// Jobs of a task are bucketed by size (half-megapixel steps), since time grows with the pixel count.
     static func key(_ task: String, _ megapixels: Double) -> String {
         "\(task)@\(String(format: "%.1f", max(0.5, (megapixels * 2).rounded() / 2)))"
     }
 
+    /// `task` may be a timing name (`timingTask`): the job's time goes under it, its load and finish under the task.
     public mutating func record(task: String, megapixels: Double, gpuSeconds: Double, loadSeconds: Double,
                                 at date: Date = Date()) {
         let k = Self.key(task, megapixels)
@@ -216,13 +234,14 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         e.seconds += (gpuSeconds - e.seconds) / Double(min(e.count, Self.window))
         e.megapixels = megapixels
         jobs[k] = e
+        let server = Self.serverTask(task)
         if loadSeconds >= 1 {
-            var l = loads[task] ?? Load(seconds: loadSeconds, count: 0)
+            var l = loads[server] ?? Load(seconds: loadSeconds, count: 0)
             l.count += 1
             l.seconds += (loadSeconds - l.seconds) / Double(min(l.count, Self.window))
-            loads[task] = l
+            loads[server] = l
         }
-        lastJob[task] = date
+        lastJob[server] = date
     }
 
     /// GPU seconds per job at this size: learned at this size, else scaled from the task's nearest learned size or
@@ -237,12 +256,13 @@ public struct GPUTimings: Codable, Sendable, Equatable {
     }
 
     public func loadSeconds(task: String) -> Double {
-        loads[task]?.seconds ?? Self.defaults[task]?.load ?? 120
+        let server = Self.serverTask(task)
+        return loads[server]?.seconds ?? Self.defaults[task]?.load ?? Self.defaults[server]?.load ?? 120
     }
 
     /// Whether the task's worker probably hasn't shut down yet.
     public func isWarm(task: String, idleSeconds: Double, now: Date = Date()) -> Bool {
-        lastJob[task].map { now.timeIntervalSince($0) < idleSeconds - 15 } ?? false
+        lastJob[Self.serverTask(task)].map { now.timeIntervalSince($0) < idleSeconds - 15 } ?? false
     }
 
     public static func load(_ url: URL) -> GPUTimings {

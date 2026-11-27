@@ -34,10 +34,27 @@ import Testing
         let chroma = try #require(PromptPreview.template(.chroma, negative: true))
         #expect(chroma.graph["image"]?.inputs["fast"] == .value(.bool(false)))
         let plain = try #require(PromptPreview.template(.chroma, negative: false))
-        #expect(plain.graph["image"]?.inputs["fast"] == nil)
+        #expect(plain.graph["image"]?.inputs["fast"] == .value(.bool(true)), "no negative: the node's fast default")
         // MiniMax and FLUX read no negative.
         let h3 = try #require(PromptPreview.template(.minimaxImage, negative: true))
         #expect(h3.slots["negative"] == nil && h3.graph["image"]?.type == "RemoteH3Image")
         #expect(PromptPreview.task(.sdxlPony) == "sdxl" && PromptPreview.task(.wan) == nil)
+    }
+
+    @Test func theFastSwitchKeepsTheFastModeWithANegative() throws {
+        for m in PromptModel.allCases where PromptPreview.nodeType(m) != nil {
+            let fast = try #require(PromptPreview.template(m, negative: true, fast: true))
+            let full = try #require(PromptPreview.template(m, negative: true, fast: false))
+            if PromptPreview.fastModels.contains(m) {
+                #expect(fast.graph["image"]?.inputs["fast"] == .value(.bool(true)), "\(m) fast")
+                #expect(full.graph["image"]?.inputs["fast"] == .value(.bool(false)), "\(m) full")
+                #expect(fast.slots["negative"] != nil, "\(m) still sends its negative")
+                #expect(PromptPreview.runsFast(m, negative: false, fast: false) == true)
+            } else {
+                #expect(fast.graph["image"]?.inputs["fast"] == nil && full == fast, "\(m) has no fast mode")
+                #expect(PromptPreview.runsFast(m, negative: true, fast: true) == nil)
+            }
+        }
+        #expect(PromptPreview.fastModels == [.chroma, .sd35, .qwenImage])
     }
 }
