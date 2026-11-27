@@ -55,7 +55,7 @@
   ],
   "name" : "MiniMax H3 Image to Video with Sound · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 320,
+  "order" : 330,
   "summary" : "Animate a picture into a clip with its own sound: the picture is the first frame (connect a last frame too, if you like). MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
   "symbol" : "cloud"
 }

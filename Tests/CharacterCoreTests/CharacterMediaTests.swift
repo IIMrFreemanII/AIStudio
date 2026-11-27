@@ -119,6 +119,36 @@ private var utc: Calendar {
         _ = try CharacterMedia.voiceLineTemplate(b).bind(bl.values, optional: Set(bl.values.keys), remove: bl.unusedPictures)
     }
 
+    @Test func motionVideos() throws {
+        var c = hero()
+        // Jobs: the still, then Wan-Animate-2 for the clip's length (capped at 10 s).
+        let jobs = CharacterMedia.jobs(.motion, character: c, text: "", hasVoiceSample: true, clipSeconds: 5)
+        #expect(jobs.map(\.task) == ["sdxl", "wan-animate2"])
+        #expect(abs(jobs[1].work - 0.512 * 120) < 1e-9)
+        #expect(CharacterMedia.motionWork(seconds: 60) == CharacterMedia.motionWork(seconds: 10))
+        #expect(CharacterCost.alwaysAsks(.motion))
+        // Motion goes with video: on for characters saved before it existed, off with video.
+        c.media = [.photo, .video]
+        #expect(c.sends == [.photo, .video, .motion])
+        c.media = [.photo, .voice]
+        #expect(!c.sends.contains(.motion))
+        #expect(!MediaKind.toggled.contains(.motion))
+        // The graph binds: the still and the clip into Wan Animate.
+        let still = URL(fileURLWithPath: "/tmp/still.png"), clip = URL(fileURLWithPath: "/tmp/dance.mp4")
+        let r = CharacterMedia.motionRender(hero(), still: still, clip: clip, seconds: 42, scene: "a beach", seed: 3, server: "s")
+        #expect(r.values["seconds"] == .double(10) && r.values["scene"] == .string("a beach"))
+        #expect(r.values["clip"] == .string("/tmp/dance.mp4") && r.values["still"] == .string("/tmp/still.png"))
+        let g = try CharacterMedia.motionTemplate().bind(r.values, optional: Set(r.values.keys), remove: r.unusedPictures)
+        #expect(g.nodes.contains { $0.type == "RemoteWanAnimate" } && g.nodes.contains { $0.type == "LoadVideo" })
+        let look = CharacterMedia.motionLook(hero())
+        #expect(look.hasPrefix("A 28-year-old adult") && !look.hasSuffix("."))
+        #expect(CharacterMedia.motionStillPrompt(hero(), request: "", scene: nil).contains("full-body"))
+        // The system prompt tells them a clip turns their video into one copying its moves.
+        #expect(MediaTags.instructions([.video, .motion]).contains("copies their clip's moves"))
+        #expect(!MediaTags.instructions([.video]).contains("clip"))
+        #expect(MediaAsk.asked(.motion, in: "can you do this dance?"))
+    }
+
     @Test func prompts() {
         let p = CharacterMedia.motionPrompt(hero(), request: "You wave at the camera.")
         #expect(p.contains("adult") && p.contains("28") && p.contains("Wave at the camera") && !p.contains("You ") && !p.contains(".."))

@@ -196,6 +196,8 @@ public struct GPUTimings: Codable, Sendable, Equatable {
         // The distilled lip-sync models: guesses (8 and 4 steps of a 14–16B DiT) until measured.
         "longcat-avatar": (90, 32.3, 120),
         "infinitetalk": (60, 32.3, 150),
+        // Wan-Animate-2 on an H200 (2026-11-27): 145 s for 5 s at 576×841 (0.48 MP × 120 frames); load and compile 75 s.
+        "wan-animate2": (145, 58.1, 75),
         "qwen3-tts": (6, 4, 60),
         "breeze-tts": (6, 4, 60),
         // MiniMax H3, fast (8 steps) on an H200: a 5 s 1344×768 clip is 124 frames ≈ 128; loading ≈ 140 GB. Guesses

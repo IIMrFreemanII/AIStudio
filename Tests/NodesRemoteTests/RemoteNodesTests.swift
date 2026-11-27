@@ -337,6 +337,34 @@ struct RemoteNodesTests {
         #expect(dubbed.audio != nil)
     }
 
+    @Test(.enabled(if: hasServer)) func wanAnimateCopiesTheChosenPartOfTheClipAt24FPS() async throws {
+        // A 2 s clip at 25 fps (red, then green from 1 s) and a blue picture; start 1 s, 1 s long: back at 24 fps,
+        // 24 frames, opening on the picture (the fake worker's first frame), then the clip's green half.
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let mp4 = out.appendingPathComponent("dance.mp4"), png = out.appendingPathComponent("her.png")
+        let red = MLXArray.ones([25, 48, 64, 3]) * MLXArray([0.9, 0.1, 0.1] as [Float])
+        let green = MLXArray.ones([25, 48, 64, 3]) * MLXArray([0.1, 0.9, 0.1] as [Float])
+        try await MediaIO.writeVideo(VideoClip(frames: MLX.concatenated([red, green]), fps: 25), to: mp4)
+        try ImageArray.savePNG(MLXArray.ones([64, 64, 4]) * MLXArray([0.1, 0.1, 0.9, 1.0] as [Float]), to: png)
+        let (result, log) = try await run([
+            GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(mp4.path))]),
+            GraphNode(id: "her", type: "LoadImage", inputs: ["path": .value(.string(png.path))]),
+            GraphNode(id: "animate", type: "RemoteWanAnimate", inputs: [
+                "image": .link(node: "her", output: "image"), "video": .link(node: "clip", output: "video"),
+                "start": .value(.double(1)), "seconds": .value(.double(1))]),
+            GraphNode(id: "save", type: "SaveVideo", inputs: [
+                "video": .link(node: "animate", output: "video"), "directory": .value(.string(out.path))]),
+        ])
+        #expect(log.statuses.contains("Uploading"))
+        let moved = try #require({ () -> VideoClip? in
+            if case .object(let o)? = result.outputs["save"]?["video"] { return o as? VideoClip }; return nil
+        }())
+        #expect(moved.frameCount == 24 && moved.fps == 24 && moved.width == 64)
+        #expect(moved.frames[0].mean(axes: [0, 1])[2].item(Float.self) > 0.7)  // the picture
+        #expect(moved.frames[23].mean(axes: [0, 1])[1].item(Float.self) > 0.7)  // the clip from 1 s: green
+        #expect(RemoteNodes.taskID(forNodeType: "RemoteWanAnimate") == "wan-animate2")
+    }
+
     @Test(.enabled(if: hasServer)) func h3MakesA24FPSClipWithStereoSoundFromItsStartPicture() async throws {
         // A blue 16:9 picture at 544p: 960×544, 5 s at 24 fps snapped to 124 frames, starting blue, with stereo sound.
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)

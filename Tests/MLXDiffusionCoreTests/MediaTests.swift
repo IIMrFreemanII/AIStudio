@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import MLX
 import Testing
@@ -106,4 +107,19 @@ func tempURL(_ ext: String) -> URL {
     var other = copy
     other.frames = other.frames * 0.5
     #expect(other.sourceURL == nil)
+}
+
+@Test func phoneClipsTurnUpright() {
+    // A 3×2 frame (width 3, height 2) with each pixel's red value its index: 0 1 2 / 3 4 5.
+    let frame: [Float] = (0..<6).flatMap { [Float($0), 0, 0] }
+    let (cw, w, h) = MediaIO.rotate(frame, count: 1, width: 3, height: 2, quarterTurns: 1)
+    #expect(w == 2 && h == 3)
+    #expect(stride(from: 0, to: cw.count, by: 3).map { Int(cw[$0]) } == [3, 0, 4, 1, 5, 2])  // 90° clockwise
+    let (ccw, _, _) = MediaIO.rotate(frame, count: 1, width: 3, height: 2, quarterTurns: 3)
+    #expect(stride(from: 0, to: ccw.count, by: 3).map { Int(ccw[$0]) } == [2, 5, 1, 4, 0, 3])
+    let (flip, _, _) = MediaIO.rotate(frame, count: 1, width: 3, height: 2, quarterTurns: 2)
+    #expect(stride(from: 0, to: flip.count, by: 3).map { Int(flip[$0]) } == [5, 4, 3, 2, 1, 0])
+    #expect(MediaIO.quarterTurns(CGAffineTransform(a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0)) == 1)  // a phone's portrait
+    #expect(MediaIO.quarterTurns(.identity) == 0)
+    #expect(MediaIO.quarterTurns(CGAffineTransform(a: 0, b: -1, c: 1, d: 0, tx: 0, ty: 0)) == 3)
 }

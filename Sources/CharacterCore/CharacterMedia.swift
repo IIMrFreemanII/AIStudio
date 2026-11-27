@@ -27,6 +27,8 @@ public enum MediaAsk {
         case .talk:
             if has(t, ["video message", "on camera"]) { return true }
             return has(t, videoWords) && (has(t, voiceWords) || has(t, pattern: "\\bsay\\b|\\bsaying\\b|\\btalk\\b|\\btalking\\b"))
+        case .motion:
+            return has(t, videoWords) || has(t, pattern: "\\bdo (this|that|it)\\b|\\blike (this|that)\\b|\\bcopy\\b|\\bdance\\b")
         }
     }
 }
@@ -36,7 +38,7 @@ public enum MediaDecision: Equatable, Sendable { case run, ask, skip(String) }
 
 public enum CharacterCost {
     /// Videos and video messages always wait for the user's OK; photos and voice only when they cost more than `autoLimit`.
-    public static func alwaysAsks(_ kind: MediaKind) -> Bool { kind == .video || kind == .talk }
+    public static func alwaysAsks(_ kind: MediaKind) -> Bool { kind == .video || kind == .talk || kind == .motion }
 
     public static func decide(_ kind: MediaKind, estimate: Double?, autoLimit: Double, asked: Bool,
                               initiativeLeft: Int) -> MediaDecision {
@@ -59,6 +61,16 @@ public enum CharacterMedia {
     public static let videoSeconds = 5.0
     /// LongCat clips: the voice must fit.
     public static let maxTalkSeconds = MovieVoices.maxTalking
+    /// Motion clips copy at most this much of the user's clip (from its start).
+    public static let maxMotionSeconds = 10.0
+    /// Wan-Animate-2's target area for chat (portrait; the shape is the still's) and its frame rate.
+    public static let motionArea = (width: 640, height: 800)
+    public static let motionFPS = 24.0
+
+    /// Wan-Animate-2's work for `seconds` of clip: megapixels × frames, as GPUTimings counts it.
+    public static func motionWork(seconds: Double) -> Double {
+        Double(motionArea.width * motionArea.height) / 1e6 * (min(seconds, maxMotionSeconds) * motionFPS).rounded()
+    }
 
     /// One GPU job of a request: its server task and its work for GPUTimings.
     public struct Job: Equatable, Sendable {
@@ -76,7 +88,9 @@ public enum CharacterMedia {
         return max(1, Double(words) / 2.6)
     }
 
-    public static func jobs(_ kind: MediaKind, character c: Character, text: String, hasVoiceSample: Bool) -> [Job] {
+    /// `clipSeconds`: a motion clip's length (the user's clip, capped at `maxMotionSeconds`).
+    public static func jobs(_ kind: MediaKind, character c: Character, text: String, hasVoiceSample: Bool,
+                            clipSeconds: Double = maxMotionSeconds) -> [Job] {
         let photo = Job(task: CharacterArt.task(c.artModel.family),
                         work: Double(CharacterArt.photoSize.width * CharacterArt.photoSize.height) / 1e6)
         let sample = Job(task: c.voiceEngine.rawValue, work: speechSeconds(MovieVoices.sampleText))
@@ -90,14 +104,16 @@ public enum CharacterMedia {
         case .voice: return (hasVoiceSample ? [] : [sample]) + [line]
         case .video: return [photo, wan]
         case .talk: return [photo] + (hasVoiceSample ? [] : [sample]) + [line, longcat]
+        case .motion: return [photo, Job(task: "wan-animate2", work: motionWork(seconds: clipSeconds))]
         }
     }
 
     public static func estimate(_ kind: MediaKind, character c: Character, text: String, hasVoiceSample: Bool,
-                                timings: GPUTimings, price: (String) -> Double?, warm: (String) -> Bool) -> Double? {
+                                clipSeconds: Double = maxMotionSeconds, timings: GPUTimings,
+                                price: (String) -> Double?, warm: (String) -> Bool) -> Double? {
         var total = 0.0
         var loaded = Set<String>()
-        for job in jobs(kind, character: c, text: text, hasVoiceSample: hasVoiceSample) {
+        for job in jobs(kind, character: c, text: text, hasVoiceSample: hasVoiceSample, clipSeconds: clipSeconds) {
             guard let p = price(job.task) else { return nil }
             total += timings.seconds(task: job.task, megapixels: job.work) * p
             if !warm(job.task), loaded.insert(job.task).inserted { total += timings.loadSeconds(task: job.task) * p }
@@ -163,6 +179,58 @@ public enum CharacterMedia {
             "length": .int(MovieShots.frames(for: videoSeconds)), "server": .string(server), "start": .string(start.path),
         ]
         return MovieArt.Render(values: values, unusedPictures: ["end"])
+    }
+
+    // MARK: Motion
+
+    /// The motion clip's graph: Load Image (the still) and Load Video (the user's clip) into Wan Animate (Cloud GPU)
+    /// into a Preview Video.
+    public static func motionTemplate(name: String = "character-motion") -> MovieTemplate {
+        let still = GraphNode(id: "still", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                              position: GraphPoint(x: 40, y: 60))
+        let clip = GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(""))],
+                             position: GraphPoint(x: 40, y: 300))
+        let animate = GraphNode(id: "animate", type: "RemoteWanAnimate", inputs: [
+            "image": .link(node: "still", output: "image"), "video": .link(node: "clip", output: "video"),
+            "prompt": .value(.string("")), "scene": .value(.string("")), "seed": .value(.int(0)),
+            "seconds": .value(.double(5)), "server": .value(.string("")),
+        ], position: GraphPoint(x: 340, y: 60))
+        let out = GraphNode(id: "out", type: "PreviewVideo", inputs: ["video": .link(node: "animate", output: "video")],
+                            position: GraphPoint(x: 720, y: 80))
+        var slots = Dictionary(uniqueKeysWithValues: ["prompt", "scene", "seed", "seconds", "server"].map {
+            ($0, MovieTemplate.Slot(node: "animate", input: $0))
+        })
+        slots["still"] = .init(node: "still", input: "path")
+        slots["clip"] = .init(node: "clip", input: "path")
+        return MovieTemplate(name: name, graph: Graph(nodes: [still, clip, animate, out]), slots: slots)
+    }
+
+    /// The still the motion starts from: full body, so a dance's arms and legs have somewhere to go; its background
+    /// is the clip's scene (Wan-Animate-2 keeps the picture's).
+    public static func motionStillPrompt(_ c: Character, request: String, scene: Scenario?,
+                                         context: CharacterArt.Context = .init()) -> String {
+        let req = clean(request)
+        return CharacterArt.photoPrompt(c, request: "full-body shot, standing, facing the camera" + (req.isEmpty ? "" : ", \(req)"),
+                                        scene: scene, context: context)
+    }
+
+    /// The reply's words as the motion clip's scene (a caption without "you"/"I").
+    public static func motionScene(_ request: String) -> String { CharacterArt.caption(clean(request)) }
+
+    /// The look for Wan-Animate-2's caption: who they are and what they wear in the still.
+    public static func motionLook(_ c: Character) -> String {
+        let gender = clean(c.gender), look = clean(c.fullLook)
+        return "A \(c.age)-year-old adult" + (gender.isEmpty ? "" : " \(gender)") + (look.isEmpty ? "" : ", \(look)")
+    }
+
+    public static func motionRender(_ c: Character, still: URL, clip: URL, seconds: Double, scene: String, seed: Int,
+                                    server: String) -> MovieArt.Render {
+        let values: [String: JSONValue] = [
+            "prompt": .string(motionLook(c)), "scene": .string(scene), "seed": .int(seed),
+            "seconds": .double(min(max(seconds, 1), maxMotionSeconds)), "server": .string(server),
+            "still": .string(still.path), "clip": .string(clip.path),
+        ]
+        return MovieArt.Render(values: values, unusedPictures: [])
     }
 
     // MARK: Talk

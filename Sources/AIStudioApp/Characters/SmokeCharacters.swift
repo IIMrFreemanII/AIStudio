@@ -223,8 +223,28 @@ extension SmokeTest {
         let skippedTurn = await send(doc, "send a video")
         if let t = skippedTurn, let m = await settled(skippedTurn) { model.skipMedia(doc, turnID: t.id, mediaID: m.id) }
         check(skippedTurn.flatMap { doc.transcript.turn($0.id) }?.media?.first?.status == .skipped, "a skipped video stays skipped")
+        // g3b. Motion: "Have her do this" on a clip, and a video asked for after sending one, copy its moves.
+        if let clip = video?.file, let her = model.character(c.id) {
+            check(model.motionCharacter(doc) != nil, "she can copy a clip's moves")
+            model.requestMotion(doc, clip: clip, character: her)
+            let motionTurn = doc.transcript.turns.last
+            let motionWaiting = await settled(motionTurn)
+            check(motionWaiting?.kind == "motion" && motionWaiting?.status == .waiting && motionWaiting?.source == clip
+                  && motionWaiting?.estimateUSD != nil, "the clip's motion video waits for the OK with its price (\(describe(motionWaiting)))")
+            if let t = motionTurn, let m = motionWaiting { model.approveMedia(doc, turnID: t.id, mediaID: m.id) }
+            let motion = await settled(motionTurn, [.done, .failed])
+            check(motion?.status == .done && motion?.file?.hasSuffix(".mp4") == true, "the motion video is made (\(describe(motion)))")
+            doc.pending = [.image(clip)]
+            let askedTurn = await send(doc, "send a video")
+            let asked = await settled(askedTurn)
+            check(asked?.kind == "motion" && asked?.source == clip, "a video asked for after a clip copies it (\(describe(asked)))")
+            if let t = askedTurn, let m = asked { model.skipMedia(doc, turnID: t.id, mediaID: m.id) }
+        } else {
+            check(false, "the motion step needs the approved video")
+        }
         let kinds = model.characterStore.memory(c.id).album.map(\.kind)
-        check(kinds == [.photo, .photo, .photo, .voice, .video, .talk], "the album lists the voice message and both videos (\(kinds))")
+        check(kinds == [.photo, .photo, .photo, .voice, .video, .talk, .motion],
+              "the album lists the voice message, both videos and the motion video (\(kinds))")
         check(model.characterStore.memory(c.id).ownMedia.isEmpty, "asked-for media uses none of her initiative")
 
         // g4. She texts first after time away (her chat's last message 9 hours ago), once.

@@ -35,8 +35,8 @@ extension AppModel {
     /// known; none without a server).
     func mediaKinds(_ c: Companion, server: String?) -> [CharacterCore.MediaKind] {
         guard let server else { return [] }
-        guard case .gpuOnline(let info)? = connections.status[server] else { return c.media }
-        return c.media.filter { k in
+        guard case .gpuOnline(let info)? = connections.status[server] else { return c.sends }
+        return c.sends.filter { k in
             CharacterMedia.jobs(k, character: c, text: "", hasVoiceSample: false).allSatisfy { info.task($0.task) != nil }
         }
     }
@@ -84,6 +84,19 @@ extension AppModel {
         return ""
     }
 
+    /// The video the user's message before `turn` carries (its last one), for a motion clip.
+    func askingVideo(_ doc: ChatDocument, before turn: ChatTurn) -> String? {
+        var id = turn.parent
+        while let p = id.flatMap({ doc.transcript.turn($0) }) {
+            if p.role == .user { return p.images.last { Self.isClip($0) } }
+            guard p.role == .assistant, let who = p.speaker, who != turn.speaker else { return nil }
+            id = p.parent
+        }
+        return nil
+    }
+
+    static func isClip(_ name: String) -> Bool { ["mp4", "mov", "m4v"].contains((name as NSString).pathExtension.lowercased()) }
+
     func startCharacterMedia(_ doc: ChatDocument, turnID: UUID, character c: Companion) {
         guard let turn = doc.transcript.turn(turnID), turn.error == nil, turn.speaker == c.id, turn.media == nil else { return }
         let requests = MediaTags.parse(turn.text).requests
@@ -91,16 +104,24 @@ extension AppModel {
         let server = photoServer(for: doc)
         let kinds = mediaKinds(c, server: server)
         let asking = askingText(doc, before: turn)
+        let clip = askingVideo(doc, before: turn)
         var left = CharacterCost.initiativeLeft(c, memory: characterStore.memory(c.id))
         var own = 0
-        let media = requests.map { r -> ChatMedia in
+        let media = requests.map { request -> ChatMedia in
+            // A video after the user sent a clip copies its moves (when the server can); a motion tag without a clip
+            // is an ordinary video.
+            var r = request
+            var source: String?
+            if r.kind == .video || r.kind == .motion {
+                if let clip, kinds.contains(.motion) { r.kind = .motion; source = clip } else { r.kind = .video }
+            }
             let kind = r.kind.rawValue
             guard let server else {
                 return ChatMedia(kind: kind, prompt: r.text, status: .failed, error: "No GPU server for media")
             }
             guard kinds.contains(r.kind) else {
                 return ChatMedia(kind: kind, prompt: r.text, status: .skipped,
-                                 error: c.media.contains(r.kind) ? "The GPU server can't make these" : "Turned off for \(c.name)")
+                                 error: c.sends.contains(r.kind) ? "The GPU server can't make these" : "Turned off for \(c.name)")
             }
             let asked = MediaAsk.asked(r.kind, in: asking)
             let estimate = mediaEstimate(r.kind, character: c, text: r.text, server: server)
@@ -111,7 +132,7 @@ extension AppModel {
             case let decision:
                 if !asked { left -= 1; own += 1 }
                 return ChatMedia(kind: kind, prompt: r.text, status: decision == .run ? .running : .waiting,
-                                 estimateUSD: estimate)
+                                 estimateUSD: estimate, source: source)
             }
         }
         if own > 0 {
@@ -129,6 +150,27 @@ extension AppModel {
                 await self.makeMedia(doc, turnID: turnID, mediaID: id, character: c)
             }
         }
+    }
+
+    /// The character who can copy a clip's moves in this chat: a one-character chat whose character sends motion
+    /// videos and whose GPU server makes them (nil otherwise).
+    func motionCharacter(_ doc: ChatDocument) -> Companion? {
+        let people = characters(of: doc)
+        guard people.count == 1, let c = people.first else { return nil }
+        return mediaKinds(c, server: photoServer(for: doc)).contains(.motion) ? c : nil
+    }
+
+    /// "Have them do this" on a clip the user sent: the character's turn with a motion video of that clip, waiting for
+    /// the user's OK (its cost shows on it, as every video's does).
+    func requestMotion(_ doc: ChatDocument, clip: String, character c: Companion) {
+        guard !doc.isStreaming, let server = photoServer(for: doc) else { return }
+        let estimate = mediaEstimate(.motion, character: c, text: "", server: server)
+        var t = ChatTurn(role: .assistant, text: "<video>the moves from your clip</video>", model: doc.transcript.modelID)
+        t.speaker = c.id
+        t.media = [ChatMedia(kind: CharacterCore.MediaKind.motion.rawValue, prompt: "", status: .waiting,
+                             estimateUSD: estimate, source: clip)]
+        doc.transcript.append(t)
+        saveChat(doc)
     }
 
     /// The user said yes to waiting media.
@@ -204,6 +246,23 @@ extension AppModel {
                 let s = CharacterMedia.videoSize
                 charge(recordGPUJobs(jobs, work: MovieShots.work(width: s.width, height: s.height,
                                                                  frames: MovieShots.frames(for: CharacterMedia.videoSeconds))))
+                file = try copyOutput(outputs, .video, to: folder, base: base)
+            case .motion:
+                guard let source = media.source, FileManager.default.fileExists(atPath: folder.appendingPathComponent(source).path)
+                else { throw CharacterMediaError.noClip }
+                let clip = folder.appendingPathComponent(source)
+                let seconds = min(await MovieComposer.duration(of: clip) ?? CharacterMedia.maxMotionSeconds,
+                                  CharacterMedia.maxMotionSeconds)
+                let still = folder.appendingPathComponent("\(base)-start.png")
+                charge(try await drawPhoto(c, prompt: CharacterMedia.motionStillPrompt(c, request: media.prompt, scene: scene, context: artContext(c)),
+                                           server: server, to: still, title: "\(c.name)'s video (picture)",
+                                           progress: phase("picture")))
+                let render = CharacterMedia.motionRender(c, still: still, clip: clip, seconds: seconds,
+                                                         scene: CharacterMedia.motionScene(media.prompt),
+                                                         seed: Self.mediaSeed(), server: server)
+                let (outputs, jobs) = try await runHeadlessGraph(template: CharacterMedia.motionTemplate(), render: render,
+                                                                 title: "\(c.name)'s video", progress: phase("moves"))
+                charge(recordGPUJobs(jobs, work: CharacterMedia.motionWork(seconds: seconds)))
                 file = try copyOutput(outputs, .video, to: folder, base: base)
             case .talk:
                 let still = folder.appendingPathComponent("\(base)-start.png")
@@ -355,10 +414,11 @@ extension AppModel {
 }
 
 enum CharacterMediaError: Error, CustomStringConvertible {
-    case noServer, noVoice, noOutput(String), tooLong(Double)
+    case noServer, noVoice, noOutput(String), tooLong(Double), noClip
     var description: String {
         switch self {
         case .noServer: "No GPU server for media"
+        case .noClip: "The clip to copy is gone from this chat"
         case .noVoice: "They have no voice sample yet"
         case .noOutput(let kind): "The server sent back no \(kind)"
         case .tooLong(let s):

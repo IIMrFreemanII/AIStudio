@@ -68,7 +68,7 @@
   ],
   "name" : "MiniMax H3 from References · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 330,
+  "order" : 360,
   "summary" : "A clip from a reference picture and a voice clip: name them <Picture 1> and <Audio 1> in the prompt, and the character speaks in that voice. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
   "symbol" : "cloud"
 }

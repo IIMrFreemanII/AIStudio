@@ -122,11 +122,11 @@ struct CharacterMediaKindsRow: View {
     var body: some View {
         MGFormRow("Sends") {
             HStack(spacing: 12) {
-                ForEach(CharacterCore.MediaKind.allCases, id: \.self) { k in
+                ForEach(CharacterCore.MediaKind.toggled, id: \.self) { k in
                     Toggle(CharacterDisplay.label(k).name + "s", isOn: Binding(
                         get: { c.media.contains(k) },
                         set: { on in
-                            if on { c.media = CharacterCore.MediaKind.allCases.filter { c.media.contains($0) || $0 == k } }
+                            if on { c.media = CharacterCore.MediaKind.toggled.filter { c.media.contains($0) || $0 == k } }
                             else { c.media.removeAll { $0 == k } }
                         }))
                         .toggleStyle(MGCheckboxStyle())

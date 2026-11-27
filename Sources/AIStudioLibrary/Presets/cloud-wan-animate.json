@@ -1,0 +1,72 @@
+{
+  "category" : "video",
+  "graph" : {
+    "nodes" : [
+      {
+        "id" : "character",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 60
+        },
+        "type" : "LoadImage"
+      },
+      {
+        "id" : "clip",
+        "inputs" : {
+          "path" : ""
+        },
+        "position" : {
+          "x" : 40,
+          "y" : 300
+        },
+        "type" : "LoadVideo"
+      },
+      {
+        "id" : "cloud",
+        "inputs" : {
+          "image" : {
+            "node" : "character",
+            "output" : "image"
+          },
+          "video" : {
+            "node" : "clip",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 60
+        },
+        "type" : "RemoteWanAnimate"
+      },
+      {
+        "id" : "show",
+        "inputs" : {
+          "video" : {
+            "node" : "cloud",
+            "output" : "video"
+          }
+        },
+        "position" : {
+          "x" : 700,
+          "y" : 120
+        },
+        "type" : "PreviewVideo"
+      }
+    ],
+    "version" : 1
+  },
+  "id" : "cloud-wan-animate",
+  "modelName" : "Wan-Animate-2 on a GPU server",
+  "models" : [
+
+  ],
+  "name" : "Copy a Clip's Motion · Cloud GPU",
+  "needsServer" : "gpu",
+  "order" : 300,
+  "summary" : "Make a character move like the person in a video, expressions included, in the picture's own scene. The clip's sound stays. About 2.5 minutes of GPU time for 5 seconds.",
+  "symbol" : "cloud"
+}

@@ -357,11 +357,14 @@ public enum MediaIO {
         }
     }
 
-    /// Decodes a video to frames (at most `maxFrames`), with its soundtrack if it has one.
+    /// Decodes a video to frames (at most `maxFrames`), with its soundtrack if it has one. A phone clip's rotation
+    /// (its track's preferred transform) is applied, so portrait clips come in upright.
     public static func readVideo(_ url: URL, maxFrames: Int? = nil) async throws -> VideoClip {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw MediaError.noTrack(url) }
         let fps = Double(try await track.load(.nominalFrameRate))
+        let transform = (try? await track.load(.preferredTransform)) ?? .identity
+        let turns = quarterTurns(transform)
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -395,7 +398,39 @@ public enum MediaIO {
         }
         guard count > 0 else { throw MediaError.reader("no frames") }
         let audio = try? await readAudio(url, maxSeconds: Double(count) / max(fps, 1))
-        return VideoClip(frames: MLXArray(frames, [count, h, w, 3]), fps: fps > 0 ? Double(fps) : 24, audio: audio)
+        let (upright, uw, uh) = rotate(frames, count: count, width: w, height: h, quarterTurns: turns)
+        return VideoClip(frames: MLXArray(upright, [count, uh, uw, 3]), fps: fps > 0 ? Double(fps) : 24, audio: audio)
+    }
+
+    /// Clockwise quarter turns (0…3) a track's preferred transform asks for (phones store portrait clips sideways).
+    public static func quarterTurns(_ t: CGAffineTransform) -> Int {
+        let degrees = atan2(Double(t.b), Double(t.a)) * 180 / .pi
+        return ((Int((degrees / 90).rounded()) % 4) + 4) % 4
+    }
+
+    /// RGB frames `[count, height, width, 3]` turned clockwise by `quarterTurns`, with their new width and height.
+    public static func rotate(_ frames: [Float], count: Int, width w: Int, height h: Int,
+                              quarterTurns turns: Int) -> ([Float], Int, Int) {
+        guard turns % 4 != 0 else { return (frames, w, h) }
+        let (nw, nh) = turns % 2 == 1 ? (h, w) : (w, h)
+        var out = [Float](repeating: 0, count: frames.count)
+        let plane = w * h * 3
+        for f in 0..<count {
+            let base = f * plane
+            for y in 0..<h {
+                for x in 0..<w {
+                    let (nx, ny): (Int, Int)
+                    switch turns % 4 {
+                    case 1: (nx, ny) = (h - 1 - y, x)  // 90° clockwise
+                    case 2: (nx, ny) = (w - 1 - x, h - 1 - y)
+                    default: (nx, ny) = (y, w - 1 - x)  // 270°
+                    }
+                    let src = base + (y * w + x) * 3, dst = base + (ny * nw + nx) * 3
+                    out[dst] = frames[src]; out[dst + 1] = frames[src + 1]; out[dst + 2] = frames[src + 2]
+                }
+            }
+        }
+        return (out, nw, nh)
     }
 
     /// Duration in seconds (0 if unreadable).

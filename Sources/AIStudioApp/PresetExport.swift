@@ -341,6 +341,23 @@ enum PresetExport {
                             "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
                      ])
                  }),
+            Spec(id: "cloud-wan-animate", name: "Copy a Clip's Motion · Cloud GPU", category: .video, models: [],
+                 modelName: "Wan-Animate-2 on a GPU server",
+                 summary: "Make a character move like the person in a video, expressions included, in the picture's own scene. The clip's sound stays. About 2.5 minutes of GPU time for 5 seconds.",
+                 symbol: "cloud", needsServer: "gpu", build: { _ in
+                     Graph(nodes: [
+                        GraphNode(id: "character", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 60)),
+                        GraphNode(id: "clip", type: "LoadVideo", inputs: ["path": .value(.string(""))],
+                                  position: GraphPoint(x: 40, y: 300)),
+                        GraphNode(id: "cloud", type: "RemoteWanAnimate", inputs: [
+                            "image": .link(node: "character", output: "image"),
+                            "video": .link(node: "clip", output: "video"),
+                        ], position: GraphPoint(x: 340, y: 60)),
+                        GraphNode(id: "show", type: "PreviewVideo", inputs: [
+                            "video": .link(node: "cloud", output: "video")], position: GraphPoint(x: 700, y: 120)),
+                     ])
+                 }),
             Spec(id: "cloud-breeze-tts", name: "Breeze TTS 2 · Cloud GPU (non-commercial)", category: .speech,
                  models: [], modelName: "Breeze TTS 2 on a GPU server",
                  summary: "Expressive English and Chinese speech: design a voice from a description, or connect Load Audio to reference (with its exact transcript) to clone and direct a voice. Research and non-commercial use only.",

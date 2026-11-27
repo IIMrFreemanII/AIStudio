@@ -31,8 +31,14 @@ public struct Character: Codable, Identifiable, Equatable, Sendable, Hashable {
     /// File names in the character's voice/ folder.
     public var voiceSamples: [String]
     public var selectedVoiceSample: String?
-    /// The kinds of media the character may send.
+    /// The kinds of media the character may send (motion goes with video: see `sends`).
     public var media: [MediaKind]
+    /// What the character may send: `media`, with motion when video is on (characters saved before motion existed
+    /// list only the toggled kinds).
+    public var sends: [MediaKind] {
+        let own = media.filter { $0 != .motion }
+        return own.contains(.video) ? own + [.motion] : own
+    }
     /// Own-initiative media per day.
     public var initiative: Int
     /// Hours away after which they text you first when you open the chat; 0: never.

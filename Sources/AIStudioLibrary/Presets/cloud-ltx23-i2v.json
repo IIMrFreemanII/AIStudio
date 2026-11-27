@@ -55,7 +55,7 @@
   ],
   "name" : "LTX-2.3 · Image to Video · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 340,
+  "order" : 350,
   "summary" : "Animate a picture into a clip with its own sound: the picture is the first frame.",
   "symbol" : "cloud"
 }
