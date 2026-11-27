@@ -292,37 +292,18 @@ s2v_image = s2v_base.add_local_python_source("aistudio_gpu")
 
 # Wan-Animate v1's replacement mode: the S2V image (the same official repo and commit) plus what the repo's
 # preprocessing imports (requirements_animate.txt): onnxruntime for the YOLO and ViTPose trackers, SAM2 at the repo's
-# commit (its CUDA extension skipped: the video predictor runs without it), moviepy 1 (it writes its videos with
-# moviepy.editor), loguru, matplotlib, pandas.
+# commit from source on the path (its setup builds a CUDA extension the image can't; the video predictor runs without
+# it), moviepy 1 (it writes its videos with moviepy.editor), loguru, matplotlib, pandas, SAM2's hydra and iopath.
 SAM2_COMMIT = "0e78a118995e66bb27d78518c4bd9a3e95b4e266"
 animate_image = (
     s2v_base
     .uv_pip_install("onnxruntime-gpu==1.22.0", "moviepy==1.0.3", "loguru==0.7.3", "matplotlib==3.10.3",
                     "pandas==2.3.1", "hydra-core==1.3.2", "omegaconf==2.3.0", "iopath==0.1.10")
-    .run_commands(f"SAM2_BUILD_CUDA=0 pip install --no-build-isolation --no-deps "
-                  f"'git+https://github.com/facebookresearch/sam2.git@{SAM2_COMMIT}'")
+    .run_commands("git init -q /opt/sam2 && cd /opt/sam2 && git remote add origin "
+                  f"https://github.com/facebookresearch/sam2 && git fetch -q --depth 1 origin {SAM2_COMMIT} && "
+                  "git checkout -q FETCH_HEAD")
+    .env({"PYTHONPATH": "/opt/wan22:/opt/sam2"})
     .add_local_python_source("aistudio_gpu"))
-
-
-@_gpu_class(image=animate_image, gpu=ANIMATE_REPLACE_GPUS if len(ANIMATE_REPLACE_GPUS) > 1 else GPU_WAN,
-            **_container("wan-animate-replace"))
-class WanAnimateReplace:
-    @modal.enter(snap=True)
-    def imports(self):
-        _s2v_imports()
-
-    @modal.enter(snap=False)
-    def load(self):
-        from aistudio_gpu.modal_runner import WorkerState
-
-        self.state = WorkerState("wan-animate-replace", MODELS)
-
-    @modal.method()
-    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
-        from aistudio_gpu.modal_runner import run_job
-
-        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
-                       models=(volume, MODELS))
 
 
 # LongCat-Video-Avatar 1.6: the official repo at a pinned commit with its requirements.txt pins (torch 2.6 + CUDA
@@ -491,6 +472,27 @@ class WanS2V:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("wan22-s2v", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+@_gpu_class(image=animate_image, gpu=ANIMATE_REPLACE_GPUS if len(ANIMATE_REPLACE_GPUS) > 1 else GPU_WAN,
+            **_container("wan-animate-replace"))
+class WanAnimateReplace:
+    @modal.enter(snap=True)
+    def imports(self):
+        _s2v_imports()
+
+    @modal.enter(snap=False)
+    def load(self):
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("wan-animate-replace", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
