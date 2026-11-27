@@ -123,3 +123,16 @@ def test_velocity_target_and_capture():
     c = capture(pipe, denoise, prompt="zq_mia, a woman")
     assert isinstance(c, Captured) and c.state == {"prompt": "zq_mia, a woman"} and c.sigmas == [1.0, 0.5, 0.0]
     assert Wrapper.__call__.__name__ == "__call__"  # restored
+
+
+def test_training_size_matches_the_reference_path():
+    from diffusers.modular_pipelines.minimax_h3_image.before_encoder import bound_short_edge
+
+    from aistudio_gpu.tasks.train_h3_image import reference_size
+
+    for w, h in [(832, 1248), (1216, 832), (1024, 1024), (900, 1700)]:
+        size = reference_size(w, h, 1024)
+        assert min(size) == 1024 and size[0] % 32 == 0 and size[1] % 32 == 0
+        assert bound_short_edge(*size, 1024, 2048, 32) == size  # the edit path keeps it as it is
+    assert reference_size(832, 1248, 512) == (1024, 1536)  # never below the reference path's 1024
+

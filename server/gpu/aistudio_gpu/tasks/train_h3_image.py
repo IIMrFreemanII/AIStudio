@@ -8,7 +8,8 @@ pipeline's own inputs for it:
 * **Inputs.** The pipeline runs up to its denoise loop and stops there (``capture``): a text-to-image run with the
   caption gives the packed noise rows, the prompt embeddings, each step's timestep plan and the sequence description
   (token tags, positions, row indices); an edit run with the picture as ``<Picture 1>`` gives the picture's clean
-  latent rows (its reference rows), at the same canvas.
+  latent rows (its reference rows), at the same canvas: a short edge of 1024 (``reference_size``), the size at
+  which the edit path keeps a reference as it is.
 * **Training.** A PEFT LoRA on the transformer blocks' attention and feed-forward layers (``alpha = rank``: the file
   loads at scale 1, as alpha-less H3 LoRAs do), AdamW, bf16 autocast, gradient checkpointing; each step a random
   picture and a random one of the six steps.
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from . import Output, TaskSpec
 from .minimax_h3_image import H3ImageWorker
-from .training import bucket, fit, read_dataset, total_steps
+from .training import fit, read_dataset, total_steps
 
 ADAPTER = "character"
 TARGETS = r".*transformer_blocks\.\d+\.(attn\.(to_q|to_k|to_v|to_out\.0)|ff\.net\.(0\.proj|2))"
@@ -68,6 +69,17 @@ def capture(pipe, denoise, **kwargs) -> Captured:
     raise RuntimeError("MiniMax H3 Image didn't reach its denoise loop")
 
 
+def reference_size(width: int, height: int, short: int, multiple: int = 32) -> tuple[int, int]:
+    """The training size of a picture: its aspect ratio with a short edge of ``short`` (1024–2048), both sides in
+    multiples of 32. The edit path keeps a reference whose short edge is within 1024–2048 at its own size and the
+    canvas rounds to 32, so at this size the picture's reference rows and a generation's rows line up (at 832×1248 the
+    reference was enlarged to 1024×1536: 1536 rows against 1014)."""
+    short = min(max(short, 1024), 2048)
+    scale = short / min(width, height)
+    return (max(multiple, round(width * scale / multiple) * multiple),
+            max(multiple, round(height * scale / multiple) * multiple))
+
+
 def noisy_and_target(clean, noise, sigma: float):
     """The step's input and its velocity target: x = (1 − σ)·x₀ + σ·ε, v = x₀ − ε."""
     return (1.0 - sigma) * clean + sigma * noise, clean - noise
@@ -91,7 +103,6 @@ class H3ImageTrainWorker(H3ImageWorker):
         samples = read_dataset(inputs["dataset"])
         pipe, transformer = self.pipe._pipe, self.pipe.transformer
         steps = total_steps(len(samples), params["steps"], 50, 800, 1600)
-        area = params["resolution"] ** 2
         rng = random.Random(params["seed"])
         torch.manual_seed(params["seed"])
 
@@ -99,7 +110,7 @@ class H3ImageTrainWorker(H3ImageWorker):
         prepared: list[Prepared] = []
         for i, s in enumerate(samples):
             sink.check()
-            w, h = bucket(s.image.width, s.image.height, area, multiple=32)
+            w, h = reference_size(s.image.width, s.image.height, params["resolution"])
             picture = fit(s.image, (w, h))
             common = {"width": w, "height": h, "min_generation_area": w * h,
                       "generator": torch.Generator().manual_seed(params["seed"] + i), "output_type": "pil"}
