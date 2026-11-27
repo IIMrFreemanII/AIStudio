@@ -328,3 +328,55 @@ struct StudioFaceTests {
         }
     }
 }
+
+struct StudioOrbPoseTests {
+    func face(_ s: StudioActorState) -> StudioFace { StudioFace.face(state: s, pace: .watchable, reduceMotion: false) }
+
+    @Test func eyesFollowTheMood() {
+        let open = StudioOrbPose.pose(face: face(.idle))
+        #expect(open.eyeShape == .pill && open.eyeWidth == 0.26 && open.eyeHeight == 0.66 && open.eyeGap == 0.42)
+        #expect(StudioOrbPose.pose(face: face(.working)).eyeHeight < open.eyeHeight, "focus: narrower")
+        let wide = StudioOrbPose.pose(face: face(.waiting))
+        #expect(wide.eyeHeight > open.eyeHeight && wide.eyeWidth > open.eyeWidth)
+        let closed = StudioOrbPose.pose(face: face(.paused), paused: true)
+        #expect(closed.eyeHeight < 0.1 && closed.eyeWidth > open.eyeWidth && closed.glow == 0.35)
+        #expect(StudioOrbPose.pose(face: face(.done)).eyeShape == .happy && StudioOrbPose.pose(face: face(.done)).eyeGap == 0.54)
+        #expect(StudioOrbPose.pose(face: face(.failed)).eyeShape == .cross)
+    }
+
+    @Test func blinkShutsPillEyesOnly() {
+        let b = StudioOrbPose.pose(face: face(.idle), blinking: true)
+        #expect(b.eyeHeight < 0.1 && b.eyeWidth > 0.26)
+        #expect(StudioOrbPose.pose(face: face(.done), blinking: true).eyeHeight == 0.66, "happy arcs don't blink")
+    }
+
+    @Test func smallOrbsKeepVisibleEyes() {
+        let p = StudioOrbPose.pose(face: face(.paused), radius: 8)
+        #expect(p.eyeHeight * 8 >= 0.999 && p.eyeWidth * 8 >= 1.599)
+        #expect(StudioOrbPose.pose(face: face(.idle), radius: 8).glow == 0.75)
+    }
+
+    @Test func gazeTurnsTheSphere() {
+        let still = StudioOrbPose.pose(face: face(.idle))
+        #expect(still.rotation == [1, 0, 0, 0, 1, 0, 0, 0, 1])
+        // Looking right and up: the front (+z in the body) turns toward +x and +y on screen.
+        let p = StudioOrbPose.pose(face: face(.idle), gaze: CGVector(dx: 1, dy: -1))
+        let m = p.rotation
+        let front = (m[6], m[7], m[8])
+        #expect(front.0 > 0.2 && front.1 > 0.2 && front.2 > 0.5)
+        // Orthonormal columns.
+        for c in 0..<3 {
+            let col = (m[c * 3], m[c * 3 + 1], m[c * 3 + 2])
+            #expect(abs(col.0 * col.0 + col.1 * col.1 + col.2 * col.2 - 1) < 1e-5)
+        }
+        // A long gaze is clamped to 1; turn 0 keeps it facing front.
+        let far = StudioOrbPose.pose(face: face(.idle), gaze: CGVector(dx: 5, dy: 0))
+        #expect(abs(far.yaw - StudioOrbPose.maxYaw * StudioOrbPose.standardTurn) < 1e-9)
+        #expect(StudioOrbPose.pose(face: face(.idle), gaze: CGVector(dx: 1, dy: 0), turn: 0).yaw == 0)
+    }
+
+    @Test func talkingLiftsTheEyes() {
+        #expect(StudioOrbPose.pose(face: face(.working), bounce: -1).eyeLift > 0)
+        #expect(StudioOrbPose.pose(face: face(.working), bounce: 1).eyeLift < 0)
+    }
+}

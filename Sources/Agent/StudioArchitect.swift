@@ -531,3 +531,118 @@ public struct StudioFace: Equatable, Sendable {
         }
     }
 }
+
+// MARK: 3D orb pose
+
+/// The eye shapes the 3D orb's shader draws.
+public enum StudioOrbEyeShape: Int, Sendable {
+    case pill = 0
+    case happy = 1
+    case cross = 2
+}
+
+/// The look of the 3D orb's glossy dark glass. The defaults are "Close to today" from the mock-up page.
+public struct StudioOrbGlass: Equatable, Sendable {
+    /// The key-light highlight's half-size, in radians.
+    public var highlightSize = 0.16
+    public var highlightStrength = 0.85
+    /// The rim colour from the viewing angle.
+    public var rim = 0.85
+    /// The frosted band, as a fraction of the radius.
+    public var frost = 0.17
+    /// How far the glow inside the glass spreads, in radii.
+    public var glowSpread = 0.55
+    public var glowStrength = 1.0
+    /// The architect's colour-shifting film.
+    public var iridescence = 0.7
+
+    public init() {}
+    public static let standard = StudioOrbGlass()
+}
+
+/// What the 3D orb's shader draws at one moment: how the sphere is turned, the eyes' shape and size on its surface,
+/// and how bright the glow inside the glass is. Lengths are in sphere radii, angles in radians, y points up.
+public struct StudioOrbPose: Equatable, Sendable {
+    public var eyeShape: StudioOrbEyeShape
+    public var eyeWidth: Double
+    public var eyeHeight: Double
+    /// Between the two eye centres.
+    public var eyeGap: Double
+    /// The talking bounce: moves the eyes up (positive) or down on the surface.
+    public var eyeLift: Double
+    /// Turned right (positive) or left.
+    public var yaw: Double
+    /// Turned up (positive) or down.
+    public var pitch: Double
+    /// Tilted anticlockwise (positive).
+    public var roll: Double
+    /// The glow inside the glass: 1 normally.
+    public var glow: Double
+
+    /// A pill eye at rest.
+    public static let eyeWidth = 0.26, eyeHeight = 0.66
+    /// How far the sphere turns for a full look (gaze 1) at turn 1.
+    public static let maxYaw = 0.7, maxPitch = 0.55
+    /// How much the sphere turns toward its gaze (the mock-up's "Turn toward gaze").
+    public static let standardTurn = 0.6
+
+    /// - Parameters:
+    ///   - gaze: where it looks, up to 1 long, x right and y down (as `StudioOrb`'s gaze).
+    ///   - bounce: the talking bounce's phase, -1…1 (0 when it isn't talking).
+    ///   - breathe: the glow's breathing, 0.8…1 while working (1 otherwise).
+    ///   - radius: the orb's radius in points, to keep the eyes at least 1.6 pt wide and 1 pt tall.
+    public static func pose(face: StudioFace, blinking: Bool = false, gaze: CGVector = CGVector(dx: 0, dy: 0), bounce: Double = 0,
+                            breathe: Double = 1, paused: Bool = false, radius: Double = 16,
+                            turn: Double = standardTurn) -> StudioOrbPose {
+        let w = eyeWidth, h = eyeHeight
+        var shape = StudioOrbEyeShape.pill
+        var size: (Double, Double)
+        switch face.eyes {
+        case .open: size = (w, h)
+        case .focus: size = (w, h * 0.72)
+        case .wide: size = (w * 1.08, h * 1.15)
+        case .closed: size = (w * 1.3, h * 0.14)
+        case .happy: shape = .happy; size = (w, h)
+        case .cross: shape = .cross; size = (w, h)
+        }
+        if blinking, shape == .pill, face.eyes != .closed { size = (size.0 * 1.1, h * 0.12) }
+        let r = max(radius, 1)
+        let g = Self.clampedGaze(gaze)
+        let t = min(max(turn, 0), 1)
+        return StudioOrbPose(
+            eyeShape: shape,
+            eyeWidth: max(size.0, 1.6 / r),
+            eyeHeight: max(size.1, 1 / r),
+            eyeGap: shape == .pill ? 0.42 : 0.54,
+            eyeLift: -0.094 * bounce,
+            yaw: Double(g.dx) * maxYaw * t,
+            pitch: -Double(g.dy) * maxPitch * t,
+            roll: 0,
+            glow: breathe * (paused ? 0.35 : 1) * (radius < 12 ? 0.75 : 1))
+    }
+
+    static func clampedGaze(_ v: CGVector) -> CGVector {
+        let l = hypot(v.dx, v.dy)
+        return l > 1 ? CGVector(dx: v.dx / l, dy: v.dy / l) : v
+    }
+
+    /// The sphere's turn as a 3×3 rotation, column by column (body → view): roll · yaw · pitch. The view looks down -z
+    /// at the sphere, so the face's front is +z.
+    public var rotation: [Float] {
+        let cy = cos(yaw), sy = sin(yaw), cp = cos(pitch), sp = sin(pitch), cr = cos(roll), sr = sin(roll)
+        // Rz(roll) · Ry(yaw) · Rx(-pitch): a positive pitch turns the front up.
+        let rz: [[Double]] = [[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]]
+        let ry: [[Double]] = [[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]
+        let rx: [[Double]] = [[1, 0, 0], [0, cp, sp], [0, -sp, cp]]
+        func mul(_ a: [[Double]], _ b: [[Double]]) -> [[Double]] {
+            (0..<3).map { (i: Int) -> [Double] in
+                (0..<3).map { (j: Int) -> Double in
+                    let x: Double = a[i][0] * b[0][j] + a[i][1] * b[1][j]
+                    return x + a[i][2] * b[2][j]
+                }
+            }
+        }
+        let m = mul(mul(rz, ry), rx)
+        return (0..<3).flatMap { c in (0..<3).map { r in Float(m[r][c]) } }
+    }
+}
