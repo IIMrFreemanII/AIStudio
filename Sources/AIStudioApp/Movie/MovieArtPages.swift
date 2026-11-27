@@ -24,6 +24,7 @@ struct MovieCastPage: View {
             .mgHelp(missing > 0 ? "A sheet for each character and a plate for each place without one (you see the cost first)"
                     : "A new take of every sheet and plate; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-sheets")
+            MovieFastPicturesToggle(doc: doc)
             Button("Edit Template") {
                 model.editMovieTemplate(MovieArt.TemplateName.sheet, for: doc) {
                     MovieArt.textToImageTemplate(name: MovieArt.TemplateName.sheet)
@@ -189,6 +190,7 @@ struct MovieKeyframesPage: View {
             .mgHelp(missing > 0 ? "One keyframe for each shot without one (you see the cost first)"
                     : "A new take for every shot; the chosen ones stay until you pick another")
             .mgTestAnchor("movie-make-keyframes")
+            MovieFastPicturesToggle(doc: doc)
             Button("Edit Template") {
                 model.editMovieTemplate(MovieArt.TemplateName.keyframeEdit, for: doc) { MovieArt.editTemplate() }
             }
@@ -408,5 +410,21 @@ struct MovieExpandButton: View {
         }
         .buttonStyle(.plain)
         .mgHelp("Open in the viewer")
+    }
+}
+
+/// The movie's Fast switch for its pictures (sheets, plates and keyframes): Qwen's Lightning modes, much cheaper but
+/// without the negative prompt. Shown on the Cast and Keyframes pages; one setting for both.
+struct MovieFastPicturesToggle: View {
+    @Bindable var doc: MovieDocument
+
+    var body: some View {
+        Toggle("Fast", isOn: $doc.movie.fastPictures)
+            .toggleStyle(.switch).controlSize(.small)
+            .disabled(doc.isBusy)
+            .mgHelp("Qwen's Lightning mode for sheets, plates and keyframes: 8 steps without guidance, about 6× cheaper "
+                    + "(10× for keyframes with the cast), but the negative prompt is ignored, so text or extra people "
+                    + "can slip in. Off: the full models (50 and 40 steps with guidance)")
+            .mgTestAnchor("movie-fast-pictures")
     }
 }

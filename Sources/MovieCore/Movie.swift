@@ -784,6 +784,10 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
     public var voiceEngine: VoiceEngine
     /// The model that makes the clips.
     public var videoEngine: VideoEngine
+    /// Sheets, plates and keyframes in Qwen's fast mode (the Lightning LoRAs: 8 steps without guidance, ≈ 6× fewer GPU
+    /// seconds for Qwen-Image and ≈ 10× for Qwen-Image-Edit), which ignores the negative prompt, so text or extra
+    /// people can slip onto sheets and people onto plates. Off (the default): the full modes (`MovieArt.fastMode`).
+    public var fastPictures: Bool
 
     public init(id: UUID = UUID(), title: String = "Untitled Movie", idea: String = "",
                 style: String = MovieStyle.cinematic.id, aspect: MovieAspect = .wide, targetSeconds: Int = 90,
@@ -795,7 +799,7 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
                 created: Date = Date(),
                 modified: Date = Date(), music: [MusicCue] = [], mix: MovieMix = MovieMix(), lipSync: Bool = true,
                 lipSyncEngine: LipSyncEngine = .wanS2V, voiceEngine: VoiceEngine = .qwen3,
-                videoEngine: VideoEngine = .wan22) {
+                videoEngine: VideoEngine = .wan22, fastPictures: Bool = false) {
         self.id = id
         self.title = title
         self.idea = idea
@@ -826,6 +830,7 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         self.lipSyncEngine = lipSyncEngine
         self.voiceEngine = voiceEngine
         self.videoEngine = videoEngine
+        self.fastPictures = fastPictures
         // Per-sequence stages given in `approved` count for every sequence.
         for stage in approved where stage.isPerSequence { approve(stage) }
     }
@@ -834,7 +839,7 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         case version, id, title, idea, style, aspect, targetSeconds, llm, logline, premise, tone, theme, characters,
              locations, scenes, critiqueNotes, critique, shots, sequences,
              approved, sequenceApproved, budget, costSpent, created, modified, music, mix, lipSync, lipSyncEngine,
-             voiceEngine, videoEngine
+             voiceEngine, videoEngine, fastPictures
     }
 
     /// Movies saved before the sound stages have no music, mix or lip-sync setting.
@@ -884,6 +889,7 @@ public struct MovieProject: Codable, Identifiable, Sendable, Equatable {
         lipSyncEngine = (try? c.decodeIfPresent(LipSyncEngine.self, forKey: .lipSyncEngine)) ?? .wanS2V
         voiceEngine = (try? c.decodeIfPresent(VoiceEngine.self, forKey: .voiceEngine)) ?? .qwen3
         videoEngine = (try? c.decodeIfPresent(VideoEngine.self, forKey: .videoEngine)) ?? .wan22
+        fastPictures = try c.decodeIfPresent(Bool.self, forKey: .fastPictures) ?? false
     }
 
     public var runtime: Double { shots.reduce(0) { $0 + $1.duration } }

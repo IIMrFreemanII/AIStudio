@@ -36,9 +36,10 @@ public struct FilmEstimate: Sendable, Equatable {
     public init(movie: MovieProject, timings: GPUTimings) {
         let sequences = Double(max(1, movie.sequences.count))
         var parts: [Part] = []
-        func add(_ label: String, task: String, jobs: [Double], runs: Double = sequences) {
+        func add(_ label: String, task: String, jobs: [Double], runs: Double = sequences, fast: Bool = false) {
             guard !jobs.isEmpty, let price = Self.taskPrice[task] else { return }
-            let work = jobs.reduce(0) { $0 + timings.seconds(task: task, megapixels: $1) }
+            let timing = GPUTimings.timingTask(task, fast: fast)
+            let work = jobs.reduce(0) { $0 + timings.seconds(task: timing, megapixels: $1) }
             let start = min(Double(jobs.count), runs) * (timings.loadSeconds(task: task) + Self.idleSeconds)
             parts.append(Part(label: label, usd: (work + start) * price))
         }
@@ -59,13 +60,14 @@ public struct FilmEstimate: Sendable, Equatable {
         // Cast: a sheet for each character without one.
         let cast = movie.characters.filter { $0.selectedSheetFile == nil }.count
         let castCount = movie.characters.isEmpty && !planned ? 3 : cast
-        add("Character sheets", task: "qwen-image", jobs: Array(repeating: 1.5, count: castCount), runs: 1)
+        add("Character sheets", task: "qwen-image", jobs: Array(repeating: 1.5, count: castCount), runs: 1,
+            fast: movie.fastPictures)
 
         // Keyframes.
         let size = movie.aspect.keyframeSize
         let kmp = Double(size.width * size.height) / 1e6
         add("Keyframes", task: "qwen-image-edit",
-            jobs: shots.filter { $0.selectedKeyframeFile == nil }.map { _ in kmp })
+            jobs: shots.filter { $0.selectedKeyframeFile == nil }.map { _ in kmp }, fast: movie.fastPictures)
 
         // Clips.
         let engine = movie.videoEngine

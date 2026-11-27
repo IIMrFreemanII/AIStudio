@@ -312,8 +312,9 @@ ends prompts with a "positive magic" suffix, `, Ultra HD, 4K, cinematic composit
 **In AIStudio:** node `RemoteQwenImage` (task `qwen-image`, H100). Movie Studio draws character sheets and location
 plates with it: `MovieArt.sheetPrompt` and `platePrompt`, with `MovieStyle.keyframeSuffix` at the end. The
 template (`MovieArt.textToImageTemplate`) turns `fast` off (50 steps at CFG 4), so the negatives apply: text and extra
-people stay off the sheets, and people stay off the plates. A movie whose template was saved before this change keeps
-its own copy, with `fast` on. **(code)**
+people stay off the sheets, and people stay off the plates. The movie's **Fast** switch (Cast and Keyframes pages,
+`MovieProject.fastPictures`, off by default) turns Lightning back on for every Qwen node at render time
+(`MovieArt.fastMode`, edited copies of the template too): ≈ 6× cheaper, but the negatives are ignored. **(code)**
 
 ### Qwen-Image-Edit 2511
 
@@ -341,8 +342,8 @@ the sheet's grey background and layout into keyframes. **(ours)**
 **In AIStudio:** node `RemoteQwenImageEdit` (task `qwen-image-edit`, H100). Movie Studio keyframes:
 `MovieArt.keyframePrompt(for:in:references:)` writes the "Picture n is …" lines, the shot, its framing and the
 style suffix, from at most three references (sheets, then the plate, then the previous keyframe). The template
-(`MovieArt.editTemplate`) turns `fast` off (40 steps at CFG 4), so `MovieStyle.negative` applies. A movie whose template
-was saved before this change keeps its own copy, with `fast` on. **(code)**
+(`MovieArt.editTemplate`) turns `fast` off (40 steps at CFG 4), so `MovieStyle.negative` applies. The movie's
+**Fast** switch turns Lightning on (≈ 10× cheaper, negative ignored), as for Qwen-Image. **(code)**
 
 ### MiniMax H3 Image
 

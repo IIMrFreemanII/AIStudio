@@ -88,6 +88,13 @@ struct PromptPreviewPanel: View {
             MGPicker(selection: $draft.aspect, options: PromptPreview.Aspect.allCases.map { ($0, $0.title) }, maxWidth: 110)
             Toggle("Keep seed", isOn: $draft.keepSeed).toggleStyle(.checkbox).fixedSize()
                 .mgHelp("The same seed every time, so a changed option shows only its own effect")
+            // A saved character's own model keeps its full mode: its negative carries AgeGuard's terms.
+            if PromptPreview.fastModels.contains(draft.model), model.previewCharacter(draft) == nil {
+                Toggle("Fast", isOn: $draft.fast).toggleStyle(.checkbox).fixedSize()
+                    .mgHelp("The model's fast mode (Chroma Flash, SD 3.5 Turbo, Qwen-Image Lightning) even with a "
+                            + "negative: much cheaper, but the negative is ignored. Off: in full when there is a negative")
+                    .mgTestAnchor("prompt-preview-fast")
+            }
             Button { draft.seed = Int.random(in: 0..<Int(Int32.max)) } label: { Image(systemName: "dice") }
                 .buttonStyle(.mg(.icon)).mgHelp("New seed (\(draft.seed))")
             Spacer(minLength: 0)

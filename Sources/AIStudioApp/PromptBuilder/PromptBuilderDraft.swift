@@ -35,6 +35,9 @@ struct PromptBuilderDraft: Codable, Equatable {
     var seed = Int.random(in: 0..<Int(Int32.max))
     /// The same seed for every preview, so a changed option shows only its own effect.
     var keepSeed = true
+    /// Chroma, SD 3.5 and Qwen-Image previews in their fast modes even with a negative, which they then ignore
+    /// (`PromptPreview.runsFast`); off: in full whenever there is a negative.
+    var fast = false
 
     static let storageKey = "promptBuilder.draft"
 
@@ -63,6 +66,7 @@ struct PromptBuilderDraft: Codable, Equatable {
         aspect = v(.aspect, aspect)
         seed = v(.seed, seed)
         keepSeed = v(.keepSeed, keepSeed)
+        fast = v(.fast, fast)
     }
 
     /// Takes a saved character's look, age, gender, image model and trigger words (`model`/`triggerWords` from

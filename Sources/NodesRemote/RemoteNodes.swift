@@ -205,7 +205,7 @@ private func submitRemoteJob(task: String, params: [String: Any], pngs: [String:
     context.status(costLine(gpuSeconds: result.gpuSeconds, loadSeconds: load, cost: result.costUSD))
     RemoteJobLog.post(RemoteJobRecord(task: task, serverID: endpoint.id, width: params["width"] as? Int,
                                       height: params["height"] as? Int, gpuSeconds: result.gpuSeconds,
-                                      loadSeconds: load, costUSD: result.costUSD))
+                                      loadSeconds: load, costUSD: result.costUSD, fast: params["fast"] as? Bool))
     return (url, result.output.kind)
 }
 
@@ -221,10 +221,13 @@ public struct RemoteJobRecord: Sendable, Equatable {
     public var costUSD: Double?
     /// `RemoteJobLog.scope` where the job ran: which of several graphs running at once it belongs to.
     public var scope: UUID?
+    /// The job's `fast` setting, for tasks that have one (their fast and full modes take very different times).
+    public var fast: Bool?
 
     public init(task: String, serverID: String, width: Int?, height: Int?, gpuSeconds: Double, loadSeconds: Double,
-                costUSD: Double?, scope: UUID? = RemoteJobLog.scope) {
+                costUSD: Double?, fast: Bool? = nil, scope: UUID? = RemoteJobLog.scope) {
         self.scope = scope
+        self.fast = fast
         self.task = task
         self.serverID = serverID
         self.width = width

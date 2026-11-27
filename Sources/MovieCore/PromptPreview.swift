@@ -65,12 +65,24 @@ public enum PromptPreview {
         }
     }
 
+    /// The models whose node has a fast mode that skips guidance (Chroma Flash, SD 3.5 Large Turbo, Qwen-Image
+    /// Lightning), so it ignores the negative prompt.
+    public static let fastModels: Set<PromptModel> = [.chroma, .sd35, .qwenImage]
+
+    /// Whether a preview runs `model`'s fast mode: always with the builder's Fast switch on; with it off only when
+    /// there is no negative (a negative needs guidance, so it runs in full). nil: the model has no fast mode.
+    public static func runsFast(_ model: PromptModel, negative: Bool, fast: Bool) -> Bool? {
+        guard fastModels.contains(model) else { return nil }
+        return fast || !negative
+    }
+
     /// Slots: prompt, seed, width, height, server; negative where the model reads one; model (a fine-tune) where the
     /// node takes one. nil for the video models.
     ///
     /// Chroma, SD 3.5 and Qwen-Image default to their fast modes, which skip guidance and so ignore the negative
-    /// prompt: with a negative they run in full, as the written prompt expects (docs/prompting.md).
-    public static func template(_ model: PromptModel, negative: Bool) -> MovieTemplate? {
+    /// prompt: with a negative they run in full, as the written prompt expects (docs/prompting.md), unless `fast`
+    /// (the builder's Fast switch) keeps the fast mode anyway (`runsFast`).
+    public static func template(_ model: PromptModel, negative: Bool, fast: Bool = false) -> MovieTemplate? {
         guard let type = nodeType(model) else { return nil }
         var inputs: [String: NodeInput] = [
             "prompt": .value(.string("")), "seed": .value(.int(0)), "width": .value(.int(1024)),
@@ -81,8 +93,8 @@ public enum PromptPreview {
         if model.takesNegative {
             inputs["negative"] = .value(.string(""))
             names.append("negative")
-            if negative, [.chroma, .sd35, .qwenImage].contains(model) { inputs["fast"] = .value(.bool(false)) }
         }
+        if let f = runsFast(model, negative: negative, fast: fast) { inputs["fast"] = .value(.bool(f)) }
         if takesFineTune(model) {
             inputs["model"] = .value(.string(""))
             names.append("model")
