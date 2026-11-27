@@ -352,6 +352,14 @@ extension SmokeTest {
             models.append((m, parts.count > 1 ? parts[1] : ""))
         }
         let dry = CommandLine.arguments.contains("--smoke-real-dry")
+        // `--smoke-real-loras id[:strength],…`: library LoRAs every preview draws with (their trigger words join the
+        // prompt), for the models whose family they fit.
+        let loraPicks: [PromptBuilderLoRA] = (argument("--smoke-real-loras") ?? "").split(separator: ",").compactMap { item in
+            let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let e = model.store?.library.item(parts[0]) else { say("FAIL no library LoRA \(parts[0])"); return nil }
+            return PromptBuilderLoRA(id: e.id, strength: parts.count > 1 ? Double(parts[1]) ?? 0.8 : 0.8,
+                                     triggerWords: e.triggerWords)
+        }
         var base = PromptBuilderDraft()
         base.gender = "woman"
         base.age = 28
@@ -378,6 +386,8 @@ extension SmokeTest {
                 var draft = d
                 draft.model = m
                 draft.variant = fineTune
+                draft.loras = loraPicks
+                draft.keepLoRAs(fitting: PromptBuilderDraft.loraFamily(m), library: model.store?.library)
                 // The written prompt: not empty, allowed, with a negative where the model takes one.
                 guard let wp = draft.written, !wp.prompt.isEmpty else { fail("\(name) \(step): no prompt written"); continue }
                 if let problem = draft.problem { fail("\(name) \(step): refused: \(problem)"); continue }
@@ -385,6 +395,17 @@ extension SmokeTest {
                 if m.takesNegative && wp.negative.isEmpty { fail("\(name) \(step): no negative"); continue }
                 if dry {
                     say("ok \(name) \(step) written: \(wp.prompt)\(wp.negative.isEmpty ? "" : " | negative: \(wp.negative)")")
+                    if !draft.loras.isEmpty {  // the LoRA nodes the job would send
+                        let job = try? await model.previewJob(draft, server: "dry")
+                        let g = job.flatMap { try? $0.template.bind($0.render.values, optional: Set($0.render.values.keys),
+                                                                    remove: $0.render.unusedPictures) }
+                        let nodes = g?.nodes.filter { $0.type == "RemoteLoRA" }.map { n -> String in
+                            if case .value(.string(let id))? = n.inputs["lora"] { return id }; return "?"
+                        } ?? []
+                        let wired = g?[ "image"]?.inputs["loras"] != nil
+                        say("  loras picked \(draft.loras.map(\.id)) → graph \(nodes), wired \(wired)")
+                        if nodes.count != draft.loras.count || !wired { fail("\(name) \(step): the LoRAs aren't in the graph") }
+                    }
                     continue
                 }
                 do {

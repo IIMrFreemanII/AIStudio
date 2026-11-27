@@ -172,6 +172,9 @@ private func submitRemoteJob(task: String, params: [String: Any], pngs: [String:
         uploaded[name] = try await serverFetch(link, client: client, context: context)
     }
     context.status("Submitting")
+    if ProcessInfo.processInfo.environment["AISTUDIO_LOG_JOBS"] != nil {  // debugging: what each job sends
+        print("[job] \(task) inputs \(uploaded.keys.sorted()) params \(params.keys.sorted())"); fflush(stdout)
+    }
     let job: GPUJob
     do {
         job = try await client.submit(task: task, params: params, inputs: uploaded)
