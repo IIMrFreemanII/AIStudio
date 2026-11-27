@@ -379,7 +379,8 @@ struct CostGateSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Run (≈ \(CostEstimate.format(usd)))") {
+                // No amount when the price isn't known (the estimate's notes say so), rather than "≈ $0.00".
+                Button(usd > 0 ? "Run (≈ \(CostEstimate.format(usd)))" : "Run") {
                     let (run, choose, plan) = (gate.run, gate.choose, chosen)
                     dismiss()
                     if let plan { choose(plan) }
