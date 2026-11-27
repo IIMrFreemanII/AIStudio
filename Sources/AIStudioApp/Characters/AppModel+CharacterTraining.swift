@@ -1,5 +1,6 @@
 import CharacterCore
 import Foundation
+import MovieCore
 import NodesRemote
 import NodesStandard
 
@@ -39,6 +40,51 @@ extension AppModel {
             train = price * Self.trainingSeconds(c.artModel.family, pictures: picked)
         }
         return (draw, train)
+    }
+
+    /// The cost sheet shown before drawing `count` training pictures.
+    func trainingPicturesCost(_ c: Companion, count: Int) -> CostEstimate {
+        let family = c.artModel.family
+        let task = trainingServerInfo()?.task(CharacterArt.task(family))
+        let usd = trainingEstimate(c, pictures: count, picked: CharacterTraining.minPicked).draw
+        var notes = ["Each picture is drawn with their profile photo's face; you pick the ones to train on afterwards."]
+        if usd == nil { notes.append(Self.unknownPrice) }
+        return CostEstimate(title: "Make \(count) Training Pictures",
+                            lines: [.init(label: "Pictures (\(family.title))", count: count,
+                                          gpu: task?.gpu ?? (family == .minimax ? "B200" : "L40S"),
+                                          seconds: Self.seconds(usd, price: task?.pricePerSecond), usd: usd ?? 0)],
+                            notes: notes)
+    }
+
+    /// The cost sheet shown before training a LoRA on `picked` pictures.
+    func trainingLoRACost(_ c: Companion, picked: Int) -> CostEstimate {
+        let family = c.artModel.family
+        let task = CharacterTraining.task(family).flatMap { trainingServerInfo()?.task($0) }
+        let seconds = Self.trainingSeconds(family, pictures: picked)
+        // The server's GPUs for the training tasks (GPU_SD, GPU_H3_IMAGE), for Modal's list price until it says its own.
+        let gpu = task?.gpu ?? (family == .minimax ? "B200" : "L40S")
+        let usd = trainingEstimate(c, pictures: 0, picked: picked).train
+            ?? MovieCost.price(gpu: gpu).map { $0 * seconds }
+        var notes = ["Training takes about \(Int((seconds / 60).rounded())) min "
+                     + "and can be cancelled; the LoRA then joins their photos and your Models library."]
+        if usd == nil { notes.append(Self.unknownPrice) }
+        return CostEstimate(title: "Train a LoRA",
+                            lines: [.init(label: "LoRA training (\(family.title))", count: picked, gpu: gpu,
+                                          seconds: seconds, usd: usd ?? 0)],
+                            notes: notes)
+    }
+
+    private static let unknownPrice = "The GPU server hasn't said its price yet, so the cost isn't known."
+
+    private static func seconds(_ usd: Double?, price: Double?) -> Double {
+        guard let usd, let price, price > 0 else { return 0 }
+        return usd / price
+    }
+
+    private func trainingServerInfo() -> GPUServerInfo? {
+        guard let server = connections.gpuServers.first?.id, case .gpuOnline(let info)? = connections.status[server]
+        else { return nil }
+        return info
     }
 
     func trainingSet(_ id: UUID) -> TrainingSet { characterStore.training(id) }

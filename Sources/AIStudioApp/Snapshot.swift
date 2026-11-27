@@ -432,6 +432,11 @@ enum Snapshot {
         let trainee = mia
         await render(sheet(MGForm { CharacterTrainingSection(c: .constant(trainee)) }.frame(width: 560).environment(m)),
                      to: dir.appendingPathComponent("62e-character-training.png"), size: CGSize(width: 608, height: 640))
+        // The cost sheets before its paid steps (no server in snapshots: the price-unknown note shows).
+        await render(sheet(CostGateSheet(gate: CostGate(estimate: m.trainingPicturesCost(trainee, count: 40)) {})),
+                     to: dir.appendingPathComponent("62f-training-pictures-cost.png"), size: CGSize(width: 568, height: 360))
+        await render(sheet(CostGateSheet(gate: CostGate(estimate: m.trainingLoRACost(trainee, picked: 20)) {})),
+                     to: dir.appendingPathComponent("62g-training-lora-cost.png"), size: CGSize(width: 568, height: 360))
         try? FileManager.default.removeItem(at: trainFolder)
         // The memory sheet reads the store: a throwaway folder entry, removed after.
         var memory = CharacterMemory()

@@ -8,6 +8,8 @@ import SwiftUI
 struct CharacterTrainingSection: View {
     @Environment(AppModel.self) private var model
     @Binding var c: AppModel.Companion
+    /// The cost sheet of a paid step, shown before it starts.
+    @State private var gate: CostGate?
 
     private var set: TrainingSet {
         _ = model.trainingRevision  // redraw when pictures or state change
@@ -31,6 +33,7 @@ struct CharacterTrainingSection: View {
             Text("A LoRA trained on 15–30 pictures of them keeps their face, hair and body the same in every photo; "
                  + "clothes, places and poses stay free.")
         }
+        .mgSheet("training-cost-gate", item: $gate) { gate in CostGateSheet(gate: gate) }
         .onChange(of: set.loraID) { _, id in
             // A training that finished while the editor is open: its LoRA joins this draft too.
             guard let id, !c.loras.contains(where: { $0.lora == id }), c.loras.count < CharacterArt.maxLoRAs else { return }
@@ -99,7 +102,9 @@ struct CharacterTrainingSection: View {
 
     private func makePictures(_ count: Int) {
         let who = c
-        model.runTraining(c.id) { progress in try await model.makeTrainingPictures(who, count: count, progress: progress) }
+        gate = CostGate(estimate: model.trainingPicturesCost(who, count: count)) {
+            model.runTraining(who.id) { progress in try await model.makeTrainingPictures(who, count: count, progress: progress) }
+        }
     }
 
     private func redraw(_ file: String) {
@@ -109,7 +114,9 @@ struct CharacterTrainingSection: View {
 
     private func train() {
         let who = c
-        model.runTraining(c.id) { progress in _ = try await model.trainLoRA(who, progress: progress) }
+        gate = CostGate(estimate: model.trainingLoRACost(who, picked: set.picked.count)) {
+            model.runTraining(who.id) { progress in _ = try await model.trainLoRA(who, progress: progress) }
+        }
     }
 }
 
