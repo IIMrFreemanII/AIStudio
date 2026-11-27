@@ -68,7 +68,8 @@ extension AppModel {
 
     /// What one preview would cost on the first GPU server, and whether its model is loaded; nil when the server is
     /// offline or the price isn't known.
-    func promptPreviewEstimate(_ draft: PromptBuilderDraft) -> (usd: Double, warm: Bool)? {
+    /// `written`: a prompt written elsewhere (the prompt engine's) instead of the draft's.
+    func promptPreviewEstimate(_ draft: PromptBuilderDraft, written: WrittenPrompt? = nil) -> (usd: Double, warm: Bool)? {
         guard let server = connections.gpuServers.first?.id, let task = previewTask(draft),
               case .gpuOnline(let info)? = connections.status[server], let price = info.task(task)?.pricePerSecond
         else { return nil }
@@ -77,7 +78,8 @@ extension AppModel {
         let warm = timings.isWarm(task: task, idleSeconds: Double(info.idleSeconds ?? 120))
         // Qwen-Image's fast and full modes are timed apart.
         let fast = previewCharacter(draft) == nil
-            && PromptPreview.runsFast(draft.model, negative: !(draft.written?.negative ?? "").isEmpty, fast: draft.fast) == true
+            && PromptPreview.runsFast(draft.model, negative: !((written ?? draft.written)?.negative ?? "").isEmpty,
+                                      fast: draft.fast) == true
         let timing = GPUTimings.timingTask(task, fast: fast)
         var seconds = timings.seconds(task: timing, megapixels: Double(w * h) / 1e6)
         if !warm { seconds += timings.loadSeconds(task: timing) }
@@ -98,7 +100,8 @@ extension AppModel {
     }
 
     /// The graph and values one preview of `draft` runs (also the dry run's, which prints its LoRA nodes).
-    func previewJob(_ draft: PromptBuilderDraft, server: String) async throws
+    /// `override`: a prompt written elsewhere (the prompt engine's) instead of the draft's own.
+    func previewJob(_ draft: PromptBuilderDraft, server: String, written override: WrittenPrompt? = nil) async throws
         -> (template: MovieTemplate, render: MovieArt.Render, written: WrittenPrompt)
     {
         if let problem = draft.problem { throw PromptPreviewError.refused(problem) }
@@ -115,7 +118,7 @@ extension AppModel {
             // CharacterArt.render adds MiniMax's face lead itself, so the prompt is written without one.
             var d = draft
             d.faceReference = false
-            guard let wp = d.written else { throw PromptPreviewError.empty }
+            guard let wp = override ?? d.written else { throw PromptPreviewError.empty }
             written = wp
             try CharacterArt.check(wp.prompt)
             let context = artContext(c)
@@ -131,7 +134,7 @@ extension AppModel {
             render.values.merge(PromptPreview.loraValues(extra, first: own + 1)) { $1 }
             template = CharacterArt.template(c.artModel.family, loras: own + extra.count)
         } else {
-            guard let wp = draft.written else { throw PromptPreviewError.empty }
+            guard let wp = override ?? draft.written else { throw PromptPreviewError.empty }
             written = wp
             try CharacterArt.check(wp.prompt)
             guard let t = PromptPreview.template(draft.model, negative: !wp.negative.isEmpty, fast: draft.fast,
@@ -148,7 +151,7 @@ extension AppModel {
         return (template, render, written)
     }
 
-    private func keepPreview(_ draft: PromptBuilderDraft, written: WrittenPrompt, outputs: [EngineOutput],
+    func keepPreview(_ draft: PromptBuilderDraft, written: WrittenPrompt, outputs: [EngineOutput],
                              jobs: [RemoteJobRecord]) throws -> PromptPreviewShot {
         let cost = recordGPUJobs(jobs)
         guard let image = outputs.first(where: { $0.kind == .image })?.image else { throw MovieArtError.noImage }

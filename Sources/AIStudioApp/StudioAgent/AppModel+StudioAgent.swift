@@ -1,5 +1,6 @@
 import Agent
 import AppKit
+import CharacterCore
 import Foundation
 import LLMClient
 import MovieCore
@@ -81,7 +82,8 @@ extension AppModel {
         let effort = efforts.contains("low") ? "low" : efforts.contains("off") ? "off" : nil
         let workers = StudioWorkers(session: session, client: studioWorkerClient ?? client.chat, model: key.modelID, effort: effort,
                                     inlineThinking: llm.model(key)?.reasoningParser == nil, vision: vision)
-        var setup = AgentSetup(tools: StudioTools.all(session) + StudioTools.architect(workers), root: library.root) { [weak self] in
+        var setup = AgentSetup(tools: StudioTools.all(session) + StudioTools.architect(workers) + PromptTools.tools(session.prompts, finish: false),
+                               root: library.root) { [weak self] in
             self.map { StudioTools.systemPrompt($0, vision: vision) } ?? ""
         }
         setup.saveImages = true
@@ -271,6 +273,7 @@ enum StudioTools {
         - The app_* tools click and type in the window like a person. Use them only when no other tool does the step \
         (look first with app_look).
         - Keep your messages short: say what you're about to do and what you found. Use todo_write for longer jobs.
+        - \(PromptEngine.studioNote)
 
         You're the architect, with up to \(StudioPlan.maxWorkers) workers (the same model, thinking less, each with its own pointer):
         - A job with two or more parts that can go on side by side (keyframes for different shots, reviewing many \

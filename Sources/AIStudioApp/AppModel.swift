@@ -133,6 +133,8 @@ final class AppModel {
     @ObservationIgnored let studio = StudioController()
     /// The cost sheet of a workflow run the Studio agent started on the cloud GPU (Run or Cancel is the user's).
     var studioRunGate: CostGate?
+    /// The prompt engine's cost sheet before a draft (`PromptEngineSession.approve`).
+    var promptEngineGate: CostGate?
     /// The smoke test's scripted model for the Studio agent's workers (nil: the chat's own client).
     @ObservationIgnored var studioWorkerClient: (any ChatStreaming)?
     /// The graph helper panel next to the graph.

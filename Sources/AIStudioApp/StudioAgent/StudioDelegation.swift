@@ -57,6 +57,7 @@ final class StudioWorkers {
 
     func tools() -> [any AgentTool] {
         StudioTools.all(session).filter { Self.workerToolNames.contains($0.name) }
+            + PromptTools.tools(session.prompts, finish: false)
     }
 
     // MARK: the plan card

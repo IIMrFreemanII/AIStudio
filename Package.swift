@@ -345,7 +345,9 @@ let package = Package(
         // Character chat: companion characters, memory, prompts, media tags and storage (no UI).
         .target(
             name: "CharacterCore",
-            dependencies: ["MovieCore", "LLMClient", "Agent", "GraphRuntime"]
+            dependencies: ["MovieCore", "LLMClient", "Agent", "GraphRuntime"],
+            // The prompt engine's rule book: a copy of docs/prompting.md (PromptEngineTests checks they match).
+            resources: [.copy("Resources/prompting.md")]
         ),
         // Drives other Mac apps for the coding agent's UI testing: accessibility, CGEvent, ScreenCaptureKit, AVFoundation.
         .target(
