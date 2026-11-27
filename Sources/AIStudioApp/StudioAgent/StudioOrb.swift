@@ -484,6 +484,31 @@ private struct WaitingRing: View {
     }
 }
 
+/// A trail echo: the 3D glass with no eyes, its glow and rim in the trail colour (`StudioEchoesView`).
+struct StudioEchoSphere: View {
+    let size: CGFloat
+    /// The trail colour: the glow inside and, lightened, the rim.
+    let color: (Double, Double, Double)
+    var glass = StudioOrbGlass.standard
+
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        let c = color, g = glass
+        let rim = (c.0 * 0.6 + 0.4, c.1 * 0.6 + 0.4, c.2 * 0.6 + 0.4)
+        Rectangle().fill(.white)
+            .frame(width: size, height: size)
+            .colorEffect(StudioOrbShader.library.studioOrbSphere(
+                .boundingRect, .float(displayScale),
+                .float3(c.0, c.1, c.2), .float3(rim.0, rim.1, rim.2), .float(0),
+                .floatArray([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+                .float4(-1, 0, 0, 0), .float(0), .float(1), .float(0),
+                .float4(g.highlightSize, g.highlightStrength * 0.7, g.rim * 1.1, g.frost),
+                .float3(g.glowSpread, g.glowStrength, 0)))
+            .allowsHitTesting(false)
+    }
+}
+
 /// The pop-in and the done jump: size, lift (points, up is negative) and stretch (taller positive, wider negative).
 private struct OrbBounce {
     var scale = 1.0
