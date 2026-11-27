@@ -44,6 +44,7 @@ enum Snapshot {
         // `--only characters`: just the character sheets.
         if SmokeTest.argument("--only") == "characters" { await renderCharacters(to: dir); return }
         if SmokeTest.argument("--only") == "prompt-builder" { await renderPromptBuilder(to: dir); return }
+        if SmokeTest.argument("--only") == "prompt-engine" { await renderPromptEngine(to: dir); return }
         let projectOutputs = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
         let defaults = UserDefaults.standard
         let saved = ["sidebarPanel", "sidebarOpen", "historyGrid", "assetsTab", "wireStyle", "showModelWires", "showMinimap",
@@ -247,6 +248,72 @@ enum Snapshot {
         await renderChrome(m, to: dir)
         await renderCharacters(to: dir)
         await renderPromptBuilder(to: dir)
+        await renderPromptEngine(to: dir)
+    }
+
+    /// 77–79: the Prompt Builder's Engine pane: empty (77), part way with two tries judged (78), finished with the
+    /// second try chosen (79). The tries are flat dummy pictures; nothing runs.
+    static func renderPromptEngine(to dir: URL) async {
+        let m = makeModel(dir)
+        let defaults = UserDefaults.standard
+        let savedIdea = defaults.object(forKey: "promptEngine.idea")
+        defer { if let savedIdea { defaults.set(savedIdea, forKey: "promptEngine.idea") } else { defaults.removeObject(forKey: "promptEngine.idea") } }
+        defaults.set("A woman standing in a sunlit kitchen, her whole body in frame, morning light on the floor", forKey: "promptEngine.idea")
+        await render(VStack(spacing: 0) {
+            HStack { Spacer(); PromptBuilderModePicker(mode: .constant(.engine)); Spacer() }.padding(.vertical, 10)
+                .background(MG.windowBackground)
+            Divider()
+            PromptEngineView()
+        }.background(MG.windowBackground).mgWindow("Prompt Builder").environment(m),
+                     to: dir.appendingPathComponent("77-prompt-engine-empty.png"), size: CGSize(width: 1000, height: 720))
+
+        func dummy(_ name: String, hue: Double, cropped: Bool) -> String {
+            let url = dir.appendingPathComponent("engine-\(name).png")
+            let img = NSImage(size: NSSize(width: 240, height: 340))
+            img.lockFocus()
+            NSColor(hue: hue, saturation: 0.25, brightness: 0.92, alpha: 1).setFill()
+            NSRect(x: 0, y: 0, width: 240, height: 340).fill()
+            NSColor(hue: hue, saturation: 0.5, brightness: 0.5, alpha: 1).setFill()
+            NSBezierPath(ovalIn: NSRect(x: 95, y: cropped ? 150 : 250, width: 50, height: 60)).fill()
+            NSBezierPath(roundedRect: NSRect(x: 85, y: cropped ? -40 : 30, width: 70, height: cropped ? 190 : 220),
+                         xRadius: 20, yRadius: 20).fill()
+            img.unlockFocus()
+            if let tiff = img.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: url)
+            }
+            return url.path
+        }
+        let prompt = "photo of a 30-year-old adult woman standing in a sunlit kitchen, whole body in frame from head to toe, feet and shoes visible on the floor, white cabinets, bright morning light"
+        let t1 = EngineTry(n: 1, model: .sdxl, prompt: prompt, negative: "cartoon, blurry, child, minor, teen, underage", seed: 1099,
+                           file: dummy("1", hue: 0.1, cropped: true), costUSD: 0.012, seconds: 14)
+        var t2 = t1
+        t2.n = 2
+        t2.seed = 1099
+        t2.prompt = "(full body:1.3), " + prompt
+        t2.file = dummy("2", hue: 0.12, cropped: false)
+        for (i, finished) in [false, true].enumerated() {
+            let key = LLMKey(serverID: "snapshot", modelID: "qwen3.8-27b-abliterated")
+            let s = PromptEngineSession(app: m, idea: "a woman standing in a sunlit kitchen", llm: key)
+            let r = s.record
+            r.checklist = ["one woman", "adult, clearly 18 or older", "standing", "whole body in frame, head to toe",
+                           "kitchen with cabinets", "sunlight in the room"]
+            r.tries = [t1, t2]
+            r.verdicts = [EngineVerdict(attempt: 1, pass: false, issues: ["cut at the knees: the feet aren't in frame"],
+                                        change: "weight the framing: (full body:1.3) first, same seed")]
+            r.gpuUSD = 0.024
+            r.llmUSD = 0.041
+            r.status = "Judging try 2…"
+            if finished {
+                r.verdicts.append(EngineVerdict(attempt: 2, pass: true))
+                r.status = "Done"
+                r.finish(best: 2, notes: "Weighting the full-body framing at the front of the prompt brought the feet into frame with the same seed.")
+            }
+            await render(PromptEngineRunView(session: s, record: r, useTitle: "Use in Node", onUse: { _ in }, copied: .constant(false))
+                .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(MG.windowBackground).environment(m),
+                         to: dir.appendingPathComponent("\(78 + i)-prompt-engine-\(finished ? "finished" : "running").png"),
+                         size: CGSize(width: 620, height: finished ? 860 : 720))
+        }
     }
 
     /// 70–71: the Prompt Builder on a person (MiniMax, then a Pony SDXL fine-tune), 72 on a video with sound, 74 with
