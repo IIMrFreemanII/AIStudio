@@ -148,3 +148,88 @@ float sdCross(float2 p) {
 
     return half4(half3(col * alpha), half(alpha));
 }
+
+namespace orb {
+constant float3 spark = float3(0.66, 0.74, 1.0);
+
+float hash(float n) { return fract(sin(n) * 43758.5453); }
+
+float2 rotate(float2 v, float a) { float c = cos(a), s = sin(a); return float2(c * v.x - s * v.y, s * v.x + c * v.y); }
+
+// Paints `c` with alpha `a` over `acc` (premultiplied).
+void over(thread float4 &acc, float3 c, float a) {
+    a = clamp(a, 0.0, 1.0);
+    acc.rgb = c * a + acc.rgb * (1.0 - a);
+    acc.a = a + acc.a * (1.0 - a);
+}
+}
+
+/// What goes around the sphere, in depth: the architect's tilted ring and its spark, and the sparkles orbiting it.
+/// Drawn twice on a square 2.4 radii across: once behind the sphere (`front` 0: what's further away, which the sphere
+/// hides) and once over it (`front` 1).
+/// - box: the layer's bounding rect; scale: pixels per point; extent: the box's half-width in sphere radii.
+/// - ring: shown (0/1), the spark's angle, the ring's tilt; particles: how many (0–8); seed: per actor.
+/// - time: seconds (wrapped by the caller); lightWindow: 1 on a light window (a violet ring, pure-colour sparkles).
+[[ stitchable ]] half4 studioOrbAround(float2 position, half4 color, float4 box, float scale, float extent, float front,
+                                       float3 tint, float3 rimColor, float architect,
+                                       float3 ring, float particles, float seed, float time, float lightWindow) {
+    float half_ = min(box.z, box.w) * 0.5;
+    float r = half_ / extent;
+    float2 center = box.xy + box.zw * 0.5;
+    float2 p = (position - center) / r;
+    p.y = -p.y;
+    float aa = 1.0 / max(r * scale, 1.0);
+    bool wantFront = front > 0.5;
+    bool light = lightWindow > 0.5;
+    float4 acc = float4(0.0);
+
+    // The ring: a circle 1.62 radii across, tilted so it looks like an ellipse 0.44 tall; its lower half is nearer.
+    if (ring.x > 0.5) {
+        float2 q = orb::rotate(p, -ring.z);
+        float A = 1.62, B = 0.44;
+        float l = length(q / float2(A, B));
+        float g = length(q / float2(A * A, B * B)) / max(l, 1e-4);
+        float d = abs(l - 1.0) / max(g, 1e-4);
+        float3 rc = light ? orb::violet : rimColor;
+        float ra = light ? 0.7 : 0.55;
+        float lw = max(light ? 0.056 : 0.044, 0.6 / r);
+        if ((q.y < 0.0) == wantFront) orb::over(acc, rc, ra * (1.0 - smoothstep(lw * 0.5 - aa, lw * 0.5 + aa, d)));
+        // The spark rides it clockwise; nearer, it's a little bigger.
+        float th = ring.y;
+        if ((sin(th) > 0.0) == wantFront) {
+            float2 sp = float2(A * cos(th), -B * sin(th));
+            float sc = max(0.22 * (1.0 + 0.3 * sin(th)), 2.0 / r);
+            float2 s = (q - sp) / sc;
+            float ds = sqrt(abs(s.x)) + sqrt(abs(s.y)) - 1.0;
+            float aaS = aa / sc * 2.0;
+            orb::over(acc, orb::spark, exp(-dot(s, s) * 1.6) * 0.75);
+            orb::over(acc, light ? orb::violet : float3(1.0), 1.0 - smoothstep(-aaS, aaS, ds));
+        }
+    }
+
+    // Sparkles on tilted orbits 1.3–2 radii out, fading in and out, in the orb's own colours.
+    for (int i = 0; i < 8; i++) {
+        if (float(i) >= particles) break;
+        float fi = float(i) + seed * 13.0;
+        float rad = 1.3 + 0.75 * orb::hash(fi * 1.7);
+        float spd = (0.22 + 0.3 * orb::hash(fi * 2.3)) * (orb::hash(fi * 5.1) > 0.5 ? 1.0 : -1.0);
+        float ph = orb::hash(fi * 3.9) * 6.283;
+        float incl = (orb::hash(fi * 7.3) - 0.5) * 2.2;
+        float az = orb::hash(fi * 9.1) * 6.283;
+        float a = ph + time * spd;
+        float3 v = float3(cos(a), 0.0, sin(a)) * rad;
+        v = float3(v.x, -v.z * sin(incl), v.z * cos(incl));
+        v = float3(cos(az) * v.x + sin(az) * v.z, v.y, -sin(az) * v.x + cos(az) * v.z);
+        if ((v.z > 0.0) != wantFront) continue;
+        float life = 0.5 + 0.5 * sin(time * (0.6 + 0.5 * orb::hash(fi * 4.4)) + ph * 2.0);
+        float sz = max(0.07 * (1.0 + 0.3 * v.z / rad), 0.8 / r);
+        float d = length(p - v.xy) - sz;
+        float gd = max(d, 0.0);
+        float3 pc = architect > 0.5 ? orb::iridescent(orb::hash(fi * 6.7)) : tint;
+        pc = mix(pc, float3(1.0), light ? 0.0 : 0.3);
+        orb::over(acc, pc, exp(-gd * gd / (sz * sz * 4.0)) * 0.35 * life);
+        orb::over(acc, pc, (1.0 - smoothstep(-aa, aa, d)) * 0.95 * life);
+    }
+
+    return half4(acc);
+}

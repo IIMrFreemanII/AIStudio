@@ -67,8 +67,10 @@ struct StudioOverlayView: View {
                     let motions = controller.motions(c)
                     if let p = c.displayed(at: now, drift: motions.contains(.drift)) {
                         let size: CGFloat = c.actor.isArchitect ? 36 : 32
+                        let flying = c.isFlying(at: now)
                         StudioPointer(cursor: c, motions: motions, pace: controller.pace, paused: controller.gate.isPaused,
-                                      moving: c.isFlying(at: now) || (c.state == .idle && c.position != nil && c.homeTarget != nil))
+                                      moving: flying || (c.state == .idle && c.position != nil && c.homeTarget != nil),
+                                      velocity: flying ? c.flight?.velocity(at: now.timeIntervalSince(c.flightStart)) ?? .zero : .zero)
                             .fixedSize()
                             .offset(x: p.x - size / 2 - 4, y: p.y - size / 2 - 4)
                             .transition(.scale(scale: 0.4).combined(with: .opacity))
@@ -127,6 +129,8 @@ struct StudioPointer: View {
     var paused = false
     /// Flying or wandering (particles trail it).
     var moving = false
+    /// How fast it flies (points per second): the orb tilts into it.
+    var velocity: CGVector = .zero
 
     var controllerState: StudioActorState {
         if paused, cursor.state != .idle { return .paused }
@@ -136,7 +140,8 @@ struct StudioPointer: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             StudioOrb(actor: cursor.actor, state: controllerState, size: cursor.actor.isArchitect ? 36 : 32, pace: pace,
-                      talking: cursor.isTalking, moving: moving, gaze: cursor.gaze, moment: cursor.moment, popIn: cursor.popIn)
+                      talking: cursor.isTalking, moving: moving, gaze: cursor.gaze, moment: cursor.moment, popIn: cursor.popIn,
+                      velocity: velocity)
                 .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
             if let caption = cursor.caption, !caption.isEmpty {
                 HStack(spacing: 5) {

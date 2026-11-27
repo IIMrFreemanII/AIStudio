@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 // The Studio agent as an architect: the plan it shows the user, the workers it hands tasks to, and how their icons
 // move and fly on screen. Foundation only, so it's unit-tested.
@@ -264,6 +265,16 @@ public struct StudioFlight: Equatable, Sendable {
     }
 
     public func isOver(at t: Double) -> Bool { t >= duration }
+
+    /// How fast and which way the icon moves at `t` seconds into the flight, in points per second (zero outside it).
+    public func velocity(at t: Double) -> CGVector {
+        guard duration > 0, t >= 0, t <= duration else { return CGVector(dx: 0, dy: 0) }
+        let h = min(0.008, duration / 4)
+        let a = point(at: max(t - h, 0)), b = point(at: min(t + h, duration))
+        let dt = min(t + h, duration) - max(t - h, 0)
+        guard dt > 0 else { return CGVector(dx: 0, dy: 0) }
+        return CGVector(dx: (b.x - a.x) / dt, dy: (b.y - a.y) / dt)
+    }
 
     static func ease(_ u: Double) -> Double { u < 0.5 ? 2 * u * u : 1 - pow(-2 * u + 2, 2) / 2 }
 
@@ -585,15 +596,23 @@ public struct StudioOrbPose: Equatable, Sendable {
     public static let maxYaw = 0.7, maxPitch = 0.55
     /// How much the sphere turns toward its gaze (the mock-up's "Turn toward gaze").
     public static let standardTurn = 0.6
+    /// How much it tilts into a flight (the mock-up's "Bank when flying"); full tilt at `bankSpeed` points per second.
+    public static let standardBank = 0.6, bankSpeed = 700.0
+    /// The architect's ring, tilted 18° anticlockwise at rest.
+    public static let ringTilt = 0.314
+    /// The inner glow's slow drift, in radians per second (the mock-up's "Idle spin" at 0.5).
+    public static let spinRate = 0.175
 
     /// - Parameters:
     ///   - gaze: where it looks, up to 1 long, x right and y down (as `StudioOrb`'s gaze).
     ///   - bounce: the talking bounce's phase, -1…1 (0 when it isn't talking).
     ///   - breathe: the glow's breathing, 0.8…1 while working (1 otherwise).
     ///   - radius: the orb's radius in points, to keep the eyes at least 1.6 pt wide and 1 pt tall.
+    ///   - velocity: how fast it flies, in points per second (y down): it tilts into the way it's going.
     public static func pose(face: StudioFace, blinking: Bool = false, gaze: CGVector = CGVector(dx: 0, dy: 0), bounce: Double = 0,
                             breathe: Double = 1, paused: Bool = false, radius: Double = 16,
-                            turn: Double = standardTurn) -> StudioOrbPose {
+                            turn: Double = standardTurn, velocity: CGVector = CGVector(dx: 0, dy: 0),
+                            bank: Double = standardBank) -> StudioOrbPose {
         let w = eyeWidth, h = eyeHeight
         var shape = StudioOrbEyeShape.pill
         var size: (Double, Double)
@@ -617,9 +636,20 @@ public struct StudioOrbPose: Equatable, Sendable {
             eyeLift: -0.094 * bounce,
             yaw: Double(g.dx) * maxYaw * t,
             pitch: -Double(g.dy) * maxPitch * t,
-            roll: 0,
+            roll: -min(max(Double(velocity.dx) / bankSpeed, -1), 1) * min(max(bank, 0), 1) * 0.5,
             glow: breathe * (paused ? 0.35 : 1) * (radius < 12 ? 0.75 : 1))
     }
+
+    /// The architect's ring tilt: its rest tilt, leaning with the body.
+    public var ringRoll: Double { Self.ringTilt + roll * 0.6 }
+
+    /// The inner glow's drift angle at `time` (seconds), kept within one turn.
+    public static func spin(at time: Double) -> Double {
+        (time * spinRate).truncatingRemainder(dividingBy: 2 * .pi)
+    }
+
+    /// The talking bounce's squash: how much taller (positive) or wider the orb is at `time`.
+    public static func talkStretch(at time: Double) -> Double { 0.021 * sin(time * 2 * .pi * 3) }
 
     static func clampedGaze(_ v: CGVector) -> CGVector {
         let l = hypot(v.dx, v.dy)
