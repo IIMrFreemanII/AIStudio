@@ -85,7 +85,10 @@ extension StudioActor {
 ///
 /// The orb itself is a 3D sphere (`StudioOrb.metal`): glossy dark glass lit from the upper left, the glow inside it,
 /// and the eyes on its surface; it turns toward where it looks while the highlight stays put. It falls back to the
-/// flat drawing when the shader library is missing or Reduce Transparency is on.
+/// flat drawing when the shader library is missing or Reduce Transparency is on. Around the sphere, in depth, the
+/// architect's ring passes behind and in front of it and the sparkles orbit it. In flight it tilts into the way it's
+/// going; it stretches on take-off, squashes on landing, and squashes and stretches on its pop-in, its done jump and
+/// while talking; the glow inside drifts slowly.
 struct StudioOrb: View {
     let actor: StudioActor
     var state: StudioActorState = .idle
@@ -101,6 +104,12 @@ struct StudioOrb: View {
     var popIn = 0
     /// A still face (finished rows): its mood, no motion.
     var still = false
+    /// How fast it flies, in points per second (zero when it isn't): it tilts into the way it's going.
+    var velocity: CGVector = .zero
+
+    /// Bumped when a flight starts or ends: the take-off stretch and the landing squash.
+    @State private var tookOff = 0
+    @State private var landed = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -136,14 +145,42 @@ struct StudioOrb: View {
         .frame(width: size, height: size)
         // The architect's orbit ring reaches past the orb: room for it beside text.
         .padding(.horizontal, actor.isArchitect && size < 30 ? size * 0.32 : 0)
-        .keyframeAnimator(initialValue: 1.0, trigger: popIn) { content, s in
-            content.scaleEffect(s)
+        .keyframeAnimator(initialValue: OrbBounce(), trigger: popIn) { content, v in
+            content.scaleEffect(x: v.scale * (1 - 0.5 * v.stretch), y: v.scale * (1 + v.stretch))
         } keyframes: { _ in
-            KeyframeTrack {
+            KeyframeTrack(\.scale) {
                 LinearKeyframe(0.55, duration: 0.01)
                 SpringKeyframe(1.1, duration: 0.22)
                 SpringKeyframe(1, duration: 0.16)
             }
+            // Stretched as it grows, a little wide as it settles.
+            KeyframeTrack(\.stretch) {
+                LinearKeyframe(0, duration: 0.01)
+                CubicKeyframe(squashes ? 0.16 : 0, duration: 0.12)
+                CubicKeyframe(squashes ? -0.07 : 0, duration: 0.14)
+                SpringKeyframe(0, duration: 0.2)
+            }
+        }
+        .keyframeAnimator(initialValue: 0.0, trigger: tookOff) { content, e in
+            content.scaleEffect(x: 1 - 0.5 * e, y: 1 + e)
+        } keyframes: { _ in
+            KeyframeTrack {
+                CubicKeyframe(0.12, duration: 0.08)
+                SpringKeyframe(0, duration: 0.3)
+            }
+        }
+        .keyframeAnimator(initialValue: 0.0, trigger: landed) { content, e in
+            content.scaleEffect(x: 1 - 0.5 * e, y: 1 + e, anchor: .bottom)
+        } keyframes: { _ in
+            KeyframeTrack {
+                CubicKeyframe(-0.16, duration: 0.07)
+                CubicKeyframe(0.06, duration: 0.12)
+                SpringKeyframe(0, duration: 0.25)
+            }
+        }
+        .onChange(of: velocity != .zero) { _, flying in
+            guard squashes else { return }
+            if flying { tookOff &+= 1 } else { landed &+= 1 }
         }
         .keyframeAnimator(initialValue: 0.0, trigger: state == .failed && !reduceMotion ? moment : 0) { content, x in
             content.offset(x: x)
@@ -155,17 +192,32 @@ struct StudioOrb: View {
                 LinearKeyframe(0, duration: 0.07)
             }
         }
-        .keyframeAnimator(initialValue: 1.0, trigger: state == .done && !reduceMotion ? moment : 0) { content, s in
-            content.scaleEffect(s)
+        .keyframeAnimator(initialValue: OrbBounce(), trigger: state == .done && !reduceMotion ? moment : 0) { content, v in
+            content.scaleEffect(x: v.scale * (1 - 0.5 * v.stretch), y: v.scale * (1 + v.stretch)).offset(y: v.lift)
         } keyframes: { _ in
-            KeyframeTrack {
+            KeyframeTrack(\.scale) {
                 CubicKeyframe(1.25, duration: 0.15)
                 CubicKeyframe(1, duration: 0.3)
+            }
+            // A little jump: stretched going up, squashed landing.
+            KeyframeTrack(\.lift) {
+                CubicKeyframe(squashes ? -0.22 * size : 0, duration: 0.2)
+                CubicKeyframe(0, duration: 0.22)
+            }
+            KeyframeTrack(\.stretch) {
+                CubicKeyframe(squashes ? 0.14 : 0, duration: 0.1)
+                CubicKeyframe(0, duration: 0.12)
+                CubicKeyframe(0, duration: 0.18)
+                CubicKeyframe(squashes ? -0.18 : 0, duration: 0.06)
+                SpringKeyframe(0, duration: 0.3)
             }
         }
         .accessibilityElement()
         .accessibilityLabel(actor.label)
     }
+
+    /// It squashes and stretches (the 3D orb, with motion allowed).
+    private var squashes: Bool { isSphere && !reduceMotion && !still }
 
     // MARK: layers
 
@@ -178,10 +230,18 @@ struct StudioOrb: View {
         let angle = f.orbit ? t * 0.9 : -0.45
         let dim = state == .paused
         let sphere = isSphere
+        let spin = f.animates ? StudioOrbPose.spin(at: t) : 0
+        let flight = reduceMotion ? CGVector.zero : velocity
+        let ringRoll = StudioOrbPose.pose(face: f, velocity: flight).ringRoll
+        let ringAngle = f.orbit ? (t * 0.9).truncatingRemainder(dividingBy: 2 * .pi) : -0.45
+        let sparkles = f.particles ? 6 : 0
+        let wrapped = t.truncatingRemainder(dividingBy: 3600)
+        let talk = sphere && f.bounce ? StudioOrbPose.talkStretch(at: t) : 0
         return Group {
             if sphere {
                 StudioOrbSphere(actor: actor, face: f, size: s, blinking: blink, gaze: look,
-                                bounce: f.bounce ? sin(t * 2 * .pi * 3) : 0, breathe: breathe, paused: dim)
+                                bounce: f.bounce ? sin(t * 2 * .pi * 3) : 0, breathe: breathe, paused: dim,
+                                velocity: flight, spin: spin)
                     .animation(.spring(duration: 0.35), value: look)
             } else {
                 ZStack {
@@ -200,7 +260,14 @@ struct StudioOrb: View {
             ZStack {
                 if state == .waiting { WaitingRing(size: s, pulse: !reduceMotion) }
                 glow.opacity(breathe * (dim ? 0.35 : 1) * (scheme == .light ? 1.25 : 1) * (s < 24 ? 0.75 : 1))
-                if actor.isArchitect { orbit(angle: angle, front: false) }
+                if sphere {
+                    if actor.isArchitect || sparkles > 0 {
+                        StudioOrbAround(actor: actor, size: s, front: false, ringAngle: ringAngle, ringRoll: ringRoll,
+                                        particles: sparkles, time: wrapped)
+                    }
+                } else if actor.isArchitect {
+                    orbit(angle: angle, front: false)
+                }
             }
         }
         .overlay {
@@ -210,10 +277,18 @@ struct StudioOrb: View {
                     eyes(f.eyes, blink: blink).offset(x: look.dx * s * 0.08, y: look.dy * s * 0.08 + bounce)
                         .animation(.spring(duration: 0.35), value: look)
                 }
-                if actor.isArchitect { orbit(angle: angle, front: true) }
-                if f.particles { particles(t) }
+                if sphere {
+                    if actor.isArchitect || sparkles > 0 {
+                        StudioOrbAround(actor: actor, size: s, front: true, ringAngle: ringAngle, ringRoll: ringRoll,
+                                        particles: sparkles, time: wrapped)
+                    }
+                } else {
+                    if actor.isArchitect { orbit(angle: angle, front: true) }
+                    if f.particles { particles(t) }
+                }
             }
         }
+        .scaleEffect(x: 1 - 0.5 * talk, y: 1 + talk)
         .opacity(dim ? 0.7 : 1)
     }
 
@@ -339,6 +414,8 @@ private struct StudioOrbSphere: View, Animatable {
     let bounce: Double
     let breathe: Double
     let paused: Bool
+    var velocity: CGVector = .zero
+    var spin = 0.0
     var glass = StudioOrbGlass.standard
 
     @Environment(\.displayScale) private var displayScale
@@ -350,7 +427,7 @@ private struct StudioOrbSphere: View, Animatable {
 
     var body: some View {
         let pose = StudioOrbPose.pose(face: face, blinking: blinking, gaze: gaze, bounce: bounce, breathe: breathe,
-                                      paused: paused, radius: size / 2)
+                                      paused: paused, radius: size / 2, velocity: velocity)
         let tint = actor.orbTintRGB, rim = actor.orbRimRGB, g = glass
         Rectangle().fill(.white)
             .frame(width: size, height: size)
@@ -359,7 +436,7 @@ private struct StudioOrbSphere: View, Animatable {
                 .float3(tint.0, tint.1, tint.2), .float3(rim.0, rim.1, rim.2), .float(actor.isArchitect ? 1 : 0),
                 .floatArray(pose.rotation),
                 .float4(Double(pose.eyeShape.rawValue), pose.eyeWidth, pose.eyeHeight, pose.eyeLift),
-                .float(pose.eyeGap), .float(pose.glow), .float(0),
+                .float(pose.eyeGap), .float(pose.glow), .float(spin),
                 .float4(g.highlightSize, g.highlightStrength, g.rim, g.frost),
                 .float3(g.glowSpread, g.glowStrength, g.iridescence)))
             .allowsHitTesting(false)
@@ -404,5 +481,45 @@ private struct WaitingRing: View {
         } else {
             Circle().stroke(MG.warning, lineWidth: max(1, size * 0.06)).frame(width: size * 1.2, height: size * 1.2)
         }
+    }
+}
+
+/// The pop-in and the done jump: size, lift (points, up is negative) and stretch (taller positive, wider negative).
+private struct OrbBounce {
+    var scale = 1.0
+    var lift = 0.0
+    var stretch = 0.0
+}
+
+/// What goes around the 3D sphere, in depth (`studioOrbAround` in StudioOrb.metal): the architect's ring and its spark,
+/// and the sparkles orbiting it. Drawn behind the sphere (`front` false: the far parts, which the sphere hides) and over
+/// it (`front` true), on a square 2.4 radii across around the orb's frame.
+private struct StudioOrbAround: View {
+    let actor: StudioActor
+    let size: CGFloat
+    let front: Bool
+    let ringAngle: Double
+    let ringRoll: Double
+    let particles: Int
+    /// Seconds, kept small for the shader's floats.
+    let time: Double
+
+    static let extent = 2.4
+
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let tint = actor.orbTintRGB, rim = actor.orbRimRGB
+        let side = size * Self.extent
+        Rectangle().fill(.white)
+            .frame(width: side, height: side)
+            .colorEffect(StudioOrbShader.library.studioOrbAround(
+                .boundingRect, .float(displayScale), .float(Self.extent), .float(front ? 1 : 0),
+                .float3(tint.0, tint.1, tint.2), .float3(rim.0, rim.1, rim.2), .float(actor.isArchitect ? 1 : 0),
+                .float3(actor.isArchitect ? 1 : 0, ringAngle, ringRoll), .float(Double(particles)),
+                .float(Double(actor.number + 1)), .float(time), .float(scheme == .light ? 1 : 0)))
+            .frame(width: size, height: size)
+            .allowsHitTesting(false)
     }
 }

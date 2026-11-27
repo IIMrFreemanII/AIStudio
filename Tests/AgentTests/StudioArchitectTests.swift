@@ -380,3 +380,30 @@ struct StudioOrbPoseTests {
         #expect(StudioOrbPose.pose(face: face(.working), bounce: 1).eyeLift < 0)
     }
 }
+
+struct StudioOrbMotionTests {
+    @Test func flightVelocityPointsAlongTheWay() {
+        let f = StudioFlight(from: CGPoint(x: 0, y: 0), to: CGPoint(x: 400, y: 0), pace: .watchable)
+        let mid = f.velocity(at: f.duration / 2)
+        #expect(mid.dx > 100 && abs(mid.dy) < mid.dx)
+        #expect(f.velocity(at: f.duration / 2).dx > f.velocity(at: f.duration * 0.05).dx, "eased: faster in the middle")
+        #expect(f.velocity(at: -1) == CGVector(dx: 0, dy: 0) && f.velocity(at: f.duration + 1) == CGVector(dx: 0, dy: 0))
+    }
+
+    @Test func itTiltsIntoTheFlight() {
+        let face = StudioFace.face(state: .working, pace: .watchable, reduceMotion: false)
+        let right = StudioOrbPose.pose(face: face, velocity: CGVector(dx: 2000, dy: 0))
+        #expect(right.roll < 0, "flying right leans clockwise")
+        #expect(abs(right.roll + StudioOrbPose.standardBank * 0.5) < 1e-9, "clamped at full tilt")
+        #expect(StudioOrbPose.pose(face: face, velocity: CGVector(dx: -350, dy: 0)).roll > 0)
+        #expect(StudioOrbPose.pose(face: face, velocity: CGVector(dx: 500, dy: 0), bank: 0).roll == 0)
+        #expect(right.ringRoll < StudioOrbPose.ringTilt && StudioOrbPose.pose(face: face).ringRoll == StudioOrbPose.ringTilt)
+    }
+
+    @Test func spinStaysWithinATurn() {
+        #expect(StudioOrbPose.spin(at: 0) == 0)
+        let big = StudioOrbPose.spin(at: 800_000_000)
+        #expect(big >= 0 && big < 2 * .pi)
+        #expect(abs(StudioOrbPose.talkStretch(at: 1.0 / 12)) > 0.02)
+    }
+}

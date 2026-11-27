@@ -355,7 +355,8 @@ extension SmokeTest {
                    let png = rep.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("orbs-\(name).png"))
                 }
-                // The 3D turn: the architect and Mint at 64 pt looking left, up, ahead, right and down.
+                // The 3D turn: the architect and Mint at 64 pt looking left, up, ahead, right and down. Then in depth:
+                // flying left and right (tilted), and working with the ring and sparkles around them.
                 let gazes = [CGVector(dx: -1, dy: 0), CGVector(dx: 0, dy: -1), .zero, CGVector(dx: 1, dy: 0), CGVector(dx: 0.7, dy: 0.7)]
                 let turns = VStack(alignment: .leading, spacing: 56) {
                     ForEach([0, 1], id: \.self) { n in
@@ -364,6 +365,16 @@ extension SmokeTest {
                                 StudioOrb(actor: StudioActor(n), size: 64, pace: .watchable, gaze: g, still: true)
                             }
                         }
+                    }
+                    HStack(spacing: 64) {
+                        ForEach([0, 2], id: \.self) { n in
+                            StudioOrb(actor: StudioActor(n), size: 64, pace: .watchable, gaze: CGVector(dx: -0.85, dy: 0), still: true,
+                                      velocity: CGVector(dx: -900, dy: 0))
+                            StudioOrb(actor: StudioActor(n), size: 64, pace: .watchable, gaze: CGVector(dx: 0.85, dy: 0), still: true,
+                                      velocity: CGVector(dx: 900, dy: 0))
+                        }
+                        StudioOrb(actor: .architect, state: .working, size: 64, pace: .watchable)
+                        StudioOrb(actor: StudioActor(3), state: .working, size: 64, pace: .watchable)
                     }
                 }
                 .padding(60)
