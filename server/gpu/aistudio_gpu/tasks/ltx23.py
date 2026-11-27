@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from ..media import write_mp4, write_wav
-from . import Output, TaskSpec
+from . import Output, TaskSpec, fp8
 from .residency import fits, modules_of, weight_bytes
 
 RESIDENT_MARGIN_GIB = 32  # room for a clip's activations beside all the weights
@@ -94,6 +94,10 @@ class LTX23Worker(AdapterSlots):
                 status("Moving LTX-2.3 onto the GPU")
                 pipe.to("cuda")
                 self.resident = True
+                if fp8.wanted("AISTUDIO_PRECISION_LTX"):
+                    # The transformer and the Gemma text encoder in fp8; the other mode's transformer is quantized
+                    # the same way when it's parked beside it (adapters.WeightPark).
+                    fp8.convert_parts(modules_of(pipe.components), label="ltx23 fp8")
             else:
                 print(f"ltx23: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room for a "
                       "clip; offloading", flush=True)

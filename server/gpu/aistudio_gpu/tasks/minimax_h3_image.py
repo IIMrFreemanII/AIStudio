@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from ..media import write_png
-from . import Output, TaskSpec
+from . import Output, TaskSpec, fp8
 from .adapters import AdapterSlots
 from .residency import fits, weight_bytes
 
@@ -190,6 +190,8 @@ class H3ImageWorker(AdapterSlots):
             status("Moving MiniMax H3 Image onto the GPU")
             for module in parts.values():
                 module.to("cuda")
+            if fp8.wanted("AISTUDIO_PRECISION_H3_IMAGE"):
+                fp8.convert_parts(parts, label="h3-image fp8")  # transformer and text encoder: half their memory
         else:  # an opt-in smaller fallback GPU: they take turns (slow; see the module docstring)
             print(f"h3-image: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room to run; "
                   "offloading", flush=True)

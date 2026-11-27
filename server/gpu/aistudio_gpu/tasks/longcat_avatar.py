@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from ..media import write_mp4, write_wav
-from . import Output, TaskSpec
+from . import Output, TaskSpec, fp8
 
 FPS = 25
 SEGMENT_FRAMES, COND_FRAMES = 93, 13  # frames per pass, and how many of them continue the pass before
@@ -93,6 +93,25 @@ class LongCatAvatarWorker:
                                                scheduler=scheduler, dit=dit, audio_encoder=encoder,
                                                audio_feature_extractor=extractor, model_type=MODEL_TYPE)
         self.pipe.to(0)
+        if fp8.wanted("AISTUDIO_PRECISION_LONGCAT"):
+            # The DiT and UMT5 in fp8. The repo's LoRA wrapper keeps the Linear's bound forward and only takes modules
+            # whose class is called "Linear": its networks were built above on the bf16 layers; unhook, convert, then
+            # enable the mix again so it wraps the fp8 layers' forward.
+            dit.disable_all_loras()
+            fp8.convert_parts({"dit": dit, "text_encoder": text_encoder}, label="longcat fp8")
+            self._enable_mix(self.mix)
+
+    def _enable_mix(self, mix) -> None:
+        """The two distillation LoRAs mixed per step. The repo moves them to its DiT's first parameter's dtype: keep
+        them in bf16 when that's an fp8 layer's."""
+        import torch
+
+        dit = self.pipe.dit
+        dit.enable_lora_mix("dmd", "opsd", mix[1], mix[0])
+        for network in dit.lora_dict.values():
+            for lora in network.loras:
+                if any(p.dtype in (torch.float8_e4m3fn, torch.float8_e5m2) for p in lora.parameters()):
+                    lora.to(dtype=torch.bfloat16)
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
         import PIL.Image
@@ -113,7 +132,7 @@ class LongCatAvatarWorker:
         steps = params["steps"] or STEPS
         mix = (params["mix_steps"], params["mix_alpha"])
         if mix != self.mix:
-            self.pipe.dit.enable_lora_mix("dmd", "opsd", mix[1], mix[0])
+            self._enable_mix(mix)
             self.mix = mix
 
         # Whisper features per video frame; the demo pads the speech to what the passes cover plus a second.

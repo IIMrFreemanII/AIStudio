@@ -247,6 +247,14 @@ def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
                 if name is None or name not in params:
                     raise ValueError(f"{vid}: unexpected weight {key}")
                 p = params[name]
+                scale = _fp8_scale_of(params, name)
+                if scale is not None and not _is_scale_key(sf, key):
+                    from . import fp8
+
+                    # An fp8 layer: the file's bf16/fp32 weight quantized as the loaded one was, with its scale.
+                    q, sc = fp8.quantize_weight(sf.get_tensor(key).to(p.device))
+                    out[name], out[fp8.scale_name(name)] = q, sc.to(scale.dtype)
+                    continue
                 out[name] = sf.get_tensor(key).to(device=p.device, dtype=p.dtype)
     missing = set(params) - set(out)
     if missing:
@@ -265,6 +273,7 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     params = dict(module.named_parameters())
     params.update(dict(module.named_buffers()))
     wanted = {_plain(k) for k, _ in module.named_parameters() if ".lora_" not in k}
+    scales = {_plain(k) for k in wanted if k.endswith(".w_scale")}  # an fp8 layer's: made from its weight below
     # Every key is matched before anything is copied, so a file that doesn't fit leaves the module as it was.
     plan = []
     for f in files:
@@ -279,11 +288,39 @@ def _copy_weights(module, src: Path, vid: str) -> None:
         with safe_open(str(f), "pt", device="cpu") as sf:
             for key, name in [(k, n) for g, k, n in plan if g == f]:
                 target = _param_for(params, name)
-                target.data.copy_(sf.get_tensor(key).to(device=target.device, dtype=target.dtype))
-                seen.add(name)
+                scale = _fp8_scale_of(params, _plain(name))
+                if scale is not None and not _is_scale_key(sf, key):
+                    from . import fp8
+
+                    fp8.quantize_into(target, scale, sf.get_tensor(key))  # quantized as at load, with its scale
+                    seen.add(fp8.scale_name(_plain(name)))
+                else:
+                    target.data.copy_(sf.get_tensor(key).to(device=target.device, dtype=target.dtype))
+                seen.add(_plain(name))
     missing = wanted - seen
     if missing:
         raise ValueError(f"{vid}: {len(missing)} weights missing, e.g. {sorted(missing)[0]}")
+
+
+def _fp8_scale_of(params: dict, name: str):
+    """The per-channel scale beside ``name`` when it is a converted fp8 layer's weight (``fp8.convert``), else None."""
+    if not name.endswith(".weight"):
+        return None
+    scale = _param_for(params, name[: -len("weight")] + "w_scale")
+    weight = _param_for(params, name)
+    if scale is None or weight is None or weight.dtype not in _fp8_dtypes():
+        return None
+    return scale
+
+
+def _is_scale_key(sf, key: str) -> bool:
+    return key.endswith(".w_scale")
+
+
+def _fp8_dtypes():
+    import torch
+
+    return (torch.float8_e4m3fn, torch.float8_e5m2)
 
 
 def _plain(name: str) -> str:

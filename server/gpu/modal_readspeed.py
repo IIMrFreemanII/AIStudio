@@ -3,7 +3,8 @@ billed at the GPU's price. Runs on CPU containers only (a few cents), one fresh 
 cached, one at a time so they don't share the Volume's bandwidth.
 
     modal run server/gpu/modal_readspeed.py                       # every installed model folder
-    modal run server/gpu/modal_readspeed.py --models wan22-t2v,ltx23
+    modal run server/gpu/modal_readspeed.py --models wan22-t2v,ltx23 [--threads 8]   # files read in parallel
+    AISTUDIO_READSPEED_VOLUME=<name> AISTUDIO_READSPEED_VERSION=2 modal run …   # another Volume (a v2 one)
 
 Prints, per model folder: weight GB, read seconds, GB/s, the GPU of the task that loads it, and what the read costs on
 that GPU per cold start. A CPU container's network may differ from a GPU container's, so compare with a real cold
@@ -12,6 +13,7 @@ start (``modal_check.py``'s ``loadSeconds``) before trusting the dollars.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,7 +27,9 @@ WEIGHTS = {".safetensors", ".pth", ".pt", ".bin", ".ckpt", ".gguf"}
 CHUNK = 64 * 2**20
 
 app = modal.App("aistudio-gpu-readspeed")
-volume = modal.Volume.from_name("aistudio-gpu-models")
+VOLUME = os.environ.get("AISTUDIO_READSPEED_VOLUME", "aistudio-gpu-models")
+VERSION = os.environ.get("AISTUDIO_READSPEED_VERSION")  # "2" for a v2 Volume
+volume = modal.Volume.from_name(VOLUME, **({"version": int(VERSION)} if VERSION else {}))
 image = modal.Image.debian_slim(python_version="3.12")
 
 
@@ -34,18 +38,26 @@ def installed() -> list[str]:
     return sorted(p.name for p in MODELS.iterdir() if p.is_dir() and (p / ".complete").exists())
 
 
-@app.function(image=image, volumes={MODELS: volume}, cpu=2, memory=2048, single_use_containers=True, max_containers=1,
+def _read_file(f: Path) -> int:
+    total, buf = 0, bytearray(CHUNK)
+    with open(f, "rb", buffering=0) as fh:
+        while n := fh.readinto(buf):
+            total += n
+    return total
+
+
+@app.function(image=image, volumes={MODELS: volume}, cpu=4, memory=2048, single_use_containers=True, max_containers=1,
               timeout=60 * 60)
-def read(name: str) -> dict:
-    """Reads every weight file of one model folder once (a fresh container: single_use_containers=True)."""
+def read(name: str, threads: int = 1) -> dict:
+    """Reads every weight file of one model folder once (a fresh container: single_use_containers=True), with
+    ``threads`` files at a time."""
+    from concurrent.futures import ThreadPoolExecutor
+
     root = MODELS / name
     files = sorted(f for f in root.rglob("*") if f.is_file() and f.suffix in WEIGHTS)
-    total, start = 0, time.monotonic()
-    buf = bytearray(CHUNK)
-    for f in files:
-        with open(f, "rb", buffering=0) as fh:
-            while n := fh.readinto(buf):
-                total += n
+    start = time.monotonic()
+    with ThreadPoolExecutor(max(1, threads)) as pool:
+        total = sum(pool.map(_read_file, files))
     return {"name": name, "files": len(files), "bytes": total, "seconds": time.monotonic() - start}
 
 
@@ -63,12 +75,12 @@ def gpu_of(name: str) -> tuple[str, float | None]:
 
 
 @app.local_entrypoint()
-def main(models: str = ""):
+def main(models: str = "", threads: int = 1):
     names = [m.strip() for m in models.split(",") if m.strip()] or installed.remote()
     rows = []
     print(f"{'model':28} {'GB':>7} {'read s':>8} {'GB/s':>6} {'GPU':>6} {'$ / cold start':>15}")
     for name in names:
-        r = read.remote(name)
+        r = read.remote(name, threads)
         gb, secs = r["bytes"] / 1e9, r["seconds"]
         gpu, price = gpu_of(name)
         cost = f"{secs * price:.3f}" if price else "-"
