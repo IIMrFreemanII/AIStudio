@@ -47,7 +47,7 @@ CLASSES = {"wan22-t2v": "WanT2V", "wan22-i2v": "WanI2V", "wan22-s2v": "WanS2V", 
            "chroma": "Chroma", "ace-step-xl": "Music",
            "stable-audio-3": "Sound", "qwen3-tts": "Speech",
            "breeze-tts": "Breeze", "h3-video": "H3Video", "h3-references": "H3References",
-           "ltx23-video": "LTX23", "h3-image": "H3Image"}
+           "ltx23-video": "LTX23", "h3-image": "H3Image", "wan-animate2": "WanAnimate2"}
 
 
 def main() -> int:
