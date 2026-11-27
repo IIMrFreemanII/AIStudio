@@ -422,6 +422,27 @@ H100 (`AISTUDIO_GPU_AVATAR`):
 - Both log each step's time (`longcat-avatar step 3/8: … s`) and return `setupSeconds` and `stepSeconds` in the
   result's `extra`.
 
+### Motion transfer: Wan-Animate-2
+
+**`wan-animate2`**: Wan-Animate-2 distilled (Apache 2.0), through diffusers 0.42.1's modular pipeline.
+- A character picture (`image`) and a driving video (`video`) make a clip of that character moving as the person in
+  the video moves, expressions included. The scene comes from the picture, not the video.
+- The clip is cut to `start` … `start + seconds` first. The result is 24 fps, made in 81-frame segments, each
+  continuing from the last.
+- Parameters:
+  - `prompt` (the character's look), `scene` (the background; empty means "as in the picture");
+  - `seed`, `seconds` (1–15), `start`;
+  - `area` (`640x800` or `720x1280`, a target area; the shape is the picture's);
+  - `steps` (default 10, the distilled checkpoint's);
+  - `keep_audio` (the clip's sound on the result), `color_match` (frames matched to the picture's colours, so the
+    segments don't drift).
+- Everything stays on the GPU: about 46 GB of weights plus each segment's reference cache. That needs an H200
+  (`AISTUDIO_GPU_ANIMATE2`), with a B200 when none is free (`AISTUDIO_GPU_ANIMATE2_FALLBACK`). The transformer's
+  blocks compile as the container loads.
+- Download it with `--models wan-animate2` (≈ 46 GB).
+- Check it with `python server/gpu/modal_check.py wan-animate2 --image her.png --input video=dance.mp4`.
+- The result's `extra` holds `animateSeconds` and `peakGB`.
+
 ### MiniMax H3: video with its own sound
 
 | Node | Task | What it makes |

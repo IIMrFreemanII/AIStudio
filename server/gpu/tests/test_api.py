@@ -60,6 +60,10 @@ def test_auth_and_info(client):
     assert tasks["longcat-avatar"]["params"]["resolution"]["choices"] == ["480p", "720p"]
     assert tasks["infinitetalk"]["inputs"] == ["video", "audio"] and tasks["infinitetalk"]["gpu"] == "H100"
     assert not tasks["longcat-avatar"]["installed"] and not tasks["infinitetalk"]["installed"]
+    animate = tasks["wan-animate2"]
+    assert animate["inputs"] == ["image", "video"] and animate["gpu"] == "H200" and animate["fallbackGpu"] == "B200"
+    assert animate["params"]["steps"]["default"] == 10 and animate["params"]["keep_audio"]["default"] is True
+    assert not animate["installed"]
 
 
 def test_video_job_streams_status_progress_previews_and_result(client):

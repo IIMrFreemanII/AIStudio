@@ -58,6 +58,10 @@ MODELS: dict[str, dict] = {
         "wav2vec2-large-xlsr-53-english/config.json", "wav2vec2-large-xlsr-53-english/preprocessor_config.json",
         "wav2vec2-large-xlsr-53-english/special_tokens_map.json", "wav2vec2-large-xlsr-53-english/vocab.json",
         "wav2vec2-large-xlsr-53-english/alphabet.json", "wav2vec2-large-xlsr-53-english/model.safetensors"]},
+    # Wan-Animate-2 distilled (Apache 2.0), diffusers' modular layout: the 14B transformer in bf16 (4 shards), UMT5-XXL,
+    # the CLIP image encoder and the Wan VAE; ≈ 45.9 GB, summed from the repo's file listing at this revision, 2026-11-27.
+    "wan-animate2": {"repo": "Wan-AI/Wan2.2-Animate-2-14B-Distilled-Diffusers",
+                     "revision": "59e4141466bcb1bf9733eca1bc78be6891c9fbdf"},
     # LongCat-Video-Avatar 1.6 (MIT): its bf16 avatar DiT, the two distillation LoRAs, the scheduler and
     # Whisper-large-v3 (safetensors only; not the int8 DiT, the vocal separator or Whisper's flax/pt copies), plus
     # LongCat-Video's UMT5 text encoder, tokenizer and VAE (not its own 54 GB DiT). ≈ 63.6 GB, summed from the repos'
@@ -208,7 +212,7 @@ MODELS: dict[str, dict] = {
 # What a task name expands to.
 GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": ["wan22-s2v"],
           "longcat-avatar": ["longcat-avatar"], "infinitetalk": ["infinitetalk"],
-          "lipsync": ["wan22-s2v", "longcat-avatar", "infinitetalk"], "flux": ["flux1-dev"],
+          "lipsync": ["wan22-s2v", "longcat-avatar", "infinitetalk"], "wan-animate2": ["wan-animate2"], "flux": ["flux1-dev"],
           "qwen": ["qwen-image", "qwen-image-lightning"],
           "qwen-edit": ["qwen-image-edit", "qwen-image-edit-lightning"], "music": ["ace-step-xl"],
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
