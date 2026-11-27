@@ -908,7 +908,7 @@ def test_train_sdxl_lora_task_wiring(tmp_path, monkeypatch):
 
     spec = TASKS["train-sdxl-lora"]
     assert spec.kind == "train" and spec.inputs == ("dataset",) and spec.models == ("sdxl",)
-    assert "sdxl-train" in CONTAINERS and spec.normalize({})["steps"] == 0 and spec.normalize({})["rank"] == 32
+    assert "sdxl-train" in CONTAINERS and spec.normalize({})["steps"] == 0 and spec.normalize({})["rank"] == 16
     data = tmp_path / "d.zip"
     with zipfile.ZipFile(data, "w") as z:
         for i in range(4):
@@ -929,3 +929,19 @@ def test_train_h3_image_lora_task_wiring():
     assert spec.models == ("minimax-h3-image", "minimax-h3") and CONTAINERS["h3-image-train"] == CONTAINERS["h3-image"]
     p = spec.normalize({})
     assert p["rank"] == 16 and p["steps"] == 0 and p["resolution"] == 1024
+
+
+def test_a_file_result_is_kept_in_the_uploads(tmp_path):
+    # A trained LoRA (a job's "file" result) is stored like an upload under its SHA-256: the next job finds it.
+    import hashlib
+
+    from aistudio_gpu.jobs import keep_file
+
+    store = FileStore(tmp_path / "uploads")
+    result = tmp_path / "result.safetensors"
+    result.write_bytes(b"lora bytes")
+    name = keep_file(store, result)
+    assert name == hashlib.sha256(b"lora bytes").hexdigest() + ".lora"
+    assert store.path(name).read_bytes() == b"lora bytes" and result.exists()
+    assert keep_file(store, result) == name  # again: already there
+    assert not any(p.name.endswith(".keeping") for p in (tmp_path / "uploads").iterdir())

@@ -151,7 +151,8 @@ public enum WireError: Error, Equatable {
 /// What a finished Save/Preview node produced; sent with ``WireEvent/Kind/outputReady`` so the client can download
 /// it while the rest of the run continues.
 public struct OutputDescriptor: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable { case image, video, audio }
+    /// `file`: a file that isn't media (a trained LoRA).
+    public enum Kind: String, Codable, Sendable { case image, video, audio, file }
     /// The file's name inside the run (the download path is `/v1/runs/<run>/outputs/<name>`).
     public var name: String
     public var kind: Kind

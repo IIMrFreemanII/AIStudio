@@ -53,6 +53,9 @@ extension SmokeTest {
         if CommandLine.arguments.contains("--smoke-real-builder") {
             return await realBuilderPreviews(model, out: out, say: say)
         }
+        if let family = argument("--smoke-real-train").flatMap(ArtModel.Family.init(rawValue:)) {
+            return await realTraining(model, family: family, keep: keep, say: say)
+        }
         if CommandLine.arguments.contains("--smoke-real-creator") {
             return await realCreator(model, count: portraitCount, keep: keep, say: say)
         }
@@ -457,6 +460,75 @@ extension SmokeTest {
         let values = pixels.map(Double.init)
         let mean = values.reduce(0, +) / Double(values.count)
         return (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(values.count)).squareRoot()
+    }
+
+    /// `--smoke-characters-real <any> --smoke-real-train sdxl|minimax` (+ `--smoke-real-out`, `--smoke-real-train-pictures
+    /// <n>` default 20, `--smoke-real-train-steps <n>` default the server's): no chat. A template character on that
+    /// model gets one portrait, n training pictures with its face, a trained LoRA (added to the library and to the
+    /// character), then the same four photos in new outfits and places before (face only) and after (face + LoRA).
+    /// Everything goes to the out folder; the costs are printed. Costs GPU time.
+    static func realTraining(_ model: AppModel, family: ArtModel.Family, keep: (URL, String) -> Void,
+                             say: @escaping (String) -> Void) async -> Bool {
+        var ok = true
+        func check(_ good: Bool, _ what: String) {
+            if good { say("ok \(what)") } else { say("FAIL \(what)"); ok = false }
+        }
+        guard let server = model.connections.gpuServers.first?.id else { say("FAIL no GPU server"); return false }
+        let pictures = argument("--smoke-real-train-pictures").flatMap(Int.init) ?? 20
+        let steps = argument("--smoke-real-train-steps").flatMap(Int.init) ?? 0
+        var c = CharacterTemplates.make(CharacterTemplates.all[0])
+        c.artModel = ArtModel(family: family)
+        check(model.saveCharacter(c).isEmpty, "\(c.name) is saved on \(family.title)")
+        let start = Date()
+        var trainedID: String?
+        // The trained LoRA goes into the real Models library: the out folder keeps the photos, the library not it.
+        defer { if let trainedID { model.store?.library.remove(trainedID) } }
+        do {
+            let portraits = try await model.generatePortraits(for: c.id, count: 1) { say("portrait: \($0)") }
+            c = model.character(c.id) ?? c
+            check(portraits.count == 1 && model.portraitURL(c) != nil, "a portrait is made and chosen")
+            if let p = model.portraitURL(c) { keep(p, "portrait.png") }
+
+            try await model.makeTrainingPictures(c, count: pictures) { say("  \($0)") }
+            let set = model.trainingSet(c.id)
+            check(set.pictures.count == pictures && set.status == .ready, "\(pictures) training pictures are drawn")
+            let folder = model.characterStore.trainingFolder(c.id)
+            for (i, p) in set.pictures.prefix(8).enumerated() {
+                keep(folder.appendingPathComponent(p.file), String(format: "train-%02d.png", i + 1))
+            }
+            say("pictures spent $\(String(format: "%.3f", set.spentUSD)) in \(Int(Date().timeIntervalSince(start))) s")
+
+            let before = c
+            let t0 = Date()
+            let id = try await model.trainLoRA(c, steps: steps) { say("  \($0)") }
+            trainedID = id
+            c = model.character(c.id) ?? c
+            let trained = model.trainingSet(c.id)
+            check(c.loras.contains { $0.lora == id } && trained.status == .done, "the LoRA \(id) is trained and on \(c.name)")
+            check(model.store?.library.item(id)?.triggerWords == [trained.trigger ?? ""], "its trigger word is in the library")
+            say("training took \(Int(Date().timeIntervalSince(t0))) s; all spent $\(String(format: "%.3f", trained.spentUSD))")
+
+            let asks = ["wearing a red evening dress at a rooftop party at night",
+                        "hiking on a mountain trail in a yellow rain jacket",
+                        "reading in a library, wearing glasses and a grey cardigan",
+                        "cooking in a sunny kitchen, wearing an apron"]
+            var spent = 0.0
+            for (i, ask) in asks.enumerated() {
+                for (label, who) in [("before", before), ("after", c)] {
+                    let file = FileManager.default.temporaryDirectory.appendingPathComponent("train-\(label)-\(i).png")
+                    let prompt = CharacterArt.photoPrompt(who, request: ask, scene: nil, context: model.artContext(who))
+                    spent += try await model.drawPhoto(who, prompt: prompt, server: server, to: file, title: "Training check",
+                                                       seed: 1000 + i, progress: { _ in }) ?? 0
+                    keep(file, "photo-\(i + 1)-\(label).png")
+                }
+            }
+            say("photos spent $\(String(format: "%.3f", spent))")
+        } catch {
+            say("FAIL \(error)")
+            ok = false
+        }
+        say(ok ? "ok all passed" : "FAIL training check")
+        return ok
     }
 
     /// `--smoke-characters-real <any> --smoke-real-outfit` (+ `--smoke-real-out`): no chat. One portrait of Mia, then

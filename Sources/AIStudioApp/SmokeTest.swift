@@ -17,12 +17,14 @@ enum SmokeTest {
         return args[i + 1]
     }
 
-    /// `--headless` (on by itself for the builder's GPU check, `--smoke-characters-real … --smoke-real-builder`): no
+    /// `--headless` (on by itself for the builder's and the training GPU checks, `--smoke-characters-real …
+    /// --smoke-real-builder` or `--smoke-real-train`): no
     /// window, no Dock icon, never takes focus, so the run works from a background shell. The model is the App's,
     /// handed to the launch hooks without waiting for a window.
     nonisolated static var headless: Bool {
         let a = CommandLine.arguments
-        return a.contains("--headless") || (a.contains("--smoke-characters-real") && a.contains("--smoke-real-builder"))
+        return a.contains("--headless") || (a.contains("--smoke-characters-real")
+            && (a.contains("--smoke-real-builder") || a.contains("--smoke-real-train")))
     }
 
     static func argument(_ name: String) -> String? {

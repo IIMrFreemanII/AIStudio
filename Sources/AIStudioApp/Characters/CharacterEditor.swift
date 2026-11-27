@@ -71,6 +71,7 @@ struct CharacterEditor: View {
                 }
                 CharacterLookSection(c: $c, title: "Profile photo")
                 CharacterPhotosSection(c: $c)
+                CharacterTrainingSection(c: $c)
                 CharacterVoiceSection(c: $c)
                 MGSection("Chat") {
                     MGFormRow("Temperature") {

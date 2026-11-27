@@ -3,7 +3,8 @@
 The base is SDXL or one of its fine-tunes from the library (``model``, swapped in as the SDXL worker does), so the
 LoRA fits the model the character is drawn with. Every part stays on the GPU. Each picture's VAE latents and text
 embeddings are computed once (at an aspect bucket near 1 MP, plus an empty caption for dropout); then a PEFT LoRA on
-the UNet's attention layers trains with AdamW, bf16 autocast, gradient checkpointing and min-SNR loss weighting.
+the UNet's attention layers trains with AdamW, bf16 autocast, gradient checkpointing and min-SNR loss weighting
+(defaults: rank 16, 5e-5, 40 steps a picture within 600–1200).
 
 The result is a diffusers-format ``.safetensors`` (``StableDiffusionXLPipeline.save_lora_weights``), which the SDXL
 worker's LoRA slots load like any other. The adapter is removed after the job, so the container's next job starts
@@ -59,7 +60,8 @@ class SDXLTrainWorker(AdapterSlots):
         samples = read_dataset(inputs["dataset"])
         self._use_variant(params.get("model") or "base", sink)
         pipe, device = self.pipe, self.device
-        steps = total_steps(len(samples), params["steps"], 80, 1200, 2400)
+        # 80 a picture at 1e-4 (1600 for 20) burned the first real LoRA in: a stretched face, glowing eyes, one framing.
+        steps = total_steps(len(samples), params["steps"], 40, 600, 1200)
         area = params["resolution"] ** 2
         rng = random.Random(params["seed"])
         torch.manual_seed(params["seed"])

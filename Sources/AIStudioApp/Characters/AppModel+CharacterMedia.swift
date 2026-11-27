@@ -245,11 +245,13 @@ extension AppModel {
     /// `face` instead, when given) into `file` (PNG); returns its cost.
     func drawPhoto(_ c: Companion, prompt: String, server: String, to file: URL, title: String, seed: Int? = nil,
                    wholePortrait: Bool = false, extraNegative: String = "", face given: URL? = nil, keepHair: Bool = true,
+                   faceStrength: Double = CharacterArt.faceStrength,
                    progress: @escaping @MainActor (String) -> Void) async throws -> Double? {
         let face: URL?
         if let given { face = given } else { face = wholePortrait ? portraitURL(c) : await faceReference(c) }
         let render = CharacterArt.render(c, prompt: prompt, seed: seed ?? Self.mediaSeed(), server: server, face: face,
-                                         keepHair: keepHair, extraNegative: extraNegative, context: artContext(c))
+                                         keepHair: keepHair, extraNegative: extraNegative, context: artContext(c),
+                                         faceStrength: faceStrength)
         let (outputs, jobs) = try await runHeadlessGraph(template: CharacterArt.template(c.artModel.family, loras: c.loras.count),
                                                          render: render, title: title, progress: progress)
         // The jobs cost money even if the picture then can't be saved.

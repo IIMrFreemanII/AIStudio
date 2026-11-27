@@ -354,9 +354,9 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
     # A character LoRA for SDXL (or one of its fine-tunes, `model`) from a zip of pictures with captions
     # (training.py); returns the .safetensors, which the SDXL task's LoRA slots load.
     TaskSpec("train-sdxl-lora", "Train a character LoRA (SDXL)", "train", "sdxl-train", GPU_SD, {
-        "steps": Param("int", 0, min=0, max=6000),  # 0: 80 per picture, 1200–2400
-        "rank": Param("int", 32, min=4, max=128),
-        "learning_rate": Param("float", 1e-4, min=1e-6, max=1e-2),
+        "steps": Param("int", 0, min=0, max=6000),  # 0: 40 per picture, 600–1200
+        "rank": Param("int", 16, min=4, max=128),
+        "learning_rate": Param("float", 5e-5, min=1e-6, max=1e-2),
         "resolution": Param("int", 1024, min=256, max=1536, multiple=64),  # the side of the buckets' area
         "seed": Param("int", 0, min=0, max=2**32 - 1),
         "model": Param("string", "base"),
@@ -465,7 +465,7 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "steps": Param("int", 0, min=0, max=4000),  # 0: 50 per picture, 800–1600
         "rank": Param("int", 16, min=4, max=64),
         "learning_rate": Param("float", 1e-4, min=1e-6, max=1e-2),
-        "resolution": Param("int", 1024, min=512, max=2048, multiple=32),  # the side of the buckets' area
+        "resolution": Param("int", 1024, min=1024, max=2048, multiple=32),  # the pictures' short edge
         "seed": Param("int", 0, min=0, max=2**32 - 1),
     }, inputs=("dataset",), models=("minimax-h3-image", "minimax-h3")),
     # Breeze TTS 2: English and Chinese; research and non-commercial use only (its weights and what it makes).

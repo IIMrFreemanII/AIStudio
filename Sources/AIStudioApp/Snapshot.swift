@@ -409,6 +409,30 @@ enum Snapshot {
         tall.height = 3300
         await render(sheet(tall.environment(m)),
                      to: dir.appendingPathComponent("62b-character-editor-saved.png"), size: CGSize(width: 608, height: 3350))
+        // 62e. The Character LoRA section: 18 training pictures (coloured stand-ins), 16 picked.
+        var training = TrainingSet()
+        let trainFolder = m.characterStore.trainingFolder(mia.id)
+        try? FileManager.default.createDirectory(at: trainFolder, withIntermediateDirectories: true)
+        for i in 0..<18 {
+            let file = "train-\(i).png"
+            let image = NSImage(size: NSSize(width: 64, height: 64), flipped: false) { r in
+                NSColor(hue: CGFloat(i) / 18, saturation: 0.45, brightness: 0.85, alpha: 1).setFill()
+                r.fill()
+                return true
+            }
+            if let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                try? png.write(to: trainFolder.appendingPathComponent(file))
+            }
+            training.pictures.append(.init(file: file, request: "r\(i)", picked: i < 16))
+        }
+        training.status = .ready
+        training.family = .sdxl
+        training.spentUSD = 0.06
+        try? m.characterStore.saveTraining(training, for: mia.id)
+        let trainee = mia
+        await render(sheet(MGForm { CharacterTrainingSection(c: .constant(trainee)) }.frame(width: 560).environment(m)),
+                     to: dir.appendingPathComponent("62e-character-training.png"), size: CGSize(width: 608, height: 640))
+        try? FileManager.default.removeItem(at: trainFolder)
         // The memory sheet reads the store: a throwaway folder entry, removed after.
         var memory = CharacterMemory()
         memory.facts = [CharacterMemory.Fact(text: "Works nights as a nurse and hates mornings"),

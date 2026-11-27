@@ -94,6 +94,11 @@ final class AppModel {
     var creatingCharacter: CharacterEdit?
     /// Unsaved characters that were cancelled: a portrait or voice still being made for one removes its folder again.
     @ObservationIgnored var discardedDrafts: Set<UUID> = []
+    /// Character LoRA training (AppModel+CharacterTraining): each running character's status line, a counter that
+    /// redraws the training section when its pictures or state change, and the running tasks.
+    var trainingStatus: [UUID: String] = [:]
+    var trainingRevision = 0
+    @ObservationIgnored var trainingTasks: [UUID: Task<Void, Never>] = [:]
     var memoryCharacter: CharacterRef?
     /// The chat in front of the graph (nil: the active workflow is in front).
     var activeChatID: UUID? {
