@@ -54,8 +54,15 @@ final class LinkLibrary {
     }
 
     /// Whether an item's family suits a target family (Qwen-Image 2.1 runs only its own LoRAs, FLUX.1 the FLUX ones).
+    /// A LoRA's name in a menu for `family`: a MiniMax H3 video LoRA offered for H3 Image says so.
+    nonisolated static func loraTitle(_ item: LibraryEntry, for family: String) -> String {
+        item.family == "minimax-h3" && family == "minimax-h3-image" ? item.title + " (video LoRA, may not fit stills)" : item.title
+    }
+
+    /// MiniMax H3 (video) LoRAs fit H3 Image too: the server drops their audio-branch layers.
     nonisolated static func fits(_ item: String, _ target: String) -> Bool {
         item == target || (item.hasPrefix("wan-2.2") && target.hasPrefix("wan-2.2"))
+            || (item == "minimax-h3" && target == "minimax-h3-image")
     }
 
     /// Whole models from links install on this Mac too (converted by ModelImport, next to the base model).

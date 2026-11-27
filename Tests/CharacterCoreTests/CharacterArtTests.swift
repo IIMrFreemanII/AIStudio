@@ -108,7 +108,7 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         #expect(CharacterArt.task(.chroma) == "chroma" && CharacterArt.task(.sdxl) == "sdxl")
     }
 
-    @Test func minimaxTemplateEditsFromTheFaceAndSkipsNegativeAndLoRAs() throws {
+    @Test func minimaxTemplateEditsFromTheFaceAndSkipsTheNegative() throws {
         var c = hero()
         c.artModel = ArtModel(family: .minimax)
         c.loras = [CharacterLoRA(lora: "a")]
@@ -116,7 +116,11 @@ private let cafe = Scenario(id: "x", title: "X", place: "a small cafe", outfit: 
         let r = CharacterArt.render(c, prompt: "Photo of her", seed: 5, server: "s", face: face)
         let t = CharacterArt.template(.minimax, loras: 1)
         let g = try t.bind(r.values, optional: Set(r.values.keys), remove: r.unusedPictures)
-        #expect(g["image"]?.type == "RemoteH3Image" && g.nodes.allSatisfy { $0.type != "RemoteLoRA" })
+        // Its LoRAs chain in like SDXL's (H3 Image LoRAs, or the video model's).
+        #expect(g["image"]?.type == "RemoteH3Image" && g["image"]?.inputs["loras"] == .link(node: "lora1", output: "loras"))
+        #expect(g["lora1"]?.inputs["lora"] == .value(.string("a")))
+        #expect(ArtModel.Family.minimax.takesLoRAs && !ArtModel.Family.minimax.takesLibraryModels)
+        #expect(ArtModel.Family.allCases.map(\.libraryFamily) == ["sdxl", "chroma", "minimax-h3-image"])
         #expect(g["image"]?.inputs["image1"] == .link(node: "face", output: "image"))
         #expect(g["image"]?.inputs["negative"] == nil && g["image"]?.inputs["model"] == nil)
         #expect(g["image"]?.inputs["prompt"] == .value(.string(CharacterArt.minimaxFaceLead + "Photo of her")))

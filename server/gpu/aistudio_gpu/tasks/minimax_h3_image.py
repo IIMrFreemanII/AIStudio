@@ -9,6 +9,11 @@ its own image. The checkpoint is distilled to a fixed grid of six steps with gui
 negative prompt. It generates on a canvas of at least ``canvas_mp`` megapixels (the model card: best at 4–16 MP) and
 resizes to the asked size, so a 1024×1024 picture costs about what a 2048×2048 one does.
 
+LoRAs (``lora1`` … ``lora4``) load into the transformer through diffusers' MiniMax H3 LoRA converter (the video
+model's: musubi-tuner, ai-toolkit, DiffSynth and diffusers layouts). The image transformer is the video one without
+its audio branch, so a video LoRA's audio-branch tensors (and any other module the image model lacks) are dropped and
+counted; the rest loads.
+
 All of it stays on the GPU (≈ 125 GiB: a B200). Only on a smaller card (an opt-in fallback) do the text encoder and
 transformer take turns under a ``ComponentsManager``, which costs ≈ 80 s a picture on an H200 instead of seconds.
 """
@@ -23,6 +28,7 @@ import numpy as np
 
 from ..media import write_png
 from . import Output, TaskSpec
+from .adapters import AdapterSlots
 from .residency import fits, weight_bytes
 
 STEPS = 6  # the checkpoint's sampling grid (one output head per step)
@@ -54,10 +60,107 @@ def check(task: TaskSpec, params: dict, inputs: dict[str, Path]) -> None:
         raise ValueError("pass the reference pictures in order: image1, image2, …")
 
 
-class H3ImageWorker:
+def lora_module(key: str) -> str | None:
+    """The transformer module a converted LoRA tensor belongs to (``transformer.blocks.0.attn.to_q.lora_A.weight`` →
+    ``blocks.0.attn.to_q``); None for a key that isn't a LoRA factor or alpha."""
+    name = key.removeprefix("transformer.")
+    for part in (".lora_A.", ".lora_B.", ".lora_up.", ".lora_down."):
+        if part in name:
+            return name.split(part)[0]
+    if name.endswith(".alpha"):
+        return name.removesuffix(".alpha")
+    return None
+
+
+def keep_existing(state: dict, modules: set[str]) -> tuple[dict, int]:
+    """The tensors of ``state`` whose module the image transformer has, and how many were dropped (a video LoRA's audio
+    branch)."""
+    kept = {k: v for k, v in state.items() if (m := lora_module(k)) is None or m in modules}
+    return kept, len(state) - len(kept)
+
+
+class LoRAPipe:
+    """The modular pipeline (``__call__`` and every attribute) plus the pipeline-level LoRA calls ``AdapterSlots``
+    makes, done on the transformer by diffusers' MiniMax H3 LoRA mixin (the image pipeline has none of its own)."""
+
+    def __init__(self, pipe):
+        from diffusers.loaders.lora_pipeline import MiniMaxH3LoraLoaderMixin
+        from diffusers.loaders.peft import PeftAdapterMixin
+
+        t = pipe.transformer
+        if not isinstance(t, PeftAdapterMixin):  # diffusers 0.43's image transformer lacks the adapter methods
+            t.__class__ = type(type(t).__name__, (type(t), PeftAdapterMixin), {})
+        modules = {n for n, _ in t.named_modules()}
+        dropped = {"n": 0}
+
+        class Host(MiniMaxH3LoraLoaderMixin):
+            def __init__(self, transformer):
+                self.transformer = transformer
+                self.transformer_ref = None
+                # What diffusers' offload check reads from a pipeline: no device map, and its modules.
+                self.hf_device_map = None
+                self.components = {"transformer": transformer}
+
+            def lora_state_dict(self, *args, **kwargs):  # the video converter, then only what the image model has
+                out = MiniMaxH3LoraLoaderMixin.lora_state_dict.__func__(type(self), *args, **kwargs)
+                state, rest = (out[0], out[1:]) if isinstance(out, tuple) else (out, ())
+                state, dropped["n"] = keep_existing(state, modules)
+                if not any(lora_module(k) for k in state):
+                    raise ValueError("none of its layers exist in MiniMax H3 Image")
+                return (state, *rest) if rest else state
+
+        self._pipe = pipe
+        self._host = Host(pipe.transformer)
+        self.dropped = dropped
+
+    def __call__(self, *args, **kwargs):
+        return self._pipe(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._pipe, name)
+
+    def load_lora_weights(self, state, adapter_name, **_):
+        self.dropped["n"] = 0
+        self._host.load_lora_weights(state, adapter_name=adapter_name)
+        if self.dropped["n"]:
+            print(f"h3-image: LoRA {adapter_name}: dropped {self.dropped['n']} tensors for layers the image model "
+                  "lacks (a video LoRA's audio branch)", flush=True)
+
+    def enable_lora(self):
+        self._host.enable_lora()
+
+    def disable_lora(self):
+        self._host.disable_lora()
+
+    def set_adapters(self, names, weights):
+        self._host.set_adapters(names, weights)
+
+    def delete_adapters(self, name):
+        self._host.delete_adapters(name)
+
+    def get_list_adapters(self):
+        return self._host.get_list_adapters()
+
+
+class H3ImageWorker(AdapterSlots):
+    family = "minimax-h3-image"
+    title = "MiniMax H3 Image"
+    components = ("transformer",)
+
     def __init__(self):
         self.pipe = None
         self.resident = False
+        self.dtype = None
+        self._init_slots()
+
+    def _load_lora(self, name: str, parts: list[tuple[Path, str]], slot: int) -> None:
+        """As every worker, then fp32 factors (DiffSynth's files) back to bf16, so the LoRA path keeps the budget."""
+        import torch
+
+        super()._load_lora(name, parts, slot)
+        for n, p in self.pipe.transformer.named_parameters():
+            if ".lora_" in n and p.dtype == torch.float32:
+                p.data = p.data.to(torch.bfloat16)
 
     def load(self, models_root: Path, status) -> None:
         os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -92,6 +195,9 @@ class H3ImageWorker:
                   "offloading", flush=True)
             manager.enable_auto_cpu_offload(device="cuda", memory_reserve_margin=OFFLOAD_MARGIN_GIB * 2**30)
         self._denoise = denoise
+        self.models_root = models_root
+        self.dtype = torch.bfloat16
+        self.pipe = LoRAPipe(self.pipe)
 
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
         import torch
@@ -100,6 +206,7 @@ class H3ImageWorker:
         from .minimax_h3 import gpu_name
 
         check(task, params, inputs)
+        loras = self._use_loras(params, inputs, sink)
         width, height = output_size(params)
         pictures = [Image.open(inputs[k]).convert("RGB") for k in PICTURES if k in inputs]
         kwargs: dict = {"prompt": params["prompt"].strip(), "width": width, "height": height,
@@ -140,6 +247,6 @@ class H3ImageWorker:
         return Output(path, "image", "image/png",
                       extra={"gpu": gpu_name(), "resident": self.resident,
                              "workflow": "image_conditioned" if pictures else "text2image",
-                             "steps": STEPS, "pictures": len(pictures), "width": image.width, "height": image.height,
+                             "steps": STEPS, "pictures": len(pictures), "loras": loras, "width": image.width, "height": image.height,
                              "canvasMegapixels": params["canvas_mp"],
                              "sampleSeconds": round(time.monotonic() - t0, 2)})

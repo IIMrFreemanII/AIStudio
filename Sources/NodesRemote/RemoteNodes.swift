@@ -60,7 +60,7 @@ public enum RemoteNodes {
     public static let libraryFamilies: [String: String] = [
         "RemoteFlux": "flux.1", "RemoteQwenImage": "qwen-image", "RemoteSD35": "sd3.5-large", "RemoteSDXL": "sdxl",
         "RemoteAnima": "anima", "RemoteChroma": "chroma", "RemoteWanTextToVideo": "wan-2.2-t2v", "RemoteWanImageToVideo": "wan-2.2-i2v",
-        "RemoteH3Video": "minimax-h3", "RemoteH3References": "minimax-h3-ref",
+        "RemoteH3Video": "minimax-h3", "RemoteH3References": "minimax-h3-ref", "RemoteH3Image": "minimax-h3-image",
         "RemoteLTX23": "ltx-2.3",
     ]
 
@@ -1187,7 +1187,7 @@ public struct RemoteH3ImageNode: NodeImplementation {
 
     public static let schema = NodeSchema(
         type: "RemoteH3Image", displayName: "MiniMax H3 Image (Cloud GPU)", category: "remote",
-        inputs: pictures.map { InputSpec($0, .image, optional: true) } + [
+        inputs: [InputSpec("loras", .cloudLoRAs, optional: true)] + pictures.map { InputSpec($0, .image, optional: true) } + [
             RemoteNodes.serverInput,
             InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
             InputSpec("seed", .int, default: .int(0), widget: .seed),
@@ -1207,13 +1207,16 @@ public struct RemoteH3ImageNode: NodeImplementation {
         // The server numbers pictures in order (image1, image2…): close any gaps.
         var ordered: [String: MLXArray] = [:]
         for (i, name) in Self.pictures.filter({ images[$0] != nil }).enumerated() { ordered["image\(i + 1)"] = images[name] }
-        let params: [String: Any] = [
+        var params: [String: Any] = [
             "prompt": try inputs.string("prompt"), "seed": try inputs.int("seed"),
             "width": try inputs.int("width"), "height": try inputs.int("height"),
             "canvas_mp": try inputs.float("canvas_mp"),
         ]
-        let (url, _) = try await runRemoteJob(task: "h3-image", params: params, images: ordered, inputs: inputs,
-                                              context: context)
+        // H3 Image LoRAs, and the video model's (the server drops their audio-branch layers).
+        let (files, links) = try CloudLoRA.attach(inputs.optionalObject("loras", as: [CloudLoRA].self) ?? [],
+                                                  family: "minimax-h3-image", to: &params)
+        let (url, _) = try await runRemoteJob(task: "h3-image", params: params, images: ordered, files: files,
+                                              links: links, inputs: inputs, context: context)
         return ["image": .object(try loadImage(url))]
     }
 }

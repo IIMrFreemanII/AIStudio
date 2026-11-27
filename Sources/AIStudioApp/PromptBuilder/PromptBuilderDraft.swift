@@ -204,7 +204,6 @@ struct PromptBuilderDraft: Codable, Equatable {
     /// node's own family is used (`PromptBuilderTarget.loraFamily`).
     static func loraFamily(_ model: PromptModel) -> String? {
         switch model {
-        case .minimaxImage: nil
         case .wan: "wan-2.2-t2v"  // LinkLibrary.fits counts every Wan 2.2 LoRA
         case .ltx23: "ltx-2.3"
         case .minimaxVideo: "minimax-h3"

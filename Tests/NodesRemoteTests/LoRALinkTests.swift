@@ -272,7 +272,9 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
         #expect(RemoteNodes.libraryFamilies["RemoteSDXL"] == "sdxl")
         #expect(RemoteNodes.taskID(forNodeType: "RemoteChroma") == "chroma")
         #expect(RemoteNodes.taskID(forNodeType: "RemoteH3Image") == "h3-image")
-        #expect(RemoteNodes.types.contains("RemoteH3Image") && RemoteNodes.libraryFamilies["RemoteH3Image"] == nil)
+        // Its LoRAs come from the H3 Image family (it has no `model` input, so no fine-tune menu).
+        #expect(RemoteNodes.types.contains("RemoteH3Image") && RemoteNodes.libraryFamilies["RemoteH3Image"] == "minimax-h3-image")
+        #expect(RemoteH3ImageNode.schema.inputs.allSatisfy { $0.name != "model" })
         #expect(RemoteNodes.libraryFamilies["RemoteChroma"] == "chroma")
         #expect(RemoteNodes.baseTitle(family: "chroma") == "Chroma1-HD (base)")
         #expect(RemoteNodes.types.isSuperset(of: ["RemoteSD35", "RemoteSDXL", "RemoteChroma"]))
@@ -318,6 +320,13 @@ func sha256Hex(_ d: Data) -> String { FileHasher.hex(SHA256.hash(data: d)) }
 
     @Test func miniMaxH3LoRAFamilies() throws {
         #expect(LoRASources.family(forBaseModel: "MiniMax H3") == "minimax-h3")
+        #expect(LoRASources.family(forBaseModel: "MiniMax H3 Image") == "minimax-h3-image")
+        #expect(LoRASources.familyName("minimax-h3-image") == "MiniMax H3 Image")
+        #expect(RemoteNodes.libraryFamilies["RemoteH3Image"] == "minimax-h3-image")
+        #expect(RemoteH3ImageNode.schema.inputs.first?.name == "loras")
+        // A video LoRA fits the image node (the server drops its audio-branch layers).
+        try CloudLoRA(source: .file(URL(fileURLWithPath: "/x.safetensors")), strength: 1, baseModel: "MiniMax H3")
+            .checkFits("minimax-h3-image")
         #expect(LoRASources.familyName("minimax-h3") == "MiniMax H3")
         #expect(LoRASources.familyName("minimax-h3-ref") == "MiniMax H3 References")
         #expect(LoRASources.families.contains("minimax-h3") && LoRASources.families.contains("minimax-h3-ref"))

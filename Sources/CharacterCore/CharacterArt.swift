@@ -197,11 +197,11 @@ public enum CharacterArt {
     /// Chroma runs in full (40 steps with guidance), not Flash: only guidance uses the negative prompt, which holds
     /// AgeGuard's terms.
     ///
-    /// MiniMax H3 Image: Load Image (face) → its picture 1; no negative prompt (AgeGuard's age and youth-term checks
-    /// still apply to the prompt), no fine-tunes or LoRAs.
+    /// MiniMax H3 Image: Load Image (face) → its picture 1, ← the LoRA chain; no negative prompt (AgeGuard's age and
+    /// youth-term checks still apply to the prompt) and no fine-tunes.
     public static func template(_ family: ArtModel.Family = .sdxl, loras: Int) -> MovieTemplate {
-        if family == .minimax { return minimaxTemplate() }
         let n = min(max(loras, 0), maxLoRAs)
+        if family == .minimax { return minimaxTemplate(loras: n) }
         var nodes = [GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))],
                                position: GraphPoint(x: 40, y: 40))]
         var slots: [String: MovieTemplate.Slot] = [:]
@@ -223,15 +223,7 @@ public enum CharacterArt {
         case .minimax:
             break  // minimaxTemplate()
         }
-        for k in stride(from: 1, through: n, by: 1) {
-            var inputs: [String: NodeInput] = ["lora": .value(.string("")), "strength": .value(.double(1))]
-            if k > 1 { inputs["loras"] = .link(node: "lora\(k - 1)", output: "loras") }
-            nodes.append(GraphNode(id: "lora\(k)", type: "RemoteLoRA", inputs: inputs,
-                                   position: GraphPoint(x: 40, y: 200 + Double(k - 1) * 160)))
-            slots["lora\(k)"] = .init(node: "lora\(k)", input: "lora")
-            slots["lora\(k)_strength"] = .init(node: "lora\(k)", input: "strength")
-        }
-        if n > 0 { gen["loras"] = .link(node: "lora\(n)", output: "loras") }
+        addLoRAChain(n, to: &nodes, slots: &slots, gen: &gen)
         let type = family == .chroma ? "RemoteChroma" : "RemoteSDXL"
         nodes.append(GraphNode(id: "image", type: type, inputs: gen, position: GraphPoint(x: 400, y: 60)))
         nodes.append(GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
@@ -243,19 +235,35 @@ public enum CharacterArt {
         return MovieTemplate(name: templateName, graph: Graph(nodes: nodes), slots: slots)
     }
 
-    private static func minimaxTemplate() -> MovieTemplate {
-        let gen: [String: NodeInput] = [
+    /// `n` `RemoteLoRA` nodes chained into `gen`'s `loras` input, with slots `lora1`…, `lora1_strength`….
+    private static func addLoRAChain(_ n: Int, to nodes: inout [GraphNode], slots: inout [String: MovieTemplate.Slot],
+                                     gen: inout [String: NodeInput]) {
+        for k in stride(from: 1, through: n, by: 1) {
+            var inputs: [String: NodeInput] = ["lora": .value(.string("")), "strength": .value(.double(1))]
+            if k > 1 { inputs["loras"] = .link(node: "lora\(k - 1)", output: "loras") }
+            nodes.append(GraphNode(id: "lora\(k)", type: "RemoteLoRA", inputs: inputs,
+                                   position: GraphPoint(x: 40, y: 200 + Double(k - 1) * 160)))
+            slots["lora\(k)"] = .init(node: "lora\(k)", input: "lora")
+            slots["lora\(k)_strength"] = .init(node: "lora\(k)", input: "strength")
+        }
+        if n > 0 { gen["loras"] = .link(node: "lora\(n)", output: "loras") }
+    }
+
+    private static func minimaxTemplate(loras n: Int) -> MovieTemplate {
+        var gen: [String: NodeInput] = [
             "prompt": .value(.string("")), "seed": .value(.int(0)), "width": .value(.int(photoSize.width)),
             "height": .value(.int(photoSize.height)), "server": .value(.string("")), "canvas_mp": .value(.double(4)),
             "image1": .link(node: "face", output: "image"),
         ]
-        let nodes = [
-            GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))], position: GraphPoint(x: 40, y: 40)),
+        var nodes = [GraphNode(id: "face", type: "LoadImage", inputs: ["path": .value(.string(""))],
+                               position: GraphPoint(x: 40, y: 40))]
+        var slots: [String: MovieTemplate.Slot] = ["face": .init(node: "face", input: "path")]
+        addLoRAChain(n, to: &nodes, slots: &slots, gen: &gen)
+        nodes += [
             GraphNode(id: "image", type: "RemoteH3Image", inputs: gen, position: GraphPoint(x: 400, y: 60)),
             GraphNode(id: "out", type: "PreviewImage", inputs: ["image": .link(node: "image", output: "image")],
                       position: GraphPoint(x: 780, y: 80)),
         ]
-        var slots: [String: MovieTemplate.Slot] = ["face": .init(node: "face", input: "path")]
         for name in ["prompt", "seed", "width", "height", "server"] { slots[name] = .init(node: "image", input: name) }
         return MovieTemplate(name: templateName, graph: Graph(nodes: nodes), slots: slots)
     }
