@@ -212,17 +212,31 @@ public enum CharacterMedia {
     public static func motionStillPrompt(_ c: Character, request: String, scene: Scenario?,
                                          context: CharacterArt.Context = .init()) -> String {
         var s = CharacterArt.spec(c, request: "", scene: scene, context: context)
-        if c.artModel.style == .photoreal { s.medium = "photo" }
-        s.shot = "full-body shot, head to feet in frame"
+        // Without a place SDXL drew studio head-shots (the face reference pulls towards the portrait's framing), so the
+        // still always has a room with a floor to stand on, a full-body medium first, and full body as a weighted tag.
+        if c.artModel.style == .photoreal { s.medium = "full-body photo" }
+        // "On the floor" and a wooden floor read as sitting on it (3 of 4 checks sat): standing is weighted instead.
+        s.shot = "full-body shot, head to toe in frame"
         s.action = "standing upright, arms relaxed at the sides, hands empty, facing the camera"
+        // At 1.3 every check stood but was cut at the waist or thighs (the face reference pulls the framing in).
+        s.details.insert(PromptDetail(tag: "wide shot, full body, head to toe, standing, shoes",
+                                      text: "A wide shot: they stand, and their whole body is in the picture, from the hair to the shoes",
+                                      weight: 1.5), at: 0)
         let req = clean(request)
         if !req.isEmpty { s.place = CharacterArt.caption(req) }
+        if s.place.isEmpty { s.place = "in a bright, spacious room" }
         return PromptWriter.write(s, for: CharacterArt.promptModel(c, context: context)).prompt
     }
 
-    /// The face reference's strength for the still: the training pictures' (weaker than photos'), so the portrait's
-    /// framing and pose don't carry over.
-    public static let motionFaceStrength = CharacterTraining.faceStrength
+    /// The face reference's strength for the still: weaker than photos' (0.6) and training pictures' (0.4), so the
+    /// portrait's head-and-shoulders framing doesn't carry over to a full-body shot.
+    public static let motionFaceStrength = 0.3
+    /// The still's canvas: taller than a photo's 832 × 1216 (on which SDXL cut a standing person off at the knees), an
+    /// SDXL size of about the same area, so the whole body and the feet fit.
+    public static let motionStillSize = (width: 768, height: 1344)
+    /// Said against the still: a seated or phone-holding pose, and framings that cut the legs off.
+    public static let motionStillNegative = "sitting, sitting on the floor, kneeling, crouching, holding a phone, cropped legs, "
+        + "feet out of frame, cut off at the knees, close-up, cowboy shot"
 
     /// The reply's words as the motion clip's scene (a caption without "you"/"I").
     public static func motionScene(_ request: String) -> String { CharacterArt.caption(clean(request)) }

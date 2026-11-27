@@ -494,6 +494,24 @@ extension SmokeTest {
             _ = try await model.generatePortraits(for: c.id, count: 1) { say("portrait: \($0)") }
             c = model.character(c.id) ?? c
             if let p = model.portraitURL(c) { keep(p, "portrait.png") }
+            // `--smoke-real-motion-stills N`: only N motion stills (the framing check), no video.
+            if let n = argument("--smoke-real-motion-stills").flatMap(Int.init), n > 0, let server = model.connections.gpuServers.first?.id {
+                let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("motion-stills-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+                var spent = 0.0
+                for i in 1...n {
+                    let file = tmp.appendingPathComponent("still-\(i).png")
+                    spent += try await model.drawPhoto(c, prompt: CharacterMedia.motionStillPrompt(c, request: "", scene: nil,
+                                                                                                    context: model.artContext(c)),
+                                                       server: server, to: file, title: "motion still \(i)",
+                                                       extraNegative: CharacterMedia.motionStillNegative,
+                                                       faceStrength: CharacterMedia.motionFaceStrength,
+                                                       size: CharacterMedia.motionStillSize) { say("still \(i): \($0)") } ?? 0
+                    keep(file, "still-\(i).png")
+                }
+                say("stills spent $\(String(format: "%.3f", spent))")
+                return ok
+            }
             let doc = model.newCharacterChat([c.id])
             defer { model.deleteChat(doc.id) }
             let folder = model.chatStore.filesFolder(doc.id)

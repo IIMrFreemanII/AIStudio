@@ -273,16 +273,18 @@ public enum CharacterArt {
     /// replaces it (the Prompt Builder's preview writes its own). `keepHair`
     /// false: on MiniMax the face reference keeps only the face (a hairstyle example).
     /// `faceStrength`: how strongly the face picture steers SDXL and Chroma (training pictures use less, so poses and
-    /// outfits follow the request instead of the portrait's).
+    /// outfits follow the request instead of the portrait's). `size`: the canvas (a motion video's still is taller, so
+    /// the whole body fits).
     public static func render(_ c: Character, prompt: String, seed: Int, server: String, face: URL?, keepHair: Bool = true,
                               extraNegative: String = "", negative written: String? = nil,
-                              context: Context = .init(), faceStrength strength: Double = faceStrength) -> MovieArt.Render {
+                              context: Context = .init(), faceStrength strength: Double = faceStrength,
+                              size: (width: Int, height: Int) = photoSize) -> MovieArt.Render {
         let base = written ?? negative(c, context: context)
         let negative = extraNegative.isEmpty ? base : base + ", " + extraNegative
         let lead = c.artModel.family == .minimax && face != nil ? (keepHair ? minimaxFaceLead : minimaxFaceOnlyLead) : ""
         var values: [String: JSONValue] = [
             "prompt": .string(lead + prompt), "negative": .string(negative), "seed": .int(seed),
-            "width": .int(photoSize.width), "height": .int(photoSize.height), "server": .string(server),
+            "width": .int(size.width), "height": .int(size.height), "server": .string(server),
             "model": .string(c.artModel.variant ?? ""), "face_strength": .double(strength),
         ]
         if let face { values["face"] = .string(face.path) }

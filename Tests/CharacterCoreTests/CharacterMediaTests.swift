@@ -143,6 +143,13 @@ private var utc: Calendar {
         let look = CharacterMedia.motionLook(hero())
         #expect(look.hasPrefix("A 28-year-old adult") && !look.hasSuffix("."))
         #expect(CharacterMedia.motionStillPrompt(hero(), request: "", scene: nil).contains("full-body"))
+        // The still's canvas is taller than a photo's (the whole body fits), at about the same area.
+        let size = CharacterMedia.motionStillSize
+        #expect(Double(size.height) / Double(size.width) > Double(CharacterArt.photoSize.height) / Double(CharacterArt.photoSize.width))
+        #expect(size.width % 64 == 0 && size.height % 64 == 0)
+        let tall = CharacterArt.render(hero(), prompt: "p", seed: 1, server: "s", face: nil, size: size)
+        #expect(tall.values["width"] == .int(768) && tall.values["height"] == .int(1344))
+        #expect(CharacterMedia.motionStillNegative.contains("feet out of frame"))
         // The system prompt tells them a clip turns their video into one copying its moves.
         #expect(MediaTags.instructions([.video, .motion]).contains("copies their clip's moves"))
         #expect(!MediaTags.instructions([.video]).contains("clip"))
