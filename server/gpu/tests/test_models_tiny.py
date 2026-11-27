@@ -396,6 +396,12 @@ def test_wan_fp8_copy_on_disk_gives_the_same_weights_and_frames(models, tmp_path
             assert a[n].dtype == b[n].dtype, n
             assert torch.equal(a[n].detach().contiguous().view(torch.uint8),
                                b[n].detach().contiguous().view(torch.uint8)), n
+        bufs_a = dict(getattr(cast.pipe, c).named_buffers())
+        bufs_b = dict(getattr(stored.pipe, c).named_buffers())
+        assert bufs_a.keys() == bufs_b.keys()
+        for n in bufs_a:
+            assert bufs_a[n].dtype == bufs_b[n].dtype, n
+            assert torch.equal(bufs_a[n], bufs_b[n]), n
         assert any(p.dtype == torch.float8_e4m3fn for p in b.values())
         assert all(p.dtype != torch.float8_e4m3fn for n, p in b.items() if ".lora_" in n)
     assert _frames(cast_out.path) == _frames(stored_out.path)
