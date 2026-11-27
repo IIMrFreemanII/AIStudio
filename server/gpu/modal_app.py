@@ -389,9 +389,9 @@ def _container(family: str) -> dict:
     return {"memory": (request, limit), **({"cpu": cpu} if cpu > MIN_CPU else {})}
 
 
-def _gpu_class(image=gpu_image, **kwargs):
-    return app.cls(image=image, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=IDLE, timeout=60 * 60,
-                   enable_memory_snapshot=True, max_containers=GPU_CONTAINERS, **kwargs)
+def _gpu_class(image=gpu_image, timeout=60 * 60, snapshot=True, **kwargs):
+    return app.cls(image=image, volumes={MODELS: volume, UPLOADS: uploads}, scaledown_window=IDLE, timeout=timeout,
+                   enable_memory_snapshot=snapshot, max_containers=GPU_CONTAINERS, **kwargs)
 
 
 @_gpu_class(gpu=GPU_WAN, **_container("wan22-t2v"))
@@ -631,6 +631,25 @@ class H3Image:
                        models=(volume, MODELS))
 
 
+# MiniMax H3 Image LoRA training: one long job on the same GPU (all parts resident), no memory snapshot.
+@_gpu_class(image=h3_image_image, gpu=GPU_H3_IMAGE, timeout=2 * 60 * 60, snapshot=False,
+            **_container("h3-image-train"))
+class H3ImageTrain:
+    @modal.enter()
+    def load(self):
+        _imports()
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("h3-image-train", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
 # LTX-2.3: the 49 GB text encoder and the 38 GB transformer wait in host RAM and take turns on the GPU (model offload);
 # a text-to-video and an image-to-video pipeline share them. No torchvision needed. PyAV re-encodes an image-to-video start picture through H.264 the way LTX was
 # trained (diffusers' `image_crf`), so its image adds `av`.
@@ -689,6 +708,24 @@ class SDXL:
         from aistudio_gpu.modal_runner import WorkerState
 
         self.state = WorkerState("sdxl", MODELS)
+
+    @modal.method()
+    def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
+        from aistudio_gpu.modal_runner import run_job
+
+        return run_job(self.state, events, cancels, job_id, task, params, inputs, uploads=(uploads, UPLOADS),
+                       models=(volume, MODELS))
+
+
+# LoRA training: one long job (up to 2 h), no memory snapshot (the container trains once and goes).
+@_gpu_class(gpu=GPU_SD, timeout=2 * 60 * 60, snapshot=False, **_container("sdxl-train"))
+class SDXLTrain:
+    @modal.enter()
+    def load(self):
+        _imports()
+        from aistudio_gpu.modal_runner import WorkerState
+
+        self.state = WorkerState("sdxl-train", MODELS)
 
     @modal.method()
     def run(self, job_id: str, task: str, params: dict, inputs: dict) -> dict:
@@ -1596,7 +1633,7 @@ def api():
     data = Path("/tmp/aistudio-gpu")
     runner = ModalRunner({"wan22-t2v": WanT2V, "wan22-i2v": WanI2V, "wan22-s2v": WanS2V,
                           "longcat-avatar": LongCatAvatar, "infinitetalk": InfiniteTalk, "flux1-dev": Flux, "qwen-image": QwenImage,
-                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "anima": Anima, "chroma": Chroma, "music": Music,
+                          "qwen-image-edit": QwenImageEdit, "sd35-large": SD35, "sdxl": SDXL, "sdxl-train": SDXLTrain, "h3-image-train": H3ImageTrain, "anima": Anima, "chroma": Chroma, "music": Music,
                           "sound": Sound, "speech": Speech, "breeze": Breeze,
                           "h3-video": H3Video, "h3-references": H3References, "ltx23": LTX23,
                           "h3-image": H3Image}, events, cancels, volume, MODELS, uploads_volume=uploads,

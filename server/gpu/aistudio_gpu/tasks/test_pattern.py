@@ -120,6 +120,15 @@ class FakeModelWorker:
     def run(self, task: TaskSpec, params: dict, inputs: dict[str, Path], sink, out_dir: Path) -> Output:
         from PIL import Image
 
+        if task.kind == "train":  # the real worker's dataset checks, then a tiny stand-in file
+            from .training import read_dataset
+            samples = read_dataset(inputs["dataset"])
+            for step in range(1, 5):
+                sink.check()
+                sink.progress(step, 4)
+            path = out_dir / "pytorch_lora_weights.safetensors"
+            path.write_bytes(b"fake lora for " + str(len(samples)).encode() + b" pictures")
+            return Output(path, "file", "application/octet-stream", extra={"pictures": len(samples), "steps": 4})
         speech_seconds = None
         fps = TALKING_FPS.get(task.id, 16)
         if task.id in TALKING_FPS:  # as the real workers: the clip is as long as the audio, within its limit

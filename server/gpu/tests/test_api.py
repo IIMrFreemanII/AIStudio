@@ -896,3 +896,36 @@ def test_h3_image_lora_keeps_only_layers_it_has():
     assert dropped == 2 and set(kept) == {"transformer.blocks.0.attn.to_q.lora_A.weight",
                                           "transformer.blocks.0.attn.to_q.lora_B.weight"}
 
+
+def test_train_sdxl_lora_task_wiring(tmp_path, monkeypatch):
+    # A training job takes one zip; the fake worker checks it as the real one does and returns a small file.
+    import io
+    import zipfile
+
+    from PIL import Image
+
+    from aistudio_gpu.tasks import CONTAINERS, TASKS, make_worker
+
+    spec = TASKS["train-sdxl-lora"]
+    assert spec.kind == "train" and spec.inputs == ("dataset",) and spec.models == ("sdxl",)
+    assert "sdxl-train" in CONTAINERS and spec.normalize({})["steps"] == 0 and spec.normalize({})["rank"] == 32
+    data = tmp_path / "d.zip"
+    with zipfile.ZipFile(data, "w") as z:
+        for i in range(4):
+            buf = io.BytesIO()
+            Image.new("RGB", (32, 32)).save(buf, "PNG")
+            z.writestr(f"{i}.png", buf.getvalue())
+    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
+    out = make_worker(spec.family).run(spec, spec.normalize({}), {"dataset": data}, _QuietSink(), tmp_path)
+    assert out.kind == "file" and out.extra["pictures"] == 4
+
+
+
+def test_train_h3_image_lora_task_wiring():
+    from aistudio_gpu.tasks import CONTAINERS, TASKS
+
+    spec = TASKS["train-h3-image-lora"]
+    assert spec.kind == "train" and spec.gpu == "B200" and spec.inputs == ("dataset",)
+    assert spec.models == ("minimax-h3-image", "minimax-h3") and CONTAINERS["h3-image-train"] == CONTAINERS["h3-image"]
+    p = spec.normalize({})
+    assert p["rank"] == 16 and p["steps"] == 0 and p["resolution"] == 1024
