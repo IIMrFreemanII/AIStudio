@@ -4,7 +4,7 @@
     "groups" : [
       {
         "color" : "purple",
-        "height" : 298,
+        "height" : 282,
         "id" : "group1",
         "title" : "Hi-res Fix",
         "width" : 1288,
@@ -120,7 +120,7 @@
         },
         "position" : {
           "x" : 1296,
-          "y" : 189
+          "y" : 186
         },
         "type" : "ImageScale"
       },
@@ -139,7 +139,7 @@
         },
         "position" : {
           "x" : 1626,
-          "y" : 189
+          "y" : 186
         },
         "type" : "VAEEncode"
       },
@@ -182,7 +182,7 @@
         },
         "position" : {
           "x" : 2286,
-          "y" : 202
+          "y" : 198
         },
         "type" : "VAEDecode"
       }

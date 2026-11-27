@@ -40,7 +40,7 @@
   ],
   "name" : "Anima · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 360,
+  "order" : 390,
   "summary" : "Anima: a 2B anime text-to-image model (Danbooru-style tags or natural language) on the cloud GPU. Anima fine-tunes and LoRAs from the library work too.",
   "symbol" : "cloud"
 }

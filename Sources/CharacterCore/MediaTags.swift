@@ -151,6 +151,7 @@ public enum MediaTags {
                 case .video: out += "[sent a video: \(body)]"
                 case .voice: out += "[sent a voice message: \"\(body)\"]"
                 case .talk: out += "[sent a video message: \"\(body)\"]"
+                case .motion: out += "[sent a video doing the moves from the clip: \(body)]"
                 }
             }
         }
@@ -173,6 +174,9 @@ public enum MediaTags {
                 lines.append("- <voice>the exact words you say, a sentence or two</voice> sends a voice message.")
             case .talk:
                 lines.append("- <talk>the exact words you say on camera, one or two short sentences</talk> sends a video of you saying them.")
+            case .motion:
+                lines.append("- When the user sends you a video and asks you to do what's in it (a dance, a move), answer with a "
+                    + "<video>where you are and what you wear while you do it</video> tag: your video copies their clip's moves.")
             }
         }
         if wanted.contains(.voice) || wanted.contains(.talk) {

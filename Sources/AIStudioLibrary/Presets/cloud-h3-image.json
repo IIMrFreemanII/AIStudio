@@ -39,7 +39,7 @@
   ],
   "name" : "MiniMax H3 Image · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 340,
+  "order" : 370,
   "summary" : "MiniMax H3 Image on an NVIDIA H200: detailed, realistic pictures from long descriptions, in six steps. Wire Load Image into image1…image4 and name them in the prompt as <Picture 1>… to edit or combine pictures. Its licence excludes the US, EU, UK and Korea.",
   "symbol" : "cloud"
 }

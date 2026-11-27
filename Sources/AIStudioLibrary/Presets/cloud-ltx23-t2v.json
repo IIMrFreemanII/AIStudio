@@ -40,7 +40,7 @@
   ],
   "name" : "LTX-2.3 · Text to Video · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 330,
+  "order" : 340,
   "summary" : "A clip with its own sound from one prompt. Fast mode runs the distilled model in 8 steps; LTX-2.3 fine-tunes and LoRAs from the library work too.",
   "symbol" : "cloud"
 }

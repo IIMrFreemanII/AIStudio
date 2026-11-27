@@ -137,6 +137,12 @@ struct NodeExtras: View {
                      + "The result is as long as the speech; past the clip's end its last frame holds.")
                     .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
             }
+            if node.type == "RemoteWanAnimate" {
+                Text("The picture's character moves as the person in the clip moves, expressions included, in the "
+                     + "picture's scene (not the clip's). Use a full-body picture for a full-body clip. Start and seconds "
+                     + "pick the part of the clip to copy; its sound stays on the result.")
+                    .font(.mgSubheadline).foregroundStyle(MG.secondaryLabel).fixedSize(horizontal: false, vertical: true)
+            }
             if node.type == "RemoteTextToSpeech" {
                 Text("Connect a reference clip to clone its voice (a few seconds; its transcript helps). Otherwise it "
                      + "speaks with the chosen voice, or with \"designed\", a new voice made from the description. "

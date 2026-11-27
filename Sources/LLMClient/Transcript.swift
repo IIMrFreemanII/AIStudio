@@ -174,7 +174,7 @@ public struct ChatMedia: Codable, Equatable, Sendable, Identifiable {
     public enum Status: String, Codable, Sendable { case waiting, running, done, failed, skipped }
     // waiting: over the automatic-cost threshold, needs the user's OK. skipped: the user said no.
     public var id: UUID
-    /// A `CharacterCore.MediaKind` raw value ("photo", "video", "voice", "talk").
+    /// A `CharacterCore.MediaKind` raw value ("photo", "video", "voice", "talk", "motion").
     public var kind: String
     /// The tag's text.
     public var prompt: String
@@ -184,10 +184,13 @@ public struct ChatMedia: Codable, Equatable, Sendable, Identifiable {
     public var estimateUSD: Double?
     public var costUSD: Double?
     public var error: String?
+    /// A motion video's clip: the user's attachment it copies the moves of (a file name in the chat's files folder).
+    public var source: String?
 
     public init(id: UUID = UUID(), kind: String, prompt: String, status: Status = .running, file: String? = nil,
-                estimateUSD: Double? = nil, costUSD: Double? = nil, error: String? = nil) {
+                estimateUSD: Double? = nil, costUSD: Double? = nil, error: String? = nil, source: String? = nil) {
         self.id = id
+        self.source = source
         self.kind = kind
         self.prompt = prompt
         self.status = status

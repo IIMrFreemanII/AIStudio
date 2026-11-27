@@ -42,7 +42,7 @@
   ],
   "name" : "Breeze TTS 2 · Cloud GPU (non-commercial)",
   "needsServer" : "gpu",
-  "order" : 300,
+  "order" : 310,
   "summary" : "Expressive English and Chinese speech: design a voice from a description, or connect Load Audio to reference (with its exact transcript) to clone and direct a voice. Research and non-commercial use only.",
   "symbol" : "cloud"
 }

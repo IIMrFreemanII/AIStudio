@@ -40,7 +40,7 @@
   ],
   "name" : "Chroma · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 340,
+  "order" : 380,
   "summary" : "Chroma1-HD, a Flux-based open model, on an NVIDIA GPU. Fast mode runs Chroma1-Flash (16 steps); Chroma fine-tunes and LoRAs from the library work too.",
   "symbol" : "cloud"
 }

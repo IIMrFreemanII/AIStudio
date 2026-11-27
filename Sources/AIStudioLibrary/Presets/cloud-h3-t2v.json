@@ -40,7 +40,7 @@
   ],
   "name" : "MiniMax H3 Video with Sound · Cloud GPU",
   "needsServer" : "gpu",
-  "order" : 310,
+  "order" : 320,
   "summary" : "A 5–15 s clip with its own dialogue, effects and ambience from one prompt, on an H200. MiniMax H3's licence excludes the US, EU, UK and Korea without MiniMax's own licence.",
   "symbol" : "cloud"
 }

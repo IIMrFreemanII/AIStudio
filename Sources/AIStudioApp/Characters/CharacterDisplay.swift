@@ -17,6 +17,7 @@ enum CharacterDisplay {
         case .video: ("🎬", "Video", "Filming a video…")
         case .voice: ("🎙", "Voice message", "Recording a voice message…")
         case .talk: ("🗣", "Video message", "Filming a video message…")
+        case .motion: ("💃", "Video", "Copying the moves…")
         }
     }
 

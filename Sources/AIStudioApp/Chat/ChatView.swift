@@ -736,7 +736,10 @@ struct ChatTurnView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 if !turn.images.isEmpty || !(turn.files ?? []).isEmpty {
                     AttachmentStrip(images: turn.images, files: turn.files ?? [],
-                                    folder: model.chatStore.filesFolder(doc.id))
+                                    folder: model.chatStore.filesFolder(doc.id),
+                                    copyMoves: model.motionCharacter(doc).map { c in
+                                        (c.name, { name in model.requestMotion(doc, clip: name, character: c) })
+                                    })
                         .fixedSize(horizontal: true, vertical: false)
                 }
                 if doc.editingTurnID == turn.id {
@@ -1049,6 +1052,8 @@ struct AttachmentStrip: View {
     let files: [ChatFile]
     let folder: URL
     var onRemove: ((String) -> Void)? = nil
+    /// A character chat: "Have <name> Do This" on each video (their motion video copies its moves).
+    var copyMoves: (name: String, action: (String) -> Void)? = nil
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -1080,6 +1085,18 @@ struct AttachmentStrip: View {
                         }
                         .mgHelp(video ? "Video (click to play)" : "Image (click to view)")
                         .mgTestAnchor("attachment:\(name)")
+                        .overlay(alignment: .bottomLeading) {
+                            if video, let copy = copyMoves {
+                                Button { copy.action(name) } label: { Text("💃").font(.system(size: 13)) }
+                                    .buttonStyle(.plain)
+                                    .frame(width: 22, height: 22)
+                                    .background(Circle().fill(.regularMaterial))
+                                    .padding(3)
+                                    .accessibilityLabel("Have \(copy.name) Do This")
+                                    .mgHelp("Have \(copy.name) do this: a video of them copying this clip's moves (asks before it costs anything)")
+                                    .mgTestAnchor("copy-moves:\(name)")
+                            }
+                        }
                         remove(name)
                     }
                 }

@@ -117,7 +117,13 @@ public struct CharacterMemory: Codable, Equatable, Sendable {
 }
 
 /// What kind of generated media a message carries.
-public enum MediaKind: String, Codable, Sendable, CaseIterable { case photo, video, voice, talk }
+/// `motion`: a video of the character doing what a clip the user sent shows (Wan-Animate-2 copies its motion).
+public enum MediaKind: String, Codable, Sendable, CaseIterable {
+    case photo, video, voice, talk, motion
+
+    /// The kinds a character's "Sends" row turns on and off; motion goes with video.
+    public static let toggled: [MediaKind] = [.photo, .video, .voice, .talk]
+}
 
 /// A photo, video or voice note kept in the character's album.
 public struct AlbumItem: Codable, Identifiable, Equatable, Sendable {

@@ -12,7 +12,7 @@ import NodesStandard
 public enum RemoteNodes {
     public static let all: [NodeImplementation.Type] = [
         RemoteWanTextToVideoNode.self, RemoteWanImageToVideoNode.self, RemoteWanSpeechToVideoNode.self,
-        RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
+        RemoteLongCatAvatarNode.self, RemoteInfiniteTalkNode.self, RemoteWanAnimateNode.self, RemoteFluxNode.self, RemoteQwenImageNode.self,
         RemoteQwenImageEditNode.self, RemoteSD35Node.self, RemoteSDXLNode.self, RemoteAnimaNode.self, RemoteChromaNode.self,
         RemoteTextToMusicNode.self, RemoteTextToSoundNode.self, RemoteTextToSpeechNode.self, RemoteBreezeSpeechNode.self, RemoteH3VideoNode.self, RemoteH3ReferencesNode.self, RemoteLTX23Node.self,
         RemoteH3ImageNode.self,
@@ -31,7 +31,7 @@ public enum RemoteNodes {
     public static let taskIDs: [String: String] = [
         "RemoteWanTextToVideo": "wan22-t2v", "RemoteWanImageToVideo": "wan22-i2v",
         "RemoteWanSpeechToVideo": "wan22-s2v", "RemoteLongCatAvatar": "longcat-avatar",
-        "RemoteInfiniteTalk": "infinitetalk", "RemoteFlux": "flux1-dev",
+        "RemoteInfiniteTalk": "infinitetalk", "RemoteWanAnimate": "wan-animate2", "RemoteFlux": "flux1-dev",
         "RemoteQwenImage": "qwen-image", "RemoteQwenImageEdit": "qwen-image-edit", "RemoteSD35": "sd35-large", "RemoteSDXL": "sdxl",
         "RemoteAnima": "anima", "RemoteChroma": "chroma",
         "RemoteTextToMusic": "ace-step-xl", "RemoteTextToSound": "stable-audio-3", "RemoteTextToSpeech": "qwen3-tts", "RemoteBreezeSpeech": "breeze-tts", "RemoteH3Video": "h3-video", "RemoteH3References": "h3-references",
@@ -595,6 +595,45 @@ public struct RemoteInfiniteTalkNode: NodeImplementation {
         let speech: AudioClip = try inputs.object("audio")
         let (url, _) = try await runRemoteJob(task: "infinitetalk", params: params,
                                               audios: ["audio": MediaOps.channels(speech, 1)],
+                                              videos: ["video": try inputs.object("video")], inputs: inputs,
+                                              context: context)
+        return ["video": .object(try await loadVideo(url))]
+    }
+}
+
+/// Wan-Animate-2 (Apache 2.0): the picture's character moving as the person in the video moves, expressions included,
+/// in the picture's scene. The clip is cut to start … start + seconds; 10 steps, 24 fps, about 2.5 minutes of H200 time
+/// for 5 s. The clip's sound stays on the result, and its colours are matched to the picture.
+public struct RemoteWanAnimateNode: NodeImplementation {
+    public static let schema = NodeSchema(
+        type: "RemoteWanAnimate", displayName: "Wan Animate: Copy Motion (Cloud GPU)", category: "remote",
+        inputs: [
+            InputSpec("image", .image),
+            InputSpec("video", .video),
+            RemoteNodes.serverInput,
+            // The character's look; the scene is the background (empty: as in the picture).
+            InputSpec("prompt", .string, default: .string(""), widget: .text(multiline: true)),
+            InputSpec("scene", .string, default: .string(""), widget: .text(multiline: false)),
+            InputSpec("seed", .int, default: .int(0), widget: .seed),
+            InputSpec("seconds", .float, default: .double(5), widget: .number(min: 1, max: 15, step: 0.5)),
+            InputSpec("start", .float, default: .double(0), widget: .number(min: 0, max: 600, step: 0.5)),
+            InputSpec("area", .string, default: .string("640x800"), widget: .choice(["640x800", "720x1280"])),
+            InputSpec("steps", .int, default: .int(10), widget: .number(min: 4, max: 20, step: 1)),
+            InputSpec("keep_audio", .bool, default: .bool(true), widget: .toggle),
+            InputSpec("color_match", .bool, default: .bool(true), widget: .toggle),
+        ],
+        outputs: [OutputSpec("video", .video)])
+    public init() {}
+
+    public func execute(_ inputs: NodeInputs, context: ExecutionContext) async throws -> [String: Value] {
+        let params: [String: Any] = [
+            "prompt": try inputs.string("prompt"), "scene": try inputs.string("scene"), "seed": try inputs.int("seed"),
+            "seconds": try inputs.float("seconds"), "start": try inputs.float("start"), "area": try inputs.string("area"),
+            "steps": try inputs.int("steps"), "keep_audio": try inputs.bool("keep_audio"),
+            "color_match": try inputs.bool("color_match"),
+        ]
+        let images: [String: MLXArray] = ["image": try inputs.object("image")]
+        let (url, _) = try await runRemoteJob(task: "wan-animate2", params: params, images: images,
                                               videos: ["video": try inputs.object("video")], inputs: inputs,
                                               context: context)
         return ["video": .object(try await loadVideo(url))]
