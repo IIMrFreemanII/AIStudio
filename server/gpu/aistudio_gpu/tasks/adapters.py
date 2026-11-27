@@ -248,7 +248,7 @@ def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
                     raise ValueError(f"{vid}: unexpected weight {key}")
                 p = params[name]
                 scale = _fp8_scale_of(params, name)
-                if scale is not None and not _is_scale_key(sf, key):
+                if scale is not None and not key.endswith(".w_scale"):
                     from . import fp8
 
                     # An fp8 layer: the file's bf16/fp32 weight quantized as the loaded one was, with its scale.
@@ -273,7 +273,6 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     params = dict(module.named_parameters())
     params.update(dict(module.named_buffers()))
     wanted = {_plain(k) for k, _ in module.named_parameters() if ".lora_" not in k}
-    scales = {_plain(k) for k in wanted if k.endswith(".w_scale")}  # an fp8 layer's: made from its weight below
     # Every key is matched before anything is copied, so a file that doesn't fit leaves the module as it was.
     plan = []
     for f in files:
@@ -289,7 +288,7 @@ def _copy_weights(module, src: Path, vid: str) -> None:
             for key, name in [(k, n) for g, k, n in plan if g == f]:
                 target = _param_for(params, name)
                 scale = _fp8_scale_of(params, _plain(name))
-                if scale is not None and not _is_scale_key(sf, key):
+                if scale is not None and not key.endswith(".w_scale"):
                     from . import fp8
 
                     fp8.quantize_into(target, scale, sf.get_tensor(key))  # quantized as at load, with its scale
@@ -311,10 +310,6 @@ def _fp8_scale_of(params: dict, name: str):
     if scale is None or weight is None or weight.dtype not in _fp8_dtypes():
         return None
     return scale
-
-
-def _is_scale_key(sf, key: str) -> bool:
-    return key.endswith(".w_scale")
 
 
 def _fp8_dtypes():
