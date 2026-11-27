@@ -480,6 +480,9 @@ extension SmokeTest {
         c.artModel = ArtModel(family: family)
         check(model.saveCharacter(c).isEmpty, "\(c.name) is saved on \(family.title)")
         let start = Date()
+        var trainedID: String?
+        // The trained LoRA goes into the real Models library: the out folder keeps the photos, the library not it.
+        defer { if let trainedID { model.store?.library.remove(trainedID) } }
         do {
             let portraits = try await model.generatePortraits(for: c.id, count: 1) { say("portrait: \($0)") }
             c = model.character(c.id) ?? c
@@ -498,6 +501,7 @@ extension SmokeTest {
             let before = c
             let t0 = Date()
             let id = try await model.trainLoRA(c, steps: steps) { say("  \($0)") }
+            trainedID = id
             c = model.character(c.id) ?? c
             let trained = model.trainingSet(c.id)
             check(c.loras.contains { $0.lora == id } && trained.status == .done, "the LoRA \(id) is trained and on \(c.name)")
@@ -519,8 +523,6 @@ extension SmokeTest {
                 }
             }
             say("photos spent $\(String(format: "%.3f", spent))")
-            // The trained LoRA went into the real Models library: the out folder keeps the photos, the library not it.
-            model.store?.library.remove(id)
         } catch {
             say("FAIL \(error)")
             ok = false

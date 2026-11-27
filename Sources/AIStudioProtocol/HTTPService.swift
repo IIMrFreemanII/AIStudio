@@ -98,6 +98,11 @@ public struct HTTPService: Sendable {
                 // Another upload of the same bytes moved the server's offset meanwhile: ask again (it may be done).
                 attempt += 1
                 try await Task.sleep(nanoseconds: 250_000_000)
+            } catch RemoteClient.ClientError.http(let code, _) where [502, 503, 504].contains(code) && attempt < 4 {
+                // A gateway error, such as a request that waited on another upload of the same file and was dropped:
+                // ask again how far the server got (it may be done).
+                attempt += 1
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 500_000_000)
             } catch let e as RemoteClient.ClientError {
                 throw e
             } catch {
