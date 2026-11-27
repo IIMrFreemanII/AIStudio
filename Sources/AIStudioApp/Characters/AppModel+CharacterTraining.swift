@@ -42,14 +42,15 @@ extension AppModel {
         return (draw, train)
     }
 
-    /// The cost sheet shown before drawing `count` training pictures.
-    func trainingPicturesCost(_ c: Companion, count: Int) -> CostEstimate {
+    /// The cost sheet shown before drawing `count` training pictures, or drawing one again (`redraw`).
+    func trainingPicturesCost(_ c: Companion, count: Int, redraw: Bool = false) -> CostEstimate {
         let family = c.artModel.family
         let task = trainingServerInfo()?.task(CharacterArt.task(family))
         let usd = trainingEstimate(c, pictures: count, picked: CharacterTraining.minPicked).draw
-        var notes = ["Each picture is drawn with their profile photo's face; you pick the ones to train on afterwards."]
+        var notes = [redraw ? "The picture is drawn again with their profile photo's face and replaces this one."
+                     : "Each picture is drawn with their profile photo's face; you pick the ones to train on afterwards."]
         if usd == nil { notes.append(Self.unknownPrice) }
-        return CostEstimate(title: "Make \(count) Training Pictures",
+        return CostEstimate(title: redraw ? "Redraw a Training Picture" : "Make \(count) Training Pictures",
                             lines: [.init(label: "Pictures (\(family.title))", count: count,
                                           gpu: task?.gpu ?? (family == .minimax ? "B200" : "L40S"),
                                           seconds: Self.seconds(usd, price: task?.pricePerSecond), usd: usd ?? 0)],
