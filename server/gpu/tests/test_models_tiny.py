@@ -356,6 +356,55 @@ def test_wan_fp8_storage_with_loras(models, tmp_path, monkeypatch):
     assert read_mp4_frames(out.path)[0] == 5
 
 
+def _frames(path: Path) -> list[bytes]:
+    import imageio_ffmpeg
+
+    reader = imageio_ffmpeg.read_frames(str(path))
+    reader.__next__()
+    return list(reader)
+
+
+def test_wan_fp8_copy_on_disk_gives_the_same_weights_and_frames(models, tmp_path, monkeypatch):
+    """download.fp8_copy's transformers load to bit for bit the weights the cast at load makes from the originals, so
+    the clip is identical, and a switch back to the base weights reads the copy. bf16 on the CPU: CUDA's dtypes."""
+    from aistudio_gpu.download import FP8_MARKER, fp8_copy
+    from aistudio_gpu.tasks import wan
+
+    monkeypatch.setenv("AISTUDIO_FP8", "force")
+    monkeypatch.setattr(wan, "pick_device", lambda: ("cpu", torch.bfloat16))
+    root = tmp_path / "models"
+    for name in ("wan22-t2v", "wan22-lightning"):
+        shutil.copytree(models / name, root / name)
+    params = {"width": 64, "height": 48, "length": 5, "seed": 3}
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    cast, _, cast_out = run(root, "wan22-t2v", params, tmp=tmp_path / "a")
+    assert cast.fp8 and not cast.fp8_on_disk
+
+    components = ["transformer", "transformer_2"]
+    assert fp8_copy(root / "wan22-t2v", components)
+    assert (root / "wan22-t2v" / FP8_MARKER).exists()
+    assert not fp8_copy(root / "wan22-t2v", components)  # already there
+    stored, _, stored_out = run(root, "wan22-t2v", params, tmp=tmp_path / "b")
+    assert stored.fp8_on_disk
+
+    for c in components:
+        a = dict(getattr(cast.pipe, c).named_parameters())
+        b = dict(getattr(stored.pipe, c).named_parameters())
+        assert a.keys() == b.keys()
+        for n in a:
+            assert a[n].dtype == b[n].dtype, n
+            assert torch.equal(a[n].detach().contiguous().view(torch.uint8),
+                               b[n].detach().contiguous().view(torch.uint8)), n
+        assert any(p.dtype == torch.float8_e4m3fn for p in b.values())
+        assert all(p.dtype != torch.float8_e4m3fn for n, p in b.items() if ".lora_" in n)
+    assert _frames(cast_out.path) == _frames(stored_out.path)
+
+    base = root / "wan22-t2v"
+    assert stored._variant_dir("base", "transformer") == base / "transformer-fp8"
+    assert cast._variant_dir("base", "transformer") == base / "transformer"
+
+
 def test_nag_is_wan_attention_without_a_different_negative():
     """The NAG processor leaves a prompt alone when there is no negative half, or when the negative is the prompt
     itself (nothing to steer away from), and changes the output when the negative differs."""

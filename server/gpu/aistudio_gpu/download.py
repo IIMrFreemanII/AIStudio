@@ -6,6 +6,10 @@ parameter — checked 2026-11-10); everything else comes from the official repo,
 to bfloat16 here. A cold start then reads ≈ 63 GB. Every repo is pinned to a commit. A folder counts as installed
 once its ``.complete`` marker exists (written last).
 
+On CUDA, Wan runs its transformers with fp8 weights, so ``download(..., fp8=True)`` (the Modal download) also
+stores fp8 copies of them beside the bf16 ones (``fp8_copy``): a cold start then reads ≈ 29 GB less, for exactly the
+same weights on the GPU. The bf16 ones stay for the Mac and the CPU, which don't run fp8.
+
 The audio models: ACE-Step 1.5 XL in ACE-Step's own checkpoint layout (≈ 38 GB), Qwen3-TTS's three 1.7B checkpoints
 (≈ 14 GB), and Stable Audio 3 medium, gated, converted here to the diffusers layout with diffusers' own conversion
 script (fetched at the diffusers release the server pins, checked by its hash).
@@ -32,12 +36,13 @@ import urllib.request
 from pathlib import Path
 
 TRANSFORMERS = ["transformer/*", "transformer_2/*"]
+TRANSFORMERS_FP8 = ["transformer", "transformer_2"]  # stored in fp8 too, for CUDA (``fp8_copy``)
 MODELS: dict[str, dict] = {
     "wan22-t2v": {"repo": "Wan-AI/Wan2.2-T2V-A14B-Diffusers", "revision": "5be7df9619b54f4e2667b2755bc6a756675b5cd7",
-                  "bf16": ["text_encoder"],
+                  "bf16": ["text_encoder"], "fp8": TRANSFORMERS_FP8,
                   "mirror": ("ai-toolkit/Wan2.2-T2V-A14B-Diffusers-bf16", "fe9c6303ddfdefcae7f06ec7fc7c244bada46cc3")},
     "wan22-i2v": {"repo": "Wan-AI/Wan2.2-I2V-A14B-Diffusers", "revision": "596658fd9ca6b7b71d5057529bbf319ecbc61d74",
-                  "bf16": ["text_encoder"],
+                  "bf16": ["text_encoder"], "fp8": TRANSFORMERS_FP8,
                   "mirror": ("cbensimon/Wan2.2-I2V-A14B-bf16-Diffusers", "1f424b0caf6617cfb63822bb0298331bcf44e0e1")},
     # The Lightning 4-step LoRAs (rank 64), laid out as <t2v|i2v>/{high,low}_noise_model.safetensors.
     "wan22-lightning": {"repo": "lightx2v/Wan2.2-Lightning", "revision": "18bccf8884ec0a078eed79785eb4ef13ea16ce1e",
@@ -250,13 +255,16 @@ def expand(names: list[str]) -> list[str]:
     return out
 
 
-def download(names: list[str], root: Path, token: str | None = None, on_done=None) -> None:
+def download(names: list[str], root: Path, token: str | None = None, on_done=None, fp8: bool = False) -> None:
+    """``fp8``: also store the fp8 copies a CUDA server loads (``fp8_copy``), for models already installed too."""
     token = token or os.environ.get("HF_TOKEN")
     root.mkdir(parents=True, exist_ok=True)
     for name in expand(names):
         dest = root / name
         if (dest / ".complete").exists():
             print(f"✓ {name} already installed ({size_gb(dest):.1f} GB)")
+            if fp8 and MODELS[name].get("fp8") and fp8_copy(dest, MODELS[name]["fp8"]) and on_done:
+                on_done(name)
             continue
         spec = MODELS[name]
         if spec.get("gated") and not token:
@@ -282,9 +290,47 @@ def download(names: list[str], root: Path, token: str | None = None, on_done=Non
         else:
             _snapshot(spec["repo"], dest, token, allow=spec.get("allow"), revision=spec.get("revision"))
         (dest / ".complete").write_text(json.dumps({"repo": spec["repo"], "at": time.time()}))
+        if fp8 and spec.get("fp8"):
+            fp8_copy(dest, spec["fp8"])
         print(f"✓ {name}: {size_gb(dest):.1f} GB in {time.monotonic() - start:.0f} s", flush=True)
         if on_done:
             on_done(name)  # e.g. commit the Modal Volume so other containers see it
+
+
+FP8_SUFFIX, FP8_MARKER = "-fp8", ".fp8-complete"  # tasks/wan.py loads these
+
+
+def fp8_copy(dest: Path, components: list[str]) -> bool:
+    """Stores each diffusers transformer ``component`` of ``dest`` again as ``<component>-fp8``: loaded in bf16 the
+    way the worker loads it, cast with the worker's own ``fp8_cast``, saved as it is then (fp8 linears, the rest as
+    they were). Loading that copy gives bit for bit the weights the cast at load makes. Returns whether it made one
+    (False when the copy is already there); ``FP8_MARKER`` is written last."""
+    import torch
+
+    from .tasks.device import fp8_cast
+
+    if (dest / FP8_MARKER).exists():
+        return False
+    index = json.loads((dest / "model_index.json").read_text())
+    for component in components:
+        out = dest / (component + FP8_SUFFIX)
+        if (out / "config.json").exists():
+            continue
+        library, class_name = index[component]
+        cls = getattr(importlib.import_module(library), class_name)
+        start = time.monotonic()
+        print(f"  storing {dest.name}/{component} in fp8", flush=True)
+        model = cls.from_pretrained(dest / component, dtype=torch.bfloat16, low_cpu_mem_usage=True)
+        fp8_cast(model, torch.bfloat16)
+        tmp = out.with_name(out.name + ".partial")
+        shutil.rmtree(tmp, ignore_errors=True)
+        model.save_pretrained(tmp, max_shard_size="5GB", safe_serialization=True)
+        tmp.rename(out)  # config.json appears only with every shard beside it
+        del model
+        gc.collect()
+        print(f"  {component}{FP8_SUFFIX}: {size_gb(out):.1f} GB in {time.monotonic() - start:.0f} s", flush=True)
+    (dest / FP8_MARKER).write_text(json.dumps({"components": components, "at": time.time()}))
+    return True
 
 
 def _snapshot(repo: str, dest: Path, token: str | None, allow=None, ignore=None, revision=None):
