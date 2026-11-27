@@ -253,14 +253,19 @@ public enum PromptWriter {
     // MARK: Sentences
 
     private static func sentences(_ s: PromptSpec, _ m: PromptModel) -> String {
-        // LoRA trigger words lead, as they were trained (a LoRA learns them as a caption's first words).
-        let triggers = s.triggerWords.map(clean).filter { !$0.isEmpty }
-        var out: [String] = triggers.isEmpty ? [] : [triggers.joined(separator: ", ") + "."]
+        var out = triggerLead(s)
         out.append(opening(s))
         out += describe(s)
         out += look(s, m)
         if !m.takesNegative { out += s.without.map(sentence) }
         return out.filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// LoRA trigger words as the prompt's first sentence, as they were trained (a LoRA learns them as a caption's
+    /// first words); every prose dialect (sentences, narrative, motion) leads with them.
+    private static func triggerLead(_ s: PromptSpec) -> [String] {
+        let triggers = s.triggerWords.map(clean).filter { !$0.isEmpty }
+        return triggers.isEmpty ? [] : [triggers.joined(separator: ", ") + "."]
     }
 
     /// "A candid smartphone photo, full body, of a 30-year-old adult man sitting on a bench."
@@ -318,7 +323,7 @@ public enum PromptWriter {
     // MARK: Narrative (MiniMax H3 Image)
 
     private static func narrative(_ s: PromptSpec, _ m: PromptModel) -> String {
-        var out: [String] = []
+        var out = triggerLead(s)
         let possessive = possessive(s.pronoun)
         if s.reference != .none {
             out.append("<Picture 1> shows the face of \(clean(s.subject).isEmpty ? "the subject" : clean(s.subject)).")
@@ -348,7 +353,7 @@ public enum PromptWriter {
     // MARK: Motion (video)
 
     private static func motion(_ s: PromptSpec, _ m: PromptModel) -> String {
-        var out: [String] = []
+        var out = triggerLead(s)
         let shot = clean(s.shot), camera = s.camera.map(clean).filter { !$0.isEmpty }
         var frame = shot.isEmpty ? "" : article(shot)
         if !camera.isEmpty { frame += (frame.isEmpty ? "" : ", ") + list(camera) }

@@ -356,12 +356,16 @@ extension SmokeTest {
         }
         let dry = CommandLine.arguments.contains("--smoke-real-dry")
         // `--smoke-real-loras id[:strength],…`: library LoRAs every preview draws with (their trigger words join the
-        // prompt), for the models whose family they fit.
+        // prompt), for the models whose family they fit. `--smoke-real-triggers "a, b"` uses those words instead of the
+        // library's ("" for none), so a LoRA whose saved words are explicit can still be checked with SFW ones.
+        let triggerOverride = argument("--smoke-real-triggers").map {
+            $0.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
         let loraPicks: [PromptBuilderLoRA] = (argument("--smoke-real-loras") ?? "").split(separator: ",").compactMap { item in
             let parts = item.split(separator: ":", maxSplits: 1).map(String.init)
             guard let e = model.store?.library.item(parts[0]) else { say("FAIL no library LoRA \(parts[0])"); return nil }
             return PromptBuilderLoRA(id: e.id, strength: parts.count > 1 ? Double(parts[1]) ?? 0.8 : 0.8,
-                                     triggerWords: e.triggerWords)
+                                     triggerWords: triggerOverride ?? e.triggerWords)
         }
         var base = PromptBuilderDraft()
         base.gender = "woman"

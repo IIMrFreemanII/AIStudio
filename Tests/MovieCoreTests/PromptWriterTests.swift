@@ -33,6 +33,17 @@ import Testing
         #expect(pony.prompt.hasPrefix("score_9, score_8_up, score_7_up, 35mm film photo") && pony.negative.hasPrefix("score_6"))
     }
 
+    @Test func everyDialectLeadsWithLoRATriggerWords() {
+        var s = spec()
+        s.triggerWords = ["zqmia_3f9", "toned abdomen"]
+        #expect(PromptWriter.write(s, for: .sdxl).prompt.hasPrefix("zqmia_3f9, toned abdomen, 35mm film photo"))
+        for m in [PromptModel.chroma, .minimaxImage, .minimaxVideo, .wan] {
+            #expect(PromptWriter.write(s, for: m).prompt.hasPrefix("zqmia_3f9, toned abdomen. "), "\(m)")
+        }
+        s.triggerWords = []
+        #expect(PromptWriter.write(s, for: .minimaxImage).prompt.hasPrefix("A 35mm film photo"))
+    }
+
     @Test func sentencesDescribeWhatIsVisible() {
         let w = PromptWriter.write(spec(), for: .chroma)
         #expect(w.prompt.hasPrefix("A 35mm film photo, medium shot, of a 40-year-old adult man reading a newspaper."))
