@@ -519,6 +519,8 @@ extension SmokeTest {
                 }
             }
             say("photos spent $\(String(format: "%.3f", spent))")
+            // The trained LoRA went into the real Models library: the out folder keeps the photos, the library not it.
+            model.store?.library.remove(id)
         } catch {
             say("FAIL \(error)")
             ok = false

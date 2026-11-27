@@ -8,6 +8,11 @@ public enum CharacterTraining {
     public static let pictureCount = 40
     public static let minPicked = 15
     public static let maxPicked = 30
+    /// The face reference's strength for training pictures: weaker than photos' (0.6), which copy the portrait's
+    /// framing and clothes, so the pictures vary as asked (a spike's at 0.6 were nearly all front-facing close-ups).
+    public static let faceStrength = 0.4
+    /// A trained LoRA's strength on the character (0.9 overpowered the prompt in the first spike).
+    public static let loraStrength = 0.7
 
     /// The server task that trains a LoRA for the family (Chroma has none yet).
     public static func task(_ family: ArtModel.Family) -> String? {

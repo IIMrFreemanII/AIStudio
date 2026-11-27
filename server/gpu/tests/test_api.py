@@ -908,7 +908,7 @@ def test_train_sdxl_lora_task_wiring(tmp_path, monkeypatch):
 
     spec = TASKS["train-sdxl-lora"]
     assert spec.kind == "train" and spec.inputs == ("dataset",) and spec.models == ("sdxl",)
-    assert "sdxl-train" in CONTAINERS and spec.normalize({})["steps"] == 0 and spec.normalize({})["rank"] == 32
+    assert "sdxl-train" in CONTAINERS and spec.normalize({})["steps"] == 0 and spec.normalize({})["rank"] == 16
     data = tmp_path / "d.zip"
     with zipfile.ZipFile(data, "w") as z:
         for i in range(4):

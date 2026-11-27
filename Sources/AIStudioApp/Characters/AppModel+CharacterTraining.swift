@@ -23,7 +23,7 @@ extension AppModel {
     /// Rough GPU seconds of a training run, until the server's timings are learned.
     static func trainingSeconds(_ family: ArtModel.Family, pictures: Int) -> Double {
         switch family {
-        case .sdxl: return Double(min(max(80 * pictures, 1200), 2400)) * 0.45 + 90
+        case .sdxl: return Double(min(max(40 * pictures, 600), 1200)) * 1.0 + 120  // ≈ 1 s a step on an L40S
         case .minimax: return Double(min(max(50 * pictures, 800), 1600)) * 2.2 + Double(pictures) * 12 + 240
         case .chroma: return 0
         }
@@ -83,7 +83,8 @@ extension AppModel {
             let file = String(format: "train-%02d-", start + k + 1) + UUID().uuidString.prefix(6).lowercased() + ".png"
             let prompt = CharacterArt.photoPrompt(c, request: request, scene: nil, context: artContext(c))
             let cost = try await drawPhoto(c, prompt: prompt, server: server, to: folder.appendingPathComponent(file),
-                                           title: "Training picture", progress: { _ in })
+                                           title: "Training picture", faceStrength: CharacterTraining.faceStrength,
+                                           progress: { _ in })
             var s = trainingSet(c.id)
             s.pictures.append(.init(file: file, request: request, picked: s.picked.count < CharacterTraining.maxPicked))
             s.spentUSD += cost ?? 0
@@ -99,7 +100,8 @@ extension AppModel {
         let prompt = CharacterArt.photoPrompt(c, request: p.request, scene: nil, context: artContext(c))
         let cost = try await drawPhoto(c, prompt: prompt, server: server,
                                        to: characterStore.trainingFolder(c.id).appendingPathComponent(file),
-                                       title: "Training picture", progress: progress)
+                                       title: "Training picture", faceStrength: CharacterTraining.faceStrength,
+                                       progress: progress)
         set = trainingSet(c.id)
         set.spentUSD += cost ?? 0
         saveTraining(set, c.id)
@@ -166,7 +168,7 @@ extension AppModel {
             library.reload()
             if var saved = character(c.id) {
                 saved.loras.removeAll { $0.lora == set.loraID }
-                if saved.loras.count < CharacterArt.maxLoRAs { saved.loras.append(CharacterLoRA(lora: id, strength: 0.9)) }
+                if saved.loras.count < CharacterArt.maxLoRAs { saved.loras.append(CharacterLoRA(lora: id, strength: CharacterTraining.loraStrength)) }
                 _ = saveCharacter(saved)
             }
             set = trainingSet(c.id)

@@ -1220,7 +1220,7 @@ def test_training_refuses_a_bad_dataset(tmp_path):
     samples = read_dataset(_dataset_zip(tmp_path / "ok.zip"))
     assert [s.caption for s in samples][:2] == ["", "zq_mia, a woman, picture 1"]
     assert bucket(1024, 1024) == (1024, 1024) and bucket(832, 1216)[0] < bucket(832, 1216)[1]
-    assert total_steps(20, 0, 80, 1200, 2400) == 1600 and total_steps(5, 0, 80, 1200, 2400) == 1200
+    assert total_steps(20, 0, 40, 600, 1200) == 800 and total_steps(5, 0, 40, 600, 1200) == 600
     assert total_steps(20, 300, 80, 1200, 2400) == 300
 
 

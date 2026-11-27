@@ -34,7 +34,7 @@ struct CharacterTrainingSection: View {
         .onChange(of: set.loraID) { _, id in
             // A training that finished while the editor is open: its LoRA joins this draft too.
             guard let id, !c.loras.contains(where: { $0.lora == id }), c.loras.count < CharacterArt.maxLoRAs else { return }
-            c.loras.append(CharacterLoRA(lora: id, strength: 0.9))
+            c.loras.append(CharacterLoRA(lora: id, strength: CharacterTraining.loraStrength))
         }
     }
 
