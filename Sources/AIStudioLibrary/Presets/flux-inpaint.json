@@ -4,7 +4,7 @@
     "groups" : [
       {
         "color" : "green",
-        "height" : 370,
+        "height" : 389,
         "id" : "group1",
         "title" : "Inpainting",
         "width" : 958,
@@ -153,7 +153,7 @@
         },
         "position" : {
           "x" : 1296,
-          "y" : 310
+          "y" : 319
         },
         "type" : "LoadMask"
       },
@@ -169,7 +169,7 @@
         },
         "position" : {
           "x" : 1626,
-          "y" : 322
+          "y" : 332
         },
         "type" : "FeatherMask"
       },
@@ -213,7 +213,7 @@
         },
         "position" : {
           "x" : 1956,
-          "y" : 322
+          "y" : 332
         },
         "type" : "ImageCompositeMasked"
       }

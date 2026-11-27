@@ -51,8 +51,9 @@
             "node" : "prompt",
             "output" : "conditioning"
           },
+          "denoise" : 0.75,
           "latent" : {
-            "node" : "latent",
+            "node" : "img2img_encode",
             "output" : "latent"
           },
           "model" : {
@@ -112,6 +113,25 @@
           "y" : -80
         },
         "type" : "LoadImage"
+      },
+      {
+        "id" : "img2img_encode",
+        "inputs" : {
+          "image" : {
+            "node" : "refimage",
+            "output" : "image"
+          },
+          "megapixels" : 1,
+          "model" : {
+            "node" : "model",
+            "output" : "model"
+          }
+        },
+        "position" : {
+          "x" : 340,
+          "y" : 420
+        },
+        "type" : "VAEEncode"
       }
     ],
     "version" : 1

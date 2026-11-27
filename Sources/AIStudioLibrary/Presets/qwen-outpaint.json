@@ -4,7 +4,7 @@
     "groups" : [
       {
         "color" : "yellow",
-        "height" : 406,
+        "height" : 428,
         "id" : "group1",
         "title" : "Outpainting",
         "width" : 958,
@@ -156,7 +156,7 @@
         },
         "position" : {
           "x" : 1626,
-          "y" : 198
+          "y" : 202
         },
         "type" : "FeatherMask"
       },
@@ -175,7 +175,7 @@
         },
         "position" : {
           "x" : 1626,
-          "y" : 346
+          "y" : 358
         },
         "type" : "VAEEncode"
       },
@@ -197,7 +197,7 @@
         },
         "position" : {
           "x" : 1956,
-          "y" : 346
+          "y" : 358
         },
         "type" : "SetLatentMask"
       },
@@ -219,7 +219,7 @@
         },
         "position" : {
           "x" : 1956,
-          "y" : 198
+          "y" : 202
         },
         "type" : "ImageCompositeMasked"
       }
