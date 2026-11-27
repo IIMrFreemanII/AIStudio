@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import secrets
+import shutil
 import threading
 import time
 from collections import OrderedDict, deque
@@ -66,6 +68,30 @@ class Job:
             "result": None if self.result is None else {
                 "kind": self.result.kind, "contentType": self.result.content_type, "bytes": self.result.size},
         }
+
+
+def keep_file(files, path: Path, ext: str = "lora") -> str | None:
+    """Also stores a job's file result (a trained LoRA) in the uploads under its SHA-256, as an upload would be, so a
+    later job (and the app's library check) finds it instead of the app uploading it back: two such uploads at once
+    once timed out on a slow link. Returns the stored name; never fails the job."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(4 << 20), b""):
+                h.update(block)
+        name = f"{h.hexdigest()}.{ext}"
+        dest = files.path(name)
+        if not dest.exists():
+            tmp = files.directory / f"{name}.keeping"
+            shutil.copyfile(path, tmp)
+            os.replace(tmp, dest)
+            files.prune(keep=name)
+            if files.on_stored:  # the uploads Volume's commit, off the event loop
+                threading.Thread(target=files.on_stored, daemon=True).start()
+        return name
+    except Exception as e:  # noqa: BLE001
+        print(f"couldn't keep {path.name} in the uploads: {e}", flush=True)
+        return None
 
 
 class Runner(Protocol):
@@ -208,6 +234,8 @@ class JobManager:
             output.path.replace(final)
         etag = hashlib.sha256(f"{job.id}:{size}".encode()).hexdigest()[:16]
         job.result = Result(final, output.kind, output.content_type, size, etag)
+        if output.kind == "file":  # a trained LoRA: the jobs that use it next find it in the uploads store
+            keep_file(self.files, final)
         job.gpu_seconds = gpu_seconds
         job.load_seconds = output.load_seconds
         got = (getattr(output, "extra", None) or {}).get("gpu")  # a fallback GPU when the first was busy
