@@ -160,6 +160,10 @@ def convert(model, keep: tuple[str, ...] = TRANSFORMER_KEEP, device: str = "cuda
         if m.bias is not None:
             m.bias.data = m.bias.data.to(device)
         m.__class__ = cls
+        # A library that hooked the layer's forward and unhooked it again (LongCat's LoRAs) may leave the plain
+        # Linear forward behind as an instance attribute: it would run bf16 math on the fp8 weight.
+        if getattr(m.__dict__.get("forward"), "__func__", None) is nn.Linear.forward:
+            del m.__dict__["forward"]
         m.compute_dtype = torch.bfloat16  # what PEFT gives a LoRA on this layer (else fp8: rounded factors)
         done += 1
         before += nbytes

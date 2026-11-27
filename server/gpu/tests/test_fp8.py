@@ -215,3 +215,13 @@ def test_t5s_feed_forward_output_stays_bf16():
     fp8.convert_parts({"text_encoder": m}, device="cpu")
     assert m.DenseReluDense.wi_0.weight.dtype == torch.float8_e4m3fn
     assert m.DenseReluDense.wo.weight.dtype == torch.bfloat16
+
+
+def test_a_left_behind_plain_forward_is_dropped(monkeypatch):
+    """LongCat's LoRA unhooking leaves ``module.forward = <the Linear's own bound forward>`` on the instance."""
+    monkeypatch.setattr(fp8, "MATMUL", "dequant")
+    model = _block()
+    model.ff.forward = model.ff.forward  # what `module.forward = module.org_forward` leaves behind
+    fp8.convert(model, device="cpu")
+    assert "forward" not in model.ff.__dict__
+    model(torch.randn(4, 512, dtype=torch.bfloat16))  # runs the fp8 layer's own forward
