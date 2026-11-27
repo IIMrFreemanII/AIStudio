@@ -59,7 +59,8 @@ weights.
 
 **LoRA trigger words.** A LoRA trained on a trigger word (`ohwx woman`, an artist tag, a style name) only works with
 that word in the prompt, usually near the start. The LoRA's Civitai or Hugging Face page names the word. Put it where
-the encoder will still read it, which on SDXL means inside the first 77 tokens.
+the encoder will still read it, which on SDXL means inside the first 77 tokens. The app's prompt writer puts a picked LoRA's
+words first in every dialect: tags, sentences, MiniMax H3 Image's paragraph and the video models' paragraph.
 
 ## Quick reference
 
