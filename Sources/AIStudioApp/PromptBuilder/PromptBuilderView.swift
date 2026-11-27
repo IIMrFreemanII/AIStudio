@@ -370,11 +370,23 @@ struct ChoiceChip: View {
 /// launches.
 struct PromptBuilderWindow: View {
     @AppStorage(PromptBuilderDraft.storageKey) private var stored = ""
+    @AppStorage(PromptBuilderMode.storageKey) private var mode = PromptBuilderMode.builder
     @State private var draft = PromptBuilderDraft()
     @State private var loaded = false
 
     var body: some View {
-        PromptBuilderView(draft: $draft)
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                PromptBuilderModePicker(mode: $mode)
+                Spacer()
+            }
+            .padding(.top, 30).padding(.bottom, 10)
+            .background(MG.windowBackground)
+            Divider()
+            if mode == .engine { PromptEngineView() } else { PromptBuilderView(draft: $draft) }
+        }
+        .background(MG.windowBackground)
             .frame(minWidth: 880, minHeight: 600)
             .onAppear {
                 guard !loaded else { return }
@@ -394,6 +406,7 @@ struct PromptBuilderSheet: View {
     @Environment(\.mgDismiss) private var dismiss
     @AppStorage(PromptBuilderDraft.storageKey) private var stored = ""
     let target: PromptBuilderTarget
+    @AppStorage(PromptBuilderMode.storageKey) private var mode = PromptBuilderMode.builder
     @State private var draft = PromptBuilderDraft()
 
     var body: some View {
@@ -401,10 +414,29 @@ struct PromptBuilderSheet: View {
             HStack {
                 Text("Prompt Builder").font(.mgHeadline)
                 Spacer()
+                PromptBuilderModePicker(mode: $mode)
+                Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
             Divider()
+            if mode == .engine {
+                PromptEngineView(fixedModel: target.model) { t in
+                    model.mutate("Prompt Engine", undoManager: model.activeUndoManager) { g in
+                        try? g.setValue(.string(t.prompt), node: target.id, input: "prompt")
+                        if target.takesNegative { try? g.setValue(.string(t.negative), node: target.id, input: "negative") }
+                        if g[target.id]?.inputs["seed"] != nil { try? g.setValue(.int(t.seed), node: target.id, input: "seed") }
+                        if !t.variant.isEmpty, g[target.id]?.inputs["model"] != nil {
+                            try? g.setValue(.string(t.variant), node: target.id, input: "model")
+                        }
+                        if target.loraFamily != nil {
+                            let loras = t.loras.map { PromptBuilderLoRA(id: $0.id, strength: $0.strength, triggerWords: $0.triggerWords) }
+                            PromptBuilderDraft.wireLoRAs(loras, into: target.id, graph: &g)
+                        }
+                    }
+                    dismiss()
+                }
+            } else {
             PromptBuilderView(draft: $draft, lockedModel: true, nodeLoRAFamily: target.loraFamily) { w in
                 model.mutate("Prompt Builder", undoManager: model.activeUndoManager) { g in
                     try? g.setValue(.string(w.prompt), node: target.id, input: "prompt")
@@ -413,6 +445,7 @@ struct PromptBuilderSheet: View {
                     if target.loraFamily != nil { PromptBuilderDraft.wireLoRAs(draft.loras, into: target.id, graph: &g) }
                 }
                 dismiss()
+            }
             }
         }
         .frame(width: 960, height: 760)
@@ -423,5 +456,23 @@ struct PromptBuilderSheet: View {
         .onChange(of: draft) { _, d in
             if let data = try? JSONEncoder().encode(d) { stored = String(decoding: data, as: UTF8.self) }
         }
+    }
+}
+
+/// The Prompt Builder's two ways to work: pick the parts yourself (Builder), or let the prompt engine write, draft and
+/// check it (Engine). Remembered for the window and the node sheet alike.
+enum PromptBuilderMode: String, CaseIterable {
+    case builder, engine
+    static let storageKey = "promptBuilder.mode"
+}
+
+struct PromptBuilderModePicker: View {
+    @Binding var mode: PromptBuilderMode
+
+    var body: some View {
+        MGSegmentedPicker(selection: $mode, options: [(.builder, "Builder"), (.engine, "Engine")])
+            .frame(width: 200)
+            .mgHelp("Builder: pick the parts yourself. Engine: describe the picture, and an agent writes, drafts and checks the prompt.")
+            .mgTestAnchor("prompt-builder-mode")
     }
 }

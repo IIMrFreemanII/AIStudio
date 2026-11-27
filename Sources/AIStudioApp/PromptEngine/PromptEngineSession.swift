@@ -19,6 +19,10 @@ final class PromptEngineSession: PromptToolHost {
     var autoRun = false
     /// A scripted model instead of the LLM (the fake-server smoke test).
     var clientOverride: (any ChatStreaming)?
+    /// The cost sheet waiting for the user, when the host shows it itself (`showsOwnGate`: the Prompt Builder's
+    /// Engine pane, in its own window or sheet); otherwise it goes to `app.promptEngineGate` (the main window).
+    var gate: CostGate?
+    var showsOwnGate = false
     /// The step titles, newest last ("Reading the rules for sdxl").
     private(set) var steps: [String] = []
     /// The model's last words (its one-line summary after `finish`).
@@ -46,6 +50,7 @@ final class PromptEngineSession: PromptToolHost {
 
     func stop() {
         task?.cancel()
+        gate = nil
         if app?.promptEngineGate != nil { app?.promptEngineGate = nil }
     }
 
@@ -57,11 +62,14 @@ final class PromptEngineSession: PromptToolHost {
         guard let app else { return false }
         final class Pressed { var run = false }
         let pressed = Pressed()
-        app.promptEngineGate = CostGate(estimate: estimate, run: { pressed.run = true })
+        let g = CostGate(estimate: estimate, run: { pressed.run = true })
+        let own = showsOwnGate
+        if own { gate = g } else { app.promptEngineGate = g }
+        func waiting() -> Bool { own ? gate != nil : app.promptEngineGate != nil }
         do {
-            while app.promptEngineGate != nil { try await Task.sleep(for: .milliseconds(200)) }
+            while waiting() { try await Task.sleep(for: .milliseconds(200)) }
         } catch {
-            app.promptEngineGate = nil
+            if own { gate = nil } else { app.promptEngineGate = nil }
             throw error
         }
         return pressed.run
