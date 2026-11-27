@@ -20,7 +20,6 @@ public enum PromptPreview {
     /// The node type that draws `model`'s pictures; nil for the video models (the preview draws stills).
     public static func nodeType(_ model: PromptModel) -> String? {
         switch model {
-        case .sd15: "RemoteSD15"
         case .sdxl, .sdxlPony, .sdxlIllustrious: "RemoteSDXL"
         case .sd35: "RemoteSD35"
         case .flux: "RemoteFlux"
@@ -35,7 +34,6 @@ public enum PromptPreview {
     /// The server task of `model`'s node (for prices and timings).
     public static func task(_ model: PromptModel) -> String? {
         switch model {
-        case .sd15: "sd15"
         case .sdxl, .sdxlPony, .sdxlIllustrious: "sdxl"
         case .sd35: "sd35-large"
         case .flux: "flux1-dev"
@@ -47,20 +45,19 @@ public enum PromptPreview {
         }
     }
 
-    /// The picture size: SD 1.5 draws at its own 512 scale, the rest around one megapixel.
+    /// The picture size: around one megapixel.
     public static func size(_ model: PromptModel, aspect: Aspect) -> (width: Int, height: Int) {
-        let small = model == .sd15
         switch aspect {
-        case .portrait: return small ? (512, 768) : (832, 1216)
-        case .square: return small ? (512, 512) : (1024, 1024)
-        case .landscape: return small ? (768, 512) : (1216, 832)
+        case .portrait: return (832, 1216)
+        case .square: return (1024, 1024)
+        case .landscape: return (1216, 832)
         }
     }
 
     /// The node takes a library fine-tune in its `model` input.
     public static func takesFineTune(_ model: PromptModel) -> Bool {
         switch model {
-        case .sd15, .sdxl, .sdxlPony, .sdxlIllustrious, .flux, .chroma, .anima, .qwenImage: true
+        case .sdxl, .sdxlPony, .sdxlIllustrious, .flux, .chroma, .anima, .qwenImage: true
         default: false
         }
     }

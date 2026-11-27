@@ -220,10 +220,10 @@ public enum LoRASources {
 
     /// The app's family for a Civitai base model: "Flux.1 D" → `flux.1`, "Qwen" → `qwen-image` (the original 20B
     /// model), "Wan Video 2.2 T2V-A14B" → `wan-2.2-t2v`, … ; `sdxl` for SDXL and its
-    /// SDXL-based relatives (Pony, Illustrious, NoobAI), `sd1.5` for SD 1.5 ("SD 1.5", "SD 1.5 LCM", "SD 1.5 Hyper"), `anima` for Anima, `sd3.5-large` / `sd3.5-medium` for SD 3.5, `chroma` for Chroma
+    /// SDXL-based relatives (Pony, Illustrious, NoobAI), `anima` for Anima, `sd3.5-large` / `sd3.5-medium` for SD 3.5, `chroma` for Chroma
     /// (Flux-based, but FLUX.1 LoRAs and fine-tunes don't fit it), `ltx-2.3` for "LTXV 2.3" ("LTXV" and "LTXV 2" are unsupported), `minimax-h3` for "MiniMax H3" (the video
     /// partition; `family(for:)` tells the references partition apart); nil for families the app
-    /// doesn't run ("Pony V7" is AuraFlow-based).
+    /// doesn't run ("Pony V7" is AuraFlow-based; SD 1.5 was removed on 2026-11-27).
     public static func family(forBaseModel base: String) -> String? {
         let b = base.lowercased()
         if b.hasPrefix("flux.1") { return "flux.1" }
@@ -233,7 +233,6 @@ public enum LoRASources {
             if b.contains("t2v") && !b.contains("ti2v") { return "wan-2.2-t2v" }
         }
         if b.hasPrefix("sdxl") || b == "pony" || b.hasPrefix("illustrious") || b.hasPrefix("noobai") { return "sdxl" }
-        if b.hasPrefix("sd 1.5") { return "sd1.5" }
         if b == "anima" || b.hasPrefix("anima ") { return "anima" }
         if b.hasPrefix("sd 3.5") { return b.contains("medium") ? "sd3.5-medium" : "sd3.5-large" }
         if b.hasPrefix("chroma") { return "chroma" }
@@ -244,7 +243,7 @@ public enum LoRASources {
 
     /// The families a library entry can have, in menu order.
     public static let families: [String] = [
-        "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "sd1.5", "anima", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v", "ltx-2.3",
+        "flux.1", "qwen-image", "qwen-image-2.1", "sdxl", "anima", "sd3.5-large", "chroma", "wan-2.2-t2v", "wan-2.2-i2v", "ltx-2.3",
         "minimax-h3", "minimax-h3-ref",
     ]
 
@@ -269,7 +268,6 @@ public enum LoRASources {
         case "qwen-image"?: return "Qwen-Image"
         case "qwen-image-2.1"?: return "Qwen-Image 2.1"
         case "sdxl"?: return "SDXL"
-        case "sd1.5"?: return "SD 1.5"
         case "anima"?: return "Anima"
         case "sd3.5-large"?: return "SD 3.5 Large"
         case "sd3.5-medium"?: return "SD 3.5 Medium"

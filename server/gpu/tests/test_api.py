@@ -295,30 +295,12 @@ def test_fake_models_sdxl_accepts_a_face_picture(tmp_path, monkeypatch):
     assert Image.open(out.path).size == (512, 512)
 
 
-def test_sd15_task_wiring(tmp_path, monkeypatch):
+def test_sd15_is_removed():
+    # SD 1.5 was removed on 2026-11-27: no task, no container, no download, no fine-tune family.
     from aistudio_gpu import download, variants
-    from aistudio_gpu.tasks import CONTAINERS, TASKS, make_worker
-
-    spec = TASKS["sd15"]
-    assert spec.family == "sd15" and spec.models == ("sd15",) and "sd15" in CONTAINERS
-    p = spec.normalize({})
-    assert (p["width"], p["height"], p["steps"], p["guidance"], p["model"]) == (512, 768, 25, 7.0, "base")
-    assert "face_strength" not in p and "lora4" in spec.optional_inputs
-    assert variants.FAMILIES["sd1.5"] == "sd15" and variants.TASK_FAMILIES["sd15"] == "sd1.5"
-    assert variants.components("sd1.5") == ("unet", "text_encoder")
-    assert download.expand(["sd15"]) == ["sd15"] and "sd15" in download.expand(["sd"])
-    assert "safety_checker/*" not in download.MODELS["sd15"]["allow"]
-    monkeypatch.setenv("AISTUDIO_FAKE_MODELS", "1")
-
-    class Sink:
-        def status(self, t): pass
-        def progress(self, s, t): pass
-        def preview(self, *a): pass
-        def check(self): pass
-
-    from PIL import Image
-    out = make_worker(spec.family).run(spec, spec.normalize({"width": 256, "height": 256}), {}, Sink(), tmp_path)
-    assert Image.open(out.path).size == (256, 256)
+    from aistudio_gpu.tasks import CONTAINERS, TASKS
+    assert "sd15" not in TASKS and "sd15" not in CONTAINERS and "sd15" not in download.MODELS
+    assert "sd15" not in download.expand(["sd"]) and "sd1.5" not in variants.FAMILIES
 
 
 def test_ltx23_task_wiring(tmp_path, monkeypatch):

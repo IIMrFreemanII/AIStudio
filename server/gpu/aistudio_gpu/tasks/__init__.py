@@ -34,7 +34,7 @@ CONTAINERS: dict[str, tuple[int, int, float]] = {
     "ltx23": (131072, 196608, 8),
     # MiniMax H3 Image: its 66 GB transformer and H3's 66.7 GB text encoder, taking turns on an H200.
     "h3-image": (163840, 262144, 8),
-    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "sd15": (8192, 32768, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
+    "sd35-large": (16384, 65536, MIN_CPU), "sdxl": (8192, 32768, MIN_CPU), "anima": (8192, 32768, MIN_CPU), "chroma": (16384, 65536, MIN_CPU), "music": (16384, 65536, MIN_CPU),
     "sound": (8192, 32768, MIN_CPU), "speech": (8192, 32768, MIN_CPU), "breeze": (8192, 32768, MIN_CPU),
 }
 
@@ -194,7 +194,6 @@ GPU_QWEN = os.environ.get("AISTUDIO_GPU_QWEN", "H100")
 GPU_SD = os.environ.get("AISTUDIO_GPU_SD", "L40S")  # SDXL
 # SD 3.5 Large and Large Turbo: both 16 GB transformers stay on the GPU with the text encoders (≈ 44 GB), so an H100.
 GPU_SD35 = os.environ.get("AISTUDIO_GPU_SD35", "H100")
-GPU_SD15 = os.environ.get("AISTUDIO_GPU_SD15", "L40S")  # Stable Diffusion 1.5
 GPU_ANIMA = os.environ.get("AISTUDIO_GPU_ANIMA", "L40S")  # Anima (2B)
 # Chroma1-HD and Chroma1-Flash: both 17.8 GB transformers stay on the GPU with T5 and the face adapter (≈ 48 GB): an H100.
 GPU_CHROMA = os.environ.get("AISTUDIO_GPU_CHROMA", "H100")
@@ -351,19 +350,6 @@ TASKS: dict[str, TaskSpec] = {t.id: t for t in [
         "face_strength": Param("float", 0.6, min=0.0, max=1.0),
         **_lora_params(),
     }, optional_inputs=("face",) + LORA_INPUTS, models=("sdxl",)),
-    TaskSpec("sd15", "Stable Diffusion 1.5", "image", "sd15", GPU_SD15, {
-        "prompt": Param("string", ""),
-        "negative": Param("string", ""),
-        "seed": Param("int", 0, min=0, max=2**32 - 1),
-        "width": Param("int", 512, min=256, max=1024, multiple=8),
-        "height": Param("int", 768, min=256, max=1024, multiple=8),
-        "steps": Param("int", 25, min=1, max=100),
-        "guidance": Param("float", 7.0, min=0.0, max=20.0),
-        "sampler": Param("string", "dpmpp-2m-karras", choices=("dpmpp-2m-karras", "euler-a", "euler")),
-        # A fine-tune installed from a link (variants.py), by its id; "base" is SD 1.5 itself.
-        "model": Param("string", "base"),
-        **_lora_params(),
-    }, optional_inputs=LORA_INPUTS, models=("sd15",)),
     TaskSpec("anima", "Anima", "image", "anima", GPU_ANIMA, {
         "prompt": Param("string", ""),
         "negative": Param("string", "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, "
@@ -563,9 +549,6 @@ def make_worker(family: str) -> Worker:
     if family == "sdxl":
         from .sdxl import SDXLWorker
         return SDXLWorker()
-    if family == "sd15":
-        from .sd15 import SD15Worker
-        return SD15Worker()
     if family == "anima":
         from .anima import AnimaWorker
         return AnimaWorker()

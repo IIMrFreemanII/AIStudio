@@ -17,7 +17,7 @@ woman"). The examples here are SFW.
 
 - [The basics](#the-basics)
 - [Quick reference](#quick-reference)
-- Image: [SD 1.5](#stable-diffusion-15) · [SDXL and its fine-tunes](#sdxl-plain-pony-illustrious-noobai) ·
+- Image: [SDXL and its fine-tunes](#sdxl-plain-pony-illustrious-noobai) ·
   [SD 3.5](#stable-diffusion-35-large-and-turbo) · [FLUX.1 dev](#flux1-dev) · [Chroma](#chroma1-hd-and-chroma1-flash) ·
   [Anima](#anima) · [Qwen-Image](#qwen-image) · [Qwen-Image-Edit](#qwen-image-edit-2511) ·
   [MiniMax H3 Image](#minimax-h3-image)
@@ -35,7 +35,7 @@ one, and every comma, hyphen and digit counts. Past the limit the pipeline cuts 
 warning, but nobody sees it in our containers.) So put what matters first, and with a short encoder put everything
 that matters inside the limit.
 
-**Tags or sentences.** CLIP models (SD 1.5, SDXL and its fine-tunes) learned from short captions and alt-text. They
+**Tags or sentences.** CLIP models (SDXL and its fine-tunes) learned from short captions and alt-text. They
 read comma-separated phrases well and long grammar badly. Models with a language-model encoder (T5, Qwen, Gemma,
 UMT5) read sentences, and they read relationships too: who is where, who does what, what is not there.
 
@@ -65,7 +65,6 @@ the encoder will still read it, which on SDXL means inside the first 77 tokens.
 
 | Model | Reads with | Limit (what we send) | Style | Negative works | Our default |
 |---|---|---|---|---|---|
-| SD 1.5 | CLIP ViT-L | 77 tokens, rest cut | tags | yes (CFG 7) | 25 steps, CFG 7, DPM++ 2M Karras, 512×768 |
 | SDXL + fine-tunes | CLIP ViT-L + OpenCLIP bigG | 77 tokens, rest cut | tags | yes (CFG 6) | 30 steps, CFG 6, DPM++ 2M Karras |
 | SD 3.5 Large | 2 CLIP + T5-XXL | CLIP 77, T5 256 | sentences | Large only (3.5) | Turbo: 4 steps, no CFG |
 | FLUX.1 dev | CLIP ViT-L + T5-XXL | CLIP 77, T5 512 | sentences | no (distilled) | 28 steps, guidance 3.5 |
@@ -85,34 +84,7 @@ the encoder will still read it, which on SDXL means inside the first 77 tokens.
 
 ## Image models
 
-### Stable Diffusion 1.5
-
-**Reads with:** one CLIP ViT-L/14 text encoder ([card](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5)),
-77 tokens: 75 of yours plus start and end. `tasks/sd15.py` passes the plain string, so diffusers keeps the first 77
-and cuts the rest. **(code)** A fine-tune from Civitai brings its own CLIP weights but the same limit.
-
-**Style:** comma-separated phrases, most important first: subject, then action, place, light, medium. Aim for 40–70
-tokens. The card names its weak spots: legible text, compositions like "a red cube on a blue sphere", and faces and
-hands, which fine-tunes (Realistic Vision, DreamShaper) mostly fix.
-
-**Control:**
-- Negative prompt: yes, at CFG 7. Short and concrete works best: `lowres, blurry, deformed hands, watermark, text`.
-- Weights: not parsed yet (see [the basics](#the-basics)).
-- LoRAs: up to four; put the trigger word in the first 75 tokens.
-- Fine-tune quality tags: only what the fine-tune's page asks for. Base SD 1.5 has none.
-
-**Avoid:** long paragraphs, because everything after token 77 is gone. Avoid piles of "8k, uhd, trending on
-artstation, masterpiece": they take tokens from the subject and do little. Avoid sizes far from 512 on the short
-side, which give doubled heads and bodies. **(ours)**
-
-**Example**
-- Good: `photo of a 30 year old woman reading a book in a cafe, rainy window behind her, warm lamp light, film grain, sharp focus`
-  with negative `lowres, blurry, deformed hands, watermark, text`
-- Bad: `A beautiful, stunning, ultra-detailed 8k masterpiece photograph, trending on artstation, of a woman who is about thirty years old and is sitting in a cozy little cafe on a rainy afternoon while she reads a novel…` (it runs past 77 tokens before the café and the light, and the quality words use up the budget).
-
-**In AIStudio:** node `RemoteSD15` (task `sd15`, L40S). Defaults: 25 steps, CFG 7, DPM++ 2M Karras, 512×768, fine-tunes
-from links, four LoRAs. The app builds no SD 1.5 prompts itself; the preset `cloud-sd15` in
-`Sources/AIStudioApp/PresetExport.swift` starts with a literal prompt.
+*(SD 1.5 was removed from the app and the GPU server on 2026-11-27: it followed prompts worst of all the image models.)*
 
 ### SDXL (plain, Pony, Illustrious, NoobAI)
 
@@ -128,8 +100,7 @@ once chunking is in.
 
 **Style:** depends on the checkpoint.
 - **Plain SDXL and photo fine-tunes (Juggernaut, RealVis):** short phrases or one plain sentence, then light and camera.
-  The card's examples are plain sentences. It names the same weak spots as SD 1.5: text, compositions, and faces at
-  small sizes.
+  The card's examples are plain sentences. It names its weak spots: text, compositions, and faces at small sizes.
   Danbooru framing tags are read literally here: on 2026-11-27 `cowboy shot` drew a cowboy hat and a western outfit,
   so the builder writes "medium full shot, framed from mid-thigh up" for these models and keeps `cowboy shot` for the
   tag-trained ones. Plain SDXL drew no elf ears in a photo, whether they were in the subject ("an elf with long
@@ -644,7 +615,7 @@ These are the rules for code that writes prompts (`PicturePrompt.swift`, `Charac
 Studio). Each writer takes the same facts (age, look, request, place, outfit, time, style) and lays them out for its
 model:
 
-1. **SDXL and SD 1.5 (CLIP):** tags or short phrases, request and place **first**, look after, quality words last.
+1. **SDXL (CLIP):** tags or short phrases, request and place **first**, look after, quality words last.
    Until long prompts land on the server, keep it under 75 tokens; afterwards keep the important part in the first
    chunk anyway. Fine-tune tags go first (Pony score tags, NoobAI/Illustrious quality tags), and only on that
    fine-tune. Use weights only once the server parses them. The negative carries the style terms and `AgeGuard.negative`.

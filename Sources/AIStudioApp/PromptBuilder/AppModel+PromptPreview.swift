@@ -30,8 +30,8 @@ extension AppModel {
     /// The saved previews, newest first.
     func promptPreviews() -> [PromptPreviewShot] {
         guard let data = try? Data(contentsOf: promptPreviewIndex),
-              let shots = try? JSONDecoder().decode([PromptPreviewShot].self, from: data) else { return [] }
-        return shots
+              let shots = try? JSONDecoder().decode([Lossy<PromptPreviewShot>].self, from: data) else { return [] }
+        return shots.compactMap(\.value)  // a preview of a model the app no longer has (SD 1.5) is skipped
     }
 
     func promptPreviewURL(_ shot: PromptPreviewShot) -> URL { promptPreviewFolder.appendingPathComponent(shot.file) }
@@ -150,4 +150,10 @@ enum PromptPreviewError: Error, CustomStringConvertible {
         case .empty: "Describe something first."
         }
     }
+}
+
+/// One element of a list that decodes to nil instead of failing the whole list.
+private struct Lossy<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
 }

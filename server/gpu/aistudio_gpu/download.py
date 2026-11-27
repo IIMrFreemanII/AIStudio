@@ -163,13 +163,6 @@ MODELS: dict[str, dict] = {
         "text_encoder_2/config.json", "text_encoder_2/model.fp16.safetensors",
         "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
         "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
-    # Stable Diffusion 1.5 (not gated): the fp16 files only (no safety checker), run in bf16.
-    "sd15": {"repo": "stable-diffusion-v1-5/stable-diffusion-v1-5", "revision": "451f4fe16113bff5a5d2269ed5ad43b0592e9a14",
-             "allow": [
-        "model_index.json", "scheduler/*", "tokenizer/*", "feature_extractor/*",
-        "text_encoder/config.json", "text_encoder/model.fp16.safetensors",
-        "unet/config.json", "unet/diffusion_pytorch_model.fp16.safetensors",
-        "vae/config.json", "vae/diffusion_pytorch_model.fp16.safetensors"]},
     # Anima (circlestone-labs, non-commercial licence, not gated): a 2B anime model, a Cosmos DiT with a Qwen3-0.6B text
     # encoder and the Qwen-Image VAE, as a Modular Diffusers repo. Every file is taken.
     "anima": {"repo": "circlestone-labs/Anima-Base-v1.0-Diffusers", "revision": "073c3a9db359c31ad0e8aa268d15775473c2176c",
@@ -221,8 +214,8 @@ GROUPS = {"wan22": ["wan22-t2v", "wan22-i2v", "wan22-lightning"], "wan22-s2v": [
           "sound": ["stable-audio-3"], "speech": ["qwen3-tts"], "audio": ["ace-step-xl", "stable-audio-3", "qwen3-tts"],
           "breeze-tts": ["breeze-tts"], "minimax-h3": ["minimax-h3", "minimax-h3-pruned-affine"],
           "minimax-h3-image": ["minimax-h3-image"],  # not in "audio": it is non-commercial, so only on request
-          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "sd15": ["sd15"], "anima": ["anima"],
-          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face", "sd15"],
+          "sd35": ["sd35-large", "sd35-large-turbo"], "sdxl": ["sdxl", "sdxl-face"], "anima": ["anima"],
+          "sdxl-face": ["sdxl-face"], "sd": ["sd35-large", "sd35-large-turbo", "sdxl", "sdxl-face"],
           "chroma": ["chroma", "chroma-flash", "chroma-face"], "chroma-face": ["chroma-face"],
           "ltx23": ["ltx23", "ltx23-distilled"]}
 SA3_CONVERTER = ("https://raw.githubusercontent.com/huggingface/diffusers/v0.42.1/scripts/"

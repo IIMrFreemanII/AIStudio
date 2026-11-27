@@ -2,14 +2,13 @@ import Foundation
 
 /// The models the app writes prompts for, and how each one reads a prompt (docs/prompting.md has the rules and sources).
 public enum PromptModel: String, CaseIterable, Codable, Sendable, Identifiable {
-    case sd15, sdxl, sdxlPony, sdxlIllustrious, sd35, flux, chroma, anima, qwenImage, minimaxImage
+    case sdxl, sdxlPony, sdxlIllustrious, sd35, flux, chroma, anima, qwenImage, minimaxImage
     case wan, ltx23, minimaxVideo
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .sd15: "SD 1.5"
         case .sdxl: "SDXL"
         case .sdxlPony: "SDXL · Pony"
         case .sdxlIllustrious: "SDXL · Illustrious / NoobAI"
@@ -30,18 +29,18 @@ public enum PromptModel: String, CaseIterable, Codable, Sendable, Identifiable {
 
     public var dialect: Dialect {
         switch self {
-        case .sd15, .sdxl, .sdxlPony, .sdxlIllustrious, .anima: .tags
+        case .sdxl, .sdxlPony, .sdxlIllustrious, .anima: .tags
         case .sd35, .flux, .chroma, .qwenImage: .sentences
         case .minimaxImage: .narrative
         case .wan, .ltx23, .minimaxVideo: .motion
         }
     }
 
-    /// The model reads a negative prompt (classifier-free guidance, or NAG for Wan's fast mode). MiniMax (distilled,
-    /// no CFG) and FLUX.1 dev (guidance-distilled) don't: their exclusions are written as sentences instead.
     /// Trained on Danbooru tags (Pony, Illustrious, Anima): a tag means what it says there.
     public var readsBooru: Bool { !qualityTags.isEmpty }
 
+    /// The model reads a negative prompt (classifier-free guidance, or NAG for Wan's fast mode). MiniMax (distilled,
+    /// no CFG) and FLUX.1 dev (guidance-distilled) don't: their exclusions are written as sentences instead.
     public var takesNegative: Bool {
         switch self {
         case .flux, .minimaxImage, .minimaxVideo: false
@@ -49,8 +48,8 @@ public enum PromptModel: String, CaseIterable, Codable, Sendable, Identifiable {
         }
     }
 
-    /// `(words:1.2)` emphasis works (the SD 1.5 / SDXL workers parse A1111 weights).
-    public var takesWeights: Bool { [.sd15, .sdxl, .sdxlPony, .sdxlIllustrious].contains(self) }
+    /// `(words:1.2)` emphasis works (the SDXL worker parses A1111 weights).
+    public var takesWeights: Bool { [.sdxl, .sdxlPony, .sdxlIllustrious].contains(self) }
 
     /// The model makes sound too: the prompt describes it.
     public var hasSound: Bool { self == .ltx23 || self == .minimaxVideo }
@@ -206,7 +205,7 @@ public struct WrittenPrompt: Equatable, Sendable {
 }
 
 /// Writes a `PromptSpec` the way each model reads best (docs/prompting.md):
-/// - **tags** (SD 1.5, SDXL and fine-tunes, Anima): a short comma list, most important first, because CLIP weighs the
+/// - **tags** (SDXL and fine-tunes, Anima): a short comma list, most important first, because CLIP weighs the
 ///   start most and older workers cut at 77 tokens; emphasis as `(…:1.2)`; exclusions in the negative.
 /// - **sentences** (Chroma, FLUX, SD 3.5, Qwen-Image; T5 or an LLM encoder): plain sentences describing what is
 ///   visible; exclusions in the negative, or as sentences when the model takes none (FLUX).

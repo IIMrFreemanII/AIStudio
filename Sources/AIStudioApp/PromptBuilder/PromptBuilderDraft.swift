@@ -196,7 +196,6 @@ struct PromptBuilderDraft: Codable, Equatable {
     /// prompt the builder can write.
     static func promptModel(nodeType: String, baseModel: String?) -> PromptModel? {
         switch nodeType {
-        case "RemoteSD15": .sd15
         case "RemoteSDXL": PromptModel.sdxl(baseModel: baseModel)
         case "RemoteSD35": .sd35
         case "RemoteFlux": .flux

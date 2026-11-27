@@ -1,4 +1,4 @@
-"""Long prompts and A1111 weights for the CLIP models (SDXL's two text encoders, SD 1.5's one).
+"""Long prompts and A1111 weights for the CLIP models (SDXL's two text encoders).
 
 Plain diffusers keeps only a prompt's first 77 tokens; this encodes all of it, the way AUTOMATIC1111's web UI does:
 
@@ -9,8 +9,8 @@ Plain diffusers keeps only a prompt's first 77 tokens; this encodes all of it, t
   tokens. When a chunk fills up and one of its last 20 tokens is a comma, it ends after that comma instead, so a
   comma-separated tag stays whole (A1111's "comma padding backtrack"). Each chunk gets BOS and EOS and the tokenizer's
   own padding up to 77, exactly as the tokenizer pads a short prompt.
-* **Encoding** (``encode_sdxl``, ``encode_sd15``): each chunk goes through the text encoder on its own (the same
-  hidden layer the pipeline uses: SDXL's penultimate, SD 1.5's last), its token embeddings are multiplied by their
+* **Encoding** (``encode_sdxl``): each chunk goes through the text encoder on its own (the same
+  hidden layer the pipeline uses: SDXL's penultimate), its token embeddings are multiplied by their
   weights, and the chunks are joined along the sequence (75 tokens → 77 embeddings, 150 → 154…). The UNet's cross
   attention takes any length. SDXL's pooled embedding comes from the first chunk.
 * **Mean kept** (A1111's "Original" emphasis): after the multiply, a chunk is rescaled so the mean of all its
@@ -139,7 +139,7 @@ def _empty(tokenizer) -> tuple[list[int], list[float]]:
 
 def _encode(encoder, tokenizer_chunks, hidden: str):
     """One prompt's chunks through ``encoder``, weighted and joined: (embeddings [1, 77·n, d], the first chunk's
-    pooled embedding or None). ``hidden``: "penultimate" (SDXL) or "last" (SD 1.5)."""
+    pooled embedding or None). ``hidden``: "penultimate" (SDXL) or "last" (the final layer)."""
     import torch
 
     device = next(encoder.parameters()).device
@@ -198,15 +198,3 @@ def encode_sdxl(pipe, prompt: str, negative: str | None) -> dict:
         out["negative_prompt_embeds"] = embeds[1].to(dtype=dtype, device=device)
         out["negative_pooled_prompt_embeds"] = pooled[1].to(dtype=dtype, device=device)
     return out
-
-
-def encode_sd15(pipe, prompt: str, negative: str | None) -> dict:
-    """``StableDiffusionPipeline`` arguments for the prompt and the negative (empty or None: ``""`` encoded, as the
-    pipeline does)."""
-    tok, enc = pipe.tokenizer, pipe.text_encoder
-    lists = _padded(tok, [prompt, (negative or "").strip()])
-    n = max(len(c) for c in lists)
-    pos, neg = (_encode(enc, c + [_empty(tok)] * (n - len(c)), "last")[0] for c in lists)
-    dtype, device = enc.dtype, pipe._execution_device
-    return {"prompt_embeds": pos.to(dtype=dtype, device=device),
-            "negative_prompt_embeds": neg.to(dtype=dtype, device=device)}
