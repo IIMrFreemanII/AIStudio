@@ -183,3 +183,229 @@ def pin_dtype(model, dtype) -> None:
     if getattr(cls, "_fp8_pinned", False):
         return
     model.__class__ = type(cls.__name__, (cls,), {"dtype": property(lambda self: dtype), "_fp8_pinned": True})
+
+
+# MARK: fp8 copies on disk
+
+# Converted modules stored beside their bf16 folder (``<folder>-fp8``), so a cold start reads half the bytes: the
+# module's own tensors (fp8 weights with their scales, the rest as they were), its config, the buffers it doesn't save
+# itself, and a marker written last. Made by the worker from the module it just converted, so loading one gives exactly
+# what converting at load gives. A marker from another format or keep list is stale: the copy is made again.
+COPY_FORMAT = 1
+COPY_MARKER = ".fp8-copy.json"
+SHARD_BYTES = 5 * 2**30
+
+
+def copy_dir(src) -> "Path":
+    from pathlib import Path
+
+    src = Path(src)
+    return src.with_name(src.name + "-fp8")
+
+
+def _copy_meta(text_encoder: bool) -> dict:
+    keep = TEXT_KEEP if text_encoder else TRANSFORMER_KEEP
+    return {"format": COPY_FORMAT, "keep": list(keep), "min_features": MIN_FEATURES}
+
+
+def copy_ready(src, text_encoder: bool = False) -> bool:
+    """Whether ``src`` has a current fp8 copy (this format and keep list)."""
+    import json
+
+    marker = copy_dir(src) / COPY_MARKER
+    try:
+        meta = json.loads(marker.read_text())
+    except (OSError, ValueError):
+        return False
+    return all(meta.get(k) == v for k, v in _copy_meta(text_encoder).items())
+
+
+def _base_class(module):
+    """The model's own class (``pin_dtype`` puts a subclass of the same name in front of it)."""
+    for cls in type(module).__mro__:
+        if "_fp8_pinned" not in cls.__dict__:
+            return cls
+    return type(module)
+
+
+def save_copy(module, src, text_encoder: bool = False) -> bool:
+    """Writes ``module`` (converted by ``convert``) as ``src``'s fp8 copy, unless a current one is there. PEFT's
+    wrappers are unwrapped and LoRA factors left out (LoRAs load on top as usual); a tensor shared by two names is
+    stored once. Returns whether it wrote one."""
+    import json
+    import shutil
+    import time
+    import uuid
+
+    import torch
+    from safetensors.torch import save_file
+
+    if copy_ready(src, text_encoder):
+        return False
+    start = time.monotonic()
+    out = copy_dir(src)
+    tmp = out.with_name(f"{out.name}.partial-{uuid.uuid4().hex[:8]}")
+    tmp.mkdir(parents=True)
+    try:
+        state = {}
+        for k, v in module.state_dict(keep_vars=False).items():
+            if ".lora_" in k:
+                continue
+            state[k.replace(".base_layer.", ".")] = v
+        seen, aliases, tensors = {}, {}, {}
+        for k, v in state.items():
+            key = (v.device, v.untyped_storage().data_ptr(), v.storage_offset(), tuple(v.shape), v.dtype)
+            if key in seen:
+                aliases[k] = seen[key]
+            else:
+                seen[key] = k
+                tensors[k] = v
+        shard, size, n = {}, 0, 0
+        for k, v in tensors.items():
+            shard[k] = v.detach().to("cpu").contiguous()
+            size += v.numel() * v.element_size()
+            if size >= SHARD_BYTES:
+                save_file(shard, str(tmp / f"model-{n:05d}.safetensors"))
+                shard, size, n = {}, 0, n + 1
+        if shard:
+            save_file(shard, str(tmp / f"model-{n:05d}.safetensors"))
+        saved = set(state) | {k.replace(".base_layer.", ".") for k in module.state_dict()}
+        extra = {}
+        for k, b in module.named_buffers():
+            k = k.replace(".base_layer.", ".")
+            if k not in saved and ".lora_" not in k and b.dtype in (torch.float32, torch.bfloat16, torch.float16,
+                                                                      torch.int64, torch.int32, torch.bool):
+                extra[k] = b.detach().to("cpu").contiguous()
+        if extra:
+            save_file(extra, str(tmp / "buffers.safetensors"))
+        if hasattr(module, "save_config"):  # diffusers
+            module.save_config(str(tmp))
+        elif hasattr(getattr(module, "config", None), "save_pretrained"):  # transformers
+            module.config.save_pretrained(str(tmp))
+        cls = _base_class(module)
+        meta = {**_copy_meta(text_encoder), "class": f"{cls.__module__}:{cls.__qualname__}", "aliases": aliases}
+        (tmp / COPY_MARKER).write_text(json.dumps(meta))
+        if out.exists():  # stale (another format), or another container finished first
+            if copy_ready(src, text_encoder):
+                shutil.rmtree(tmp, ignore_errors=True)
+                return False
+            shutil.rmtree(out, ignore_errors=True)
+        tmp.rename(out)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    gb = sum(f.stat().st_size for f in out.glob("*.safetensors")) / 1e9
+    print(f"fp8: stored {out.name} ({gb:.1f} GB) in {time.monotonic() - start:.0f} s", flush=True)
+    return True
+
+
+def _import(path: str):
+    import importlib
+
+    module, _, qualname = path.partition(":")
+    obj = importlib.import_module(module)
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _skeleton(cls, folder, init_kwargs: dict):
+    """The model built with its parameters on the meta device (its buffers real), from the copy's config."""
+    from accelerate import init_empty_weights
+
+    if hasattr(cls, "load_config") and hasattr(cls, "from_config"):  # diffusers
+        config = cls.load_config(str(folder))
+        with init_empty_weights():
+            return cls.from_config(config, **init_kwargs)
+    config = cls.config_class.from_pretrained(str(folder))  # transformers
+    with init_empty_weights():
+        return cls._from_config(config, **init_kwargs)
+
+
+def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, threads: int = 8):
+    """``src``'s fp8 copy as a ready module on ``device``: the shards read in parallel straight onto it, the fp8
+    layers made ``FP8Linear`` before the tensors are assigned, the saved buffers put back."""
+    import json
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import torch
+    from safetensors.torch import load_file
+    from torch import nn
+
+    start = time.monotonic()
+    folder = copy_dir(src)
+    meta = json.loads((folder / COPY_MARKER).read_text())
+    model = _skeleton(_import(meta["class"]), folder, init_kwargs or {})
+    files = sorted(folder.glob("model-*.safetensors"))
+    with ThreadPoolExecutor(max(1, threads)) as pool:
+        parts = list(pool.map(lambda f: load_file(str(f), device=device), files))
+    state = {k: v for p in parts for k, v in p.items()}
+    for alias, name in meta.get("aliases", {}).items():
+        state[alias] = state[name]
+    cls = linear_class()
+    for name in [k[: -len(".w_scale")] for k in state if k.endswith(".w_scale")]:
+        m = model.get_submodule(name)
+        m.__class__ = cls
+        m.w_scale = nn.Parameter(torch.empty(m.out_features, device="meta"), requires_grad=False)
+        m.compute_dtype = torch.bfloat16
+    missing, unexpected = model.load_state_dict(state, strict=False, assign=True)
+    if missing or unexpected:
+        raise RuntimeError(f"fp8 copy {folder.name}: {len(missing)} missing (e.g. {missing[:2]}), "
+                           f"{len(unexpected)} unexpected (e.g. {unexpected[:2]})")
+    buffers = folder / "buffers.safetensors"
+    if buffers.exists():
+        for k, v in load_file(str(buffers), device=device).items():
+            owner, _, leaf = k.rpartition(".")
+            model.get_submodule(owner)._buffers[leaf] = v
+    model.to(device)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    pin_dtype(model, torch.bfloat16)
+    print(f"fp8: loaded {folder.name} in {time.monotonic() - start:.1f} s", flush=True)
+    return model
+
+
+def copies_usable(sources: dict, env_name: str, margin_gib: float = 40) -> bool:
+    """Whether a worker loads its parts (name → bf16 folder) from their fp8 copies: fp8 wanted, every copy current,
+    and a CUDA GPU with room for them beside ``margin_gib`` (else the bf16 path with its own offload fallback)."""
+    import torch
+
+    if not wanted(env_name) or not torch.cuda.is_available():
+        return False
+    if not all(copy_ready(src, is_text_encoder(name)) for name, src in sources.items()):
+        return False
+    size = sum(f.stat().st_size for src in sources.values() for f in copy_dir(src).glob("*.safetensors"))
+    return torch.cuda.get_device_properties(0).total_memory - size >= margin_gib * 2**30
+
+
+def load_copies(sources: dict, init_kwargs: dict | None = None) -> dict:
+    """Every part (name → bf16 folder) from its fp8 copy, on the GPU."""
+    return {name: load_copy(src, "cuda", (init_kwargs or {}).get(name)) for name, src in sources.items()}
+
+
+def save_copies(parts: dict, sources: dict) -> bool:
+    """Stores the converted parts (name → module) as their folders' fp8 copies where a current one is missing.
+    Returns whether it wrote any (the worker's first job then commits the Volume)."""
+    wrote = False
+    for name, src in sources.items():
+        module = parts.get(name)
+        if module is not None:
+            wrote |= save_copy(module, src, is_text_encoder(name))
+    return wrote
+
+
+class LinearNamed:
+    """While open, ``FP8Linear`` calls itself "Linear": for LongCat's LoRA builder, which only wraps modules whose class
+    has that name (its forward wrapper works with any)."""
+
+    def __enter__(self):
+        self.cls = linear_class()
+        self.name = self.cls.__name__
+        self.cls.__name__ = "Linear"
+        return self
+
+    def __exit__(self, *exc):
+        self.cls.__name__ = self.name
+        return False

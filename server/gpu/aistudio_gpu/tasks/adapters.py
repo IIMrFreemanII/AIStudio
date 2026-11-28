@@ -237,6 +237,7 @@ def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
     if not files:
         raise ValueError(f"{vid}: no weights in {src.name}")
     buffers = {_plain(n) for n, _ in module.named_buffers()}
+    file_keys = _keys_of(files)
     out = {}
     for f in files:
         with safe_open(str(f), "pt", device="cpu") as sf:
@@ -248,7 +249,7 @@ def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
                     raise ValueError(f"{vid}: unexpected weight {key}")
                 p = params[name]
                 scale = _fp8_scale_of(params, name)
-                if scale is not None and not key.endswith(".w_scale"):
+                if scale is not None and _scale_key(key) not in file_keys:
                     from . import fp8
 
                     # An fp8 layer: the file's bf16/fp32 weight quantized as the loaded one was, with its scale.
@@ -274,6 +275,7 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     params.update(dict(module.named_buffers()))
     wanted = {_plain(k) for k, _ in module.named_parameters() if ".lora_" not in k}
     # Every key is matched before anything is copied, so a file that doesn't fit leaves the module as it was.
+    file_keys = _keys_of(files)
     plan = []
     for f in files:
         with safe_open(str(f), "pt", device="cpu") as sf:
@@ -288,7 +290,7 @@ def _copy_weights(module, src: Path, vid: str) -> None:
             for key, name in [(k, n) for g, k, n in plan if g == f]:
                 target = _param_for(params, name)
                 scale = _fp8_scale_of(params, _plain(name))
-                if scale is not None and not key.endswith(".w_scale"):
+                if scale is not None and _scale_key(key) not in file_keys:
                     from . import fp8
 
                     fp8.quantize_into(target, scale, sf.get_tensor(key))  # quantized as at load, with its scale
@@ -299,6 +301,21 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     missing = wanted - seen
     if missing:
         raise ValueError(f"{vid}: {len(missing)} weights missing, e.g. {sorted(missing)[0]}")
+
+
+def _keys_of(files) -> set:
+    from safetensors import safe_open
+
+    keys = set()
+    for f in files:
+        with safe_open(str(f), "pt", device="cpu") as sf:
+            keys.update(sf.keys())
+    return keys
+
+
+def _scale_key(key: str) -> str:
+    """The scale a weight's file key would come with in an fp8 copy (``fp8.save_copy``), which is copied as is."""
+    return key[: -len("weight")] + "w_scale" if key.endswith(".weight") else key + ".w_scale"
 
 
 def _fp8_scale_of(params: dict, name: str):

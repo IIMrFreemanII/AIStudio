@@ -225,3 +225,99 @@ def test_a_left_behind_plain_forward_is_dropped(monkeypatch):
     fp8.convert(model, device="cpu")
     assert "forward" not in model.ff.__dict__
     model(torch.randn(4, 512, dtype=torch.bfloat16))  # runs the fp8 layer's own forward
+
+
+# MARK: fp8 copies on disk
+
+
+def _same(a, b):
+    sa, sb = a.state_dict(), b.state_dict()
+    assert sa.keys() == sb.keys()
+    for k in sa:
+        assert sa[k].dtype == sb[k].dtype, k
+        assert torch.equal(sa[k].contiguous().view(torch.uint8), sb[k].contiguous().view(torch.uint8)), k
+    ba, bb = dict(a.named_buffers()), dict(b.named_buffers())
+    for k in ba:
+        assert torch.equal(ba[k], bb[k]), k
+
+
+def _tiny_wan():
+    diffusers = pytest.importorskip("diffusers")
+    torch.manual_seed(0)
+    return diffusers.WanTransformer3DModel(
+        patch_size=(1, 2, 2), num_attention_heads=2, attention_head_dim=128, in_channels=16, out_channels=16,
+        text_dim=256, freq_dim=256, ffn_dim=512, num_layers=1, cross_attn_norm=True,
+        qk_norm="rms_norm_across_heads", rope_max_seq_len=32).to(torch.bfloat16)
+
+
+def test_a_diffusers_copy_loads_back_exactly_with_a_lora_left_out(tmp_path, monkeypatch):
+    peft = pytest.importorskip("peft")
+    monkeypatch.setattr(fp8, "MATMUL", "dequant")
+    model = _tiny_wan()
+    src = tmp_path / "transformer"
+    src.mkdir()
+    fp8.convert(model, device="cpu")
+    assert fp8.convert(model, device="cpu")["layers"] == 0
+    reference = _tiny_wan()
+    fp8.convert(reference, device="cpu")
+    model.load_lora_adapter({"blocks.0.attn1.to_q.lora_A.weight": torch.randn(4, 256, dtype=torch.bfloat16),
+                             "blocks.0.attn1.to_q.lora_B.weight": torch.randn(256, 4, dtype=torch.bfloat16)},
+                            adapter_name="turbo", prefix=None)
+    assert not fp8.copy_ready(src)
+    assert fp8.save_copy(model, src) and fp8.copy_ready(src) and not fp8.copy_ready(src, text_encoder=True)
+    assert not fp8.save_copy(model, src)  # current: kept
+    loaded = fp8.load_copy(src, device="cpu")
+    assert type(loaded.blocks[0].attn1.to_q).__name__ == "FP8Linear" and loaded.dtype == torch.bfloat16
+    _same(reference, loaded)
+    x = dict(hidden_states=torch.randn(1, 16, 1, 8, 8, dtype=torch.bfloat16), timestep=torch.tensor([500]),
+             encoder_hidden_states=torch.randn(1, 8, 256, dtype=torch.bfloat16))
+    with torch.no_grad():
+        assert torch.equal(reference(**x).sample, loaded(**x).sample)
+
+
+def test_a_transformers_copy_keeps_tied_weights_tied(tmp_path, monkeypatch):
+    transformers = pytest.importorskip("transformers")
+    monkeypatch.setattr(fp8, "MATMUL", "dequant")
+    torch.manual_seed(0)
+    config = transformers.T5Config(vocab_size=320, d_model=256, d_kv=32, d_ff=512, num_layers=1, num_heads=4)
+    model = transformers.T5EncoderModel(config).to(torch.bfloat16).eval()
+    src = tmp_path / "text_encoder"
+    fp8.convert_parts({"text_encoder": model}, device="cpu")
+    assert model.encoder.block[0].layer[1].DenseReluDense.wi.weight.dtype == torch.float8_e4m3fn
+    fp8.save_copy(model, src, text_encoder=True)
+    loaded = fp8.load_copy(src, device="cpu")
+    _same(model, loaded)
+    assert loaded.shared.weight.data_ptr() == loaded.encoder.embed_tokens.weight.data_ptr()
+    ids = torch.tensor([[1, 5, 9, 2]])
+    with torch.no_grad():
+        assert torch.equal(model(input_ids=ids).last_hidden_state, loaded(input_ids=ids).last_hidden_state)
+
+
+def test_a_stale_copy_is_made_again(tmp_path, monkeypatch):
+    model = _tiny_wan()
+    fp8.convert(model, device="cpu")
+    src = tmp_path / "transformer"
+    fp8.save_copy(model, src)
+    monkeypatch.setattr(fp8, "COPY_FORMAT", fp8.COPY_FORMAT + 1)
+    assert not fp8.copy_ready(src)
+    assert fp8.save_copy(model, src) and fp8.copy_ready(src)
+
+
+def test_copy_weights_takes_an_fp8_copy_as_stored(tmp_path, monkeypatch):
+    """A folder that is itself an fp8 copy (weights with their scales) is copied in, not quantized again."""
+    monkeypatch.setattr(fp8, "MATMUL", "dequant")
+    tuned = _block()
+    torch.manual_seed(3)
+    for p in tuned.parameters():
+        p.data = torch.randn_like(p.float()).to(torch.bfloat16)
+    fp8.convert(tuned, device="cpu")
+    src = tmp_path / "tuned"
+    src.mkdir()
+    folder = fp8.copy_dir(src)
+    folder.mkdir()
+    safetensors_torch.save_file({k: v.contiguous() for k, v in tuned.state_dict().items()},
+                                str(folder / "diffusion_pytorch_model.safetensors"))
+    model = _block()
+    fp8.convert(model, device="cpu")
+    adapters._copy_weights(model, folder, "tuned")
+    _same(tuned, model)

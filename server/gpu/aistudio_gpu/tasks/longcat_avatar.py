@@ -75,16 +75,25 @@ class LongCatAvatarWorker:
         status("Loading LongCat Avatar")
         bf16 = torch.bfloat16
         tokenizer = AutoTokenizer.from_pretrained(base, subfolder="tokenizer", torch_dtype=bf16)
-        text_encoder = UMT5EncoderModel.from_pretrained(base, subfolder="text_encoder", torch_dtype=bf16)
         vae = AutoencoderKLWan.from_pretrained(base, subfolder="vae", torch_dtype=bf16)
         scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(str(avatar), subfolder="scheduler",
                                                                     torch_dtype=bf16)
-        dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(str(avatar), subfolder="base_model",
-                                                                   cp_split_hw=split, torch_dtype=bf16).to(0)
-        dit.load_lora(str(avatar / "loraA" / "lora.safetensors"), "dmd", multiplier=1.0, lora_network_dim=128,
-                      lora_network_alpha=64)
-        dit.load_lora(str(avatar / "loraB" / "lora.safetensors"), "opsd", multiplier=1.0, lora_network_dim=128,
-                      lora_network_alpha=64)
+        # The DiT and UMT5 from their fp8 copies when they're there (half the read), else from the bf16 files.
+        self.fp8_sources = {"dit": avatar / "base_model", "text_encoder": root / "base" / "text_encoder"}
+        from_copies = fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_LONGCAT")
+        if from_copies:
+            status("Loading LongCat Avatar (fp8)")
+            parts = fp8.load_copies(self.fp8_sources, init_kwargs={"dit": {"cp_split_hw": split}})
+            dit, text_encoder = parts["dit"], parts["text_encoder"]
+        else:
+            text_encoder = UMT5EncoderModel.from_pretrained(base, subfolder="text_encoder", torch_dtype=bf16)
+            dit = LongCatVideoAvatarTransformer3DModel.from_pretrained(str(avatar), subfolder="base_model",
+                                                                       cp_split_hw=split, torch_dtype=bf16).to(0)
+        with fp8.LinearNamed():  # its LoRA builder only takes classes named "Linear"
+            dit.load_lora(str(avatar / "loraA" / "lora.safetensors"), "dmd", multiplier=1.0, lora_network_dim=128,
+                          lora_network_alpha=64)
+            dit.load_lora(str(avatar / "loraB" / "lora.safetensors"), "opsd", multiplier=1.0, lora_network_dim=128,
+                          lora_network_alpha=64)
         dit.enable_lora_mix("dmd", "opsd", self.mix[1], self.mix[0])
         whisper = str(avatar / "whisper-large-v3")
         encoder = get_audio_encoder(whisper, MODEL_TYPE).to(0)
@@ -100,6 +109,8 @@ class LongCatAvatarWorker:
             dit.disable_all_loras()
             fp8.convert_parts({"dit": dit, "text_encoder": text_encoder}, label="longcat fp8")
             self._enable_mix(self.mix)
+            if not from_copies:  # stored for the next cold start
+                self.fp8_written = fp8.save_copies({"dit": dit, "text_encoder": text_encoder}, self.fp8_sources)
 
     def _enable_mix(self, mix) -> None:
         """The two distillation LoRAs mixed per step. The repo moves them to its DiT's first parameter's dtype: keep
