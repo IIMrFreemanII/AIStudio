@@ -333,3 +333,47 @@ def test_scaled_matmul_needs_new_torch_and_gpu(monkeypatch, version, cap, ok):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
     monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "GPU")
     assert fp8._scaled_ok() is ok
+
+
+def _fresh_quantizer(monkeypatch):
+    monkeypatch.setattr(fp8, "_quantize", None)
+    return fp8.linear_class()
+
+
+def test_input_quantizer_compiles_once(monkeypatch):
+    calls = []
+
+    def fake_compile(fn, **kw):
+        calls.append(kw)
+        return lambda a: fn(a)
+
+    cls = _fresh_quantizer(monkeypatch)
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    a = torch.randn(7, 64, dtype=torch.bfloat16)
+    qa, sa = cls.quantize(a)
+    cls.quantize(a)
+    assert calls == [{"dynamic": True}]
+    rq, rs = cls.quantize_rows(a)
+    assert qa.dtype == torch.float8_e4m3fn and sa.dtype == torch.float32
+    assert torch.equal(qa.view(torch.uint8), rq.view(torch.uint8)) and torch.equal(sa, rs)
+
+
+def test_input_quantizer_falls_back_when_compile_fails(monkeypatch, capsys):
+    def broken(a):
+        raise RuntimeError("no triton")
+
+    cls = _fresh_quantizer(monkeypatch)
+    monkeypatch.setattr(torch, "compile", lambda fn, **kw: broken)
+    a = torch.randn(5, 32, dtype=torch.bfloat16)
+    qa, _ = cls.quantize(a)
+    assert fp8._quantize is cls.quantize_rows
+    assert "unfused" in capsys.readouterr().out
+    assert torch.equal(qa.view(torch.uint8), cls.quantize_rows(a)[0].view(torch.uint8))
+
+
+def test_input_quantizer_off_switch(monkeypatch):
+    cls = _fresh_quantizer(monkeypatch)
+    monkeypatch.setenv("AISTUDIO_FP8_COMPILE", "0")
+    monkeypatch.setattr(torch, "compile", lambda *a, **k: pytest.fail("compiled"))
+    cls.quantize(torch.randn(3, 16, dtype=torch.bfloat16))
+    assert fp8._quantize is cls.quantize_rows
