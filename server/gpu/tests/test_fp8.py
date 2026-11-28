@@ -321,3 +321,15 @@ def test_copy_weights_takes_an_fp8_copy_as_stored(tmp_path, monkeypatch):
     fp8.convert(model, device="cpu")
     adapters._copy_weights(model, folder, "tuned")
     _same(tuned, model)
+
+
+@pytest.mark.parametrize("version,cap,ok", [("2.6.0+cu124", (9, 0), False), ("2.15.0", (10, 0), True),
+                                            ("2.15.0", (8, 0), False)])
+def test_scaled_matmul_needs_new_torch_and_gpu(monkeypatch, version, cap, ok):
+    # torch 2.6's row-scaled _scaled_mm was twice as slow as bf16 on an H100: dequantize there instead.
+    monkeypatch.setattr(fp8, "_capability_ok", None)
+    monkeypatch.setattr(torch, "__version__", version)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: cap)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *a: "GPU")
+    assert fp8._scaled_ok() is ok
