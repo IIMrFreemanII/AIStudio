@@ -39,6 +39,12 @@ def fp8_cast(module, compute_dtype) -> None:
 
     module.enable_layerwise_casting(storage_dtype=torch.float8_e4m3fn, compute_dtype=compute_dtype,
                                     skip_modules_pattern=tuple(DEFAULT_SKIP_MODULES_PATTERN) + ("lora_",))
+    for m in module.modules():
+        w = getattr(m, "weight", None)
+        if isinstance(w, torch.Tensor) and w.dtype == torch.float8_e4m3fn:
+            # PEFT gives a LoRA its base layer's dtype before loading its values (fp8 would round them) unless the
+            # layer names a compute dtype, as bitsandbytes' do.
+            m.compute_dtype = compute_dtype
 
 
 def fp8_storage_supported(device: str) -> bool:

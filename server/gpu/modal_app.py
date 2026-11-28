@@ -34,7 +34,8 @@ default B200) and ``AISTUDIO_GPU_H3_FALLBACK`` (the GPUs to take when none is fr
 L40S their weights are stored in fp8), ``AISTUDIO_GPU_SD`` (SDXL, default L40S), ``AISTUDIO_GPU_SD35`` (SD 3.5 Large with Turbo resident beside it, default H100), ``AISTUDIO_GPU_ANIMA`` (Anima, default L40S), ``AISTUDIO_GPU_CHROMA`` (Chroma1-HD with Flash resident beside it, default H100), ``AISTUDIO_GPU_AUDIO`` (default L40S),
 ``AISTUDIO_UPLOADS_GB`` (default 50), ``AISTUDIO_LLM_IDLE`` (default 180),
 ``AISTUDIO_VLLM`` (the vLLM version, default 0.33.0), ``AISTUDIO_LLAMA_IMAGE`` (llama.cpp's server image),
-``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
+``AISTUDIO_PRECISION_H3`` / ``_H3_IMAGE`` / ``_LTX`` / ``_LONGCAT`` (``fp8``, the default, or ``bf16``: those models' weights, see
+``tasks/fp8.py``), ``HF_ENABLE_PARALLEL_LOADING`` (default yes), ``AISTUDIO_LLM_MAX_GPUS`` (default 8), ``AISTUDIO_LLM_VOLUME`` (a separate v2 Volume for language models; unset,
 they live on the models Volume).
 """
 
@@ -148,7 +149,12 @@ env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU
        "AISTUDIO_IDLE": str(IDLE), "AISTUDIO_UPLOADS_GB": str(UPLOADS_GB), "AISTUDIO_HF_SECRET": HF_SECRET,
        "AISTUDIO_CIVITAI_SECRET": CIVITAI_SECRET, "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_OFFLINE": "1",
        "AISTUDIO_LLM_IDLE": str(LLM_IDLE), "AISTUDIO_VLLM": VLLM_VERSION,
-       "AISTUDIO_LLM_MAX_GPUS": os.environ.get("AISTUDIO_LLM_MAX_GPUS", "8"), "AISTUDIO_LLM_VOLUME": LLM_VOLUME}
+       "AISTUDIO_LLM_MAX_GPUS": os.environ.get("AISTUDIO_LLM_MAX_GPUS", "8"), "AISTUDIO_LLM_VOLUME": LLM_VOLUME,
+       # fp8 weights (tasks/fp8.py) for the biggest models, or bf16; and diffusers reading a model's shards in
+       # parallel (≈ 2× the models Volume's read speed of one file at a time, measured 2026-11-28).
+       **{f"AISTUDIO_PRECISION_{k}": os.environ.get(f"AISTUDIO_PRECISION_{k}", "fp8")
+          for k in ("H3", "H3_IMAGE", "LTX", "LONGCAT")},
+       "HF_ENABLE_PARALLEL_LOADING": os.environ.get("HF_ENABLE_PARALLEL_LOADING", "yes")}
 
 front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS).env(env)
                .add_local_python_source("aistudio_gpu"))

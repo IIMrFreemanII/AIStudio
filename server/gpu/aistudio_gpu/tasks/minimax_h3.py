@@ -37,7 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from ..media import read_wav, resample, write_mp4, write_wav
-from . import Output, TaskSpec
+from . import Output, TaskSpec, fp8
 from .adapters import AdapterSlots
 
 FPS = 24
@@ -227,6 +227,9 @@ class H3Worker(AdapterSlots):
         for module in self._modules().values():
             module.to("cuda")
         self.resident = True
+        if fp8.wanted("AISTUDIO_PRECISION_H3"):
+            # The transformer and the conditioner in fp8 (scale per channel), on the GPU: half their memory.
+            fp8.convert_parts(self._modules(), label="h3 fp8")
 
     def _load_turbo(self, status) -> None:
         """LightX2V's Turbo LoRA for this partition, as the adapter "turbo" (the loaded transformer takes it, also a
@@ -292,6 +295,8 @@ class H3Worker(AdapterSlots):
         del model
         if self.resident:
             getattr(self.pipe, component).to("cuda")
+            if fp8.wanted("AISTUDIO_PRECISION_H3"):
+                fp8.convert_parts({component: getattr(self.pipe, component)}, label="h3 fp8")
         self._load_turbo(lambda _: None)
         if not self.resident:
             self._enable_offload()
