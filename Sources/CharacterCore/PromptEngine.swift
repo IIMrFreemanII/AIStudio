@@ -329,3 +329,28 @@ public struct EngineResult: Codable, Equatable, Sendable {
         self.llmUSD = llmUSD
     }
 }
+
+/// Which LLM the prompt engine runs on, from the installed vision models ("server/model" keys).
+public enum PromptEngineLLM {
+    /// The engine's own model: the abliterated Qwen3.8-27B, its NVFP4 copy first (≈ 1.7× the decode speed on the
+    /// same H100, 2026-11-28).
+    public static let preferred = ["qwen3.8-27b-abliterated-nvfp4", "qwen3.8-27b-abliterated"]
+    /// Picks saved before a faster copy existed, moved to it once (``UpgradeKey`` remembers that it ran).
+    public static let upgrades = ["qwen3.8-27b-abliterated": "qwen3.8-27b-abliterated-nvfp4"]
+
+    /// The model to use and, when a saved pick was moved to its faster copy, the new pick to save.
+    public static func pick(installed: [String], saved: String?, upgraded: Bool) -> (model: String?, save: String?) {
+        func model(_ key: String) -> String { String(key.split(separator: "/", maxSplits: 1).last ?? "") }
+        if let saved, installed.contains(saved) {
+            if !upgraded, let to = upgrades[model(saved)] {
+                let server = saved.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+                if installed.contains("\(server)/\(to)") { return ("\(server)/\(to)", "\(server)/\(to)") }
+            }
+            return (saved, nil)
+        }
+        for id in preferred {
+            if let k = installed.first(where: { model($0) == id }) { return (k, nil) }
+        }
+        return (installed.first, nil)
+    }
+}
