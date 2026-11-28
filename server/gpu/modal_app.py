@@ -163,6 +163,14 @@ front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SE
 # Downloads LLMs onto the volume (no torch needed).
 llm_import_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS, "huggingface_hub")
                     .env(env).add_local_python_source("aistudio_gpu"))
+# llm-compressor, for the NVFP4 versions of installed LLMs (llm/quantize.py); it pins its own torch and transformers.
+# fla-core: the fast kernels for Qwen3.5/3.8's linear-attention layers during calibration; torchvision: Qwen-VL's
+# processors.
+LLMCOMPRESSOR = os.environ.get("AISTUDIO_LLMCOMPRESSOR", "0.15.0")
+quant_image = (modal.Image.debian_slim(python_version="3.12")
+               .uv_pip_install(f"llmcompressor=={LLMCOMPRESSOR}", "httpx==0.28.1", "fla-core", "torchvision")
+               # online, unlike the workers: the calibration set (mlabonne/open-perfectblend) comes from the Hub
+               .env({**env, "HF_HUB_OFFLINE": "0", "HF_DATASETS_OFFLINE": "0"}).add_local_python_source("aistudio_gpu"))
 # llama.cpp's server for GGUF models (its CUDA build; the binary lives in /app).
 llama_image = (modal.Image.from_registry(LLAMA_IMAGE, add_python="3.12").entrypoint([])
                .uv_pip_install("httpx").env({**env, "PATH": "/app:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -1536,6 +1544,34 @@ def import_llm(manifest: dict, files: list, tokens: dict):
             llm_volume.commit()
         except Exception:  # noqa: BLE001
             pass
+
+
+QUANT_SECRETS = [modal.Secret.from_name(n) for n in (HF_SECRET,) if n]  # the calibration set comes from the Hub
+
+
+@app.function(image=quant_image, cpu=2, memory=16384, volumes=LLM_VOLUMES, timeout=30 * 60, secrets=QUANT_SECRETS)
+def quantize_llm_plan(model: str) -> dict:
+    """What ``quantize_llm`` would do for an installed model, checked on CPUs: the recipe, and whether transformers
+    builds the model (on the meta device) and which of its layers would go to NVFP4, fp8 or stay in 16-bit."""
+    from aistudio_gpu.llm import quantize
+
+    llm_volume.reload()
+    return quantize.dry_run(LLM_ROOT, model)
+
+
+@app.function(image=quant_image, gpu="H100", cpu=8, memory=(131072, 524288), volumes=LLM_VOLUMES,
+              timeout=10 * 60 * 60, secrets=QUANT_SECRETS, single_use_containers=True)  # a fresh Volume view each
+def quantize_llm(model: str, samples: int = 0, seq_len: int = 0) -> dict:
+    """Makes ``<model>-nvfp4`` on the Volume (llm/quantize.py); the GPU and host memory come from ``with_options``
+    (the model in bf16 must fit in host memory; layers are calibrated one at a time on the GPU)."""
+    from aistudio_gpu.llm import quantize
+
+    llm_volume.reload()
+    try:
+        return quantize.run(LLM_ROOT, model, samples=samples or None, seq_len=seq_len or None,
+                            log=lambda s: print(s, flush=True))
+    finally:
+        llm_volume.commit()
 
 
 def _llm_service():
