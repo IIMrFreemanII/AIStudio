@@ -9,7 +9,7 @@ head. ``AISTUDIO_PRECISION_<FAMILY>=bf16`` keeps a family in bf16 (``wanted``).
 
 Two ways to multiply (``AISTUDIO_FP8_MATMUL``):
 - ``scaled`` (the default): fp8 tensor-core matmuls (``torch._scaled_mm``) with each activation row scaled to fp8 on
-  the fly; needs an H100 or newer. Falls back to ``dequant`` for a layer it can't take.
+  the fly; needs an H100 or newer and torch 2.7 or newer (``_scaled_ok``). Falls back to ``dequant`` otherwise.
 - ``dequant``: the weight turned back into bf16 for each multiply: weight memory halves, speed doesn't change.
 
 Because ``weight`` and ``w_scale`` are both parameters, PEFT LoRAs wrap a converted layer as any ``nn.Linear`` (its
@@ -87,11 +87,19 @@ def quantize_into(weight, scale, tensor) -> None:
 
 
 def _scaled_ok() -> bool:
+    """fp8 tensor cores (an H100 or newer) and a torch whose row-scaled ``_scaled_mm`` is fast: on torch 2.6
+    (LongCat's image) it took about twice as long as the bf16 matmul on an H100, so the weight is dequantized there
+    (bf16 speed, fp8 memory); on torch 2.15 (B200) it beats bf16."""
     global _capability_ok
     if _capability_ok is None:
         import torch
 
-        _capability_ok = torch.cuda.is_available() and torch.cuda.get_device_capability() >= (8, 9)
+        version = tuple(int(p) for p in torch.__version__.split("+")[0].split(".")[:2])
+        _capability_ok = (torch.cuda.is_available() and torch.cuda.get_device_capability() >= (8, 9)
+                          and version >= (2, 7))
+        if torch.cuda.is_available() and not _capability_ok:
+            print(f"fp8: torch {torch.__version__} on {torch.cuda.get_device_name()}: dequantized bf16 matmuls",
+                  flush=True)
     return _capability_ok
 
 
