@@ -98,3 +98,15 @@ def test_install_needs_a_gpu_and_the_switch(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setenv("AISTUDIO_CUDA_GRAPHS", "0")
     assert graphs.install(Step()) is None
+
+
+def test_signature_is_the_forward_s(monkeypatch):
+    """H3's denoisers pass only the arguments named in ``inspect.signature(transformer.forward)``."""
+    import inspect
+
+    m = Step()
+    want = list(inspect.signature(m.forward).parameters)
+    g = graphs.StepGraphs(m, "test")
+    assert list(inspect.signature(m.forward).parameters) == want
+    g.remove()
+    assert list(inspect.signature(m.forward).parameters) == want
