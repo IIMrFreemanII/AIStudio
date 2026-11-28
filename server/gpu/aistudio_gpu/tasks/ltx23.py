@@ -80,7 +80,16 @@ class LTX23Worker(AdapterSlots):
             self.has_fast = True
         else:
             status("Loading LTX-2.3")
-        pipe = LTX2Pipeline.from_pretrained(models_root / "ltx23", torch_dtype=dtype, **extra)
+        # The starting transformer, the Gemma text encoder and the connectors from their fp8 copies when they're
+        # there: half the read.
+        root = models_root / "ltx23"
+        self.fp8_sources = {"transformer": (distilled if "transformer" in extra else root) / "transformer",
+                            "text_encoder": root / "text_encoder", "connectors": root / "connectors"}
+        if device == "cuda" and fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_LTX"):
+            status("Loading LTX-2.3 (fp8)")
+            extra.pop("transformer", None)
+            extra.update(fp8.load_copies(self.fp8_sources))
+        pipe = LTX2Pipeline.from_pretrained(root, torch_dtype=dtype, **extra)
         self.i2v = LTX2ImageToVideoPipeline(**pipe.components)
         if device == "cuda":
             # diffusers caches its accelerator lookup, and Modal's memory snapshot runs the imports on a CPU-only
@@ -98,6 +107,7 @@ class LTX23Worker(AdapterSlots):
                     # The transformer and the Gemma text encoder in fp8; the other mode's transformer is quantized
                     # the same way when it's parked beside it (adapters.WeightPark).
                     fp8.convert_parts(modules_of(pipe.components), label="ltx23 fp8")
+                    self.fp8_written = fp8.save_copies(pipe.components, self.fp8_sources)  # for the next cold start
             else:
                 print(f"ltx23: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room for a "
                       "clip; offloading", flush=True)

@@ -175,6 +175,13 @@ class H3ImageWorker(AdapterSlots):
         status("Loading MiniMax H3 Image")
         manager = ComponentsManager()
         self.pipe = ModularPipeline.from_pretrained(str(root), components_manager=manager)
+        # The transformer and the text encoder (H3's, shared with H3's own copy) from their fp8 copies when they're
+        # there: half the read. load_components then loads only the parts still missing.
+        sub = getattr(self.pipe._component_specs.get("transformer"), "subfolder", None) or "transformer"
+        self.fp8_sources = {"transformer": root / sub, "text_encoder": text_root / "text_encoder"}
+        if fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_H3_IMAGE"):
+            status("Loading MiniMax H3 Image (fp8)")
+            self.pipe.update_components(**fp8.load_copies(self.fp8_sources))
         # The index names Hub repos; load every part from the volume instead (the text encoder from H3's folder).
         self.pipe.load_components(dtype=torch.bfloat16, pretrained_model_name_or_path={
             "text_encoder": str(text_root), "default": str(root)})
@@ -192,6 +199,7 @@ class H3ImageWorker(AdapterSlots):
                 module.to("cuda")
             if fp8.wanted("AISTUDIO_PRECISION_H3_IMAGE"):
                 fp8.convert_parts(parts, label="h3-image fp8")  # transformer and text encoder: half their memory
+                self.fp8_written = fp8.save_copies(parts, self.fp8_sources)  # for the next cold start
         else:  # an opt-in smaller fallback GPU: they take turns (slow; see the module docstring)
             print(f"h3-image: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room to run; "
                   "offloading", flush=True)

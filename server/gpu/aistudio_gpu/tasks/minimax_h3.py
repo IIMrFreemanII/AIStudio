@@ -195,6 +195,12 @@ class H3Worker(AdapterSlots):
         # All the blocks (each call picks t2va / fl2va / ref2va from its inputs); only this partition's weights. The
         # index names the Hub repo for every component, so they load from the volume instead.
         self.pipe = ModularPipeline.from_pretrained(str(root), components_manager=manager)
+        # This partition's transformer and the conditioner from their fp8 copies when they're there (half the read);
+        # load_components then loads only the parts still missing.
+        self.fp8_sources = {self.components[0]: root / self.components[0], "text_encoder": root / "text_encoder"}
+        if fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_H3"):
+            status("Loading MiniMax H3 (fp8)")
+            self.pipe.update_components(**fp8.load_copies(self.fp8_sources))
         self.pipe.load_components(workflow=self.workflow, dtype=torch.bfloat16, pretrained_model_name_or_path=str(root))
         self.manager = manager
         self._load_turbo(status)
@@ -228,8 +234,11 @@ class H3Worker(AdapterSlots):
             module.to("cuda")
         self.resident = True
         if fp8.wanted("AISTUDIO_PRECISION_H3"):
-            # The transformer and the conditioner in fp8 (scale per channel), on the GPU: half their memory.
+            # The transformer and the conditioner in fp8 (scale per channel), on the GPU: half their memory; stored
+            # as fp8 copies the first time, for the next cold start.
             fp8.convert_parts(self._modules(), label="h3 fp8")
+            if self.variant in (None, "base") and self.layout == "full":
+                self.fp8_written = fp8.save_copies(self._modules(), getattr(self, "fp8_sources", {}))
 
     def _load_turbo(self, status) -> None:
         """LightX2V's Turbo LoRA for this partition, as the adapter "turbo" (the loaded transformer takes it, also a

@@ -243,6 +243,13 @@ def run_job(state: WorkerState, events, cancels, job_id: str, task_id: str, para
     sink = QueueSink(events, cancels, job_id)
     load = state.load_seconds if state.first_job else 0.0
     state.first_job = False
+    if getattr(state.worker, "fp8_written", False) and models:
+        # The cold start stored fp8 copies of its models (tasks/fp8.py): make them visible to the next containers.
+        state.worker.fp8_written = False
+        try:
+            models[0].commit()
+        except Exception as e:  # noqa: BLE001 — the copies are a speed-up; the job runs either way
+            print(f"fp8: volume commit failed ({e})", flush=True)
     with tempfile.TemporaryDirectory() as tmp:
         paths = {}
         try:
