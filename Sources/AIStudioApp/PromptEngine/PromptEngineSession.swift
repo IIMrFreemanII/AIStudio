@@ -143,16 +143,24 @@ final class PromptEngineSession: PromptToolHost {
 
 extension AppModel {
     static let promptEngineLLMKey = "promptEngineLLM"
+    static let promptEngineLLMUpgradedKey = "promptEngineLLMUpgraded"  // a saved bf16 pick was moved to NVFP4 once
 
-    /// The engine's LLM: the one picked last (if still installed and with vision), else the abliterated Qwen3.8 if
-    /// installed, else the first installed vision model.
+    /// The engine's LLM: the one picked last (if still installed and with vision; a pick of the bf16 Qwen3.8-27B
+    /// moves once to its NVFP4 copy), else that copy, else the bf16 model, else the first installed vision model
+    /// (PromptEngineLLM).
     var defaultPromptEngineLLM: LLMKey? {
         let vision = llm.listings.flatMap { server, listing in
             listing.models.filter { $0.installed == true && $0.vision == true }.map { LLMKey(serverID: server, modelID: $0.id) }
         }
-        if let s = UserDefaults.standard.string(forKey: Self.promptEngineLLMKey),
-           let k = vision.first(where: { "\($0.serverID)/\($0.modelID)" == s }) { return k }
-        return vision.first { $0.modelID == "qwen3.8-27b-abliterated" } ?? vision.first
+        let keys = vision.map { "\($0.serverID)/\($0.modelID)" }
+        let d = UserDefaults.standard
+        let (pick, save) = PromptEngineLLM.pick(installed: keys, saved: d.string(forKey: Self.promptEngineLLMKey),
+                                               upgraded: d.bool(forKey: Self.promptEngineLLMUpgradedKey))
+        if let save, persistSettings {
+            d.set(save, forKey: Self.promptEngineLLMKey)
+            d.set(true, forKey: Self.promptEngineLLMUpgradedKey)
+        }
+        return pick.flatMap { p in vision.first { "\($0.serverID)/\($0.modelID)" == p } }
     }
 
     func setPromptEngineLLM(_ key: LLMKey) {

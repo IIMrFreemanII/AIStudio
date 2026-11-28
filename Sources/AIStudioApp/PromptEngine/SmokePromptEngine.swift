@@ -72,7 +72,7 @@ extension SmokeTest {
         func say(_ s: String) { print("[smoke-prompt-engine] \(s)"); fflush(stdout) }
         guard let server = await savedGPUServer(model) else { say("no saved GPU server with a token"); return false }
         await model.llm.refresh(server)
-        let wanted = argument("--engine-llm") ?? "qwen3.8-27b-abliterated"
+        let wanted = argument("--engine-llm") ?? "qwen3.8-27b-abliterated-nvfp4"
         let key = LLMKey(serverID: server, modelID: wanted)
         guard model.llm.model(key)?.installed == true else { say("\(wanted) isn't installed"); return false }
         let fixed = argument("--engine-model").flatMap(PromptModel.init(rawValue:))
@@ -134,7 +134,7 @@ extension SmokeTest {
         func say(_ s: String) { print("[engine-judge] \(s)"); fflush(stdout) }
         guard let server = await savedGPUServer(model) else { say("no saved GPU server with a token"); return false }
         await model.llm.refresh(server)
-        let id = argument("--engine-llm") ?? "qwen3.8-27b-abliterated"
+        let id = argument("--engine-llm") ?? "qwen3.8-27b-abliterated-nvfp4"
         guard let client = model.llm.client(server), model.llm.model(LLMKey(serverID: server, modelID: id))?.installed == true
         else { say("\(id) isn't installed"); return false }
         let dir = URL(fileURLWithPath: folder)

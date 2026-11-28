@@ -86,3 +86,29 @@ import Testing
         #expect(try! JSONDecoder().decode(EngineResult.self, from: data) == r)
     }
 }
+
+@Suite struct PromptEngineLLMTests {
+    let both = ["modal/qwen3-vl-8b-instruct", "modal/qwen3.8-27b-abliterated", "modal/qwen3.8-27b-abliterated-nvfp4"]
+
+    @Test func theNVFP4CopyIsTheDefault() {
+        #expect(PromptEngineLLM.pick(installed: both, saved: nil, upgraded: false) ==
+                ("modal/qwen3.8-27b-abliterated-nvfp4", nil))
+        #expect(PromptEngineLLM.pick(installed: ["modal/qwen3-vl-8b-instruct", "modal/qwen3.8-27b-abliterated"],
+                                     saved: nil, upgraded: false) == ("modal/qwen3.8-27b-abliterated", nil))
+        #expect(PromptEngineLLM.pick(installed: ["modal/qwen3-vl-8b-instruct"], saved: nil, upgraded: false) ==
+                ("modal/qwen3-vl-8b-instruct", nil))
+    }
+
+    @Test func aSavedBF16PickMovesToTheCopyOnce() {
+        #expect(PromptEngineLLM.pick(installed: both, saved: "modal/qwen3.8-27b-abliterated", upgraded: false) ==
+                ("modal/qwen3.8-27b-abliterated-nvfp4", "modal/qwen3.8-27b-abliterated-nvfp4"))
+        // picked again after the move: it stays
+        #expect(PromptEngineLLM.pick(installed: both, saved: "modal/qwen3.8-27b-abliterated", upgraded: true) ==
+                ("modal/qwen3.8-27b-abliterated", nil))
+        // no copy on that server: unchanged
+        #expect(PromptEngineLLM.pick(installed: ["modal/qwen3.8-27b-abliterated"], saved: "modal/qwen3.8-27b-abliterated",
+                                     upgraded: false) == ("modal/qwen3.8-27b-abliterated", nil))
+        #expect(PromptEngineLLM.pick(installed: both, saved: "modal/qwen3-vl-8b-instruct", upgraded: false) ==
+                ("modal/qwen3-vl-8b-instruct", nil))
+    }
+}
