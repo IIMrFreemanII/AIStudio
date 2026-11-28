@@ -9,6 +9,7 @@ worker hasn't started yet is cancelled with ``FunctionCall.cancel()`` instead.
 from __future__ import annotations
 
 import asyncio
+import os
 import queue as queue_mod
 import shutil
 import tempfile
@@ -231,6 +232,22 @@ def fetch_upload(uploads: tuple | None, file: str) -> Path:
     return path
 
 
+def _profiled(job, label: str):
+    """Runs ``job`` under torch's profiler and prints the operations that took the most GPU and CPU time
+    (``AISTUDIO_PROFILE=1``: every job but a container's first, which pays one-time warm-up)."""
+    import torch
+    from torch.profiler import ProfilerActivity, profile
+
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        out = job()
+        torch.cuda.synchronize()
+    table = prof.key_averages()
+    for key in ("cuda_time_total", "cpu_time_total"):
+        print(f"profile {label}: by {key}\n" + table.table(sort_by=key, row_limit=25, max_name_column_width=60),
+              flush=True)
+    return out
+
+
 def run_job(state: WorkerState, events, cancels, job_id: str, task_id: str, params: dict,
             inputs: dict[str, tuple[str, bytes | None]], uploads: tuple | None = None,
             models: tuple | None = None) -> dict:
@@ -242,6 +259,7 @@ def run_job(state: WorkerState, events, cancels, job_id: str, task_id: str, para
     _see_new_variant(spec, params, models)
     sink = QueueSink(events, cancels, job_id)
     load = state.load_seconds if state.first_job else 0.0
+    profile = not state.first_job and os.environ.get("AISTUDIO_PROFILE") == "1"
     state.first_job = False
     if getattr(state.worker, "fp8_written", False) and models:
         # The cold start stored fp8 copies of its models (tasks/fp8.py): make them visible to the next containers.
@@ -265,7 +283,10 @@ def run_job(state: WorkerState, events, cancels, job_id: str, task_id: str, para
             return {"error": describe_error(e)}
         start = time.monotonic()
         try:
-            out = state.worker.run(spec, params, paths, sink, Path(tmp))
+            if profile:
+                out = _profiled(lambda: state.worker.run(spec, params, paths, sink, Path(tmp)), task_id)
+            else:
+                out = state.worker.run(spec, params, paths, sink, Path(tmp))
         except JobCancelled:
             return {"cancelled": True}
         except Exception as e:  # noqa: BLE001

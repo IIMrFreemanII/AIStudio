@@ -3,8 +3,9 @@ fp4 e2m1 values (two per byte), one e4m3 scale per 16 values along the input, an
 
 Turned on per family with ``AISTUDIO_PRECISION_<FAMILY>=fp4`` or ``fp4w`` (``fp8.precision``); only the transformers
 change, text encoders stay fp8. Two ways to multiply:
-- ``fp4``: each input row is quantized to NVFP4 the same way and multiplied on the fp4 tensor cores
-  (``torch._scaled_mm`` with block scales; a B200, torch 2.8 or newer). Falls back to ``fp4w`` if that fails.
+- ``fp4``: each input row is quantized to NVFP4 the same way (one Triton kernel, ``quantize_rows_fast``) and
+  multiplied on the fp4 tensor cores with the scales and bias applied inside (torch's ``scaled_mm``; a B200).
+  Falls back to ``fp4w`` if that fails.
 - ``fp4w``: the weight turned back into bf16 for each multiply (weight memory a quarter of bf16, bf16 inputs).
 
 Not yet: fp4 copies on disk (fp4 parts load from the bf16 files and are converted at load), and LoRA mode switches or
@@ -19,6 +20,9 @@ BLOCK = 16
 _linear = None
 _quantize = None
 _tensor_cores = True  # until an fp4 matmul fails
+_two_level = True  # scales and bias inside the matmul (torch's scaled_mm), until that fails
+_RECIPE = _SWIZZLE = None
+_V2 = None  # the same as ints, for torch._scaled_mm_v2 (F.scaled_mm minus its Python argument handling)
 
 
 def codes(x):
@@ -48,9 +52,11 @@ def quantize(x):
 
     m, k = x.shape
     xf = x.float()
-    ts = (xf.abs().amax() / (F8_MAX * F4_MAX)).clamp(min=1e-12)
+    # Multiplying by the reciprocals, not dividing by the constants: torch divides by a constant that way on the GPU
+    # but not on the CPU, and the Triton kernel does the same, so every device gives the same bits.
+    ts = (xf.abs().amax() * (1.0 / (F8_MAX * F4_MAX))).clamp(min=1e-12)
     b = xf.view(m, k // BLOCK, BLOCK)
-    bs = (b.abs().amax(dim=-1) / F4_MAX / ts).clamp(max=F8_MAX).to(torch.float8_e4m3fn)
+    bs = (b.abs().amax(dim=-1) * (1.0 / F4_MAX) / ts).clamp(max=F8_MAX).to(torch.float8_e4m3fn)
     q = codes((b / (bs.float()[..., None] * ts)).clamp(-F4_MAX, F4_MAX)).view(m, k)
     return ((q[:, 1::2] << 4) | q[:, ::2]).view(torch.float4_e2m1fn_x2), bs, ts
 
@@ -66,15 +72,85 @@ def dequantize(packed, bs, ts, dtype):
     return (grid[q.long()].view(m, k // BLOCK, BLOCK) * bs.float()[..., None] * ts).view(m, k).to(dtype)
 
 
+_kernel = None
+
+
+def _triton_kernel():
+    """One pass over the input: each 16-value block's scale, the fp4 codes packed two per byte, and the scale written
+    straight into its place in ``blocked``'s tile layout. Bit for bit what ``quantize`` + ``blocked`` give (no clamp
+    is needed: codes saturate at 6, and a zero block's 0/0 codes to 0 either way)."""
+    global _kernel
+    if _kernel is None:
+        import triton
+        import triton.language as tl
+
+        @triton.jit
+        def nvfp4_rows(x_ptr, q_ptr, s_ptr, amax_ptr, ts_ptr, M, K, stride_xm, col_tiles, ROWS_P, KB_P,
+                       INV_TS: tl.constexpr, INV_F4: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_KB: tl.constexpr):
+            rows = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+            kb = tl.program_id(1) * BLOCK_KB + tl.arange(0, BLOCK_KB)
+            cols = tl.program_id(1) * BLOCK_KB * 16 + tl.arange(0, BLOCK_KB * 16)
+            ok_rows = rows < M
+            x = tl.load(x_ptr + rows[:, None] * stride_xm + cols[None, :],
+                        mask=ok_rows[:, None] & (cols[None, :] < K), other=0.0).to(tl.float32)
+            # The tensor scale from the input's largest |value|; the first program stores it for the matmul.
+            ts = tl.maximum(tl.load(amax_ptr).to(tl.float32) * INV_TS, 1e-12)
+            if (tl.program_id(0) == 0) & (tl.program_id(1) == 0):
+                tl.store(ts_ptr, ts)
+            xb = tl.reshape(x, (BLOCK_M, BLOCK_KB, 16))
+            amax = tl.max(tl.abs(xb), axis=2)
+            bs = tl.minimum(tl.math.div_rn(amax * INV_F4, ts), 448.0).to(tl.float8e4nv)
+            v = tl.math.div_rn(xb, (bs.to(tl.float32) * ts)[:, :, None])
+            a = tl.abs(v)
+            c = ((a > 0.25).to(tl.int32) + (a >= 0.75).to(tl.int32) + (a > 1.25).to(tl.int32)
+                 + (a >= 1.75).to(tl.int32) + (a > 2.5).to(tl.int32) + (a >= 3.5).to(tl.int32)
+                 + (a > 5.0).to(tl.int32))
+            c = c | tl.where(v < 0, 8, 0)
+            lo, hi = tl.split(tl.reshape(c, (BLOCK_M, BLOCK_KB * 8, 2)))
+            packed = (lo | (hi << 4)).to(tl.uint8)
+            qcols = tl.program_id(1) * BLOCK_KB * 8 + tl.arange(0, BLOCK_KB * 8)
+            tl.store(q_ptr + rows[:, None] * (K // 2) + qcols[None, :], packed,
+                     mask=ok_rows[:, None] & (qcols[None, :] < K // 2))
+            r = rows[:, None]
+            k = kb[None, :]
+            offset = ((r // 128) * col_tiles + k // 4) * 512 + (r % 32) * 16 + ((r % 128) // 32) * 4 + k % 4
+            # Padded rows and columns of the tile layout load as zeros, so their scales are written as zeros too.
+            tl.store(s_ptr + offset, bs.to(tl.uint8, bitcast=True), mask=(r < ROWS_P) & (k < KB_P))
+
+        _kernel = nvfp4_rows
+    return _kernel
+
+
+def quantize_rows_fast(a, block_m: int = 32, block_kb: int = 8):
+    """``quantize`` + ``blocked`` for a contiguous (M, K) CUDA tensor in one Triton kernel (plus one reduction for
+    the tensor scale, kept on the GPU): (packed fp4, scales in tile layout, tensor scale)."""
+    import torch
+
+    m, k = a.shape
+    # Two launches in all: the largest |value| (exact in bf16), then the kernel, which derives the tensor scale from
+    # it and fills the tile layout's padding (short layers' launch overhead is most of their cost).
+    amax = torch.linalg.vector_norm(a, ord=float("inf"))
+    ts = torch.empty(1, dtype=torch.float32, device=a.device)
+    q = torch.empty(m, k // 2, dtype=torch.uint8, device=a.device)
+    kb = k // BLOCK
+    rows, col_tiles = -(-m // 128) * 128, -(-kb // 4)
+    s = torch.empty(rows * col_tiles * 4, dtype=torch.uint8, device=a.device)
+    grid = (rows // block_m, -(-col_tiles * 4 // block_kb))
+    _triton_kernel()[grid](a, q, s, amax, ts, m, k, a.stride(0), col_tiles, rows, col_tiles * 4,
+                           INV_TS=1.0 / (F8_MAX * F4_MAX), INV_F4=1.0 / F4_MAX, BLOCK_M=block_m, BLOCK_KB=block_kb)
+    return q.view(torch.float4_e2m1fn_x2), s.view(torch.float8_e4m3fn), ts
+
+
 def _input_quantizer():
-    """``quantize`` plus the tile layout, compiled into few kernels on first use (else the plain steps)."""
+    """The input quantizer ``FP4Linear`` uses: the Triton kernel where it works, else ``quantize`` + ``blocked``
+    compiled (``AISTUDIO_FP8_COMPILE=0``: the plain steps). ``AISTUDIO_FP4_TRITON=0`` skips the kernel."""
     global _quantize
     if _quantize is None:
         import torch
 
         def plain(a):
             q, bs, ts = quantize(a)
-            return q, blocked(bs), ts
+            return q, blocked(bs).view(torch.float8_e4m3fn), ts.reshape(1)
 
         _quantize = plain
         if os.environ.get("AISTUDIO_FP8_COMPILE", "1") != "0":
@@ -82,6 +158,14 @@ def _input_quantizer():
                 _quantize = torch.compile(plain, dynamic=True)
             except Exception as e:  # noqa: BLE001
                 print(f"fp4: compiling the input quantization failed ({e}); unfused", flush=True)
+        if os.environ.get("AISTUDIO_FP4_TRITON", "1") != "0" and torch.cuda.is_available():
+            fallback = _quantize
+            try:
+                quantize_rows_fast(torch.ones(128, 64, dtype=torch.bfloat16, device="cuda"))
+                _quantize = quantize_rows_fast
+            except Exception as e:  # noqa: BLE001 (no Triton, an old GPU, …)
+                print(f"fp4: Triton input kernel unavailable ({e}); compiled steps instead", flush=True)
+                _quantize = fallback
     return _quantize
 
 
@@ -92,6 +176,16 @@ def linear_class():
     import torch
     import torch.nn.functional as F
     from torch import nn
+
+    global _RECIPE, _SWIZZLE, _two_level
+    try:  # NVFP4 as torch's scaled_mm names it: e4m3 scales per 16 values in tile layout, then one per tensor
+        _RECIPE = [F.ScalingType.BlockWise1x16, F.ScalingType.TensorWise]
+        _SWIZZLE = [F.SwizzleType.SWIZZLE_32_4_4, F.SwizzleType.NO_SWIZZLE]
+        global _V2
+        if hasattr(torch, "_scaled_mm_v2") and hasattr(F, "_enum_list_as_int_list"):
+            _V2 = (F._enum_list_as_int_list(_RECIPE), F._enum_list_as_int_list(_SWIZZLE))
+    except AttributeError:  # an older torch: scale after the matmul
+        _two_level = False
 
     class FP4Linear(nn.Linear):
         """``weight`` packed fp4 (out, in/2); ``w_bs`` e4m3 block scales (out, in/16), ``w_blocked`` the same in tile
@@ -116,9 +210,28 @@ def linear_class():
             if not a.is_contiguous():
                 a = a.contiguous()
             qa, bsa, tsa = _input_quantizer()(a)
-            y = torch._scaled_mm(qa, self.weight.t(), scale_a=bsa, scale_b=self.w_blocked, out_dtype=x.dtype)
-            y = y * (tsa * self.w_ts).to(y.dtype)
-            if self.bias is not None:
+            global _two_level
+            bias = self.bias if self.bias is not None and self.bias.dtype == x.dtype else None
+            if _two_level:
+                # Block and tensor scales and the bias applied inside the matmul: two passes over the output fewer
+                # (B200, LTX's layers at 3,840 tokens: 0.66 ms against 1.11 with them applied after).
+                try:
+                    if _V2 is not None:
+                        y = torch._scaled_mm_v2(qa, self.weight.t(), [bsa, tsa], _V2[0], _V2[1],
+                                                [self.w_blocked, self.w_ts], _V2[0], _V2[1], bias, x.dtype, [], False)
+                    else:
+                        y = F.scaled_mm(qa, self.weight.t(), scale_a=[bsa, tsa], scale_recipe_a=_RECIPE,
+                                        scale_b=[self.w_blocked, self.w_ts], scale_recipe_b=_RECIPE,
+                                        swizzle_a=_SWIZZLE, swizzle_b=_SWIZZLE, bias=bias, output_dtype=x.dtype)
+                except (RuntimeError, TypeError, AttributeError) as e:
+                    print(f"fp4: two-level scaled matmul unavailable ({e}); scaling after it", flush=True)
+                    _two_level = False
+            if not _two_level:
+                y = torch._scaled_mm(qa, self.weight.t(), scale_a=bsa, scale_b=self.w_blocked, out_dtype=x.dtype)
+                y = y * (tsa * self.w_ts).to(y.dtype)
+                if bias is not None:
+                    y = y + bias
+            if self.bias is not None and bias is None:
                 y = y + self.bias.to(y.dtype)
             return y.reshape(*shape[:-1], y.shape[-1])
 
@@ -147,7 +260,7 @@ def convert(model, keep: tuple[str, ...], device: str = "cuda", mode: str = "fp4
         m.weight = nn.Parameter(q, requires_grad=False)
         m.w_bs = nn.Parameter(bs, requires_grad=False)
         m.w_blocked = nn.Parameter(blocked(bs), requires_grad=False)
-        m.w_ts = nn.Parameter(ts.reshape(()), requires_grad=False)
+        m.w_ts = nn.Parameter(ts.reshape(1), requires_grad=False)
         if m.bias is not None:
             m.bias.data = m.bias.data.to(device)
         m.__class__ = cls
