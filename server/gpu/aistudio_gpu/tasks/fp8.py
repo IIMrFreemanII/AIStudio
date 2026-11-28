@@ -31,6 +31,7 @@ MIN_FEATURES = 256  # smaller layers aren't worth it
 
 _linear = None
 _capability_ok = None
+_quantize = None  # the row quantizer FP8Linear uses: compiled (fused) on first use, else the plain one
 
 
 def wanted(env_name: str) -> bool:
@@ -112,6 +113,29 @@ def linear_class():
     import torch.nn.functional as F
     from torch import nn
 
+    def quantize_rows(a):
+        """Each row of ``a`` scaled into fp8: (fp8 rows, float32 scale per row, as applied)."""
+        sa = (a.abs().amax(dim=1, keepdim=True).float() / FP8_MAX).clamp(min=1e-12)
+        qa = (a / sa.to(a.dtype)).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
+        return qa, sa.to(a.dtype).float()
+
+    def quantize(a):
+        # Unfused, these five element-wise steps cost more than the fp8 matmul saves at LTX's and H3's sizes (B200,
+        # torch 2.15: 1.11 ms against bf16's 0.79 for LTX's layers at 3,840 tokens); one compiled kernel makes it
+        # 0.70. ``AISTUDIO_FP8_COMPILE=0`` keeps the plain steps; a compile that fails falls back to them.
+        global _quantize
+        if _quantize is None:
+            _quantize = quantize_rows
+            if os.environ.get("AISTUDIO_FP8_COMPILE", "1") != "0":
+                compiled = torch.compile(quantize_rows, dynamic=True)
+                try:
+                    out = compiled(a)
+                    _quantize = compiled
+                    return out
+                except Exception as e:  # noqa: BLE001 (no Triton, an old compiler, …)
+                    print(f"fp8: compiling the input quantization failed ({e}); unfused", flush=True)
+        return _quantize(a)
+
     class FP8Linear(nn.Linear):
         def forward(self, x):
             global MATMUL
@@ -131,9 +155,7 @@ def linear_class():
             a = x.reshape(-1, shape[-1])
             if not a.is_contiguous():
                 a = a.contiguous()
-            sa = (a.abs().amax(dim=1, keepdim=True).float() / FP8_MAX).clamp(min=1e-12)
-            qa = (a / sa.to(a.dtype)).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn)
-            sa = sa.to(a.dtype).float()  # the scale exactly as applied above
+            qa, sa = quantize(a)
             bias = self.bias if self.bias is not None and self.bias.dtype == x.dtype else None
             y = torch._scaled_mm(qa, self.weight.t(), scale_a=sa, scale_b=self.w_scale[None, :], bias=bias,
                                  out_dtype=x.dtype)
@@ -141,6 +163,8 @@ def linear_class():
                 y = y + self.bias.to(y.dtype)
             return y.reshape(*shape[:-1], y.shape[-1])
 
+    FP8Linear.quantize = staticmethod(quantize)
+    FP8Linear.quantize_rows = staticmethod(quantize_rows)
     _linear = FP8Linear
     return _linear
 
