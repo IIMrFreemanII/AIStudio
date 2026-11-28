@@ -236,7 +236,7 @@ class H3Worker(AdapterSlots):
         if fp8.wanted("AISTUDIO_PRECISION_H3"):
             # The transformer and the conditioner in fp8 (scale per channel), on the GPU: half their memory; stored
             # as fp8 copies the first time, for the next cold start.
-            fp8.convert_parts(self._modules(), label="h3 fp8")
+            fp8.convert_parts(self._modules(), label="h3 fp8", mode=fp8.precision("AISTUDIO_PRECISION_H3"))
             if self.variant in (None, "base") and self.layout == "full":
                 self.fp8_written = fp8.save_copies(self._modules(), getattr(self, "fp8_sources", {}))
 
@@ -305,7 +305,8 @@ class H3Worker(AdapterSlots):
         if self.resident:
             getattr(self.pipe, component).to("cuda")
             if fp8.wanted("AISTUDIO_PRECISION_H3"):
-                fp8.convert_parts({component: getattr(self.pipe, component)}, label="h3 fp8")
+                fp8.convert_parts({component: getattr(self.pipe, component)}, label="h3 fp8",
+                                  mode=fp8.precision("AISTUDIO_PRECISION_H3"))
         self._load_turbo(lambda _: None)
         if not self.resident:
             self._enable_offload()

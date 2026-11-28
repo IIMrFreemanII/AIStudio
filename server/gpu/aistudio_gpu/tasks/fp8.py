@@ -34,10 +34,16 @@ _capability_ok = None
 _quantize = None  # the row quantizer FP8Linear uses: compiled (fused) on first use, else the plain one
 
 
+def precision(env_name: str) -> str:
+    """A family's ``AISTUDIO_PRECISION_*`` (H3, H3_IMAGE, LTX, LONGCAT): ``fp8`` (the default), ``bf16``, or the
+    experimental ``fp4`` / ``fp4w`` (``tasks/fp4.py``: transformers in fp4, text encoders in fp8)."""
+    value = os.environ.get(env_name, "fp8").strip().lower()
+    return value if value in ("fp8", "bf16", "fp4", "fp4w") else "fp8"
+
+
 def wanted(env_name: str) -> bool:
-    """Whether a family runs in fp8: its ``AISTUDIO_PRECISION_*`` (H3, H3_IMAGE, LTX, LONGCAT) is ``fp8`` (the
-    default) rather than ``bf16``."""
-    return os.environ.get(env_name, "fp8").strip().lower() == "fp8"
+    """Whether a family's weights are quantized at all (fp8 or fp4) rather than kept bf16."""
+    return precision(env_name) != "bf16"
 
 
 def is_text_encoder(name: str) -> bool:
@@ -45,9 +51,11 @@ def is_text_encoder(name: str) -> bool:
 
 
 def convert_parts(parts: dict, device: str = "cuda", skip: tuple[str, ...] = ("vae", "vocoder", "audio"),
-                  label: str = "") -> dict:
+                  label: str = "", mode: str = "fp8") -> dict:
     """Converts a pipeline's transformers and text encoders (name → module) in place, the text encoders with
-    ``TEXT_KEEP``; VAEs, vocoders and audio encoders stay as they are. Logs and returns each part's sizes."""
+    ``TEXT_KEEP``; VAEs, vocoders and audio encoders stay as they are. ``mode`` ``fp4``/``fp4w`` (``precision``)
+    turns the transformers into fp4 instead, text encoders still fp8. Logs and returns each part's sizes."""
+    from . import fp4
     import time
 
     start = time.monotonic()
@@ -55,7 +63,10 @@ def convert_parts(parts: dict, device: str = "cuda", skip: tuple[str, ...] = ("v
     for name, module in parts.items():
         if module is None or any(k in name.lower() for k in skip) or not hasattr(module, "named_modules"):
             continue
-        out[name] = convert(module, TEXT_KEEP if is_text_encoder(name) else TRANSFORMER_KEEP, device)
+        if mode in ("fp4", "fp4w") and not is_text_encoder(name):
+            out[name] = fp4.convert(module, TRANSFORMER_KEEP, device, mode)
+        else:
+            out[name] = convert(module, TEXT_KEEP if is_text_encoder(name) else TRANSFORMER_KEEP, device)
     print(f"{label or 'fp8'}: {out} in {time.monotonic() - start:.1f} s", flush=True)
     return out
 
@@ -272,6 +283,10 @@ def save_copy(module, src, text_encoder: bool = False) -> bool:
     import torch
     from safetensors.torch import save_file
 
+    from . import fp4
+
+    if fp4.has_fp4(module):  # no fp4 copies yet: fp4 parts convert from the bf16 files at load
+        return False
     if copy_ready(src, text_encoder):
         return False
     start = time.monotonic()
@@ -404,7 +419,7 @@ def copies_usable(sources: dict, env_name: str, margin_gib: float = 40) -> bool:
     and a CUDA GPU with room for them beside ``margin_gib`` (else the bf16 path with its own offload fallback)."""
     import torch
 
-    if not wanted(env_name) or not torch.cuda.is_available():
+    if precision(env_name) != "fp8" or not torch.cuda.is_available():
         return False
     if not all(copy_ready(src, is_text_encoder(name)) for name, src in sources.items()):
         return False
