@@ -73,22 +73,21 @@ class LTX23Worker(AdapterSlots):
         self.models_root = models_root
         extra = {}
         distilled = models_root / DISTILLED_DIR
-        if (distilled / ".complete").exists():  # the default mode: start with the distilled transformer
-            status("Loading LTX-2.3 (distilled)")
-            extra["transformer"] = LTX2VideoTransformer3DModel.from_pretrained(distilled / "transformer",
-                                                                               torch_dtype=dtype)
-            self.has_fast = True
-        else:
-            status("Loading LTX-2.3")
+        self.has_fast = (distilled / ".complete").exists()  # the default mode: start with the distilled transformer
         # The starting transformer, the Gemma text encoder and the connectors from their fp8 copies when they're
-        # there: half the read.
+        # there: half the read. Checked first, so the bf16 transformer isn't read only to be dropped.
         root = models_root / "ltx23"
-        self.fp8_sources = {"transformer": (distilled if "transformer" in extra else root) / "transformer",
+        self.fp8_sources = {"transformer": (distilled if self.has_fast else root) / "transformer",
                             "text_encoder": root / "text_encoder", "connectors": root / "connectors"}
         if device == "cuda" and fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_LTX"):
             status("Loading LTX-2.3 (fp8)")
-            extra.pop("transformer", None)
             extra.update(fp8.load_copies(self.fp8_sources))
+        elif self.has_fast:
+            status("Loading LTX-2.3 (distilled)")
+            extra["transformer"] = LTX2VideoTransformer3DModel.from_pretrained(distilled / "transformer",
+                                                                               torch_dtype=dtype)
+        else:
+            status("Loading LTX-2.3")
         pipe = LTX2Pipeline.from_pretrained(root, torch_dtype=dtype, **extra)
         self.i2v = LTX2ImageToVideoPipeline(**pipe.components)
         if device == "cuda":
