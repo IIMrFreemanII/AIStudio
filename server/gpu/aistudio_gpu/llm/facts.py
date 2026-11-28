@@ -548,10 +548,14 @@ def facts_from_config(ref: ModelRef, meta: dict, config: dict, weights: dict[str
         bits = qc.get("bits") or qc.get("weight_bits")
         if bits is None and method == "fp8":
             bits = 8
+        fp4 = False
         if bits is None and method == "compressed-tensors":
-            for g in (qc.get("config_groups") or {}).values():
-                bits = (g.get("weights") or {}).get("num_bits") or bits
-        quant = {"method": method, "bits": int(bits) if bits else None}
+            groups = [g.get("weights") or {} for g in (qc.get("config_groups") or {}).values()]
+            widths = [int(w["num_bits"]) for w in groups if w.get("num_bits")]
+            bits = min(widths) if widths else None  # a mixed recipe (fp8 + NVFP4 groups): its narrowest
+            fp4 = any(w.get("num_bits") == 4 and w.get("type") == "float" and w.get("group_size") == 16
+                      for w in groups)
+        quant = {"method": method, "bits": int(bits) if bits else None, **({"format": "nvfp4"} if fp4 else {})}
     dtype = str(merged.get("torch_dtype") or merged.get("dtype") or "bfloat16")
     native = int(merged.get("max_position_embeddings") or merged.get("max_sequence_length")
                  or merged.get("seq_length") or 4096)
@@ -565,6 +569,8 @@ def facts_from_config(ref: ModelRef, meta: dict, config: dict, weights: dict[str
         notes.append("FP8 weights with FP4 experts: needs H100, H200 or B200")
     elif quant.get("method") == "fp8":
         notes.append("FP8 weights: fastest on L40S, H100, H200 and B200 (A100 runs them slower)")
+    elif quant.get("format") == "nvfp4":
+        notes.append("NVFP4 weights: fp4 maths on a B200; other GPUs run them weight-only (bf16 activations)")
     return Facts(
         repo=ref.repo, revision=ref.revision, sha=meta.get("sha"), architecture=arch,
         model_type=model_type,
