@@ -199,8 +199,9 @@ class H3Worker(AdapterSlots):
         # load_components then loads only the parts still missing.
         self.fp8_sources = {self.components[0]: root / self.components[0], "text_encoder": root / "text_encoder"}
         if fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_H3"):
-            status("Loading MiniMax H3 (fp8)")
-            self.pipe.update_components(**fp8.load_copies(self.fp8_sources))
+            status(f"Loading MiniMax H3 ({fp8.precision('AISTUDIO_PRECISION_H3')})")
+            self.pipe.update_components(**fp8.load_copies(self.fp8_sources,
+                                                          mode=fp8.precision("AISTUDIO_PRECISION_H3")))
         self.pipe.load_components(workflow=self.workflow, dtype=torch.bfloat16, pretrained_model_name_or_path=str(root))
         self.manager = manager
         self._load_turbo(status)
