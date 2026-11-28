@@ -92,3 +92,30 @@ def test_modes_cannot_be_swapped_into_fp4_layers(tmp_path):
     fp4.convert(m, fp8.TRANSFORMER_KEEP, "cpu", "fp4w")
     with pytest.raises(NotImplementedError, match="fp4"):
         adapters._copy_weights(m, tmp_path, "full")
+
+
+cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="the Triton kernel and fp4 matmuls need a CUDA GPU")
+
+
+@cuda
+@pytest.mark.parametrize("m,k", [(3840, 4096), (130, 2048), (1, 4096), (257, 16384), (33, 96)])
+def test_triton_kernel_matches_the_reference_bit_for_bit(m, k):
+    torch.manual_seed(0)
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    a[:, : k // 50] *= 40
+    a[: max(1, m // 7), 16:32] = 0
+    q1, bs, t1 = fp4.quantize(a)
+    q2, s2, t2 = fp4.quantize_rows_fast(a)
+    assert torch.equal(q1.view(torch.uint8), q2.view(torch.uint8)) and torch.equal(t1.reshape(1), t2)
+    assert torch.equal(fp4.blocked(bs).view(torch.uint8), s2.view(torch.uint8))
+
+
+@cuda
+def test_fp4_layer_on_the_gpu_is_close_to_bf16():
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(4096, 4096, device="cuda", dtype=torch.bfloat16)
+    x = torch.randn(2, 640, 4096, device="cuda", dtype=torch.bfloat16)
+    ref = lin(x).float()
+    fp4.convert(torch.nn.Sequential(lin), (), "cuda", "fp4")
+    err = ((lin(x).float() - ref).norm() / ref.norm()).item()
+    assert err < 0.2
