@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from ..media import write_mp4, write_wav
-from . import Output, TaskSpec, fp8
+from . import Output, TaskSpec, fp8, graphs
 from .residency import fits, modules_of, weight_bytes
 
 RESIDENT_MARGIN_GIB = 32  # room for a clip's activations beside all the weights
@@ -195,6 +195,8 @@ class LTX23Worker(AdapterSlots):
         sink.status("Sampling" + (" (fast)" if fast else ""))
         start = time.monotonic()
         offloaded = False
+        # The transformer's steps recorded as CUDA graphs and replayed (tasks/graphs.py): resident only, this job only.
+        steps_graph = graphs.install(self.pipe.transformer, "ltx23") if self.resident else None
         try:
             try:
                 video, audio = pipe(**kwargs)
@@ -202,12 +204,17 @@ class LTX23Worker(AdapterSlots):
                 if not self.resident:
                     raise
                 # Too big to run beside all the weights: this clip only, with the modules taking turns.
+                if steps_graph is not None:
+                    steps_graph.remove()
+                    steps_graph = None
                 offloaded = True
                 sink.status("Sampling (offloaded: too big for the GPU beside the weights)")
                 torch.cuda.empty_cache()
                 self.pipe.enable_model_cpu_offload(device="cuda")
                 video, audio = pipe(**kwargs)
         finally:
+            if steps_graph is not None:
+                steps_graph.remove()
             if offloaded or not self.resident:
                 self.pipe.maybe_free_model_hooks()  # everything back on the CPU, also after a cancel or an error
             if offloaded:
