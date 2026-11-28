@@ -105,7 +105,8 @@ class LTX23Worker(AdapterSlots):
                 if fp8.wanted("AISTUDIO_PRECISION_LTX"):
                     # The transformer and the Gemma text encoder in fp8; the other mode's transformer is quantized
                     # the same way when it's parked beside it (adapters.WeightPark).
-                    fp8.convert_parts(modules_of(pipe.components), label="ltx23 fp8")
+                    fp8.convert_parts(modules_of(pipe.components), label="ltx23 fp8",
+                                      mode=fp8.precision("AISTUDIO_PRECISION_LTX"))
                     self.fp8_written = fp8.save_copies(pipe.components, self.fp8_sources)  # for the next cold start
             else:
                 print(f"ltx23: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room for a "

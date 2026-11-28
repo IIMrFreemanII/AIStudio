@@ -233,6 +233,12 @@ def _read_weights(module, params: dict, src: Path, vid: str) -> dict:
     parameter must be covered (saved buffers are skipped: modes share them)."""
     from safetensors import safe_open
 
+    from . import fp4
+
+    if fp4.has_fp4(module):
+        raise NotImplementedError(f"{vid}: modes and fine-tunes can't be swapped into fp4 layers yet (fp4 is "
+                                  "experimental; AISTUDIO_PRECISION_* fp8 or bf16 can)")
+
     files = sorted(src.glob("*.safetensors"))
     if not files:
         raise ValueError(f"{vid}: no weights in {src.name}")
@@ -267,6 +273,12 @@ def _copy_weights(module, src: Path, vid: str) -> None:
     """Copies every tensor of a diffusers transformer folder into ``module``'s parameters, in place (cast to their
     dtype: fp8 storage stays fp8). PEFT's wrapped layers (``…base_layer.weight``) are found too."""
     from safetensors import safe_open
+
+    from . import fp4
+
+    if fp4.has_fp4(module):
+        raise NotImplementedError(f"{vid}: modes and fine-tunes can't be swapped into fp4 layers yet (fp4 is "
+                                  "experimental; AISTUDIO_PRECISION_* fp8 or bf16 can)")
 
     files = sorted(src.glob("*.safetensors"))
     if not files:

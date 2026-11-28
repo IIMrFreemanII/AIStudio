@@ -198,7 +198,9 @@ class H3ImageWorker(AdapterSlots):
             for module in parts.values():
                 module.to("cuda")
             if fp8.wanted("AISTUDIO_PRECISION_H3_IMAGE"):
-                fp8.convert_parts(parts, label="h3-image fp8")  # transformer and text encoder: half their memory
+                # The transformer and text encoder: half their memory (fp4: the transformer a quarter).
+                fp8.convert_parts(parts, label="h3-image fp8",
+                                  mode=fp8.precision("AISTUDIO_PRECISION_H3_IMAGE"))
                 self.fp8_written = fp8.save_copies(parts, self.fp8_sources)  # for the next cold start
         else:  # an opt-in smaller fallback GPU: they take turns (slow; see the module docstring)
             print(f"h3-image: {weights / 2**30:.0f} GiB of weights don't fit {total / 2**30:.0f} GiB with room to run; "
