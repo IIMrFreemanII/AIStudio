@@ -8,8 +8,9 @@ change, text encoders stay fp8. Two ways to multiply:
   Falls back to ``fp4w`` if that fails.
 - ``fp4w``: the weight turned back into bf16 for each multiply (weight memory a quarter of bf16, bf16 inputs).
 
-Not yet: fp4 copies on disk (fp4 parts load from the bf16 files and are converted at load), and LoRA mode switches or
-fine-tunes swapped into fp4 layers (``adapters`` refuses them). PEFT LoRAs on top of an fp4 layer work as on fp8."""
+Converted transformers are stored as fp4 copies (``<folder>-fp4``, ``fp8.save_copy``) for the next cold start, which
+reads them instead of the bf16 files. Not yet: LoRA mode switches or fine-tunes swapped into fp4 layers (``adapters``
+refuses them). PEFT LoRAs on top of an fp4 layer work as on fp8."""
 
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import os
 
 F8_MAX, F4_MAX = 448.0, 6.0
 BLOCK = 16
+COPY_FORMAT = 1  # fp4 copies on disk (fp8.save_copy): bump when the stored layout or quantization changes
 _linear = None
 _quantize = None
 _tensor_cores = True  # until an fp4 matmul fails

@@ -80,8 +80,8 @@ class LTX23Worker(AdapterSlots):
         self.fp8_sources = {"transformer": (distilled if self.has_fast else root) / "transformer",
                             "text_encoder": root / "text_encoder", "connectors": root / "connectors"}
         if device == "cuda" and fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_LTX"):
-            status("Loading LTX-2.3 (fp8)")
-            extra.update(fp8.load_copies(self.fp8_sources))
+            status(f"Loading LTX-2.3 ({fp8.precision('AISTUDIO_PRECISION_LTX')})")
+            extra.update(fp8.load_copies(self.fp8_sources, mode=fp8.precision("AISTUDIO_PRECISION_LTX")))
         elif self.has_fast:
             status("Loading LTX-2.3 (distilled)")
             extra["transformer"] = LTX2VideoTransformer3DModel.from_pretrained(distilled / "transformer",

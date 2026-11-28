@@ -77,14 +77,70 @@ def test_precision_setting(monkeypatch):
         assert fp8.wanted("AISTUDIO_PRECISION_LTX") is quantized
 
 
-def test_fp4_parts_store_no_copies_and_never_load_fp8_ones(tmp_path, monkeypatch):
+def _tiny_wan():
+    diffusers = pytest.importorskip("diffusers")
+    torch.manual_seed(0)
+    return diffusers.WanTransformer3DModel(
+        patch_size=(1, 2, 2), num_attention_heads=2, attention_head_dim=128, in_channels=16, out_channels=16,
+        text_dim=256, freq_dim=256, ffn_dim=512, num_layers=1, cross_attn_norm=True,
+        qk_norm="rms_norm_across_heads", rope_max_seq_len=32).to(torch.bfloat16).eval()
+
+
+def _bytes(t):
+    return t.view(torch.uint8) if t.element_size() == 1 else t
+
+
+def test_an_fp4_copy_loads_back_exactly_in_either_mode(tmp_path):
+    model = _tiny_wan()
+    assert fp4.convert(model, fp8.TRANSFORMER_KEEP, "cpu", "fp4w")["layers"] > 0
+    src = tmp_path / "transformer"
+    assert not fp8.copy_ready(src, kind="fp4")
+    assert fp8.save_copy(model, src) and fp8.copy_ready(src, kind="fp4")
+    assert not fp8.copy_ready(src) and not fp8.copy_dir(src).exists()  # its own folder, not the fp8 one
+    assert not fp8.save_copy(model, src)  # current: kept
+    assert not any("w_blocked" in k for f in fp8.copy_dir(src, "fp4").glob("model-*.safetensors")
+                   for k in __import__("safetensors.torch").torch.load_file(str(f)))
+    for mode in ("fp4w", "fp4"):
+        loaded = fp8.load_copy(src, device="cpu", kind="fp4", mode=mode)
+        layer = loaded.blocks[0].attn1.to_q
+        assert type(layer).__name__ == "FP4Linear" and layer.fp4_mode == mode and loaded.dtype == torch.bfloat16
+        assert layer.weight.dtype == torch.float4_e2m1fn_x2
+        a, b = model.state_dict(), loaded.state_dict()
+        assert a.keys() == b.keys()
+        for k in a:
+            assert a[k].dtype == b[k].dtype and torch.equal(_bytes(a[k]), _bytes(b[k])), k
+    x = dict(hidden_states=torch.randn(1, 16, 1, 8, 8, dtype=torch.bfloat16), timestep=torch.tensor([500]),
+             encoder_hidden_states=torch.randn(1, 8, 256, dtype=torch.bfloat16))
+    with torch.no_grad():
+        assert torch.equal(model(**x).sample, loaded(**x).sample)  # fp4 falls back to dequantized on the CPU
+
+
+def test_fp4_modes_read_the_fp4_transformer_copy_and_the_fp8_text_encoder_copy(tmp_path, monkeypatch):
+    transformer, text = tmp_path / "transformer", tmp_path / "text_encoder"
+    m = _block()
+    fp4.convert(m, fp8.TRANSFORMER_KEEP, "cpu", "fp4")
+    fp8.save_copy(m, transformer)
+    t = _block()
+    fp8.convert(t, fp8.TEXT_KEEP, "cpu")
+    fp8.save_copy(t, text, text_encoder=True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_properties",
+                        lambda i: type("P", (), {"total_memory": 180 * 2**30})())
+    sources = {"transformer": transformer, "text_encoder": text}
+    assert fp8.copy_kind("transformer", "fp4") == "fp4" and fp8.copy_kind("text_encoder", "fp4w") == "fp8"
+    for mode, usable in (("fp4", True), ("fp4w", True), ("fp8", False), ("bf16", False)):
+        monkeypatch.setenv("AISTUDIO_PRECISION_LTX", mode)
+        assert fp8.copies_usable(sources, "AISTUDIO_PRECISION_LTX") is usable, mode  # fp8 lacks its transformer
+
+
+def test_a_stale_fp4_copy_is_made_again(tmp_path, monkeypatch):
     m = _block()
     fp4.convert(m, fp8.TRANSFORMER_KEEP, "cpu", "fp4")
     src = tmp_path / "transformer"
-    src.mkdir()
-    assert fp8.save_copy(m, src) is False and not fp8.copy_dir(src).exists()
-    monkeypatch.setenv("AISTUDIO_PRECISION_LTX", "fp4")
-    assert fp8.copies_usable({"transformer": src}, "AISTUDIO_PRECISION_LTX") is False
+    fp8.save_copy(m, src)
+    monkeypatch.setattr(fp4, "COPY_FORMAT", fp4.COPY_FORMAT + 1)
+    assert not fp8.copy_ready(src, kind="fp4")
+    assert fp8.save_copy(m, src) and fp8.copy_ready(src, kind="fp4")
 
 
 def test_modes_cannot_be_swapped_into_fp4_layers(tmp_path):

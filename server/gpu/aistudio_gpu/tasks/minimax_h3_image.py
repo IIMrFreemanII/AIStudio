@@ -180,8 +180,9 @@ class H3ImageWorker(AdapterSlots):
         sub = getattr(self.pipe._component_specs.get("transformer"), "subfolder", None) or "transformer"
         self.fp8_sources = {"transformer": root / sub, "text_encoder": text_root / "text_encoder"}
         if fp8.copies_usable(self.fp8_sources, "AISTUDIO_PRECISION_H3_IMAGE"):
-            status("Loading MiniMax H3 Image (fp8)")
-            self.pipe.update_components(**fp8.load_copies(self.fp8_sources))
+            status(f"Loading MiniMax H3 Image ({fp8.precision('AISTUDIO_PRECISION_H3_IMAGE')})")
+            self.pipe.update_components(**fp8.load_copies(self.fp8_sources,
+                                                          mode=fp8.precision("AISTUDIO_PRECISION_H3_IMAGE")))
         # The index names Hub repos; load every part from the volume instead (the text encoder from H3's folder).
         self.pipe.load_components(dtype=torch.bfloat16, pretrained_model_name_or_path={
             "text_encoder": str(text_root), "default": str(root)})

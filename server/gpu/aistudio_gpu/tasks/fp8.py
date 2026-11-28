@@ -228,39 +228,52 @@ def pin_dtype(model, dtype) -> None:
     model.__class__ = type(cls.__name__, (cls,), {"dtype": property(lambda self: dtype), "_fp8_pinned": True})
 
 
-# MARK: fp8 copies on disk
+# MARK: fp8 / fp4 copies on disk
 
-# Converted modules stored beside their bf16 folder (``<folder>-fp8``), so a cold start reads half the bytes: the
-# module's own tensors (fp8 weights with their scales, the rest as they were), its config, the buffers it doesn't save
-# itself, and a marker written last. Made by the worker from the module it just converted, so loading one gives exactly
-# what converting at load gives. A marker from another format or keep list is stale: the copy is made again.
+# Converted modules stored beside their bf16 folder (``<folder>-fp8``, or ``<folder>-fp4`` for a transformer converted
+# by ``fp4.convert``), so a cold start reads half the bytes (fp4: about a quarter): the module's own tensors (fp8 or
+# fp4 weights with their scales, the rest as they were), its config, the buffers it doesn't save itself, and a marker
+# written last. Made by the worker from the module it just converted, so loading one gives exactly what converting at
+# load gives. A marker from another format or keep list is stale: the copy is made again. The fp4 modes ``fp4`` and
+# ``fp4w`` share a copy (the same tensors; the mode is set at load); text encoders keep their fp8 copy in both.
 COPY_FORMAT = 1
 COPY_MARKER = ".fp8-copy.json"
 SHARD_BYTES = 5 * 2**30
 
 
-def copy_dir(src) -> "Path":
+def copy_kind(name: str, mode: str) -> str:
+    """The copy a part (pipeline name) loads from under ``mode`` (``precision``): ``fp4`` for a transformer in an
+    fp4 mode, else ``fp8``."""
+    return "fp4" if mode in ("fp4", "fp4w") and not is_text_encoder(name) else "fp8"
+
+
+def copy_dir(src, kind: str = "fp8") -> "Path":
     from pathlib import Path
 
     src = Path(src)
-    return src.with_name(src.name + "-fp8")
+    return src.with_name(f"{src.name}-{kind}")
 
 
-def _copy_meta(text_encoder: bool) -> dict:
+def _copy_meta(text_encoder: bool, kind: str = "fp8") -> dict:
     keep = TEXT_KEEP if text_encoder else TRANSFORMER_KEEP
-    return {"format": COPY_FORMAT, "keep": list(keep), "min_features": MIN_FEATURES}
+    meta = {"format": COPY_FORMAT, "keep": list(keep), "min_features": MIN_FEATURES}
+    if kind == "fp4":
+        from . import fp4
+
+        meta["fp4_format"] = fp4.COPY_FORMAT
+    return meta
 
 
-def copy_ready(src, text_encoder: bool = False) -> bool:
-    """Whether ``src`` has a current fp8 copy (this format and keep list)."""
+def copy_ready(src, text_encoder: bool = False, kind: str = "fp8") -> bool:
+    """Whether ``src`` has a current copy of this kind (this format and keep list)."""
     import json
 
-    marker = copy_dir(src) / COPY_MARKER
+    marker = copy_dir(src, kind) / COPY_MARKER
     try:
         meta = json.loads(marker.read_text())
     except (OSError, ValueError):
         return False
-    return all(meta.get(k) == v for k, v in _copy_meta(text_encoder).items())
+    return all(meta.get(k) == v for k, v in _copy_meta(text_encoder, kind).items())
 
 
 def _base_class(module):
@@ -272,9 +285,10 @@ def _base_class(module):
 
 
 def save_copy(module, src, text_encoder: bool = False) -> bool:
-    """Writes ``module`` (converted by ``convert``) as ``src``'s fp8 copy, unless a current one is there. PEFT's
-    wrappers are unwrapped and LoRA factors left out (LoRAs load on top as usual); a tensor shared by two names is
-    stored once. Returns whether it wrote one."""
+    """Writes ``module`` (converted by ``convert``, or ``fp4.convert``: then the fp4 copy) as ``src``'s copy, unless
+    a current one is there. PEFT's wrappers are unwrapped and LoRA factors left out (LoRAs load on top as usual); a
+    tensor shared by two names is stored once; fp4 weights go in as bytes (safetensors has no fp4 type) and the
+    tile-layout scales are left out (made again at load). Returns whether it wrote one."""
     import json
     import shutil
     import time
@@ -285,18 +299,18 @@ def save_copy(module, src, text_encoder: bool = False) -> bool:
 
     from . import fp4
 
-    if fp4.has_fp4(module):  # no fp4 copies yet: fp4 parts convert from the bf16 files at load
-        return False
-    if copy_ready(src, text_encoder):
+    kind = "fp4" if fp4.has_fp4(module) else "fp8"
+    if copy_ready(src, text_encoder, kind):
         return False
     start = time.monotonic()
-    out = copy_dir(src)
+    out = copy_dir(src, kind)
+    f4 = getattr(torch, "float4_e2m1fn_x2", None)
     tmp = out.with_name(f"{out.name}.partial-{uuid.uuid4().hex[:8]}")
     tmp.mkdir(parents=True)
     try:
         state = {}
         for k, v in module.state_dict(keep_vars=False).items():
-            if ".lora_" in k:
+            if ".lora_" in k or k.endswith(".w_blocked"):
                 continue
             state[k.replace(".base_layer.", ".")] = v
         seen, aliases, tensors = {}, {}, {}
@@ -309,7 +323,8 @@ def save_copy(module, src, text_encoder: bool = False) -> bool:
                 tensors[k] = v
         shard, size, n = {}, 0, 0
         for k, v in tensors.items():
-            shard[k] = v.detach().to("cpu").contiguous()
+            t = v.detach()
+            shard[k] = (t.view(torch.uint8) if f4 is not None and t.dtype == f4 else t).to("cpu").contiguous()
             size += v.numel() * v.element_size()
             if size >= SHARD_BYTES:
                 save_file(shard, str(tmp / f"model-{n:05d}.safetensors"))
@@ -330,10 +345,10 @@ def save_copy(module, src, text_encoder: bool = False) -> bool:
         elif hasattr(getattr(module, "config", None), "save_pretrained"):  # transformers
             module.config.save_pretrained(str(tmp))
         cls = _base_class(module)
-        meta = {**_copy_meta(text_encoder), "class": f"{cls.__module__}:{cls.__qualname__}", "aliases": aliases}
+        meta = {**_copy_meta(text_encoder, kind), "class": f"{cls.__module__}:{cls.__qualname__}", "aliases": aliases}
         (tmp / COPY_MARKER).write_text(json.dumps(meta))
         if out.exists():  # stale (another format), or another container finished first
-            if copy_ready(src, text_encoder):
+            if copy_ready(src, text_encoder, kind):
                 shutil.rmtree(tmp, ignore_errors=True)
                 return False
             shutil.rmtree(out, ignore_errors=True)
@@ -342,7 +357,7 @@ def save_copy(module, src, text_encoder: bool = False) -> bool:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     gb = sum(f.stat().st_size for f in out.glob("*.safetensors")) / 1e9
-    print(f"fp8: stored {out.name} ({gb:.1f} GB) in {time.monotonic() - start:.0f} s", flush=True)
+    print(f"{kind}: stored {out.name} ({gb:.1f} GB) in {time.monotonic() - start:.0f} s", flush=True)
     return True
 
 
@@ -369,9 +384,11 @@ def _skeleton(cls, folder, init_kwargs: dict):
         return cls._from_config(config, **init_kwargs)
 
 
-def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, threads: int = 8):
-    """``src``'s fp8 copy as a ready module on ``device``: the shards read in parallel straight onto it, the fp8
-    layers made ``FP8Linear`` before the tensors are assigned, the saved buffers put back."""
+def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, threads: int = 8, kind: str = "fp8",
+              mode: str = "fp4"):
+    """``src``'s copy of this ``kind`` as a ready module on ``device``: the shards read in parallel straight onto it,
+    the fp8 layers made ``FP8Linear`` (fp4 ones ``FP4Linear`` in ``mode``, their tile-layout scales made again)
+    before the tensors are assigned, the saved buffers put back."""
     import json
     import time
     from concurrent.futures import ThreadPoolExecutor
@@ -381,7 +398,7 @@ def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, thread
     from torch import nn
 
     start = time.monotonic()
-    folder = copy_dir(src)
+    folder = copy_dir(src, kind)
     meta = json.loads((folder / COPY_MARKER).read_text())
     model = _skeleton(_import(meta["class"]), folder, init_kwargs or {})
     files = sorted(folder.glob("model-*.safetensors"))
@@ -396,10 +413,27 @@ def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, thread
         m.__class__ = cls
         m.w_scale = nn.Parameter(torch.empty(m.out_features, device="meta"), requires_grad=False)
         m.compute_dtype = torch.bfloat16
+    fp4_layers = [k[: -len(".w_ts")] for k in state if k.endswith(".w_ts")]
+    if fp4_layers:
+        from . import fp4
+
+        cls4 = fp4.linear_class()
+        for name in fp4_layers:
+            m = model.get_submodule(name)
+            m.__class__ = cls4
+            state[f"{name}.weight"] = state[f"{name}.weight"].view(torch.float4_e2m1fn_x2)
+            for leaf in ("weight", "w_bs", "w_ts"):  # shaped as stored, so the assignment takes them
+                setattr(m, leaf, nn.Parameter(torch.empty_like(state[f"{name}.{leaf}"], device="meta"),
+                                              requires_grad=False))
+            m.compute_dtype = torch.bfloat16
+            m.fp4_mode = mode
     missing, unexpected = model.load_state_dict(state, strict=False, assign=True)
     if missing or unexpected:
-        raise RuntimeError(f"fp8 copy {folder.name}: {len(missing)} missing (e.g. {missing[:2]}), "
+        raise RuntimeError(f"{kind} copy {folder.name}: {len(missing)} missing (e.g. {missing[:2]}), "
                            f"{len(unexpected)} unexpected (e.g. {unexpected[:2]})")
+    for name in fp4_layers:
+        m = model.get_submodule(name)
+        m.w_blocked = nn.Parameter(fp4.blocked(m.w_bs.data), requires_grad=False)
     buffers = folder / "buffers.safetensors"
     if buffers.exists():
         for k, v in load_file(str(buffers), device=device).items():
@@ -410,30 +444,36 @@ def load_copy(src, device: str = "cuda", init_kwargs: dict | None = None, thread
     for p in model.parameters():
         p.requires_grad_(False)
     pin_dtype(model, torch.bfloat16)
-    print(f"fp8: loaded {folder.name} in {time.monotonic() - start:.1f} s", flush=True)
+    print(f"{kind}: loaded {folder.name} in {time.monotonic() - start:.1f} s", flush=True)
     return model
 
 
 def copies_usable(sources: dict, env_name: str, margin_gib: float = 40) -> bool:
-    """Whether a worker loads its parts (name → bf16 folder) from their fp8 copies: fp8 wanted, every copy current,
-    and a CUDA GPU with room for them beside ``margin_gib`` (else the bf16 path with its own offload fallback)."""
+    """Whether a worker loads its parts (name → bf16 folder) from their copies: fp8 or fp4 wanted, every copy that
+    mode reads current (``copy_kind``), and a CUDA GPU with room for them beside ``margin_gib`` (else the bf16 path
+    with its own offload fallback)."""
     import torch
 
-    if precision(env_name) != "fp8" or not torch.cuda.is_available():
+    mode = precision(env_name)
+    if mode == "bf16" or not torch.cuda.is_available():
         return False
-    if not all(copy_ready(src, is_text_encoder(name)) for name, src in sources.items()):
+    kinds = {name: copy_kind(name, mode) for name in sources}
+    if not all(copy_ready(src, is_text_encoder(name), kinds[name]) for name, src in sources.items()):
         return False
-    size = sum(f.stat().st_size for src in sources.values() for f in copy_dir(src).glob("*.safetensors"))
+    size = sum(f.stat().st_size for name, src in sources.items()
+               for f in copy_dir(src, kinds[name]).glob("*.safetensors"))
     return torch.cuda.get_device_properties(0).total_memory - size >= margin_gib * 2**30
 
 
-def load_copies(sources: dict, init_kwargs: dict | None = None) -> dict:
-    """Every part (name → bf16 folder) from its fp8 copy, on the GPU."""
-    return {name: load_copy(src, "cuda", (init_kwargs or {}).get(name)) for name, src in sources.items()}
+def load_copies(sources: dict, init_kwargs: dict | None = None, mode: str = "fp8") -> dict:
+    """Every part (name → bf16 folder) from its copy for ``mode`` (``precision``), on the GPU."""
+    return {name: load_copy(src, "cuda", (init_kwargs or {}).get(name), kind=copy_kind(name, mode), mode=mode)
+            for name, src in sources.items()}
 
 
 def save_copies(parts: dict, sources: dict) -> bool:
-    """Stores the converted parts (name → module) as their folders' fp8 copies where a current one is missing.
+    """Stores the converted parts (name → module) as their folders' copies (fp8, or fp4 for fp4 parts) where a
+    current one is missing.
     Returns whether it wrote any (the worker's first job then commits the Volume)."""
     wrote = False
     for name, src in sources.items():
