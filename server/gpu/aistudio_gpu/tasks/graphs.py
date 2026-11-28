@@ -10,6 +10,7 @@ graphs off for the rest of the job. ``AISTUDIO_CUDA_GRAPHS=0`` turns them off.""
 
 from __future__ import annotations
 
+import inspect
 import os
 import time
 
@@ -39,6 +40,10 @@ class StepGraphs:
     def __init__(self, module, label: str = "step"):
         self.module, self.label = module, label
         self.forward = module.forward
+        try:  # some pipelines pick the arguments they pass by the forward's signature (H3's denoisers)
+            self.__signature__ = inspect.signature(self.forward)
+        except (TypeError, ValueError):
+            pass
         self.seen: dict = {}
         self.graphs: dict = {}
         self.broken = False

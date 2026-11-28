@@ -155,7 +155,8 @@ env = {"AISTUDIO_GPU_WAN": GPU_WAN, "AISTUDIO_GPU_FLUX": GPU_FLUX, "AISTUDIO_GPU
        **{f"AISTUDIO_PRECISION_{k}": os.environ.get(f"AISTUDIO_PRECISION_{k}", "fp8")
           for k in ("H3", "H3_IMAGE", "LTX", "LONGCAT")},
        "HF_ENABLE_PARALLEL_LOADING": os.environ.get("HF_ENABLE_PARALLEL_LOADING", "yes"),
-       "AISTUDIO_PROFILE": os.environ.get("AISTUDIO_PROFILE", "0")}
+       "AISTUDIO_PROFILE": os.environ.get("AISTUDIO_PROFILE", "0"),
+       "AISTUDIO_CUDA_GRAPHS": os.environ.get("AISTUDIO_CUDA_GRAPHS", "1")}
 
 front_image = (modal.Image.debian_slim(python_version="3.12").uv_pip_install(*SERVER_DEPS).env(env)
                .add_local_python_source("aistudio_gpu"))
